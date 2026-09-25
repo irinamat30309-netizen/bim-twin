@@ -2,7 +2,7 @@
 
 ## Цель и границы
 
-Проверялись background parsing, disk-octree LOD, отмена/очистка и bounded-working-set ветки для **scalar-property ASCII/binary LE/BE PLY, uncompressed LAS PDRF 0–10 и PCD ASCII/interleaved-binary/LZF binary_compressed**. Среда предыдущих локальных E2E — Linux/Node 24 и headless Chromium/SwiftShader с fake-Electron IPC; внешние пользовательские модели и локальные screenshots/evidence не включены в Git. Windows runtime недоступен на локальном host (Amazon Linux 2023 без Wine/PowerShell/cmd.exe). Первый hosted job `windows-test` на `windows-latest` выявил `EPERM` на read-only backup descriptor; следующая hosted проверка обнаружила те же read-only `fsync` пути в octree/export, CRLF-sensitive hash assertion и SIGKILL assertion, недоступный Windows. Исправлено: собственные временные backup/node файлы синхронизируются с `r+` и writable/private mode; hash check сравнивает нормализованный текст; child-termination test использует аварийный exit на Windows и SIGKILL на POSIX. Новая hosted проверка ещё не завершена. Linux/fake-Electron проверки не выдаются за Windows-приёмку; packaged Windows/ASAR и целевой GPU/VRAM также не сертифицированы.
+Проверялись background parsing, disk-octree LOD, отмена/очистка и bounded-working-set ветки для **scalar-property ASCII/binary LE/BE PLY, uncompressed LAS PDRF 0–10 и PCD ASCII/interleaved-binary/LZF binary_compressed**. Среда предыдущих локальных E2E — Linux/Node 24 и headless Chromium/SwiftShader с fake-Electron IPC; внешние пользовательские модели и локальные screenshots/evidence не включены в Git. Windows runtime недоступен на локальном host (Amazon Linux 2023 без Wine/PowerShell/cmd.exe). Первый hosted job `windows-test` на `windows-latest` выявил `EPERM` на read-only backup descriptor; следующая hosted проверка обнаружила те же read-only `fsync` пути в octree/export, CRLF-sensitive hash assertion и SIGKILL assertion, недоступный Windows. Исправлено: собственные временные backup/node файлы синхронизируются с `r+` и writable/private mode; hash check сравнивает нормализованный текст; child-termination test использует аварийный exit на Windows и SIGKILL на POSIX. После этих исправлений hosted GitHub Actions для commit `d6c0215` завершил Linux `test` и Windows `windows-test` со статусом `success` (run `36179707597`). Это подтверждает CI-проверку на hosted Windows, но не packaged Windows/ASAR, интерактивный UI, целевой GPU/VRAM или CAD/BIM/GIS-приёмку.
 
 ## Что теперь делает out-of-core ветка
 
@@ -28,6 +28,7 @@
 | `test/octree-build-stage4.test.js`, `test/octree-store.test.js`, `test/webgl-octree-stream.test.js` | Вошли в полный успешный прогон: build/read, node ranges, LOD selection/budget, cache eviction, degenerate input |
 | `npm run check` | Успешно |
 | `npm run test:store` | `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
+| Hosted GitHub Actions CI | Linux `test` and Windows `windows-test` passed for commit `d6c0215`; packaged Windows/ASAR remains untested |
 | Синтаксис | 232 JS/MJS/CJS-файлов прошли `node --check` |
 | Focused out-of-core/resource/PTX stream + cloud Worker suite (`octree-out-of-core-las`, `octree-out-of-core-ply`, `octree-out-of-core-pcd`, `octree-build-stage4`, `octree-resource-budget-stage4`, `ptx-stream-export-stage4`, `cloud-parse-worker-stage4`) | 51/51 passed |
 | Stage 3 format/PTX regressions | 23/23 форматных+parser/writer tests и 7/7 PTX stream tests прошли; Stage 3 всё ещё частичный, см. `QA-RETEST-stage3.md` |
@@ -45,7 +46,7 @@
 - внешний LAS fixture: main-process preflight/Worker, disk index, viewer stream и cleanup; сам файл и точная метаинформация не включены;
 - synthetic PCD `binary_compressed`/LZF: progress, видимая кнопка LOD и cancel, отсутствие частичного импорта, scratch/store cleanup.
 
-Это исторические local-only E2E результаты, не повторяемые GitHub CI тесты: harness-скрипты, файлы, JSON и screenshots не публикуются. Текущая воспроизводимая проверка ветки — unit/regression suite; Windows job, packaged Electron, GPU и внешние CAD/BIM/GIS readers требуют отдельной фактической приёмки.
+Это исторические local-only E2E результаты, не повторяемые GitHub CI тесты: harness-скрипты, файлы, JSON и screenshots не публикуются. Текущая воспроизводимая проверка ветки — unit/regression suite; hosted Windows job прошёл, но packaged Electron, GPU и внешние CAD/BIM/GIS readers требуют отдельной фактической приёмки.
 
 ## Preflight, отмена и cleanup
 
@@ -66,4 +67,4 @@
 - Нужны repeatable cold/warm benches на нескольких размерах и машинах, pressure tests с конкурирующим RAM/disk use, target GPU/VRAM/frame-time, Windows packaged/ASAR, 100 GB scale и внешние CAD/BIM/GIS проверки.
 - Порог индекса в main сейчас 40M точек; это технический cap, не обещание ёмкости для каждого компьютера. Оценки ресурсов и node fallback не заменяют производственный stress test.
 
-**Вывод:** Stage 4 расширяет bounded-working-set ingest и disk octree для ASCII/binary point-cloud PLY с поддерживаемыми scalar properties, uncompressed LAS formats 0–10 и PCD ASCII/interleaved-binary/LZF; LZF preview использует ограниченный disk scratch и point budget. Текущий clean-checkout regression suite прошёл 835/842 tests, 0 failures, 7 fixture/decoder skips; это не эквивалент Windows UI приёмки. Этап остаётся **частичным, не принят и не завершён**: другие форматы/mesh memory-bound, intensity/classification и дополнительные атрибуты не стримятся, нет resumable stores и stream-aware инструментов; требуются фактический Windows CI, packaged/ASAR и GPU/VRAM проверки, повторяемые benchmarks и CAD/BIM/GIS round-trip.
+**Вывод:** Stage 4 расширяет bounded-working-set ingest и disk octree для ASCII/binary point-cloud PLY с поддерживаемыми scalar properties, uncompressed LAS formats 0–10 и PCD ASCII/interleaved-binary/LZF; LZF preview использует ограниченный disk scratch и point budget. Текущий clean-checkout regression suite прошёл 835/842 tests, 0 failures, 7 fixture/decoder skips; это не эквивалент Windows UI приёмки. Этап остаётся **частичным, не принят и не завершён**: другие форматы/mesh memory-bound, intensity/classification и дополнительные атрибуты не стримятся, нет resumable stores и stream-aware инструментов; hosted Windows CI прошёл; по-прежнему нужны packaged/ASAR и GPU/VRAM проверки, повторяемые benchmarks и CAD/BIM/GIS round-trip.
