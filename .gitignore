@@ -1,0 +1,32 @@
+# Dependencies and generated build outputs
+node_modules/
+dist/
+release/
+out/
+coverage/
+
+# Local data, user-supplied fixtures, and test artifacts
+QA-artifacts/
+qa-v1089/
+qa-v1090/
+BIM-TWIN-user-fixtures-*/
+
+# Local credentials and machine-specific files
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Runtime/test caches and local fixture/evidence bundles
+**/__pycache__/
+*.py[cod]
+test/fixtures/
+scan2bim-ai-server/test_local.py
+QA-run-stage*-latest.log
+bim-twin-handoff-*.docx
+
+# Local previews and private sample documents, not required by the app
+/preview_c.png
+renderer/preview.png
+ai/samples/
