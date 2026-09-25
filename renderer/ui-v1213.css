@@ -1,0 +1,67 @@
+/* BIM Twin v1213 — viewport/ribbon/navigation/accessibility polish */
+html[data-lxskin=on] :is(.stage,#viewerWrap,.lx-canvaswrap,#view3d,.viewer3d){background:#050609!important;background-image:none!important}
+html[data-theme=light][data-lxskin=on] :is(.stage,#viewerWrap,.lx-canvaswrap,#view3d,.viewer3d){background:#050609!important;background-image:none!important}
+html[data-lxskin=on] .stage canvas{background:#050609!important}
+.ui-vpbar,.ui-views{display:none!important}
+#tsSplatXgrids,#vtXgrids,[data-tool=xgrids],.xgrids-button{display:none!important}
+/* Larger semantic ribbon icons */
+html[data-lxskin=on] .toolbar .lx-bic{width:44px!important;height:44px!important;min-width:44px!important;min-height:44px!important}
+html[data-lxskin=on] .toolbar .lx-bic svg{width:31px!important;height:31px!important;stroke-width:1.9!important}
+html[data-lxskin=on] .toolbar .lx-bigbtn{min-height:82px!important}
+html[data-lxskin=on] #lxRibbonActions .lx-bigbtn{position:static!important;inset:auto!important;display:flex!important;opacity:1!important;margin:0!important;box-shadow:none!important}
+/* Light-theme contrast in all interaction states */
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn){color:#1d2a3c!important;background:transparent!important;border-color:transparent!important}
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn):hover{color:#0f4fb7!important;background:#e2ebf8!important;border-color:#a8bfdf!important}
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn):active,
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn).on,
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn).active,
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn)[aria-pressed=true]{color:#fff!important;background:#2861d7!important;border-color:#194aa9!important}
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn).on .lx-bic,
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn).active .lx-bic,
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn)[aria-pressed=true] .lx-bic{color:#fff!important;background:#ffffff25!important}
+html[data-theme=light][data-lxskin=on] .toolbar :is(button,.tbtn,.lx-bigbtn):disabled{color:#8793a3!important;background:#eef1f5!important;opacity:.72!important}
+/* Direct-click navigation cube */
+html[data-lxskin=on] .lx-cube.lx-cube-direct{position:relative;width:108px!important;height:108px!important;overflow:visible;cursor:default!important}
+.lx-cube-direct .lx-face{position:absolute;display:grid;place-items:center;border:1px solid #6f7f96;background:#202a38;color:#edf4ff;font:700 9px/1 Arial,sans-serif;cursor:pointer;transition:.14s ease;box-shadow:0 2px 7px #0005;padding:0}
+.lx-cube-direct .lx-face:hover{z-index:5;background:#3273dc;color:#fff;border-color:#85b5ff;filter:none}
+.lx-cube-direct .lx-face.active{z-index:6;background:#2861d7;color:#fff;border-color:#b5d0ff}
+.lx-cube-direct [data-view=top]{left:30px;top:7px;width:48px;height:32px;clip-path:polygon(50% 0,100% 38%,50% 100%,0 38%)}
+.lx-cube-direct [data-view=front]{left:30px;top:35px;width:48px;height:45px;clip-path:polygon(0 0,100% 0,100% 78%,50% 100%,0 78%)}
+.lx-cube-direct [data-view=right]{left:74px;top:22px;width:31px;height:53px;clip-path:polygon(0 24%,100% 0,100% 76%,0 100%)}
+.lx-cube-direct [data-view=left]{left:3px;top:35px;width:25px;height:29px;border-radius:4px}
+.lx-cube-direct [data-view=back]{left:3px;top:69px;width:25px;height:29px;border-radius:4px}
+.lx-cube-direct [data-view=bottom]{left:34px;top:83px;width:40px;height:23px;border-radius:4px}
+.lx-cube-direct [data-view=iso]{left:80px;top:80px;width:26px;height:25px;border-radius:4px}
+html[data-theme=light][data-lxskin=on] .lx-cube-direct .lx-face{background:#fff;color:#23344b;border-color:#9eacbd;box-shadow:0 2px 7px #24405a24}
+html[data-theme=light][data-lxskin=on] .lx-cube-direct .lx-face:hover,
+html[data-theme=light][data-lxskin=on] .lx-cube-direct .lx-face.active{background:#2861d7;color:#fff;border-color:#154ca9}
+/* Unified long-operation modal */
+#lxProgressModal{position:fixed;inset:0;z-index:100200;display:none;align-items:center;justify-content:center;background:rgba(8,10,14,.6);backdrop-filter:blur(3px)}
+#lxProgressModal.open{display:flex}
+#lxProgressModal .lx-progress-card{width:min(440px,calc(100vw - 36px));padding:24px;border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--txt);box-shadow:var(--shadow-pop);font:13px system-ui,Segoe UI,sans-serif}
+#lxProgressModal .lx-progress-title{font-size:17px;font-weight:750;margin-bottom:8px}
+#lxProgressModal .lx-progress-msg{min-height:20px;color:var(--muted);margin-bottom:14px}
+#lxProgressModal .lx-progress-track{height:12px;border-radius:999px;background:var(--panel2);overflow:hidden}
+#lxProgressModal .lx-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--lx-blue),var(--lx-green));transition:width .18s ease}
+#lxProgressModal .lx-progress-meta{display:flex;justify-content:space-between;margin-top:9px;color:var(--muted);font-variant-numeric:tabular-nums}
+#lxProgressModal .lx-progress-actions{display:flex;justify-content:flex-end;margin-top:18px}
+#lxProgressModal button{height:32px;padding:0 14px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--txt);cursor:pointer}
+#lxProgressModal button:hover{background:color-mix(in srgb, var(--panel2) 70%, var(--txt) 10%)}
+@media(max-width:1366px){html[data-lxskin=on] .toolbar .lx-bic{width:39px!important;height:39px!important}html[data-lxskin=on] .toolbar .lx-bic svg{width:28px!important;height:28px!important}}
+html[data-theme="light"] #lxRibbonActions button.lx-bigbtn{background:#f4f7fb!important;color:#203047!important;border:1px solid #c6d1df!important}
+html[data-theme="light"] #lxRibbonActions button.lx-bigbtn:hover{background:#e2ebf8!important;color:#0f4fb7!important;border-color:#8eadd5!important}
+html[data-theme="light"] #lxRibbonActions button.lx-bigbtn:is(.on,.active,[aria-pressed="true"]){background:#2861d7!important;color:#fff!important;border-color:#17489f!important}
+/* v1214 coordinate ViewCube */
+html[data-lxskin=on] .lx-cube.lx-cube-coordinates{width:128px!important;height:128px!important;background:transparent!important;border:0!important;box-shadow:none!important;overflow:visible!important}
+.lx-viewcube-svg{width:128px;height:128px;overflow:visible;font:700 7px Arial,sans-serif;user-select:none}
+.lx-vface polygon{fill:#283445;stroke:#8fa0b6;stroke-width:1.2;cursor:pointer;transition:.13s}.lx-vtop polygon{fill:#34465c}.lx-vright polygon{fill:#202c3c}.lx-vface text{fill:#eef5ff;text-anchor:middle;pointer-events:none}.lx-vface:hover polygon,.lx-vface.active polygon{fill:#2861d7;stroke:#b9d5ff;stroke-width:1.8}.lx-vcenter circle{fill:#6f9cff;stroke:#dbe9ff;cursor:pointer}.lx-vcenter:hover circle{fill:#22a979}
+.lx-axis line{stroke-width:1.6}.lx-axis circle{fill:#182231;stroke-width:1.4;cursor:pointer}.lx-axis text{font-size:6px;fill:#fff;pointer-events:none}.lx-axis-x line,.lx-axis-x circle{stroke:#ef5a5a}.lx-axis-y line,.lx-axis-y circle{stroke:#4fca76}.lx-axis-z line,.lx-axis-z circle{stroke:#5b77ff}.lx-axis circle:hover{fill:#2861d7;stroke:#fff}
+html[data-theme=light] .lx-vface polygon{fill:#fff;stroke:#8fa0b6}html[data-theme=light] .lx-vtop polygon{fill:#edf4fc}html[data-theme=light] .lx-vright polygon{fill:#dce8f6}html[data-theme=light] .lx-vface text{fill:#203047}html[data-theme=light] .lx-vface:hover polygon,html[data-theme=light] .lx-vface.active polygon{fill:#2861d7}html[data-theme=light] .lx-vface:hover text,html[data-theme=light] .lx-vface.active text{fill:#fff}html[data-theme=light] .lx-axis circle{fill:#fff}html[data-theme=light] .lx-axis text{fill:#21334c}
+/* v1214 dedicated Export ribbon; old floating bar is gone */
+.lx-smart-save{display:none!important}
+#lxExportTab{font:inherit;border:0;border-radius:0;background:transparent}
+.lx-export-icon{position:relative}.lx-export-icon small{position:absolute;right:-5px;bottom:-4px;min-width:20px;padding:1px 2px;border-radius:3px;background:#1f6bd8;color:#fff;font:700 6px/1.3 Arial;text-align:center;letter-spacing:.1px}.lx-export-btn .lx-bic{color:#32a87b!important;background:#32a87b18!important}.lx-export-btn:hover .lx-bic{color:#49cb9b!important}.lx-export-group .tgrow{gap:4px}
+html[data-theme=light] .lx-export-btn{background:#f4f7fb!important;color:#203047!important;border:1px solid #c6d1df!important}html[data-theme=light] .lx-export-btn:hover{background:#e2ebf8!important;color:#0f4fb7!important;border-color:#8eadd5!important}
+
+#lxRibbonActions .lx-bigbtn:not(:disabled):hover{transform:translateY(-1px)!important;filter:brightness(1.12)!important}
+#lxRibbonActions .lx-bigbtn:not(:disabled):active{transform:translateY(0)!important;filter:brightness(.96)!important}

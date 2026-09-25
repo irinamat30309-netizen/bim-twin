@@ -1,0 +1,101 @@
+/* v1090 — shared flat properties / bottom tool language. Loaded last. */
+html[data-lxskin="on"] .inspector { gap:0; padding:0; }
+html[data-lxskin="on"] #lxScene { min-height:100px; max-height:33%; flex:0 1 auto; }
+html[data-lxskin="on"] .lx-properties-empty {display:none;}
+html[data-lxskin="on"] #lxCloudProperties {position:relative; flex:1; min-height:0; overflow:auto; background:var(--panel); color:var(--txt); font:12px/1.45 'Segoe UI',Arial,sans-serif;}
+html[data-lxskin="on"].lx-docs-view #lxCloudProperties {display:none;}
+html[data-lxskin="on"] #lxPropertiesToggle {margin-top:auto;}
+html[data-lxskin="on"] #lxCloudFields {padding:10px 12px 14px;}
+html[data-lxskin="on"] #lxCloudProperties .lx-properties-head {position:sticky;top:0;z-index:1;background:var(--panel);cursor:default;border-top-width:3px;height:29px;}
+.lx-type-badge {font-size:9px;letter-spacing:.7px;color:var(--muted);}
+.lx-cloud-empty {padding:18px 12px;color:var(--muted);line-height:1.65;}
+html[data-lxskin="on"] .lx-cloud-entry {height:27px;display:flex;align-items:center;gap:5px;margin:0 0 1px 16px;padding:3px 6px;cursor:pointer;font-size:12px;min-width:0;}
+html[data-lxskin="on"] .lx-cloud-entry.active {background:#284578;color:#ecf2ff;}
+.lx-cloud-filename {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+.lx-cloud-ico {flex:none;display:flex;width:17px;}
+.lx-cloud-ico svg {width:17px;height:17px;}
+.lx-cloud-eye {padding:0;flex:none;background:transparent;border:0;color:inherit;width:18px;height:20px;cursor:pointer;}
+.lx-cloud-eye svg {width:17px;height:17px;}
+.lx-cloud-entry.invisible {opacity:.55;}
+.lx-cloud-entry.invisible .lx-cloud-eye {text-decoration:line-through;opacity:.5;}
+.lx-cloud-name {display:flex;align-items:center;gap:4px;margin-bottom:14px;}
+#cpName {white-space:nowrap;text-overflow:ellipsis;overflow:hidden;flex:1;font-weight:500;}
+#lxCloudMore,#cpRangeReset {background:transparent;color:var(--muted);border:0;cursor:pointer;flex:none;font-size:20px;width:24px;padding:0;}
+.lx-cp-row {display:grid;grid-template-columns:100px minmax(26px,1fr) 48px;gap:6px;align-items:center;margin-top:12px;}
+html[data-lxskin="on"] #lxCloudProperties input[type="range"] {appearance:none;width:100%;height:3px;min-width:0;margin:0;background:var(--line);border:0;border-radius:0;accent-color:#81a0ff;}
+html[data-lxskin="on"] #lxCloudProperties input[type="range"]::-webkit-slider-thumb {appearance:none;width:10px;height:10px;background:#a9b4cc;border:1px solid #dde4f0;border-radius:1px;cursor:ew-resize;}
+html[data-lxskin="on"] #lxCloudProperties input[type="number"],html[data-lxskin="on"] #lxCloudProperties select {width:100%;min-width:0;padding:3px 4px;height:25px;border:1px solid var(--line);background:var(--panel);color:var(--txt);border-radius:2px;font:12px 'Segoe UI',Arial,sans-serif;}
+html[data-lxskin="on"] #lxCloudProperties input[type="number"] {appearance:textfield;text-align:right;}
+#lxCloudProperties input::-webkit-inner-spin-button {appearance:none;}
+.lx-cp-scale {display:flex;justify-content:space-between;margin:2px 55px 0 106px;color:var(--muted);font-size:10px;}
+.lx-cp-select {display:grid;grid-template-columns:100px 1fr;align-items:center;gap:6px;margin:12px 0 8px;}
+#cpGradient {height:8px;margin:8px 0 5px;border-radius:1px;}
+#cpHistogram {display:block;width:100%;height:68px;background:var(--panel2);}
+.lx-height-ranges {display:grid;grid-template-columns:1fr;gap:10px;margin:8px 0 14px;}
+.lx-height-numbers {display:grid;grid-template-columns:1fr 1fr 20px;gap:8px;align-items:end;}
+.lx-height-numbers label {display:grid;gap:4px;color:var(--muted);}
+.lx-cp-check {display:flex;gap:5px;align-items:center;margin:10px 0 6px;}
+.lx-cp-check input {accent-color:#668fef;}
+.lx-cp-note {font-size:10px;color:var(--muted);line-height:1.5;margin-top:6px;}
+.lx-cloud-stats {display:grid;grid-template-columns:1fr auto;gap:8px 5px;padding-top:12px;border-top:1px solid var(--line);margin:14px 0 12px;}
+.lx-cloud-stats dt {color:var(--muted);}.lx-cloud-stats dd {margin:0;color:var(--txt);font-variant-numeric:tabular-nums;}
+.lx-cp-caption {color:var(--muted);font-size:11px;margin:8px 0 5px;}
+#cpDimensions {display:block;font-variant-numeric:tabular-nums;font-size:11px;line-height:1.8;}
+#cpError {color:var(--err);font-size:11px;margin-top:6px;}
+.lx-cloud-menu {position:absolute;right:9px;top:64px;z-index:30;padding:5px;background:var(--panel);border:1px solid var(--line);border-radius:3px;box-shadow:0 8px 24px #0006;}
+.lx-cloud-menu button {display:block;text-align:left;width:100%;padding:8px 12px;border:0;background:transparent;color:var(--txt);cursor:pointer;font:12px 'Segoe UI',Arial,sans-serif;}
+.lx-cloud-menu button:hover {background:var(--panel2);}
+/* One compact horizontal toolbar, anchored to viewport — not the whole application. */
+html[data-lxskin="on"] #measureBar.mtoolbox {top:auto;left:50%;bottom:44px;transform:translateX(-50%);right:auto;width:max-content;max-width:calc(100% - 32px);max-height:none;overflow:visible;padding:5px;gap:0;border-radius:3px;background:var(--panel);border:1px solid var(--line);box-shadow:0 3px 14px #0005;z-index:36;}
+.lx-dock-row {display:flex;align-items:center;gap:2px;}
+html[data-lxskin="on"] .lx-dock-row .btn-sm {display:inline-flex;align-items:center;justify-content:center;position:relative;width:38px;height:36px;padding:7px;border:1px solid transparent;border-radius:2px;background:transparent;flex:none;color:var(--txt);}
+html[data-lxskin="on"] .lx-dock-row .btn-sm svg {height:22px;width:22px;display:block;flex:none;}
+html[data-lxskin="on"] .lx-dock-row .btn-sm.on,html[data-lxskin="on"] .lx-dock-row .btn-sm[aria-pressed="true"] {background:#263e68;border-color:#5577b8;color:#90b6ff;}
+html[data-lxskin="on"] .lx-dock-row .btn-sm:hover {background:var(--panel2);border-color:var(--line);}
+html[data-lxskin="on"] #mmExit:hover {background:color-mix(in srgb, var(--err) 30%, var(--panel2));}
+.lx-drop-arrow {position:absolute;bottom:0;right:1px;font-size:8px;color:var(--muted);}
+.lx-dock-separator {height:26px;border-left:1px solid var(--line);margin:0 4px;}
+#lxMeasureHint {position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);white-space:nowrap;font-size:11px;color:var(--muted);background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-pop);padding:4px 8px;border-radius:4px;pointer-events:none;}
+html[data-lxskin="on"] #measureBar .lx-dock-pop {position:absolute;bottom:calc(100% + 38px);right:0;width:280px;max-height:300px;overflow:auto;display:grid;grid-template-columns:1fr;gap:3px;background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:6px;box-shadow:0 4px 20px #0006;}
+html[data-lxskin="on"] #measureBar .lx-dock-pop .btn-sm {text-align:left;background:transparent;border:0;min-height:30px;white-space:normal;}
+html[data-lxskin="on"] #measureBar .lx-dock-pop .btn-sm:hover {background:var(--panel2);}
+.lx-pop-title {color:var(--muted);font-size:11px;padding:5px 6px;border-bottom:1px solid var(--line);margin-bottom:3px;}
+html[data-lxskin="on"] #measureReadout {top:auto;bottom:126px;max-width:calc(100% - 80px);z-index:30;}
+html[data-lxskin="on"] #measureListPanel {left:50%!important;right:auto!important;top:auto!important;bottom:138px!important;transform:translateX(-50%);max-width:calc(100% - 80px);width:520px!important;max-height:45%!important;background:var(--panel)!important;border:1px solid var(--line)!important;border-radius:3px!important;}
+html[data-lxskin="on"] :is(#sectionPanel,#qualityBar,#editBar,#tourBar,#lxSectionControls) {left:50%!important;top:auto!important;bottom:44px!important;transform:translateX(-50%);right:auto!important;width:560px;max-width:calc(100% - 64px)!important;max-height:55%!important;padding:12px;box-shadow:0 3px 14px #0005;}
+html[data-lxskin="on"] #editCount {flex:1 0 90%;font-size:11px;line-height:1.5;}
+html[data-lxskin="on"] #lxSectionControls {width:400px;}
+html[data-lxskin="on"] #lxSectionControls {overflow-y:auto;}
+html[data-lxskin="on"] #lxSectionControls .lx-field {margin:8px 0;}
+.lx-section-presets {border-top:1px solid var(--line);margin-top:10px;padding-top:8px;}
+.lx-section-presets-title {font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;}
+.lx-section-preset-row {display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:5px;align-items:center;}
+.lx-section-preset-row select {min-width:0;width:100%;height:30px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;}
+#lxSaveSectionPreset {width:100%;margin-top:6px;}
+#lxSectionPresetStatus {min-height:15px;color:var(--muted);font-size:11px;line-height:1.35;margin-top:4px;}
+#lxSectionPresetStatus[data-state="error"] {color:var(--err);}
+html[data-lxskin="on"] #qualityBar {gap:8px!important;}
+@media(max-width:1150px){html[data-lxskin="on"] .lx-dock-row .btn-sm{width:32px;height:33px;padding:5px;}html[data-lxskin="on"] #measureBar.mtoolbox{bottom:34px;}.lx-cp-row{grid-template-columns:96px minmax(20px,1fr) 43px;gap:4px;}}
+
+/* No duplicate legacy help bubble: the dock owns hints, the readout owns results. */
+html[data-lxskin="on"] #measureReadout[data-hint="1"] {display:none!important;}
+html[data-lxskin="on"] #lxScene .lx-tw[role="button"] {display:inline-block;width:12px;color:var(--muted);font:12px/20px Arial;cursor:pointer;}
+html[data-lxskin="on"] #lxCloudFields {padding-top:8px;}
+@media(max-height:850px){
+ html[data-lxskin="on"] #lxScene{max-height:30%;}
+ .lx-cloud-name{margin-bottom:5px;}.lx-cp-row{margin-top:6px;}.lx-cp-select{margin:6px 0;}
+ #cpHistogram{height:44px;}.lx-height-ranges{gap:7px;margin:6px 0 9px;}
+ .lx-cp-check{margin:6px 0 4px;}.lx-cloud-stats{padding-top:7px;margin:8px 0;gap:5px;}
+ #cpHistNote{display:none;} .lx-cp-scale{font-size:9px;}
+}
+html[data-lxskin="on"] :is(#sectionPanel,#qualityBar,#editBar,#tourBar,#lxSectionControls) {position:absolute!important;transform:translateX(-50%)!important;z-index:35!important;}
+html[data-lxskin="on"] #lxCloudProperties::-webkit-scrollbar {width:7px;}
+html[data-lxskin="on"] #lxCloudProperties::-webkit-scrollbar-thumb {background:var(--line);border-radius:3px;}
+/* Reserve more space for real properties; the data tree has its own scrollbar. */
+html[data-lxskin="on"] #lxScene {max-height:27%;}
+.lx-cloud-name {margin-bottom:6px;}
+.lx-cp-row {margin-top:7px;}
+.lx-cp-select {margin:7px 0;}
+#cpHistogram {height:48px;}
+.lx-height-ranges {gap:8px;margin:6px 0 10px;}
+.lx-cloud-stats {gap:5px;padding-top:8px;margin:9px 0;}

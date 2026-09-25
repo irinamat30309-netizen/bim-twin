@@ -14,17 +14,33 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
 const { Worker } = require('worker_threads');
 const { pathToFileURL } = require('url');
 const cfg = require('./app-config');
 const core = require('./las-core');
+const PcdOutOfCore = require('./pcd-out-of-core');
+const ResourceBudget = require('./octree-resource-budget');
 
 const DEFAULT_MAX_POINTS = cfg.DEFAULT_MAX_POINTS;
 const CHUNK_BYTES = cfg.CLOUD_CHUNK_BYTES;
 const SCAN_N = cfg.COLOR_SAMPLE_COUNT;
-// binary_compressed PCD must currently be decompressed as a contiguous LZF
-// field-major buffer. Keep an explicit bound until Stage 4 adds out-of-core IO.
-const PCD_MAX_LZF_BYTES = 512 * 1024 * 1024;
+function currentAvailableMemoryBytes() {
+  const candidates = [];
+  try {
+    if (typeof process.availableMemory === 'function') {
+      const value = Number(process.availableMemory());
+      if (Number.isFinite(value) && value >= 0) candidates.push(value);
+    }
+  } catch (_) {}
+  try {
+    const value = Number(os.freemem());
+    if (Number.isFinite(value) && value >= 0) candidates.push(value);
+  } catch (_) {}
+  return candidates.length ? Math.min.apply(null, candidates) : null;
+}
+
 function progressAt(callback, phase, fraction, detail) {
   if (typeof callback !== 'function') return;
   const p = { phase, fraction: Math.max(0, Math.min(1, Number(fraction) || 0)) };
@@ -36,18 +52,71 @@ function progressAt(callback, phase, fraction, detail) {
 // LAS (uncompressed), streamed from disk
 // ============================================================
 function readLasCrsWkt(fd, fileSize, head) {
-  const headerSize=head.readUInt16LE(94), offToPts=head.readUInt32LE(96), vlrs=head.readUInt32LE(100);
-  function user(b,o,n){return b.toString('ascii',o,o+n).replace(/\0/g,'').trim();}
-  function scan(start,count,hdrLen){let p=start;for(let i=0;i<count&&p+hdrLen<=fileSize;i++){
-    const h=Buffer.alloc(hdrLen);if(fs.readSync(fd,h,0,hdrLen,p)!==hdrLen)break;
-    const uid=user(h,hdrLen===54?2:2,16), id=hdrLen===54?h.readUInt16LE(18):h.readUInt16LE( headerSize );
-    const len=hdrLen===54?h.readUInt16LE(20):h.readUInt32LE(20);
-    const data=p+hdrLen;if(data+len>fileSize)break;
-    if(uid==='LASF_Projection'&&(id===2112||id===2111)){const b=Buffer.alloc(len);fs.readSync(fd,b,0,len,data);return b.toString('utf8').replace(/\0+$/g,'').trim();}
-    p=data+len;
-  }return null;}
-  const got=scan(headerSize,vlrs,54);if(got)return got;
-  if(head[25]>=4&&head.length>=375){const evlrOff=Number(head.readBigUInt64LE(235)),evlrN=head.readUInt32LE(243);if(evlrOff>0&&evlrN>0&&evlrOff<fileSize){let p=evlrOff;for(let i=0;i<evlrN&&p+60<=fileSize;i++){const h=Buffer.alloc(60);fs.readSync(fd,h,0,60,p);const uid=user(h,2,16),id=h.readUInt16LE(18),len=Number(h.readBigUInt64LE(20));if(p+60+len>fileSize)break;if(uid==='LASF_Projection'&&(id===2112||id===2111)){const b=Buffer.alloc(len);fs.readSync(fd,b,0,len,p+60);return b.toString('utf8').replace(/\0+$/g,'').trim();}p+=60+len;}}}
+  if (!head || head.length < 227 || !Number.isSafeInteger(fileSize) || fileSize < 227) return null;
+  const headerSize = head.readUInt16LE(94);
+  const pointDataOffset = head.readUInt32LE(96);
+  const vlrCount = head.readUInt32LE(100);
+  const maxWktBytes = 16 * 1024 * 1024;
+  function user(buffer, offset, length) {
+    return buffer.toString('ascii', offset, offset + length).replace(/\0/g, '').trim();
+  }
+  function scanVlrs(start, count, end) {
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+        start < 0 || end < start || count > Math.floor((end - start) / 54)) return null;
+    let position = start;
+    for (let i = 0; i < count; i++) {
+      if (position + 54 > end) return null;
+      const header = Buffer.alloc(54);
+      if (fs.readSync(fd, header, 0, header.length, position) !== header.length) return null;
+      const userId = user(header, 2, 16);
+      const recordId = header.readUInt16LE(18);
+      const length = header.readUInt16LE(20);
+      const dataPosition = position + 54;
+      const next = dataPosition + length;
+      if (next > end) return null;
+      if (userId === 'LASF_Projection' && (recordId === 2112 || recordId === 2111) &&
+          length <= maxWktBytes) {
+        const data = Buffer.alloc(length);
+        if (fs.readSync(fd, data, 0, length, dataPosition) !== length) return null;
+        return data.toString('utf8').replace(/\0+$/g, '').trim();
+      }
+      position = next;
+    }
+    return null;
+  }
+  const wkt = scanVlrs(headerSize, vlrCount, pointDataOffset);
+  if (wkt) return wkt;
+  if (head[25] >= 4 && head.length >= 375) {
+    const evlrOffsetBig = head.readBigUInt64LE(235);
+    const evlrCount = head.readUInt32LE(243);
+    if (evlrOffsetBig > 0n && evlrOffsetBig <= BigInt(Number.MAX_SAFE_INTEGER) && evlrCount > 0) {
+      const evlrOffset = Number(evlrOffsetBig);
+      if (evlrOffset >= pointDataOffset && evlrOffset < fileSize &&
+          evlrCount <= Math.floor((fileSize - evlrOffset) / 60)) {
+        let position = evlrOffset;
+        for (let i = 0; i < evlrCount; i++) {
+          if (position + 60 > fileSize) break;
+          const header = Buffer.alloc(60);
+          if (fs.readSync(fd, header, 0, header.length, position) !== header.length) break;
+          const userId = user(header, 2, 16);
+          const recordId = header.readUInt16LE(18);
+          const lengthBig = header.readBigUInt64LE(20);
+          if (lengthBig > BigInt(Number.MAX_SAFE_INTEGER)) break;
+          const length = Number(lengthBig);
+          const dataPosition = position + 60;
+          const next = dataPosition + length;
+          if (!Number.isSafeInteger(next) || next > fileSize) break;
+          if (userId === 'LASF_Projection' && (recordId === 2112 || recordId === 2111) &&
+              length <= maxWktBytes) {
+            const data = Buffer.alloc(length);
+            if (fs.readSync(fd, data, 0, length, dataPosition) !== length) break;
+            return data.toString('utf8').replace(/\0+$/g, '').trim();
+          }
+          position = next;
+        }
+      }
+    }
+  }
   return null;
 }
 
@@ -59,6 +128,7 @@ function parseLASFile(fd, fileSize, maxPoints, onProgress) {
     u8: (o) => head.readUInt8(o), u16: (o) => head.readUInt16LE(o), u32: (o) => head.readUInt32LE(o),
     i32: (o) => head.readInt32LE(o), f64: (o) => head.readDoubleLE(o), big64: (o) => Number(head.readBigUInt64LE(o)),
   });
+  if (head[104] & 0xc0) throw new Error('сжатый или неизвестный LAS point format; для сжатого облака откройте LAZ');
   const crsWkt=readLasCrsWkt(fd,fileSize,head);
   const offToPts = H.offToPts, fmt = H.fmt, recLen = H.recLen, colorOff = H.colorOff;
   const intensityOff = H.intensityOff, classificationOff = H.classificationOff;
@@ -67,12 +137,12 @@ function parseLASFile(fd, fileSize, maxPoints, onProgress) {
   const sx = H.scale.x, sy = H.scale.y, sz = H.scale.z, ox = H.offset.x, oy = H.offset.y, oz = H.offset.z;
   let count = H.count;
   let hasColor = H.hasColor;
-  if (!count || count < 0) throw new Error('в LAS нет точек');
+  if (!Number.isSafeInteger(count) || count <= 0) throw new Error('LAS содержит ноль точек или небезопасный point count');
   if (!recLen || offToPts <= 0) throw new Error('повреждённый заголовок LAS');
 
-  // ограничим count реальным размером файла (на случай битого заголовка)
+  // Не индексируем частичный файл молча: такое усечение маскировало повреждённые LAS.
   const maxByBytes = Math.floor((fileSize - offToPts) / recLen);
-  if (maxByBytes > 0 && count > maxByBytes) count = maxByBytes;
+  if (maxByBytes < count) throw new Error('объявленное число точек LAS превышает объём записей в файле');
   if (count <= 0) throw new Error('в LAS нет точек');
 
   const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
@@ -178,6 +248,366 @@ function parseLASFile(fd, fileSize, maxPoints, onProgress) {
   };
 }
 
+const LAS_MIN_RECORD_LENGTH = [20, 28, 26, 34, 57, 63, 30, 36, 38, 59, 67];
+const LAS_MIN_VERSION_MINOR = [0, 0, 0, 0, 3, 3, 4, 4, 4, 4, 4];
+
+function readExactAt(fd, buffer, length, position, message) {
+  let offset = 0;
+  while (offset < length) {
+    const n = fs.readSync(fd, buffer, offset, length - offset, position + offset);
+    if (n <= 0) throw new Error(message || 'unexpected end of point-cloud file');
+    offset += n;
+  }
+  return offset;
+}
+
+function readLasHeaderInfo(fd, fileSize) {
+  if (!Number.isSafeInteger(fileSize) || fileSize < 227) throw new Error('LAS header is truncated');
+  const head = Buffer.alloc(400);
+  readExactAt(fd, head, Math.min(head.length, fileSize), 0, 'truncated LAS public header');
+  const H = core.parseLasHeader({
+    u8: o => head.readUInt8(o), u16: o => head.readUInt16LE(o),
+    u32: o => head.readUInt32LE(o), i32: o => head.readInt32LE(o),
+    f64: o => head.readDoubleLE(o), big64: o => Number(head.readBigUInt64LE(o))
+  });
+  const versionMajor = head.readUInt8(24), versionMinor = head.readUInt8(25);
+  const headerSize = head.readUInt16LE(94);
+  const pointFormatFlags = head.readUInt8(104);
+  const format = pointFormatFlags & 0x3f;
+  if (versionMajor !== 1 || versionMinor > 4) throw new Error('unsupported LAS version');
+  const minimumHeaderSize = versionMinor >= 4 ? 375 : (versionMinor >= 3 ? 235 : 227);
+  if (headerSize < minimumHeaderSize || headerSize > fileSize) throw new Error('invalid LAS public-header size');
+  if (pointFormatFlags & 0xc0) throw new Error('compressed or reserved LAS point-format flags are not supported by out-of-core indexing');
+  if (format > 10 || versionMinor < LAS_MIN_VERSION_MINOR[format]) {
+    throw new Error('unsupported LAS point-data format/version combination');
+  }
+  if (H.recLen < LAS_MIN_RECORD_LENGTH[format]) throw new Error('LAS point record is shorter than its format requires');
+  if (!Number.isSafeInteger(H.count) || H.count < 1) throw new Error('LAS contains no points or exceeds safe point-count limits');
+  if (!Number.isSafeInteger(H.offToPts) || H.offToPts < headerSize || H.offToPts > fileSize) {
+    throw new Error('invalid LAS point-data offset');
+  }
+  const vlrCount = head.readUInt32LE(100);
+  if (vlrCount > Math.floor((H.offToPts - headerSize) / 54)) {
+    throw new Error('LAS VLR table exceeds the point-data offset');
+  }
+  let vlrPosition = headerSize;
+  for (let i = 0; i < vlrCount; i++) {
+    const vlrHeader = Buffer.alloc(54);
+    readExactAt(fd, vlrHeader, vlrHeader.length, vlrPosition, 'truncated LAS VLR header');
+    const vlrEnd = vlrPosition + 54 + vlrHeader.readUInt16LE(20);
+    if (vlrEnd > H.offToPts) throw new Error('LAS VLR data overlaps point records');
+    vlrPosition = vlrEnd;
+  }
+  if (![H.scale.x, H.scale.y, H.scale.z].every(v => Number.isFinite(v) && v > 0) ||
+      ![H.offset.x, H.offset.y, H.offset.z].every(Number.isFinite)) {
+    throw new Error('LAS coordinate scale/offset is invalid');
+  }
+  const pointBytes = H.count * H.recLen;
+  if (!Number.isSafeInteger(pointBytes) || !Number.isSafeInteger(H.offToPts + pointBytes) ||
+      H.offToPts + pointBytes > fileSize) {
+    throw new Error('LAS point records are truncated or exceed the file');
+  }
+  const crsWkt = readLasCrsWkt(fd, fileSize, head);
+  const publicHeader = Buffer.alloc(headerSize);
+  readExactAt(fd, publicHeader, headerSize, 0, 'truncated LAS public header');
+  const layoutSignature = crypto.createHash('sha256')
+    .update(publicHeader)
+    .update(JSON.stringify({
+      versionMajor, versionMinor, format, recordLength: H.recLen,
+      pointCount: H.count, pointDataOffset: H.offToPts,
+      scale: H.scale, offset: H.offset, crsWkt: crsWkt || null
+    }))
+    .digest('hex');
+  return {
+    H, head, versionMajor, versionMinor, headerSize, format,
+    pointFormatFlags, crsWkt, layoutSignature
+  };
+}
+
+function lasPointFileInfoFromFd(fd, absPath) {
+  const stat = fs.fstatSync(fd, { bigint: true });
+  if (!stat.isFile()) throw new Error('point-cloud source is not a regular file');
+  const fileSize = Number(stat.size);
+  if (!Number.isSafeInteger(fileSize) || fileSize < 227) throw new Error('LAS file size is outside safe limits');
+  const parsed = readLasHeaderInfo(fd, fileSize);
+  const hasIntensity = parsed.H.hasIntensity && parsed.H.intensityOff + 2 <= parsed.H.recLen;
+  const hasClassification = parsed.H.hasClassification &&
+    parsed.H.classificationOff + 1 <= parsed.H.recLen;
+  const info = Object.assign(plyBigintStatIdentity(stat), {
+    pointCount: parsed.H.count,
+    pointFormat: parsed.format,
+    recordLength: parsed.H.recLen,
+    hasIntensity: !!hasIntensity,
+    hasClassification: !!hasClassification,
+    pointDataOffset: parsed.H.offToPts,
+    versionMajor: parsed.versionMajor,
+    versionMinor: parsed.versionMinor,
+    layoutSignature: parsed.layoutSignature
+  });
+  if (absPath) {
+    const pathStat = fs.statSync(absPath, { bigint: true });
+    if (!pathStat.isFile()) throw new Error('point-cloud source is not a regular file');
+    const pathIdentity = plyBigintStatIdentity(pathStat);
+    if (info.fileSize !== pathIdentity.fileSize ||
+        info.mtimeNs !== pathIdentity.mtimeNs ||
+        info.device !== pathIdentity.device ||
+        info.inode !== pathIdentity.inode) {
+      throw new Error('LAS source changed while reading its header');
+    }
+  }
+  return info;
+}
+
+function sameLasPointFileInfo(a, b) {
+  if (!a || !b) return false;
+  const keys = ['fileSize', 'mtimeNs', 'device', 'inode', 'pointCount', 'pointFormat',
+    'recordLength', 'hasIntensity', 'hasClassification', 'pointDataOffset',
+    'versionMajor', 'versionMinor', 'layoutSignature'];
+  return keys.every(key => String(a[key]) === String(b[key]));
+}
+
+function getOutOfCoreLasPointFileInfo(absPath) {
+  let fd = null;
+  try {
+    fd = fs.openSync(absPath, 'r');
+    return lasPointFileInfoFromFd(fd, absPath);
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) {}
+  }
+}
+
+function isOutOfCoreLasPointFile(absPath) {
+  try { getOutOfCoreLasPointFileInfo(absPath); return true; }
+  catch (_) { return false; }
+}
+
+function forEachLasPointRecord(fd, parsed, onRecord, onBatch) {
+  const { H } = parsed;
+  const recordsPerChunk = Math.max(1, Math.floor(CHUNK_BYTES / H.recLen));
+  const buffer = Buffer.allocUnsafe(recordsPerChunk * H.recLen);
+  let recordIndex = 0;
+  while (recordIndex < H.count) {
+    const records = Math.min(recordsPerChunk, H.count - recordIndex);
+    const bytes = records * H.recLen;
+    readExactAt(fd, buffer, bytes, H.offToPts + recordIndex * H.recLen, 'truncated LAS point data');
+    for (let i = 0; i < records; i++) onRecord(recordIndex + i, buffer, i * H.recLen);
+    recordIndex += records;
+    if (onBatch) onBatch(recordIndex);
+  }
+  return recordIndex;
+}
+
+function prepareLasOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, preferredSourceTransform, expectedSourceInfo) {
+  let sourceFd = null, canonicalFd = null;
+  try {
+    sourceFd = fs.openSync(sourcePath, 'r');
+    const sourceStat = fs.fstatSync(sourceFd, { bigint: true });
+    if (!sourceStat.isFile()) throw new Error('point-cloud source is not a regular file');
+    const sourceSize = Number(sourceStat.size);
+    if (!Number.isSafeInteger(sourceSize)) throw new Error('LAS file size exceeds safe limits');
+    const info = lasPointFileInfoFromFd(sourceFd, sourcePath);
+    if (expectedSourceInfo && !sameLasPointFileInfo(info, expectedSourceInfo)) {
+      throw new Error('source LAS changed after resource preflight; retry indexing');
+    }
+    const parsed = readLasHeaderInfo(sourceFd, sourceSize);
+    const H = parsed.H;
+    const hasIntensity = H.hasIntensity && H.intensityOff + 2 <= H.recLen;
+    const hasClassification = H.hasClassification && H.classificationOff + 1 <= H.recLen;
+    const hasRgbFields = H.hasColor && H.colorOff + 6 <= H.recLen;
+
+    const budget = Number.isSafeInteger(maxPoints) && maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
+    const sampleStride = H.count > budget ? Math.ceil(H.count / budget) : 1;
+    let validCount = 0, invalidCount = 0;
+    let shX = 0, shY = 0, shZ = 0, haveShift = false;
+    let mnx = Infinity, mny = Infinity, mnz = Infinity;
+    let mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+
+    let colorDiv = 65535, colored = false;
+    if (hasRgbFields) {
+      const sampleStep = Math.max(1, Math.floor(H.count / SCAN_N));
+      const record = Buffer.alloc(H.recLen);
+      let maxChannel = 0;
+      for (let index = 0; index < H.count; index += sampleStep) {
+        readExactAt(sourceFd, record, H.recLen, H.offToPts + index * H.recLen,
+          'truncated LAS RGB sample');
+        const c = H.colorOff;
+        maxChannel = Math.max(maxChannel, record.readUInt16LE(c),
+          record.readUInt16LE(c + 2), record.readUInt16LE(c + 4));
+        if (maxChannel > 255) break;
+      }
+      const decision = core.decideColorDivisor(maxChannel);
+      colored = decision.hasColor;
+      colorDiv = decision.colDiv;
+    }
+
+    progressAt(onProgress, 'scan-start', 0.02, { pointsTotal: H.count, mode: 'out-of-core-las' });
+    forEachLasPointRecord(sourceFd, parsed, (globalIndex, buffer, base) => {
+      const selected = core.keepSampledIndex(globalIndex, sampleStride);
+      const rawX = buffer.readInt32LE(base), rawY = buffer.readInt32LE(base + 4);
+      const rawZ = buffer.readInt32LE(base + 8);
+      const worldX = rawX * H.scale.x + H.offset.x;
+      const worldY = rawY * H.scale.y + H.offset.y;
+      const worldZ = rawZ * H.scale.z + H.offset.z;
+      if (![worldX, worldY, worldZ].every(Number.isFinite)) {
+        invalidCount++;
+        return;
+      }
+      if (!selected) return;
+      if (!haveShift) { shX = worldX; shY = worldY; shZ = worldZ; haveShift = true; }
+      const x = worldX - shX, y = worldY - shY, z = worldZ - shZ;
+      if (![x, y, z].every(Number.isFinite)) { invalidCount++; return; }
+      mnx = Math.min(mnx, x); mny = Math.min(mny, y); mnz = Math.min(mnz, z);
+      mxx = Math.max(mxx, x); mxy = Math.max(mxy, y); mxz = Math.max(mxz, z);
+      validCount++;
+    }, readCount => {
+      progressAt(onProgress, 'scan', 0.02 + 0.28 * readCount / H.count,
+        { pointsRead: readCount, pointsTotal: H.count, validPoints: validCount });
+    });
+    if (!validCount || !haveShift || !Number.isFinite(mnx + mny + mnz + mxx + mxy + mxz)) {
+      throw new Error('LAS has no finite indexed XYZ points');
+    }
+    if (![mxx - mnx, mxy - mny, mxz - mnz].every(Number.isFinite)) {
+      throw new Error('LAS coordinate range exceeds safe double-precision limits');
+    }
+
+    let preferredT = null;
+    if (preferredSourceTransform != null) {
+      const t = preferredSourceTransform;
+      if (!t || t.axis !== 'zup' || !Array.isArray(t.t) || t.t.length < 3 ||
+          !t.t.slice(0, 3).every(value => Number.isFinite(Number(value)) && Math.abs(Number(value)) <= 1e12)) {
+        throw new Error('LAS out-of-core source transform must be a finite Z-up transform');
+      }
+      preferredT = t.t.slice(0, 3).map(Number);
+    }
+    // Match parseLASFile: bounds are calculated on double coordinates relative
+    // to the first sampled return; viewer positions are then stored as Float32.
+    const centerX = preferredT ? preferredT[0] - shX : (mnx + mxx) / 2;
+    const centerY = preferredT ? preferredT[1] - shY : (mny + mxy) / 2;
+    const centerZ = preferredT ? preferredT[2] - shZ : mnz;
+    const transform = preferredT || [centerX + shX, centerY + shY, centerZ + shZ];
+    const height = mxz - mnz;
+    const outputBounds = { mn: [Infinity, Infinity, Infinity], mx: [-Infinity, -Infinity, -Infinity] };
+
+    const recordStride = 15 + (hasIntensity ? 4 : 0) + (hasClassification ? 1 : 0);
+    const outputPath = path.resolve(canonicalPath);
+    canonicalFd = fs.openSync(outputPath, 'wx', 0o600);
+    const outputRecords = Math.max(1, Math.floor(CHUNK_BYTES / recordStride));
+    const outputBuffer = Buffer.allocUnsafe(outputRecords * recordStride);
+    let outputPosition = 0, outputCount = 0;
+    function clampByte(value) {
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(255, Math.round(value * 255)));
+    }
+    function flushOutput() {
+      if (!outputPosition) return;
+      let written = 0;
+      while (written < outputPosition) {
+        const n = fs.writeSync(canonicalFd, outputBuffer, written, outputPosition - written);
+        if (!n) throw new Error('short write while creating canonical LAS point store');
+        written += n;
+      }
+      outputPosition = 0;
+    }
+
+    progressAt(onProgress, 'convert-start', 0.32,
+      { pointsTotal: H.count, pointsSelected: validCount });
+    forEachLasPointRecord(sourceFd, parsed, (globalIndex, buffer, base) => {
+      if (!core.keepSampledIndex(globalIndex, sampleStride)) return;
+      const rawX = buffer.readInt32LE(base), rawY = buffer.readInt32LE(base + 4);
+      const rawZ = buffer.readInt32LE(base + 8);
+      const worldX = rawX * H.scale.x + H.offset.x;
+      const worldY = rawY * H.scale.y + H.offset.y;
+      const worldZ = rawZ * H.scale.z + H.offset.z;
+      if (![worldX, worldY, worldZ].every(Number.isFinite)) return;
+      const relX = Math.fround(worldX - shX), relY = Math.fround(worldY - shY);
+      const relZ = Math.fround(worldZ - shZ);
+      const xyz = [
+        Math.fround(relX - centerX),
+        Math.fround(relZ - centerZ),
+        Math.fround(-(relY - centerY))
+      ];
+      if (!xyz.every(Number.isFinite)) {
+        throw new Error('LAS viewer coordinates exceed the Float32 streaming range');
+      }
+      for (let axis = 0; axis < 3; axis++) {
+        outputBounds.mn[axis] = Math.min(outputBounds.mn[axis], xyz[axis]);
+        outputBounds.mx[axis] = Math.max(outputBounds.mx[axis], xyz[axis]);
+      }
+      const offset = outputPosition;
+      outputBuffer.writeFloatLE(xyz[0], offset);
+      outputBuffer.writeFloatLE(xyz[1], offset + 4);
+      outputBuffer.writeFloatLE(xyz[2], offset + 8);
+      if (colored) {
+        const c = base + H.colorOff;
+        outputBuffer[offset + 12] = clampByte(Math.fround(buffer.readUInt16LE(c) / colorDiv));
+        outputBuffer[offset + 13] = clampByte(Math.fround(buffer.readUInt16LE(c + 2) / colorDiv));
+        outputBuffer[offset + 14] = clampByte(Math.fround(buffer.readUInt16LE(c + 4) / colorDiv));
+      } else {
+        const ramp = core.elevationRamp((relZ - mnz) / (height || 1));
+        outputBuffer[offset + 12] = clampByte(Math.fround(ramp[0]));
+        outputBuffer[offset + 13] = clampByte(Math.fround(ramp[1]));
+        outputBuffer[offset + 14] = clampByte(Math.fround(ramp[2]));
+      }
+      let attributeOffset = offset + 15;
+      if (hasIntensity) {
+        outputBuffer.writeFloatLE(buffer.readUInt16LE(base + H.intensityOff) / 65535, attributeOffset);
+        attributeOffset += 4;
+      }
+      if (hasClassification) {
+        const rawClass = buffer[base + H.classificationOff];
+        outputBuffer[attributeOffset++] = parsed.format >= 6 ? rawClass : (rawClass & 0x1f);
+      }
+      outputPosition += recordStride;
+      outputCount++;
+      if (outputPosition === outputBuffer.length) flushOutput();
+    }, readCount => {
+      progressAt(onProgress, 'convert', 0.32 + 0.14 * readCount / H.count,
+        { pointsRead: readCount, pointsTotal: H.count, pointsWritten: outputCount });
+    });
+    flushOutput();
+    if (outputCount !== validCount) throw new Error('canonical LAS count differs from the validated scan');
+
+    const sourceAfter = lasPointFileInfoFromFd(sourceFd, sourcePath);
+    if (!sameLasPointFileInfo(info, sourceAfter)) {
+      throw new Error('source LAS changed while out-of-core indexing was running');
+    }
+    const eps = outputBounds.mn.map((mn, i) => Math.max(1e-6, (outputBounds.mx[i] - mn) * 1e-6));
+    for (let i = 0; i < 3; i++) outputBounds.mx[i] += eps[i];
+    const metaOut = {
+      kind: 'points', points: outputCount, total: H.count,
+      w: mxx - mnx, d: mxy - mny, h: mxz - mnz,
+      format: 'LAS fmt ' + parsed.format + ' (out-of-core two-pass)',
+      colored,
+      hasIntensity, hasClassification,
+      streamAttributeOmissions: [],
+      crsWkt: parsed.crsWkt || null,
+      offset: { cx: transform[0], cy: transform[1], mnz: transform[2] },
+      srcXform: { axis: 'zup', t: transform.slice() },
+      outOfCore: true, invalidPointCount: invalidCount,
+      sampleStride, sourcePointCount: H.count,
+      colorStorage: 'RGB8'
+    };
+    progressAt(onProgress, 'convert-done', 0.48,
+      { pointsWritten: outputCount, pointsTotal: H.count, invalidPoints: invalidCount });
+    return {
+      ok: true, canonicalPath: outputPath, count: outputCount,
+      sourcePointCount: H.count, invalidPointCount: invalidCount,
+      hasColor: true, meta: metaOut, bbox: outputBounds,
+      ingest: 'las-two-pass'
+    };
+  } catch (error) {
+    if (canonicalFd !== null) {
+      try { fs.closeSync(canonicalFd); } catch (_) {}
+      canonicalFd = null;
+      try { fs.unlinkSync(canonicalPath); } catch (_) {}
+    }
+    throw error;
+  } finally {
+    if (sourceFd !== null) try { fs.closeSync(sourceFd); } catch (_) {}
+    if (canonicalFd !== null) try { fs.closeSync(canonicalFd); } catch (_) {}
+  }
+}
+
 // ============================================================
 // PLY (ascii + binary LE/BE), streamed from disk — облака точек (r10)
 // ============================================================
@@ -258,6 +688,599 @@ function readPlyHeader(fd, fileSize) {
     }
   }
   return { format, elements, dataOffset, comments };
+}
+
+function binaryPlyPointLayout(meta, fileSize) {
+  if (!meta || !/^binary_(?:little|big)_endian$/i.test(String(meta.format || ''))) {
+    throw new Error('out-of-core PLY supports binary little-endian or big-endian point clouds');
+  }
+  const vtx = (meta.elements || []).find((e) => e.name === 'vertex');
+  if (!vtx || !Number.isSafeInteger(vtx.count) || vtx.count < 1) throw new Error('в PLY нет вершин');
+  const firstNonEmpty = (meta.elements || []).find((e) => e.count > 0);
+  if (firstNonEmpty !== vtx) {
+    throw new Error('out-of-core PLY requires the vertex element before other non-empty elements');
+  }
+  const face = (meta.elements || []).find((e) => e.name === 'face');
+  if (face && face.count > 0) throw new Error('PLY mesh uses the mesh import path, not point-cloud LOD');
+  if (vtx.props.some((p) => p.list)) throw new Error('binary PLY vertex list properties are not supported for out-of-core indexing');
+
+  const byName = new Map();
+  let recordLength = 0;
+  for (const prop of vtx.props) {
+    const size = plyTypeSize(prop.type);
+    if (!size) throw new Error('unsupported PLY vertex property type: ' + prop.type);
+    const name = String(prop.name || '').toLowerCase();
+    if (byName.has(name)) throw new Error('duplicate PLY vertex property: ' + prop.name);
+    byName.set(name, { name: prop.name, type: prop.type, offset: recordLength });
+    recordLength += size;
+  }
+  if (!Number.isSafeInteger(recordLength) || recordLength < 1 || recordLength > 1024 * 1024) {
+    throw new Error('PLY vertex record size is outside the safe streaming limit');
+  }
+  const x = byName.get('x'), y = byName.get('y'), z = byName.get('z');
+  if (!x || !y || !z) throw new Error('PLY vertex x/y/z properties are required');
+  const vertexBytes = vtx.count * recordLength;
+  if (!Number.isSafeInteger(vertexBytes) || meta.dataOffset + vertexBytes > fileSize) {
+    throw new Error('PLY vertex records are truncated or exceed the file');
+  }
+  const color = {
+    r: byName.get('red') || byName.get('r') || byName.get('diffuse_red'),
+    g: byName.get('green') || byName.get('g') || byName.get('diffuse_green'),
+    b: byName.get('blue') || byName.get('b') || byName.get('diffuse_blue')
+  };
+  const hasColor = !!(color.r && color.g && color.b);
+  const intensity = byName.get('intensity') || byName.get('scalar_intensity') || byName.get('reflectance') || null;
+  const classification = byName.get('classification') || byName.get('class') || byName.get('label') || byName.get('scalar_classification') || null;
+  return {
+    vertexCount: vtx.count,
+    recordLength,
+    littleEndian: meta.format.toLowerCase().includes('little'),
+    x, y, z, color, hasColor,
+    colorDivisor: hasColor ? plyColorDiv(color.r.type) : 1,
+    intensity, classification
+  };
+}
+
+const MAX_PLY_ASCII_VERTEX_LINE_BYTES = 1024 * 1024;
+
+function asciiPlyPointLayout(meta) {
+  if (!meta || String(meta.format || '').toLowerCase() !== 'ascii') {
+    throw new Error('out-of-core PLY supports ASCII or binary little-/big-endian point clouds');
+  }
+  const vtx = (meta.elements || []).find((e) => e.name === 'vertex');
+  if (!vtx || !Number.isSafeInteger(vtx.count) || vtx.count < 1) throw new Error('в PLY нет вершин');
+  const firstNonEmpty = (meta.elements || []).find((e) => e.count > 0);
+  if (firstNonEmpty !== vtx) {
+    throw new Error('out-of-core PLY requires the vertex element before other non-empty elements');
+  }
+  const face = (meta.elements || []).find((e) => e.name === 'face');
+  if (face && face.count > 0) throw new Error('PLY mesh uses the mesh import path, not point-cloud LOD');
+  if (vtx.props.some((p) => p.list)) throw new Error('ASCII PLY vertex list properties are not supported for out-of-core indexing');
+
+  const byName = new Map();
+  for (let index = 0; index < vtx.props.length; index++) {
+    const prop = vtx.props[index];
+    if (!plyTypeSize(prop.type)) throw new Error('unsupported PLY vertex property type: ' + prop.type);
+    const name = String(prop.name || '').toLowerCase();
+    if (byName.has(name)) throw new Error('duplicate PLY vertex property: ' + prop.name);
+    byName.set(name, { name: prop.name, type: prop.type, index });
+  }
+  const x = byName.get('x'), y = byName.get('y'), z = byName.get('z');
+  if (!x || !y || !z) throw new Error('PLY vertex x/y/z properties are required');
+  const color = {
+    r: byName.get('red') || byName.get('r') || byName.get('diffuse_red'),
+    g: byName.get('green') || byName.get('g') || byName.get('diffuse_green'),
+    b: byName.get('blue') || byName.get('b') || byName.get('diffuse_blue')
+  };
+  const hasColor = !!(color.r && color.g && color.b);
+  const intensity = byName.get('intensity') || byName.get('scalar_intensity') || byName.get('reflectance') || null;
+  const classification = byName.get('classification') || byName.get('class') || byName.get('label') || byName.get('scalar_classification') || null;
+  return {
+    encoding: 'ascii',
+    vertexCount: vtx.count,
+    propertyCount: vtx.props.length,
+    properties: vtx.props.map((p) => ({ type: p.type, name: p.name })),
+    x, y, z, color, hasColor,
+    colorDivisor: hasColor ? plyColorDiv(color.r.type) : 1,
+    intensity, classification
+  };
+}
+
+function plyPointFileLayout(meta, fileSize) {
+  const format = String(meta && meta.format || '').toLowerCase();
+  if (/^binary_(?:little|big)_endian$/.test(format)) {
+    const layout = binaryPlyPointLayout(meta, fileSize);
+    layout.encoding = 'binary';
+    layout.properties = (meta.elements.find((e) => e.name === 'vertex') || {}).props || [];
+    return layout;
+  }
+  if (format === 'ascii') return asciiPlyPointLayout(meta, fileSize);
+  throw new Error('out-of-core PLY supports ASCII or binary little-/big-endian point clouds');
+}
+
+function plyBigintStatIdentity(stat) {
+  return {
+    fileSize: String(stat.size),
+    mtimeNs: String(stat.mtimeNs),
+    device: String(stat.dev),
+    inode: String(stat.ino)
+  };
+}
+
+function plyLayoutSignature(meta, layout) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    format: String(meta.format || ''),
+    dataOffset: meta.dataOffset,
+    elements: (meta.elements || []).map((e) => ({
+      name: e.name, count: e.count,
+      props: (e.props || []).map((p) => [!!p.list, p.type || '', p.countType || '', p.itemType || '', p.name || ''])
+    })),
+    comments: meta.comments || [],
+    encoding: layout.encoding
+  })).digest('hex');
+}
+
+function binaryPlyInfoFromFd(fd, absPath) {
+  const stat = fs.fstatSync(fd, { bigint: true });
+  if (!stat.isFile()) throw new Error('point-cloud source is not a regular file');
+  const fileSize = Number(stat.size);
+  if (!Number.isSafeInteger(fileSize) || fileSize < 0) throw new Error('PLY file size exceeds safe limits');
+  const meta = readPlyHeader(fd, fileSize);
+  const layout = binaryPlyPointLayout(meta, fileSize);
+  const info = Object.assign(plyBigintStatIdentity(stat), {
+    vertexCount: layout.vertexCount,
+    recordLength: layout.recordLength,
+    dataOffset: meta.dataOffset,
+    format: String(meta.format),
+    hasIntensity: !!layout.intensity,
+    hasClassification: !!layout.classification
+  });
+  if (absPath) {
+    const pathStat = fs.statSync(absPath, { bigint: true });
+    if (!pathStat.isFile()) throw new Error('point-cloud source is not a regular file');
+    const pathIdentity = plyBigintStatIdentity(pathStat);
+    if (info.fileSize !== pathIdentity.fileSize ||
+        info.mtimeNs !== pathIdentity.mtimeNs ||
+        info.device !== pathIdentity.device ||
+        info.inode !== pathIdentity.inode) {
+      throw new Error('PLY source changed while reading its header');
+    }
+  }
+  return info;
+}
+
+function plyPointInfoFromFd(fd, absPath) {
+  const stat = fs.fstatSync(fd, { bigint: true });
+  if (!stat.isFile()) throw new Error('point-cloud source is not a regular file');
+  const fileSize = Number(stat.size);
+  if (!Number.isSafeInteger(fileSize) || fileSize < 0) throw new Error('PLY file size exceeds safe limits');
+  const meta = readPlyHeader(fd, fileSize);
+  const layout = plyPointFileLayout(meta, fileSize);
+  const info = Object.assign(plyBigintStatIdentity(stat), {
+    vertexCount: layout.vertexCount,
+    recordLength: Number(layout.recordLength) || 0,
+    propertyCount: Number(layout.propertyCount) || (layout.properties || []).length,
+    dataOffset: meta.dataOffset,
+    format: String(meta.format),
+    hasIntensity: !!layout.intensity,
+    hasClassification: !!layout.classification,
+    layoutSignature: plyLayoutSignature(meta, layout)
+  });
+  if (absPath) {
+    const pathStat = fs.statSync(absPath, { bigint: true });
+    if (!pathStat.isFile()) throw new Error('point-cloud source is not a regular file');
+    const pathIdentity = plyBigintStatIdentity(pathStat);
+    if (info.fileSize !== pathIdentity.fileSize ||
+        info.mtimeNs !== pathIdentity.mtimeNs ||
+        info.device !== pathIdentity.device ||
+        info.inode !== pathIdentity.inode) {
+      throw new Error('PLY source changed while reading its header');
+    }
+  }
+  return info;
+}
+
+function sameBinaryPlyPointFileInfo(a, b) {
+  if (!a || !b) return false;
+  const keys = ['fileSize', 'mtimeNs', 'device', 'inode', 'vertexCount', 'recordLength',
+    'propertyCount', 'dataOffset', 'format', 'hasIntensity', 'hasClassification', 'layoutSignature'];
+  return keys.every(key => String(a[key]) === String(b[key]));
+}
+
+function samePlyPointFileInfo(a, b) {
+  return sameBinaryPlyPointFileInfo(a, b);
+}
+
+function getBinaryPlyPointFileInfo(absPath) {
+  let fd = null;
+  try {
+    fd = fs.openSync(absPath, 'r');
+    return binaryPlyInfoFromFd(fd, absPath);
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) {}
+  }
+}
+
+function getOutOfCorePlyPointFileInfo(absPath) {
+  let fd = null;
+  try {
+    fd = fs.openSync(absPath, 'r');
+    return plyPointInfoFromFd(fd, absPath);
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) {}
+  }
+}
+
+function isBinaryPlyPointFile(absPath) {
+  try {
+    getBinaryPlyPointFileInfo(absPath);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function isOutOfCorePlyPointFile(absPath) {
+  try {
+    getOutOfCorePlyPointFileInfo(absPath);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function plyRecordValue(record, field, layout) {
+  if (!field) return NaN;
+  if (layout.encoding === 'ascii') return Number(record.tokens[field.index]);
+  return plyRead(record.buffer, record.base + field.offset, field.type, layout.littleEndian);
+}
+
+function forEachPlyVertexRecord(fd, fileSize, meta, layout, onRecord, onBatch) {
+  const total = layout.vertexCount;
+  let recordIndex = 0;
+  if (layout.encoding === 'binary') {
+    const recordLength = layout.recordLength;
+    const recordsPerChunk = Math.max(1, Math.floor(CHUNK_BYTES / recordLength));
+    const buffer = Buffer.alloc(recordsPerChunk * recordLength);
+    while (recordIndex < total) {
+      const records = Math.min(recordsPerChunk, total - recordIndex);
+      const want = records * recordLength;
+      let got = 0;
+      while (got < want) {
+        const n = fs.readSync(fd, buffer, got, want - got,
+          meta.dataOffset + recordIndex * recordLength + got);
+        if (n <= 0) throw new Error('truncated binary PLY vertex data');
+        got += n;
+      }
+      for (let k = 0; k < records; k++) {
+        onRecord(recordIndex + k, { buffer, base: k * recordLength });
+      }
+      recordIndex += records;
+      if (onBatch) onBatch(recordIndex);
+    }
+    return recordIndex;
+  }
+
+  const buffer = Buffer.alloc(Math.max(1, CHUNK_BYTES));
+  let position = meta.dataOffset, carry = '';
+  function consumeLine(raw) {
+    if (recordIndex >= total) return;
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (!line.trim()) return;
+    if (line.length > MAX_PLY_ASCII_VERTEX_LINE_BYTES) {
+      throw new Error('ASCII PLY vertex line exceeds the 1 MiB safety limit');
+    }
+    const tokens = line.trim().split(/[ \t]+/);
+    if (tokens.length !== layout.propertyCount) {
+      throw new Error('malformed ASCII PLY vertex record ' + (recordIndex + 1) +
+        ': expected ' + layout.propertyCount + ' scalar values, found ' + tokens.length);
+    }
+    for (let i = 0; i < tokens.length; i++) {
+      const value = Number(tokens[i]);
+      if (!Number.isFinite(value) &&
+          !plyIsFloat(String(layout.properties[i].type || '').toLowerCase())) {
+        throw new Error('malformed ASCII PLY integer property in vertex record ' + (recordIndex + 1));
+      }
+      if (Number.isFinite(value) &&
+          !plyIsFloat(String(layout.properties[i].type || '').toLowerCase()) &&
+          !Number.isInteger(value)) {
+        throw new Error('malformed ASCII PLY integer property in vertex record ' + (recordIndex + 1));
+      }
+    }
+    onRecord(recordIndex, { tokens });
+    recordIndex++;
+  }
+
+  while (position < fileSize && recordIndex < total) {
+    const want = Math.min(buffer.length, fileSize - position);
+    const got = fs.readSync(fd, buffer, 0, want, position);
+    if (got <= 0) break;
+    position += got;
+    const text = carry + buffer.toString('latin1', 0, got);
+    let start = 0, newline;
+    while ((newline = text.indexOf('\n', start)) >= 0 && recordIndex < total) {
+      consumeLine(text.slice(start, newline));
+      start = newline + 1;
+    }
+    carry = recordIndex < total ? text.slice(start) : '';
+    if (carry.length > MAX_PLY_ASCII_VERTEX_LINE_BYTES) {
+      throw new Error('ASCII PLY vertex line exceeds the 1 MiB safety limit');
+    }
+    if (onBatch) onBatch(recordIndex);
+  }
+  if (recordIndex < total && carry.trim()) consumeLine(carry);
+  if (recordIndex !== total) {
+    throw new Error('truncated ASCII PLY vertex data (' + recordIndex + ' of ' + total + ' records)');
+  }
+  return recordIndex;
+}
+
+// Stage 4 out-of-core ingest for binary PLY point clouds. Pass one determines
+// the same source-frame/axis transform used by parsePLYFile; pass two writes a
+// compact, centred, float32+RGB canonical file. Peak point-data memory is
+// bounded by the read/write chunks instead of sourceCount*XYZ/RGB arrays.
+function preparePlyOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, preferredSourceTransform, expectedSourceInfo) {
+  let sourceFd = null, canonicalFd = null;
+  try {
+    sourceFd = fs.openSync(sourcePath, 'r');
+    const sourceStat = fs.fstatSync(sourceFd, { bigint: true });
+    if (!sourceStat.isFile()) throw new Error('point-cloud source is not a regular file');
+    const sourceSize = Number(sourceStat.size);
+    if (!Number.isSafeInteger(sourceSize) || sourceSize < 0) throw new Error('PLY file size exceeds safe limits');
+    const meta = readPlyHeader(sourceFd, sourceSize);
+    const layout = plyPointFileLayout(meta, sourceSize);
+    const sourceInfo = Object.assign(plyBigintStatIdentity(sourceStat), {
+      vertexCount: layout.vertexCount,
+      recordLength: Number(layout.recordLength) || 0,
+      propertyCount: Number(layout.propertyCount) || (layout.properties || []).length,
+      dataOffset: meta.dataOffset,
+      format: String(meta.format),
+      hasIntensity: !!layout.intensity,
+      hasClassification: !!layout.classification,
+      layoutSignature: plyLayoutSignature(meta, layout)
+    });
+    if (expectedSourceInfo && !samePlyPointFileInfo(sourceInfo, expectedSourceInfo)) {
+      throw new Error('source PLY changed after resource preflight; retry indexing');
+    }
+    const pathStat = fs.statSync(sourcePath, { bigint: true });
+    const pathIdentity = plyBigintStatIdentity(pathStat);
+    if (sourceInfo.fileSize !== pathIdentity.fileSize ||
+        sourceInfo.mtimeNs !== pathIdentity.mtimeNs ||
+        sourceInfo.device !== pathIdentity.device ||
+        sourceInfo.inode !== pathIdentity.inode) {
+      throw new Error('source PLY changed while opening the index job');
+    }
+    const vertexCount = layout.vertexCount;
+    const budget = Number.isSafeInteger(maxPoints) && maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
+    const sampleStride = vertexCount > budget ? Math.ceil(vertexCount / budget) : 1;
+    const selectedCapacity = Math.ceil(vertexCount / sampleStride);
+    const axisStep = Math.max(1, Math.ceil(selectedCapacity / 50000));
+    const firstSample = [[], [], []];
+    let selectedOrdinal = 0, validCount = 0, invalidCount = 0;
+    let shX = 0, shY = 0, shZ = 0, haveShift = false;
+    let mnx = Infinity, mny = Infinity, mnz = Infinity;
+    let mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+    const intensityInfo = layout.intensity;
+    let intensityMax = 0;
+
+    progressAt(onProgress, 'scan-start', 0.02, { pointsTotal: vertexCount, mode: 'out-of-core-ply' });
+    forEachPlyVertexRecord(sourceFd, sourceSize, meta, layout, (globalIndex, record) => {
+      const selected = !core.keepSampledIndex || core.keepSampledIndex(globalIndex, sampleStride);
+      const ordinal = selected ? selectedOrdinal++ : -1;
+      const x = plyRecordValue(record, layout.x, layout);
+      const y = plyRecordValue(record, layout.y, layout);
+      const z = plyRecordValue(record, layout.z, layout);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        invalidCount++;
+        return;
+      }
+      if (!selected) return;
+      if (!haveShift) { shX = x; shY = y; shZ = z; haveShift = true; }
+      // The legacy preview computes bounds from double offsets, stores
+      // float32 positions, and uses those stored values only for the robust
+      // up-axis sample. Preserve that split so the source transform agrees.
+      const rx = x - shX, ry = y - shY, rz = z - shZ;
+      if (rx < mnx) mnx = rx; if (ry < mny) mny = ry; if (rz < mnz) mnz = rz;
+      if (rx > mxx) mxx = rx; if (ry > mxy) mxy = ry; if (rz > mxz) mxz = rz;
+      if (ordinal % axisStep === 0) {
+        firstSample[0].push(Math.fround(rx)); firstSample[1].push(Math.fround(ry)); firstSample[2].push(Math.fround(rz));
+      }
+      if (intensityInfo) {
+        const iv = plyRecordValue(record, intensityInfo, layout);
+        if (Number.isFinite(iv) && iv > intensityMax) intensityMax = iv;
+      }
+      validCount++;
+    }, (readCount) => {
+      progressAt(onProgress, 'scan', 0.02 + 0.28 * readCount / vertexCount,
+        { pointsRead: readCount, pointsTotal: vertexCount, validPoints: validCount });
+    });
+    if (!validCount || !haveShift || !Number.isFinite(mnx + mny + mnz + mxx + mxy + mxz)) {
+      throw new Error('PLY has no finite indexed XYZ points');
+    }
+    const axisRanges = firstSample.map((values) => {
+      values.sort((a, b) => a - b);
+      return values.length
+        ? values[Math.floor((values.length - 1) * 0.995)] - values[Math.floor((values.length - 1) * 0.005)]
+        : 0;
+    });
+    const up = commentUp(meta.comments, core.plyUpAxis
+      ? core.plyUpAxis(meta.comments, [shX, shY, shZ], axisRanges)
+      : 'y');
+    const preferredAxis = preferredSourceTransform &&
+      (preferredSourceTransform.axis === 'zup' || preferredSourceTransform.axis === 'yup') &&
+      Array.isArray(preferredSourceTransform.t) && preferredSourceTransform.t.length >= 3 &&
+      preferredSourceTransform.t.slice(0, 3).every(Number.isFinite)
+      ? preferredSourceTransform.axis
+      : null;
+    // Keep streamed points registered with the already-open preview. Its bbox
+    // may come from a sampled subset; recomputing a new origin from every source
+    // point would visibly shift a georeferenced cloud when LOD is toggled.
+    const zUp = preferredAxis ? preferredAxis === 'zup' : up === 'z';
+    const sourceCrsWkt = (core.plyCrsWkt ? core.plyCrsWkt(meta.comments) : null) || commentCrs(meta.comments);
+    const units = commentValue(meta.comments, 'units');
+    const preferredT = preferredAxis ? preferredSourceTransform.t.slice(0, 3).map(Number) : null;
+    const centerX = preferredT ? preferredT[0] - shX : (mnx + mxx) / 2;
+    const centerY = preferredT ? preferredT[1] - shY : (mny + mxy) / 2;
+    const centerZ = preferredT
+      ? preferredT[2] - shZ
+      : (zUp ? mnz : (mnz + mxz) / 2);
+    const outputBounds = { mn: [Infinity, Infinity, Infinity], mx: [-Infinity, -Infinity, -Infinity] };
+    const outputPath = path.resolve(canonicalPath);
+    canonicalFd = fs.openSync(outputPath, 'wx', 0o600);
+    const hasIntensity = !!layout.intensity;
+    const hasClassification = !!layout.classification;
+    const recordStride = 15 + (hasIntensity ? 4 : 0) + (hasClassification ? 1 : 0);
+    const outputRecords = Math.max(1, Math.floor(CHUNK_BYTES / recordStride));
+    const outputBuffer = Buffer.alloc(outputRecords * recordStride);
+    let outputPosition = 0, outputCount = 0;
+    const rampHeight = zUp ? (mxz - mnz) : (mxy - mny);
+    const colorDiv = layout.colorDivisor || 1;
+    const intensityDiv = hasIntensity
+      ? plyIntensityDiv(layout.intensity.type, intensityMax)
+      : 1;
+
+    function clampByte(value) {
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(255, Math.round(value * 255)));
+    }
+    function flushOutput() {
+      if (!outputPosition) return;
+      let written = 0;
+      while (written < outputPosition) {
+        const n = fs.writeSync(canonicalFd, outputBuffer, written, outputPosition - written);
+        if (!n) throw new Error('short write while creating canonical PLY point store');
+        written += n;
+      }
+      outputPosition = 0;
+    }
+
+    progressAt(onProgress, 'convert-start', 0.32, { pointsTotal: vertexCount, pointsSelected: validCount });
+    selectedOrdinal = 0;
+    forEachPlyVertexRecord(sourceFd, sourceSize, meta, layout, (globalIndex, record) => {
+      if (core.keepSampledIndex && !core.keepSampledIndex(globalIndex, sampleStride)) return;
+      selectedOrdinal++;
+      const x = plyRecordValue(record, layout.x, layout);
+      const y = plyRecordValue(record, layout.y, layout);
+      const z = plyRecordValue(record, layout.z, layout);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      const rx = x - shX, ry = y - shY, rz = z - shZ;
+      const storedX = Math.fround(rx), storedY = Math.fround(ry), storedZ = Math.fround(rz);
+      const viewerX = storedX - centerX;
+      const viewerY = zUp ? storedZ - centerZ : storedY - centerY;
+      const viewerZ = zUp ? -(storedY - centerY) : storedZ - centerZ;
+      const xyz = [Math.fround(viewerX), Math.fround(viewerY), Math.fround(viewerZ)];
+      for (let a = 0; a < 3; a++) {
+        outputBounds.mn[a] = Math.min(outputBounds.mn[a], xyz[a]);
+        outputBounds.mx[a] = Math.max(outputBounds.mx[a], xyz[a]);
+      }
+      const recordOffset = outputPosition;
+      outputBuffer.writeFloatLE(xyz[0], recordOffset);
+      outputBuffer.writeFloatLE(xyz[1], recordOffset + 4);
+      outputBuffer.writeFloatLE(xyz[2], recordOffset + 8);
+      if (layout.hasColor) {
+        outputBuffer[recordOffset + 12] = clampByte(plyRecordValue(record, layout.color.r, layout) / colorDiv);
+        outputBuffer[recordOffset + 13] = clampByte(plyRecordValue(record, layout.color.g, layout) / colorDiv);
+        outputBuffer[recordOffset + 14] = clampByte(plyRecordValue(record, layout.color.b, layout) / colorDiv);
+      } else {
+        const elevation = zUp ? storedZ - mnz : storedY - mny;
+        const ramp = core.elevationRamp((elevation / (rampHeight || 1)));
+        outputBuffer[recordOffset + 12] = clampByte(ramp[0]);
+        outputBuffer[recordOffset + 13] = clampByte(ramp[1]);
+        outputBuffer[recordOffset + 14] = clampByte(ramp[2]);
+      }
+      let attributeOffset = recordOffset + 15;
+      if (hasIntensity) {
+        const value = plyRecordValue(record, layout.intensity, layout);
+        const normalized = Number.isFinite(value)
+          ? Math.max(0, Math.min(1, value / (intensityDiv || 1)))
+          : 0;
+        outputBuffer.writeFloatLE(normalized, attributeOffset);
+        attributeOffset += 4;
+      }
+      if (hasClassification) {
+        const value = plyRecordValue(record, layout.classification, layout);
+        outputBuffer[attributeOffset++] = Number.isFinite(value)
+          ? Math.max(0, Math.min(255, Math.round(value)))
+          : 0;
+      }
+      outputPosition += recordStride;
+      outputCount++;
+      if (outputPosition === outputBuffer.length) flushOutput();
+    }, (readCount) => {
+      progressAt(onProgress, 'convert', 0.32 + 0.14 * readCount / vertexCount,
+        { pointsRead: readCount, pointsTotal: vertexCount, pointsWritten: outputCount });
+    });
+    flushOutput();
+    if (outputCount !== validCount) throw new Error('canonical PLY count differs from the validated scan');
+    const sourceAfter = fs.fstatSync(sourceFd, { bigint: true });
+    const pathAfter = fs.statSync(sourcePath, { bigint: true });
+    const sourceAfterIdentity = plyBigintStatIdentity(sourceAfter);
+    const pathAfterIdentity = plyBigintStatIdentity(pathAfter);
+    if (sourceAfterIdentity.fileSize !== sourceInfo.fileSize ||
+        sourceAfterIdentity.mtimeNs !== sourceInfo.mtimeNs ||
+        sourceAfterIdentity.device !== sourceInfo.device ||
+        sourceAfterIdentity.inode !== sourceInfo.inode ||
+        pathAfterIdentity.fileSize !== sourceInfo.fileSize ||
+        pathAfterIdentity.mtimeNs !== sourceInfo.mtimeNs ||
+        pathAfterIdentity.device !== sourceInfo.device ||
+        pathAfterIdentity.inode !== sourceInfo.inode) {
+      throw new Error('source PLY changed while out-of-core indexing was running');
+    }
+
+    const eps = outputBounds.mn.map((mn, i) => Math.max(1e-6, (outputBounds.mx[i] - mn) * 1e-6));
+    for (let i = 0; i < 3; i++) outputBounds.mx[i] += eps[i];
+    const metaOut = {
+      kind: 'points', points: outputCount, total: vertexCount,
+      w: mxx - mnx, d: zUp ? (mxy - mny) : (mxz - mnz),
+      h: zUp ? (mxz - mnz) : (mxy - mny),
+      format: 'PLY cloud (' + (layout.encoding === 'ascii' ? 'ASCII' : 'binary') +
+        ', out-of-core ' + (zUp ? 'Z-up' : 'Y-up') + ')',
+      colored: layout.hasColor,
+      hasIntensity, hasClassification,
+      streamAttributeOmissions: [],
+      crsWkt: sourceCrsWkt || null, units: units || null,
+      offset: zUp
+        ? { cx: preferredT ? preferredT[0] : centerX + shX,
+          cy: preferredT ? preferredT[1] : centerY + shY,
+          mnz: preferredT ? preferredT[2] : mnz + shZ }
+        : undefined,
+      srcXform: preferredT
+        ? { axis: preferredAxis, t: preferredT }
+        : zUp
+          ? { axis: 'zup', t: [centerX + shX, centerY + shY, mnz + shZ] }
+          : { axis: 'yup', t: [centerX + shX, centerY + shY, centerZ + shZ] },
+      outOfCore: true, invalidPointCount: invalidCount,
+      sampleStride
+    };
+    progressAt(onProgress, 'convert-done', 0.48,
+      { pointsWritten: outputCount, pointsTotal: vertexCount, invalidPoints: invalidCount });
+    return {
+      ok: true, canonicalPath: outputPath, count: outputCount,
+      sourcePointCount: vertexCount, invalidPointCount: invalidCount,
+      hasColor: true, meta: metaOut, bbox: outputBounds,
+      ingest: layout.encoding + '-ply-two-pass'
+    };
+  } catch (error) {
+    if (canonicalFd !== null) {
+      try { fs.closeSync(canonicalFd); } catch (_) {}
+      canonicalFd = null;
+      try { fs.unlinkSync(canonicalPath); } catch (_) {}
+    }
+    throw error;
+  } finally {
+    if (sourceFd !== null) try { fs.closeSync(sourceFd); } catch (_) {}
+    if (canonicalFd !== null) try { fs.closeSync(canonicalFd); } catch (_) {}
+  }
+}
+
+// Backward-compatible binary-only entry point for older callers.
+function prepareBinaryPLYOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, preferredSourceTransform, expectedSourceInfo) {
+  const info = getOutOfCorePlyPointFileInfo(sourcePath);
+  if (!/^binary_(?:little|big)_endian$/i.test(String(info.format || ''))) {
+    throw new Error('source is not a supported binary PLY point cloud');
+  }
+  return preparePlyOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
+    preferredSourceTransform, expectedSourceInfo || info);
 }
 
 function parsePLYFile(fd, fileSize, maxPoints, onProgress) {
@@ -504,7 +1527,10 @@ function parseE57File(fd, fileSize, maxPoints, onProgress) {
   if (!r.count) throw new Error('в E57 нет корректных точек');
   return finalizeWorldZup(r.pos, r.col, r.count, {
     total: r.total, format: 'E57 (' + r.scans.length + ' скан.)',
-    crsWkt: r.crs || null, scans: r.scans.map((s) => ({ name: s.name, count: s.count, pose: s.pose }))
+    crsWkt: r.crs || null, scans: r.scans.map((s) => ({
+      name: s.name, start: s.start, count: s.count,
+      recordCount: s.recordCount, pose: s.pose
+    }))
   }, { intensity: r.intensity });
 }
 
@@ -629,6 +1655,28 @@ function parseTextCloudFile(fd, fileSize, maxPoints, ext, onProgress) {
     total, format: ext.toUpperCase() + ' (текст)', colored: hasColor, hasIntensity, hasClassification,
     crsWkt: crs || null, units: units || null, intensityScale: intensityMax > 1.0001 ? intensityMax : 1
   }, { intensity: intensity ? intensity.subarray(0, oi) : null, classification: classification ? classification.subarray(0, oi) : null });
+}
+
+function ptxRigidPose(scan) {
+  const m = scan && scan.matrix;
+  if (!Array.isArray(m) || m.length < 16 || !m.slice(0, 16).every(Number.isFinite)) return null;
+  const rowVector = scan.convention === 'row-vector';
+  const R = rowVector
+    ? [m[0], m[4], m[8], m[1], m[5], m[9], m[2], m[6], m[10]]
+    : [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]];
+  const T = rowVector ? [m[12], m[13], m[14]] : [m[3], m[7], m[11]];
+  if (!T.every(Number.isFinite)) return null;
+  const rows = [R.slice(0, 3), R.slice(3, 6), R.slice(6, 9)];
+  const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  if (rows.some(row => Math.abs(dot3(row, row) - 1) > 1e-5) ||
+      Math.abs(dot3(rows[0], rows[1])) > 1e-5 ||
+      Math.abs(dot3(rows[0], rows[2])) > 1e-5 ||
+      Math.abs(dot3(rows[1], rows[2])) > 1e-5) return null;
+  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) -
+    R[1] * (R[3] * R[8] - R[5] * R[6]) +
+    R[2] * (R[3] * R[7] - R[4] * R[6]);
+  if (Math.abs(det - 1) > 1e-5) return null;
+  return { R, T };
 }
 
 // Leica PTX is a sequence of scans. Each header contains dimensions, scanner
@@ -761,7 +1809,10 @@ function parsePTXFile(fd, fileSize, maxPoints, onProgress) {
   const colorDiv = colorMax > 255 ? 65535 : colorMax > 1.0001 ? 255 : 1;
   const intensityDiv = intensityMax > 1.0001 ? intensityMax : 1;
   let validIndex = 0, out = 0;
-  const second = walk(() => {}, (_scan, rec, xyz) => {
+  const sampledScanRanges = new Map();
+  const second = walk(scan => {
+    sampledScanRanges.set(scan.index, { start: out, count: 0 });
+  }, (scan, rec, xyz) => {
     const sample = validIndex++;
     if (sample % stride !== 0 || out >= cap) return;
     world[out * 3] = xyz[0]; world[out * 3 + 1] = xyz[1]; world[out * 3 + 2] = xyz[2];
@@ -771,13 +1822,19 @@ function parsePTXFile(fd, fileSize, maxPoints, onProgress) {
       col[out * 3 + 2] = Math.max(0, Math.min(1, rec.b / colorDiv));
     }
     if (intensity) intensity[out] = Math.max(0, Math.min(1, rec.intensity / intensityDiv));
+    const sampledRange = sampledScanRanges.get(scan.index);
+    if (sampledRange) sampledRange.count++;
     out++;
   }, 'sample');
   if (out !== cap || second.recordCount !== first.recordCount) throw new Error('PTX: source changed between streaming passes');
   const scans = indexScans.map(s => ({
     index: s.index, columns: s.columns, rows: s.rows, pointRecords: s.pointRecords,
     validPoints: s.validPoints, scannerPosition: s.scannerPosition, axes: s.axes,
-    transform: s.matrix, matrixConvention: s.convention
+    transform: s.matrix, matrixConvention: s.convention,
+    start: (sampledScanRanges.get(s.index) || { start: 0 }).start,
+    count: (sampledScanRanges.get(s.index) || { count: 0 }).count,
+    name: 'PTX Scan ' + (s.index + 1),
+    pose: ptxRigidPose(s)
   }));
   return finalizeWorldZup(world, col, out, {
     total: validCount, recordCount: first.recordCount, scanCount: first.scanCount,
@@ -787,30 +1844,7 @@ function parsePTXFile(fd, fileSize, maxPoints, onProgress) {
   }, { intensity });
 }
 
-function lzfDecompress(input, expectedSize) {
-  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > PCD_MAX_LZF_BYTES) throw new Error('PCD: decompressed buffer exceeds 512 MiB safety limit');
-  const out = Buffer.allocUnsafe(expectedSize); let ip = 0, op = 0;
-  while (ip < input.length && op < expectedSize) {
-    const ctrl = input[ip++];
-    if (ctrl < 32) {
-      const len = ctrl + 1;
-      if (ip + len > input.length || op + len > expectedSize) throw new Error('PCD: invalid LZF literal run');
-      input.copy(out, op, ip, ip + len); ip += len; op += len;
-    } else {
-      let len = ctrl >>> 5, ref = op - ((ctrl & 0x1f) << 8) - 1;
-      if (len === 7) { if (ip >= input.length) throw new Error('PCD: truncated LZF length'); len += input[ip++]; }
-      if (ip >= input.length) throw new Error('PCD: truncated LZF offset');
-      ref -= input[ip++]; len += 2;
-      if (ref < 0 || op + len > expectedSize) throw new Error('PCD: invalid LZF back-reference');
-      for (let k = 0; k < len; k++) out[op++] = out[ref++];
-    }
-  }
-  if (op !== expectedSize) throw new Error('PCD: decompressed length mismatch (' + op + ' != ' + expectedSize + ')');
-  if (ip !== input.length) throw new Error('PCD: trailing bytes after LZF payload');
-  return out;
-}
-
-function parsePCDFile(fd, fileSize, maxPoints, onProgress) {
+function parsePCDFile(fd, fileSize, maxPoints, onProgress, scratchBaseDir) {
   progressAt(onProgress, 'header', 0.03);
   const headerCap = Math.min(fileSize, 1024 * 1024), hb = Buffer.alloc(headerCap);
   fs.readSync(fd, hb, 0, hb.length, 0);
@@ -847,6 +1881,14 @@ function parsePCDFile(fd, fileSize, maxPoints, onProgress) {
   if (ix < 0 || iy < 0 || iz < 0) throw new Error('PCD: нет полей x y z');
   for (const i of [ix,iy,iz,ii,ic,irgb,ir,ig,ib]) if (i >= 0 && counts[i] !== 1 && i !== irgb) throw new Error('PCD: многокомпонентные координаты/скаляры не поддержаны');
   const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS, stride = n > budget ? Math.ceil(n / budget) : 1, cap = Math.ceil(n / stride);
+  const previewMemory = ResourceBudget.assessCloudPreviewMemory(cap, currentAvailableMemoryBytes());
+  if (!previewMemory.ok) {
+    throw new Error('PCD: недостаточно доступной оперативной памяти для предпросмотра — ' +
+      'оценка ' + ResourceBudget.formatMiB(previewMemory.estimatedBytes) +
+      ', безопасный бюджет ' + ResourceBudget.formatMiB(previewMemory.safeBudgetBytes) +
+      ' при доступно ' + ResourceBudget.formatMiB(previewMemory.availableBytes) +
+      '. Уменьшите плотность облака или закройте другие приложения.');
+  }
   const world = new Float64Array(cap * 3), col = (irgb >= 0 || (ir >= 0 && ig >= 0 && ib >= 0)) ? new Float32Array(cap * 3) : null;
   const intensity = ii >= 0 ? new Float32Array(cap) : null, classification = ic >= 0 ? new Uint8Array(cap) : null;
   function pcdMaxFor(i) {
@@ -929,21 +1971,32 @@ function parsePCDFile(fd, fileSize, maxPoints, onProgress) {
     }
     if (decoded !== n) throw new Error('PCD: truncated binary payload');
   } else if (mode === 'binary_compressed') {
-    const sz = Buffer.alloc(8); if (fs.readSync(fd, sz, 0, 8, dataOff) !== 8) throw new Error('PCD: truncated binary_compressed sizes');
-    const compressedSize = sz.readUInt32LE(0), uncompressedSize = sz.readUInt32LE(4);
-    if (uncompressedSize > PCD_MAX_LZF_BYTES || compressedSize > PCD_MAX_LZF_BYTES) throw new Error('PCD: binary_compressed buffer exceeds 512 MiB safety limit');
-    if (uncompressedSize !== planarBytes || dataOff + 8 + compressedSize > fileSize) throw new Error('PCD: binary_compressed length mismatch');
-    const compressed = Buffer.alloc(compressedSize); if (fs.readSync(fd, compressed, 0, compressedSize, dataOff + 8) !== compressedSize) throw new Error('PCD: truncated compressed payload');
-    progressAt(onProgress, 'read-compressed', 0.25, { bytesRead: compressedSize, bytesTotal: compressedSize });
-    const raw = lzfDecompress(compressed, uncompressedSize);
-    progressAt(onProgress, 'decompress', 0.7, { bytesRead: uncompressedSize, bytesTotal: uncompressedSize });
-    const starts = []; let start = 0; fields.forEach((_, i) => { starts.push(start); start += fieldBytes[i] * n; });
-    for (let gi = 0; gi < n; gi++) {
-      if (core.keepSampledIndex ? !core.keepSampledIndex(gi, stride) : gi % stride !== 0) continue;
-      emit(gi, (fi) => scalar(raw, starts[fi] + gi * fieldBytes[fi], fi),
-        (fi) => size[fi] === 4 ? raw.readUInt32LE(starts[fi] + gi * fieldBytes[fi]) : numberValue(scalar(raw, starts[fi] + gi * fieldBytes[fi], fi)));
-      if ((gi & 0x3ffff) === 0) progressAt(onProgress, 'decode-points', 0.7 + 0.22 * gi / n, { pointsRead: gi, pointsTotal: n });
-    }
+    const scratchRoot = scratchBaseDir || os.tmpdir();
+    PcdOutOfCore.withPcdLzfPlanarStore(fd, fileSize, scratchRoot, value => {
+      const localFraction = Number(value && value.fraction);
+      const fraction = 0.08 + 0.54 * Math.max(0, Math.min(1, localFraction / 0.18));
+      progressAt(onProgress, 'pcd-lzf-decompress', fraction, {
+        bytesRead: value && value.bytesRead,
+        bytesTotal: value && value.bytesTotal,
+        bytesWritten: value && value.bytesWritten,
+        bytesExpected: value && value.bytesExpected
+      });
+    }, (header, planarFd) => {
+      if (header.pointCount !== n || header.pointBytes !== planarBytes ||
+          header.fields.length !== fields.length ||
+          header.fields.some((field, i) => field !== fields[i] || header.sizes[i] !== size[i] ||
+            header.types[i] !== type[i] || header.counts[i] !== counts[i])) {
+        throw new Error('PCD: header changed between preview parsing passes');
+      }
+      PcdOutOfCore.forEachPcdRecord(fd, fileSize, header, (gi, read, readPacked) => {
+        if (core.keepSampledIndex ? !core.keepSampledIndex(gi, stride) : gi % stride !== 0) return;
+        emit(gi, read, readPacked);
+      }, pointsRead => {
+        progressAt(onProgress, 'pcd-lzf-sample',
+          0.64 + 0.28 * pointsRead / Math.max(1, n),
+          { pointsRead, pointsTotal: n });
+      }, null, null, null, planarFd, [ii, ic]);
+    });
   } else throw new Error('PCD: DATA ' + mode + ' не поддерживается');
   if (mode === 'ascii' && asciiRows !== n) throw new Error('PCD: truncated ASCII payload (' + asciiRows + ' of ' + n + ' points)');
   if (!oi) throw new Error('PCD: не удалось прочитать точки');
@@ -1077,7 +2130,7 @@ function parseCloudFile(absPath, opts) {
     if (ext === 'laz') return { ok: false, message: 'Для LAZ используйте асинхронный parseCloudFileAsync().' };
     if (ext === 'ply') return parsePLYFile(fd, st.size, maxPoints, opts && opts.onProgress);
     if (ext === 'e57') return parseE57File(fd, st.size, maxPoints, opts && opts.onProgress);
-    if (ext === 'pcd') return parsePCDFile(fd, st.size, maxPoints, opts && opts.onProgress);
+    if (ext === 'pcd') return parsePCDFile(fd, st.size, maxPoints, opts && opts.onProgress, opts && opts.scratchBaseDir);
     if (ext === 'ptx') return parsePTXFile(fd, st.size, maxPoints, opts && opts.onProgress);
     if (ext === 'xyz' || ext === 'pts' || ext === 'txt' || ext === 'csv' || ext === 'xyzrgb') return parseTextCloudFile(fd, st.size, maxPoints, ext, opts && opts.onProgress);
     return { ok: false, message: 'Потоковый разбор поддержан для .las, .ply, .e57, .pcd, .ptx, .xyz, .pts' };
@@ -1107,6 +2160,18 @@ async function parseCloudFileAsync(absPath, opts) {
     }
   }
 
+  const needsScratch = path.extname(absolutePath).toLowerCase() === '.pcd';
+  let workerScratchDir = null;
+  if (needsScratch) {
+    try {
+      const scratchBase = path.resolve(String(opts.scratchBaseDir || os.tmpdir()));
+      workerScratchDir = fs.mkdtempSync(path.join(scratchBase, 'bimtwin-cloud-parse-'));
+    } catch (e) {
+      return { ok: false, message: 'Не удалось подготовить временный каталог PCD: ' +
+        String((e && e.message) || e) };
+    }
+  }
+
   return new Promise((resolve) => {
     let worker = null;
     let settled = false;
@@ -1122,7 +2187,27 @@ async function parseCloudFileAsync(absPath, opts) {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(result);
+      (async () => {
+        // Terminate/await the worker before deleting its private scratch
+        // directory. This is essential on cancellation: worker finally blocks
+        // do not run after terminate().
+        if (worker) {
+          try { await worker.terminate(); } catch (_) {}
+        }
+        if (workerScratchDir) {
+          try {
+            fs.rmSync(workerScratchDir, { recursive: true, force: true });
+          } catch (error) {
+            const detail = String((error && error.message) || error);
+            result = Object.assign({}, result || {}, {
+              ok: false,
+              message: (result && result.message ? result.message + '; ' : '') +
+                'Не удалось удалить временные данные PCD: ' + detail
+            });
+          }
+        }
+        resolve(result);
+      })();
     };
     const report = (progress) => {
       if (typeof opts.onProgress !== 'function') return;
@@ -1131,13 +2216,7 @@ async function parseCloudFileAsync(absPath, opts) {
     const abortListener = () => {
       if (settled || cancellationRequested) return;
       cancellationRequested = true;
-      if (!worker) { finish(cancelledResult()); return; }
-      try {
-        Promise.resolve(worker.terminate()).then(
-          () => finish(cancelledResult()),
-          () => finish(cancelledResult())
-        );
-      } catch (_) { finish(cancelledResult()); }
+      finish(cancelledResult());
     };
 
     try {
@@ -1149,7 +2228,11 @@ async function parseCloudFileAsync(absPath, opts) {
         try { if (fs.existsSync(unpacked)) workerPath = unpacked; } catch (_) {}
       }
       worker = new Worker(workerPath, {
-        workerData: { absPath: absolutePath, maxPoints: Number(opts.maxPoints) || DEFAULT_MAX_POINTS }
+        workerData: {
+          absPath: absolutePath,
+          maxPoints: Number(opts.maxPoints) || DEFAULT_MAX_POINTS,
+          scratchBaseDir: workerScratchDir
+        }
       });
     } catch (e) {
       finish({ ok: false, message: 'Не удалось запустить поток импорта: ' + String((e && e.message) || e) });
@@ -1173,7 +2256,6 @@ async function parseCloudFileAsync(absPath, opts) {
     });
     worker.on('messageerror', (error) => {
       if (!settled && !cancellationRequested) {
-        try { worker.terminate(); } catch (_) {}
         finish({ ok: false, message: 'Ошибка передачи результата Worker: ' + String((error && error.message) || error) });
       }
     });
@@ -1188,4 +2270,18 @@ async function parseCloudFileAsync(absPath, opts) {
   });
 }
 
-module.exports = { parseCloudFile, parseCloudFileAsync, parseLASFile, parseLAZFile, parsePLYFile, parseE57File, parsePTXFile, parseTextCloudFile, parsePCDFile, finalizeWorldZup, DEFAULT_MAX_POINTS };
+module.exports = {
+  parseCloudFile, parseCloudFileAsync, parseLASFile, parseLAZFile, parsePLYFile,
+  parseE57File, parsePTXFile, parseTextCloudFile, parsePCDFile, finalizeWorldZup,
+  getBinaryPlyPointFileInfo, sameBinaryPlyPointFileInfo,
+  isBinaryPlyPointFile, prepareBinaryPLYOctreeFile,
+  getOutOfCorePlyPointFileInfo, samePlyPointFileInfo, isOutOfCorePlyPointFile,
+  preparePlyOctreeFile,
+  getOutOfCoreLasPointFileInfo, sameLasPointFileInfo, isOutOfCoreLasPointFile,
+  prepareLasOctreeFile,
+  getOutOfCorePcdPointFileInfo: PcdOutOfCore.getOutOfCorePcdPointFileInfo,
+  samePcdPointFileInfo: PcdOutOfCore.samePcdPointFileInfo,
+  isOutOfCorePcdPointFile: PcdOutOfCore.isOutOfCorePcdPointFile,
+  preparePcdOctreeFile: PcdOutOfCore.preparePcdOctreeFile,
+  DEFAULT_MAX_POINTS
+};
