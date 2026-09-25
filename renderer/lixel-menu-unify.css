@@ -1,0 +1,126 @@
+/* lixel-menu-unify.css — v1217
+ * Единый набор классов для ВСЕХ всплывающих меню, выпадающих списков и
+ * плавающих панелей, которые раньше собирались в JS по отдельности с
+ * произвольными зашитыми hex-цветами (не зависящими от темы — источник
+ * багов светлой темы). Никаких новых переменных не заводим — используем
+ * существующую палитру проекта (--panel/--panel2/--line/--txt/--muted/
+ * --accent/--ok/--warn/--err/--radius/--shadow-pop из styles.css), которая
+ * уже корректно переключается по [data-theme]. Это и даёт единый стиль:
+ * все меню используют один источник цвета/скруглений/тени.
+ */
+
+.lx-pop {
+  position: fixed;
+  z-index: 10001;
+  background: var(--panel);
+  color: var(--txt);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg, 12px);
+  padding: 6px;
+  box-shadow: var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 240px;
+  max-height: 70vh;
+  overflow-y: auto;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, system-ui, sans-serif;
+}
+.lx-pop-head { font-size: 11px; color: var(--muted); padding: 4px 10px 6px; }
+.lx-pop-sep { height: 1px; margin: 4px 2px; background: var(--line); border: 0; }
+.lx-pop-item {
+  text-align: left; background: transparent; border: 0; color: var(--txt);
+  padding: 8px 10px; border-radius: var(--radius, 8px); cursor: pointer;
+  font-size: 13px; white-space: nowrap; display: flex; flex-direction: column; gap: 2px;
+}
+.lx-pop-item:hover, .lx-pop-item:focus-visible { background: var(--panel2); outline: none; }
+.lx-pop-item[disabled], .lx-pop-item.disabled { opacity: .45; cursor: default; pointer-events: none; }
+.lx-pop-item-title { font-size: 13px; font-weight: 600; }
+.lx-pop-item-sub { font-size: 11px; color: var(--muted); white-space: normal; }
+.lx-pop-item-ok { color: var(--ok); }
+.lx-pop-item-warn { color: var(--warn); }
+
+.lx-modal-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(8, 10, 14, .55);
+  display: flex; align-items: center; justify-content: center;
+}
+html[data-theme="light"] .lx-modal-overlay, :root:not([data-theme]) .lx-modal-overlay { background: rgba(60, 55, 45, .35); }
+.lx-modal {
+  background: var(--panel); color: var(--txt); border: 1px solid var(--line);
+  border-radius: var(--radius-lg, 12px); box-shadow: var(--shadow-pop); padding: 18px;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, system-ui, sans-serif;
+}
+
+.lx-pill {
+  position: fixed; z-index: 10000;
+  background: var(--panel); color: var(--txt); border: 1px solid var(--line);
+  border-radius: var(--radius-lg, 12px); padding: 9px 16px; box-shadow: var(--shadow-pop);
+  font-size: 13px; display: flex; align-items: center; gap: 10px;
+}
+
+.lx-btn {
+  height: 32px; padding: 0 14px; border-radius: var(--radius, 8px);
+  border: 1px solid var(--line); background: var(--panel); color: var(--txt);
+  cursor: pointer; font-size: 13px; white-space: nowrap;
+}
+.lx-btn:hover { background: var(--panel2); }
+.lx-btn-primary { border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 600; }
+.lx-btn-primary:hover { filter: brightness(1.06); }
+.lx-btn-ghost { background: transparent; border-color: var(--line); color: var(--txt); }
+
+.lx-float-panel {
+  position: absolute; z-index: 35;
+  background: var(--panel); color: var(--txt); border: 1px solid var(--line);
+  border-radius: var(--radius-lg, 12px); box-shadow: var(--shadow-pop); padding: 12px 14px;
+  font-size: 12px;
+}
+
+.lx-row-label { display: flex; justify-content: space-between; font-size: 13px; color: var(--txt); }
+.lx-row-value { color: var(--accent); font-variant-numeric: tabular-nums; }
+.lx-hint { font-size: 12px; color: var(--muted); }
+
+/* Плавающая панель-инструмент (объект/инспектор/scan2bim и т.п.) — тот же
+   визуальный язык, что и у .lx-pop, но как самостоятельная панель. */
+.lx-tool-panel {
+  position: fixed; z-index: 99999;
+  background: var(--panel); color: var(--txt); border: 1px solid var(--line);
+  border-radius: var(--radius-lg, 12px); box-shadow: var(--shadow-pop);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, system-ui, sans-serif;
+}
+.lx-tool-btn {
+  position: fixed; z-index: 99998;
+  background: var(--panel); color: var(--txt); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 12px; font-size: 13px; cursor: pointer;
+  box-shadow: var(--shadow-pop);
+}
+.lx-tool-btn.on { background: var(--lx-blue); color: #fff; border-color: var(--lx-blue); }
+
+/* Единая палитра "тонов действия" — одна и та же роль всегда одного цвета
+   во всех панелях приложения, вместо десятка чуть разных зашитых hex. */
+:root {
+  --lx-blue: #2f6bff; --lx-blue-ink: #fff;
+  --lx-green: #1e8e50; --lx-green-ink: #fff;
+  --lx-red: #c0392b; --lx-red-ink: #fff;
+  --lx-orange: #b5723f; --lx-orange-ink: #fff;
+  --lx-purple: #6b3fb5; --lx-purple-ink: #fff;
+  --lx-neutral: #6b7684; --lx-neutral-ink: #fff;
+}
+html[data-theme="dark"] {
+  --lx-blue: #2f6bff;
+  --lx-green: #2b8a5b;
+  --lx-red: #a4392b;
+  --lx-orange: #7a5b2b;
+  --lx-purple: #6b3fb5;
+  --lx-neutral: #3a3a3f;
+}
+.lx-tone-btn {
+  color: #fff; border: 0; border-radius: 6px; padding: 4px 8px;
+  font-size: 12px; cursor: pointer;
+}
+.lx-tone-blue { background: var(--lx-blue); }
+.lx-tone-green { background: var(--lx-green); }
+.lx-tone-red { background: var(--lx-red); }
+.lx-tone-orange { background: var(--lx-orange); }
+.lx-tone-purple { background: var(--lx-purple); }
+.lx-tone-neutral { background: var(--lx-neutral); color: #fff; }

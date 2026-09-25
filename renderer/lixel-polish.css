@@ -1,0 +1,94 @@
+/* ============================================================
+   lixel-polish.css — v1153. Финальная полировка UI «под копирку».
+   Задачи из запроса:
+     • иконка на КАЖДОЙ кнопке ленты + единый размер (ровные ряды);
+     • адаптивная лента, чтобы все группы помещались на экран;
+     • аккуратные, выровненные плавающие панели инструментов.
+   Активно под html[data-lxskin="on"]. Подключается последним,
+   поэтому переопределяет предыдущие скины без правки их файлов.
+   ============================================================ */
+
+/* ---------- Лента: адаптивная ширина кнопок (всё вмещается) ---------- */
+html[data-lxskin="on"] .toolbar .tbtns .tgroup .btn.lx-bigbtn,
+html[data-lxskin="on"] .toolbar .tbtns .tgroup label.btn.lx-bigbtn {
+  flex: 0 0 clamp(72px, 6.4vw, 94px);
+  width: clamp(72px, 6.4vw, 94px);
+  min-width: 72px;
+  max-width: 96px;
+  height: 70px;
+  box-sizing: border-box;
+}
+html[data-lxskin="on"] .toolbar .tgroup { padding-left: 6px; padding-right: 6px; }
+
+/* Единый вид для кнопок с инлайновым фоном (например LCC2 / 3DGS) —
+   после декорирования делаем их такими же ровными, как остальные. */
+html[data-lxskin="on"] .toolbar .tbtns .lx-bigbtn[style] {
+  background: var(--panel2) !important;
+  border-color: var(--line) !important;
+  color: var(--txt) !important;
+}
+html[data-lxskin="on"] .toolbar .tbtns .lx-bigbtn.lx-primary[style] {
+  background: color-mix(in srgb, var(--lx-blue) 18%, var(--panel2)) !important;
+  border-color: var(--lx-blue) !important;
+  color: var(--txt) !important;
+}
+
+/* Тонкий аккуратный горизонтальный скролл, если групп всё же больше ширины. */
+html[data-lxskin="on"] .toolbar .tbtns { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+html[data-lxskin="on"] .toolbar .tbtns::-webkit-scrollbar { height: 7px; }
+html[data-lxskin="on"] .toolbar .tbtns::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+html[data-lxskin="on"] .toolbar .tbtns::-webkit-scrollbar-track { background: transparent; }
+
+/* Ровная иконка и подпись на всех больших кнопках. */
+html[data-lxskin="on"] .toolbar .lx-bigbtn { align-items: center; justify-content: center; gap: 4px; }
+html[data-lxskin="on"] .toolbar .lx-bigbtn .lx-bic {
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+}
+html[data-lxskin="on"] .toolbar .lx-bigbtn .lx-bic svg { width: 24px; height: 24px; display: block; }
+html[data-lxskin="on"] .toolbar .lx-bigbtn .lx-blabel {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis; line-height: 14px; min-height: 28px;
+  text-align: center; width: 100%;
+}
+
+/* Узкие экраны — компактнее, но подписи и иконки читаемы. */
+@media (max-width: 1200px) {
+  html[data-lxskin="on"] .toolbar .tbtns .tgroup .btn.lx-bigbtn,
+  html[data-lxskin="on"] .toolbar .tbtns .tgroup label.btn.lx-bigbtn {
+    flex-basis: 78px; width: 78px; font-size: 11px;
+  }
+}
+@media (max-width: 980px) {
+  html[data-lxskin="on"] .toolbar .tbtns .tgroup .btn.lx-bigbtn,
+  html[data-lxskin="on"] .toolbar .tbtns .tgroup label.btn.lx-bigbtn {
+    flex-basis: 72px; width: 72px; height: 66px;
+  }
+  html[data-lxskin="on"] .toolbar .tglabel { font-size: 10px; }
+}
+
+/* ---------- Плавающие панели инструментов: ровные ряды ---------- */
+html[data-lxskin="on"] #measureBar .btn-sm,
+html[data-lxskin="on"] #editBar .btn-sm,
+html[data-lxskin="on"] .mtoolbox .btn-sm,
+html[data-lxskin="on"] .etoolbox .btn-sm {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 30px; padding: 4px 10px; line-height: 1; white-space: nowrap;
+  vertical-align: middle; box-sizing: border-box;
+}
+html[data-lxskin="on"] .mtoolbox .mrow,
+html[data-lxskin="on"] .etoolbox .erow,
+html[data-lxskin="on"] #measureBar .mgroup,
+html[data-lxskin="on"] #editBar .egroup {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+html[data-lxskin="on"] .btn-sm .bico { width: 15px; height: 15px; flex: none; }
+/* эмодзи-иконки в тексте кнопок выравниваем по базовой линии */
+html[data-lxskin="on"] .btn-sm { font-variant-emoji: text; }
+
+/* Плавающие панели не выходят за экран по высоте. */
+html[data-lxskin="on"] .mtoolbox,
+html[data-lxskin="on"] .etoolbox,
+html[data-lxskin="on"] #measureBar,
+html[data-lxskin="on"] #editBar {
+  max-height: calc(100vh - 120px); overflow-y: auto;
+}

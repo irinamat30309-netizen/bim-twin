@@ -1,0 +1,57 @@
+/* lixel-draw.css — Спринт 2 (v1087): черчение по облаку + DXF + привязки/слои/размеры. Только при data-lxskin=on */
+html[data-lxskin="on"] .lx-drawsvg {
+  position: absolute; inset: 0; z-index: 7; pointer-events: none;
+  width: 100%; height: 100%;
+}
+html[data-lxskin="on"] .lx-drawsvg .lx-dl { stroke: #ff9d3d; stroke-width: 1.6; fill: none; }
+html[data-lxskin="on"] .lx-drawsvg .lx-dl.closed { fill: rgba(255,157,61,.10); }
+html[data-lxskin="on"] .lx-drawsvg .lx-dl.lx-sect { stroke: #5ad1ff; stroke-width: 1.8; }
+html[data-lxskin="on"] .lx-drawsvg .lx-dl.lx-sect.closed { fill: rgba(90,209,255,.12); }
+html[data-lxskin="on"] .lx-drawsvg .lx-draft { stroke: #ffd27a; stroke-width: 1.4; stroke-dasharray: 5 4; fill: none; }
+html[data-lxskin="on"] .lx-drawsvg .lx-vtx { fill: #ffd27a; stroke: #131314; stroke-width: 1; }
+html[data-lxskin="on"] .lx-drawsvg .lx-circ { stroke: #7ea6ff; stroke-width: 1.6; fill: none; }
+html[data-lxskin="on"] .lx-drawsvg .lx-pt { fill: #5f7fd6; }
+
+/* размеры (dimensions) */
+html[data-lxskin="on"] .lx-drawsvg .lx-dim { stroke: #34d399; stroke-width: 1.5; fill: none; }
+html[data-lxskin="on"] .lx-drawsvg .lx-dimtxt {
+  fill: #b8f2d8; font-size: 11px; font-family: 'Inter', system-ui, sans-serif;
+  text-anchor: middle; paint-order: stroke; stroke: #131314; stroke-width: 3px; stroke-linejoin: round;
+}
+/* маркер привязки */
+html[data-lxskin="on"] .lx-drawsvg .lx-snapmark { fill: none; stroke: #ffd27a; stroke-width: 1.6; }
+
+/* активная кнопка инструмента черчения */
+html[data-lxskin="on"] .lx-bigbtn.lx-dactive { background: #1f47ca !important; }
+html[data-lxskin="on"] .lx-bigbtn.lx-dactive .lx-bic { color: #fff !important; }
+html[data-lxskin="on"] .lx-bigbtn.lx-dactive .lx-blabel { color: #fff !important; }
+
+/* селект проекции в ленте */
+html[data-lxskin="on"] .lx-projsel {
+  display: flex; flex-direction: column; gap: 3px; justify-content: center;
+  padding: 4px 8px; color: var(--muted); font-size: 11px;
+}
+html[data-lxskin="on"] .lx-projsel select {
+  background: var(--panel2); color: var(--txt); border: 1px solid var(--line); border-radius: 5px;
+  padding: 3px 6px; font-size: 12px; outline: none;
+}
+/* индикатор режима черчения на вьюпорте */
+html[data-lxskin="on"] .lx-drawhint {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+  z-index: 8; background: var(--panel); color: #ffd27a;
+  border: 1px solid var(--line); border-radius: 7px; padding: 5px 12px; font-size: 12px;
+  pointer-events: none; white-space: nowrap; box-shadow: var(--shadow-pop);
+}
+/* панель слоёв чертежа */
+html[data-lxskin="on"] .lx-lyrpanel {
+  position: absolute; right: 12px; bottom: 14px; z-index: 8;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; min-width: 132px; pointer-events: auto;
+  box-shadow: var(--shadow-pop);
+}
+html[data-lxskin="on"] .lx-lyrhead { color: var(--muted); font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+html[data-lxskin="on"] .lx-lyrrow {
+  display: flex; align-items: center; gap: 7px; color: var(--txt); font-size: 12px;
+  padding: 3px 0; cursor: pointer;
+}
+html[data-lxskin="on"] .lx-lyrrow input { accent-color: #5f7fd6; cursor: pointer; }
