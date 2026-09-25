@@ -219,10 +219,127 @@
     };
   }
 
-  // ---- сериализация точек узла в бинар (LE): 3×float32 [+ 3×uint8] ----
-  function serializeNodePoints(pos, col, hasColor) {
+  // ---- бинарный формат записи точки в узле ----
+  // v1: XYZ float32 LE + optional RGB8.
+  // v2: v1 + optional normalized intensity float32 LE + classification uint8.
+  function getNodePointLayout(index) {
+    if (!index || typeof index !== 'object' || Array.isArray(index)) return null;
+    var version = index.version == null ? 1 : Number(index.version);
+    var hasColor = index.hasColor === true;
+    var hasIntensity = version === 2 && index.hasIntensity === true;
+    var hasClassification = version === 2 && index.hasClassification === true;
+    if (version !== 1 && version !== 2) return null;
+    if (version === 1 && (index.hasIntensity === true || index.hasClassification === true)) return null;
+    var offset = hasColor ? 15 : 12;
+    var intensityOffset = hasIntensity ? offset : null;
+    if (hasIntensity) offset += 4;
+    var classificationOffset = hasClassification ? offset : null;
+    if (hasClassification) offset += 1;
+    var stride = version === 1 ? (hasColor ? 15 : 12) : offset;
+    if (index.stride != null && (!Number.isSafeInteger(index.stride) || index.stride !== stride)) return null;
+    return {
+      version: version,
+      stride: stride,
+      hasColor: hasColor,
+      hasIntensity: hasIntensity,
+      hasClassification: hasClassification,
+      colorOffset: hasColor ? 12 : null,
+      intensityOffset: intensityOffset,
+      classificationOffset: classificationOffset
+    };
+  }
+
+  // Validate the persistent index before the main process trusts any
+  // renderer-supplied node key or file range. This is intentionally linear in
+  // descriptor count and runs once when index.json enters the cache.
+  function validateOctreeIndex(index, nodeFileBytes) {
+    var layout = getNodePointLayout(index);
+    if (!layout || !Number.isSafeInteger(index.stride) ||
+        !Number.isSafeInteger(index.pointCount) || index.pointCount < 1 ||
+        !Number.isSafeInteger(index.nodeCount) || index.nodeCount < 1 ||
+        !Array.isArray(index.nodes) || index.nodes.length !== index.nodeCount ||
+        index.root !== 'r' || !index.bbox || !Array.isArray(index.bbox.mn) ||
+        !Array.isArray(index.bbox.mx) || index.bbox.mn.length !== 3 ||
+        index.bbox.mx.length !== 3) return false;
+
+    var rootMin = index.bbox.mn, rootMax = index.bbox.mx;
+    for (var axis = 0; axis < 3; axis++) {
+      if (!Number.isFinite(rootMin[axis]) || !Number.isFinite(rootMax[axis]) ||
+          rootMin[axis] > rootMax[axis]) return false;
+    }
+
+    var byKey = new Map();
+    var parentCount = new Map();
+    var expectedOffset = 0, pointTotal = 0;
+    for (var i = 0; i < index.nodes.length; i++) {
+      var node = index.nodes[i];
+      if (!node || typeof node.key !== 'string' || !/^r[0-7]*$/.test(node.key) ||
+          node.level !== node.key.length - 1 ||
+          !Number.isSafeInteger(node.count) || node.count < 1 ||
+          !Number.isSafeInteger(node.offset) || node.offset !== expectedOffset ||
+          !Number.isSafeInteger(node.byteLength) ||
+          node.byteLength !== node.count * layout.stride ||
+          !Number.isSafeInteger(expectedOffset + node.byteLength) ||
+          !Array.isArray(node.mn) || !Array.isArray(node.mx) ||
+          node.mn.length !== 3 || node.mx.length !== 3 ||
+          !Array.isArray(node.childKeys)) return false;
+      if (byKey.has(node.key)) return false;
+      if (i === 0 && (node.key !== 'r' || node.offset !== 0)) return false;
+      for (var a = 0; a < 3; a++) {
+        if (!Number.isFinite(node.mn[a]) || !Number.isFinite(node.mx[a]) ||
+            node.mn[a] > node.mx[a] ||
+            node.mn[a] < rootMin[a] - 1e-5 || node.mx[a] > rootMax[a] + 1e-5) return false;
+      }
+      byKey.set(node.key, node);
+      parentCount.set(node.key, 0);
+      expectedOffset += node.byteLength;
+      pointTotal += node.count;
+      if (!Number.isSafeInteger(pointTotal)) return false;
+    }
+    if (pointTotal !== index.pointCount ||
+        (nodeFileBytes != null &&
+          (!Number.isSafeInteger(nodeFileBytes) || nodeFileBytes !== expectedOffset))) return false;
+
+    for (var j = 0; j < index.nodes.length; j++) {
+      var parent = index.nodes[j];
+      var seenChildren = new Set();
+      for (var c = 0; c < parent.childKeys.length; c++) {
+        var childKey = parent.childKeys[c];
+        if (typeof childKey !== 'string' || seenChildren.has(childKey) ||
+            childKey.length !== parent.key.length + 1 ||
+            childKey.slice(0, parent.key.length) !== parent.key ||
+            !/^[0-7]$/.test(childKey.slice(-1)) || !byKey.has(childKey)) return false;
+        seenChildren.add(childKey);
+        parentCount.set(childKey, parentCount.get(childKey) + 1);
+      }
+    }
+    for (var k = 0; k < index.nodes.length; k++) {
+      var key = index.nodes[k].key;
+      if (parentCount.get(key) !== (key === 'r' ? 0 : 1)) return false;
+    }
+    return true;
+  }
+
+  // ---- сериализация узла: XYZ float32 [+ RGB8] [+ intensity float32] [+ class uint8] ----
+  function serializeNodePoints(pos, col, hasColor, attributes) {
     var n = (pos.length / 3) | 0;
-    var stride = hasColor ? (3 * FLOAT + 3) : (3 * FLOAT);
+    attributes = attributes || {};
+    var intensity = attributes.intensity || null;
+    var classification = attributes.classification || null;
+    var hasIntensity = !!intensity;
+    var hasClassification = !!classification;
+    if ((hasColor && (!col || col.length < n * 3)) ||
+        (hasIntensity && intensity.length < n) ||
+        (hasClassification && classification.length < n)) {
+      throw new RangeError('octree node attribute array is shorter than the point count');
+    }
+    var layout = getNodePointLayout({
+      version: hasIntensity || hasClassification ? 2 : 1,
+      hasColor: !!hasColor,
+      hasIntensity: hasIntensity,
+      hasClassification: hasClassification
+    });
+    var stride = layout.stride;
     var buf = new ArrayBuffer(n * stride);
     var dv = new DataView(buf);
     var off = 0;
@@ -237,31 +354,60 @@
         dv.setUint8(off + 2, clamp255(col[i * 3 + 2]));
         off += 3;
       }
+      if (hasIntensity) {
+        var iv = Number(intensity[i]);
+        dv.setFloat32(off, Number.isFinite(iv) ? Math.max(0, Math.min(1, iv)) : 0, true);
+        off += 4;
+      }
+      if (hasClassification) {
+        var cv = Number(classification[i]);
+        dv.setUint8(off, Number.isFinite(cv) ? Math.max(0, Math.min(255, Math.round(cv))) : 0);
+        off += 1;
+      }
     }
     return new Uint8Array(buf);
   }
 
-  function deserializeNodePoints(bytes, count, hasColor) {
-    var stride = hasColor ? 15 : 12;
+  function deserializeNodePoints(bytes, count, hasColor, format) {
+    var layout;
+    if (format && typeof format === 'object') {
+      layout = getNodePointLayout(format);
+      if (!layout) throw new Error('invalid octree node point layout');
+    } else {
+      layout = getNodePointLayout({
+        version: 1, hasColor: !!hasColor, stride: hasColor ? 15 : 12
+      });
+    }
+    var stride = layout.stride;
     var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (!Number.isSafeInteger(count) || count < 0 || u8.byteLength !== count * stride) {
+      throw new RangeError('octree node byte length does not match its point count and layout');
+    }
     var dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-    var n = count != null ? count : (u8.byteLength / stride) | 0;
+    var n = count;
     var pos = new Float32Array(n * 3);
-    var col = hasColor ? new Float32Array(n * 3) : null;
+    var col = layout.hasColor ? new Float32Array(n * 3) : null;
+    var intensity = layout.hasIntensity ? new Float32Array(n) : null;
+    var classification = layout.hasClassification ? new Uint8Array(n) : null;
     var off = 0;
     for (var i = 0; i < n; i++) {
       pos[i * 3] = dv.getFloat32(off, true);
       pos[i * 3 + 1] = dv.getFloat32(off + 4, true);
       pos[i * 3 + 2] = dv.getFloat32(off + 8, true);
       off += 12;
-      if (hasColor) {
+      if (layout.hasColor) {
         col[i * 3] = dv.getUint8(off) / 255;
         col[i * 3 + 1] = dv.getUint8(off + 1) / 255;
         col[i * 3 + 2] = dv.getUint8(off + 2) / 255;
         off += 3;
       }
+      if (layout.hasIntensity) {
+        intensity[i] = dv.getFloat32(off, true);
+        off += 4;
+      }
+      if (layout.hasClassification) classification[i] = dv.getUint8(off++);
     }
-    return { pos: pos, col: col };
+    return { pos: pos, col: col, intensity: intensity, classification: classification };
   }
 
   // ---- упаковка дерева в единый blob + index ----
@@ -355,6 +501,8 @@
     packOctree: packOctree,
     serializeNodePoints: serializeNodePoints,
     deserializeNodePoints: deserializeNodePoints,
+    getNodePointLayout: getNodePointLayout,
+    validateOctreeIndex: validateOctreeIndex,
     selectNodes: selectNodes
   };
   if (typeof window !== 'undefined') window.OctreeStore = api;

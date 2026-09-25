@@ -1389,6 +1389,13 @@
   var lastCloudPath = null;    // путь к файлу последнего .las облака (для потокового octree, пункт 4)
   var lastCloudCount = 0;      // число точек последнего облака (выбор: полный буфер vs стриминг)
   var activeOctreeDir = null;  // временный дисковый индекс текущего stream-сеанса
+  var octreeNodeErrorToastAt = 0;
+  window.addEventListener('bim-octree-node-error', function () {
+    const now = Date.now();
+    if (now - octreeNodeErrorToastAt < 4000) return;
+    octreeNodeErrorToastAt = now;
+    toast('Не удалось подгрузить часть облака. Проверьте временный диск; переместите камеру или выключите/включите LOD для повтора.');
+  });
   async function releaseActiveOctreeStore() {
     const dir = activeOctreeDir;
     activeOctreeDir = null;
@@ -1397,6 +1404,9 @@
     catch (error) { return { ok: false, error: String(error && error.message || error) }; }
   }
   window.addEventListener('bim-cloud-change', function () {
+    if (typeof window.__bimRefreshQuality === 'function') {
+      try { window.__bimRefreshQuality(); } catch (_) {}
+    }
     if (activeOctreeDir && !(viewer && viewer.octreeActive && viewer.octreeActive())) {
       releaseActiveOctreeStore().then(result => {
         if (result && result.ok === false) console.warn('octree cleanup', result.error || 'failed');
@@ -1678,14 +1688,43 @@
     if (qBtn && qBar) qBtn.addEventListener('click', () => { const on = !qBtn.classList.contains('on'); qBtn.classList.toggle('on', on); qBar.style.display = on ? 'flex' : 'none'; });
     window.__bimRefreshQuality = refreshQualityButtons;
     const qColor = $('qColor');
-    if (qColor) qColor.addEventListener('click', () => { if (!viewer || !viewer.setColorMode) { toast('Цветовой режим доступен в 3D-режиме (WebGL)'); return; } const toElev = qColor.textContent.indexOf('RGB') >= 0; const m = viewer.setColorMode(toElev ? 'elev' : 'rgb'); qColor.textContent = (m === 'elev') ? 'Цвет: Высота' : 'Цвет: RGB'; toast(m === 'elev' ? 'Цвет по высоте' : 'Цвет RGB — как снимал сканер'); });
+    const colorModeLabels = { rgb:'RGB', elev:'Высота', intensity:'Интенсивность', classification:'Классификация' };
+    function refreshColorModeButton() {
+      if (!qColor || !viewer) return;
+      const mode = viewer.getColorMode ? viewer.getColorMode() : (viewer._ptElev ? 'elev' : 'rgb');
+      const modes = viewer.getAvailableColorModes ? viewer.getAvailableColorModes() : ['rgb','elev'];
+      qColor.textContent = 'Цвет: ' + (colorModeLabels[mode] || 'RGB');
+      qColor.title = 'Нажмите для переключения доступных режимов: ' +
+        modes.map(value => colorModeLabels[value] || value).join(' → ');
+      qColor.setAttribute('aria-label', 'Режим окраски облака: ' + (colorModeLabels[mode] || 'RGB'));
+    }
+    if (qColor) qColor.addEventListener('click', () => {
+      if (!viewer || !viewer.setColorMode) { toast('Цветовой режим доступен в 3D-режиме (WebGL)'); return; }
+      const modes = viewer.getAvailableColorModes ? viewer.getAvailableColorModes() : ['rgb','elev'];
+      const current = viewer.getColorMode ? viewer.getColorMode() : (viewer._ptElev ? 'elev' : 'rgb');
+      const index = Math.max(0, modes.indexOf(current));
+      const mode = modes[(index + 1) % modes.length] || 'rgb';
+      try {
+        viewer.setColorMode(mode);
+        refreshColorModeButton();
+        toast(mode === 'intensity'
+          ? 'Окраска по интенсивности (шкала серого)'
+          : mode === 'classification'
+            ? 'Окраска по классу точки'
+            : mode === 'elev'
+              ? 'Цвет по высоте'
+              : 'Цвет RGB — как снимал сканер');
+      } catch (error) {
+        toast(String(error && error.message || error));
+      }
+    });
     const qBright = $('qBright');
     if (qBright) qBright.addEventListener('input', () => { if (viewer && viewer.setBrightness) viewer.setBrightness(parseFloat(qBright.value)); });
     const qSize = $('qSize');
     if (qSize) qSize.addEventListener('input', () => { if (viewer && viewer.setPointSizeScale) viewer.setPointSizeScale(parseFloat(qSize.value)); });
     function refreshQualityButtons() {
       if (!viewer) return;
-      const qc=$('qColor');if(qc)qc.textContent=viewer._ptElev?'Цвет: Высота':'Цвет: RGB';const qb=$('qBright');if(qb && document.activeElement!==qb)qb.value=viewer._ptBright;const qg=$('qGrade');if(qg)qg.classList.toggle('on',!!viewer._grade?.on);
+      refreshColorModeButton();const qb=$('qBright');if(qb && document.activeElement!==qb)qb.value=viewer._ptBright;const qg=$('qGrade');if(qg)qg.classList.toggle('on',!!viewer._grade?.on);
       const qE = $('qEDL'); if (qE) { const e = !!viewer._edl; qE.classList.toggle('on', e); qE.textContent = e ? 'EDL: вкл' : 'EDL: выкл'; }
       const qA = $('qAtten'); if (qA && viewer.attenuateOn) { const a = viewer.attenuateOn(); qA.classList.toggle('on', a); qA.textContent = a ? 'Размер: растёт' : 'Размер: постоянный'; }
       const qD = $('qDense'); if (qD && viewer.denseFillOn) { const d = viewer.denseFillOn(); qD.classList.toggle('on', d); qD.textContent = d ? 'Плотно: вкл' : 'Плотно: выкл'; }
@@ -2720,6 +2759,7 @@
         sb.classList.remove('on');
         const cleanup = await releaseActiveOctreeStore();
         if (lastCloudPath && !showCloudFromCache(lastCloudPath)) { try { const pr0 = await API.parseCloud(lastCloudPath); if (pr0 && pr0.ok) { if (pr0.kind === 'mesh') viewer.loadColoredMesh(pr0); else { viewer.loadCloud(pr0, { preserveView: true, sourceName:lastCloudPath }); cacheCloud(lastCloudPath, pr0); } } } catch (e) { console.warn('reload after stream off', e); } }
+        if (typeof window.__bimRefreshQuality === 'function') window.__bimRefreshQuality();
         toast('Потоковый режим выключен' + (cleanup && cleanup.ok === false ? ' · временный индекс не удалось удалить' : '')); return;
       }
       // ВКЛ:
@@ -2801,7 +2841,7 @@
       const dir = res.dir, index = res.index;
       // RAM-кеш узлов octree: один раз прочитанный с диска узел остаётся в оперативке — при повторном
       // попадании в кадр (после вытеснения GPU-буфера) диск не перечитывается. Бюджет зависит от профиля.
-      const octNodeCache = new Map(); // key -> { pos, col }
+      const octNodeCache = new Map(); // key -> { pos, col, intensity, classification }
       let octNodeBytes = 0;
       const fetchNode = (key) => {
         const hit = octNodeCache.get(key);
@@ -2813,18 +2853,35 @@
           return Promise.resolve(hit);
         }
         return API.readOctreeNode({ dir, key }).then(r => {
-          if (!(r && r.ok && window.OctreeStore)) return null;
-          const np = window.OctreeStore.deserializeNodePoints(r.bytes, r.count, r.hasColor);
-          if (np && np.pos) {
-            const b = np.pos.byteLength + (np.col ? np.col.byteLength : 0);
-            octNodeCache.set(key, np); octNodeBytes += b;
-            if (octNodeBytes > octNodeCacheMaxBytes) { for (const k of octNodeCache.keys()) { if (k === key) continue; const e = octNodeCache.get(k); octNodeBytes -= (e.pos.byteLength + (e.col ? e.col.byteLength : 0)); octNodeCache.delete(k); if (octNodeBytes <= octNodeCacheMaxBytes) break; } }
+          if (!(r && r.ok)) {
+            throw new Error('octree node read failed: ' + ((r && (r.error || r.message)) || 'unknown error'));
+          }
+          if (!window.OctreeStore) throw new Error('OctreeStore is unavailable');
+          const np = window.OctreeStore.deserializeNodePoints(
+            r.bytes, r.count, r.hasColor, index
+          );
+          if (!np || !np.pos || !np.pos.length) throw new Error('empty octree node data');
+          const b = np.pos.byteLength + (np.col ? np.col.byteLength : 0) +
+            (np.intensity ? np.intensity.byteLength : 0) +
+            (np.classification ? np.classification.byteLength : 0);
+          octNodeCache.set(key, np); octNodeBytes += b;
+          if (octNodeBytes > octNodeCacheMaxBytes) {
+            for (const k of octNodeCache.keys()) {
+              if (k === key) continue;
+              const e = octNodeCache.get(k);
+              octNodeBytes -= e.pos.byteLength + (e.col ? e.col.byteLength : 0) +
+                (e.intensity ? e.intensity.byteLength : 0) +
+                (e.classification ? e.classification.byteLength : 0);
+              octNodeCache.delete(k);
+              if (octNodeBytes <= octNodeCacheMaxBytes) break;
+            }
           }
           return np;
         });
       };
       const okset = viewer.setOctreeStream({ index, fetchNode });
       if (okset) {
+        if (typeof window.__bimRefreshQuality === 'function') window.__bimRefreshQuality();
         activeOctreeDir = dir;
         sb.classList.toggle('on', !!(viewer.octreeActive && viewer.octreeActive()));
         if (wb) { wb.classList.remove('on'); if (viewer.setWalk) viewer.setWalk(false); }

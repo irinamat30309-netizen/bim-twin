@@ -105,7 +105,7 @@
             <div class="tglabel">Облако точек</div>
             <div class="tgrow">
               <button class="btn primary" id="btnOpenCloud" title="Открыть облако точек: сохранённое для помещения или выбрать файл LAS/LAZ/E57/PLY">📂 Открыть облако</button>
-              <button class="btn" id="vtStream" title="Дисковый octree/LOD: поддерживаемые uncompressed LAS point formats 0–10, scalar-property ASCII/binary LE/BE PLY и ASCII/interleaved-binary/LZF binary_compressed PCD индексируются потоково. Для PCD LZF временно создаётся полный planar store на диске — учитывайте дополнительное место. PLY mesh, compressed LAS/LAZ и остальные форматы используют обычный parse-путь. В узлах LOD хранятся XYZ/RGB8; intensity/classification пока не переносятся. Индекс — до 40 млн точек; требуются место на диске и запас RAM">Поток LOD</button>
+              <button class="btn" id="vtStream" title="Дисковый octree/LOD: поддерживаемые uncompressed LAS point formats 0–10, scalar-property ASCII/binary LE/BE PLY и ASCII/interleaved-binary/LZF binary_compressed PCD индексируются потоково. Для PCD LZF временно создаётся полный planar store на диске — учитывайте дополнительное место. PLY mesh, compressed LAS/LAZ и остальные форматы используют обычный parse-путь. Узлы хранят XYZ, RGB8 и при наличии исходника intensity/classification; переключатель цвета показывает RGB, высоту, intensity и класс. Полные операции, требующие весь массив, в streaming LOD ограничены; произвольные extra dimensions не сохраняются. Индекс — до 40 млн точек; требуются место на диске и запас RAM">Поток LOD</button>
             </div>
           </div>
           <div class="tgroup" data-i18n-title="grp.edit" title="Правка и настройки">
@@ -192,7 +192,7 @@
         </div>
         <div id="qualityBar" class="measure" style="display:none;gap:10px;align-items:center;flex-wrap:wrap">
           <span style="font-size:12px;font-weight:800;opacity:.85;margin-right:2px">🎨 Вид облака:</span>
-          <button id="qColor" class="btn-sm" title="RGB (как снимал сканер) ↔ по высоте">Цвет: RGB</button>
+          <button id="qColor" class="btn-sm" title="Нажмите для переключения доступных режимов: RGB, высота, интенсивность и классификация">Цвет: RGB</button>
           <label style="display:flex;gap:4px;align-items:center">Ярк.<input id="qBright" type="range" min="0.4" max="2.5" step="0.05" value="1.3" style="width:90px"></label>
           <label style="display:flex;gap:4px;align-items:center">Точка<input id="qSize" type="range" min="0.5" max="3" step="0.1" value="1" style="width:90px"></label>
           <label style="display:flex;gap:4px;align-items:center">Плотн.<input id="qDensity" type="range" min="1" max="300" step="1" value="3" style="width:110px" title="млн точек — перечитывает облако"></label>

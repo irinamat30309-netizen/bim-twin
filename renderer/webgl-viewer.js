@@ -126,22 +126,31 @@
   }
 
   const VS = `#version 300 es
-  in vec3 aPos; in vec3 aNormal; in vec3 aColor; uniform mat4 uMVP;
+  in vec3 aPos; in vec3 aNormal; in vec3 aColor;
+  in float aIntensity; in float aClassification; uniform mat4 uMVP;
   uniform float uPointSize; uniform float uAttenuate; uniform float uPtScale; uniform float uPtMin; uniform float uPtMax;
-  out vec3 vN; out vec3 vW; out vec3 vC;
-  void main(){ vW=aPos; vN=aNormal; vC=aColor; gl_Position=uMVP*vec4(aPos,1.0);
+  out vec3 vN; out vec3 vW; out vec3 vC; out float vIntensity; out float vClassification;
+  void main(){ vW=aPos; vN=aNormal; vC=aColor; vIntensity=aIntensity; vClassification=aClassification; gl_Position=uMVP*vec4(aPos,1.0);
     float ps = uPointSize;
     if(uAttenuate>0.5){ ps = clamp(uPtScale / max(gl_Position.w, 0.0001), uPtMin, uPtMax); }
     gl_PointSize = ps; }`;
   const FS = `#version 300 es
-  precision highp float; in vec3 vN; in vec3 vW; in vec3 vC; out vec4 frag;
+  precision highp float; in vec3 vN; in vec3 vW; in vec3 vC;
+  in float vIntensity; in float vClassification; out vec4 frag;
   uniform vec3 uColor; uniform float uUnlit; uniform vec3 uLightDir; uniform float uAmbient;
   uniform float uClipOn; uniform float uClipDist; uniform vec3 uClipMin; uniform vec3 uClipMax; uniform float uUseVColor; uniform float uRound; uniform float uFrame;
-  uniform float uElevMode; uniform float uElevMin; uniform float uElevMax; uniform float uBright;
+  uniform float uElevMode; uniform float uAttrMode; uniform float uElevMin; uniform float uElevMax; uniform float uBright;
   uniform float uCloudPass; uniform float uCloudOpacity; uniform float uPalette;
   uniform float uGrade; uniform float uExposure; uniform float uContrast; uniform float uSaturation; uniform float uGamma; uniform float uTone;
   vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }
   vec3 ramp(float t){ t=clamp(t,0.0,1.0); return clamp(vec3(1.5-abs(4.0*t-3.0),1.5-abs(4.0*t-2.0),1.5-abs(4.0*t-1.0)),0.0,1.0); }
+  vec3 classColor(float value){
+    float code=floor(value+0.5);
+    if(code<0.5) return vec3(0.58);
+    float hue=fract((code+1.0)*0.61803398875);
+    vec3 p=abs(fract(vec3(hue)+vec3(0.0,2.0/3.0,1.0/3.0))*6.0-3.0);
+    return mix(vec3(1.0),clamp(p-1.0,0.0,1.0),0.78)*0.95;
+  }
   void main(){
     if(uClipOn>0.5 && (vW.x<uClipMin.x||vW.x>uClipMax.x||vW.y<uClipMin.y||vW.y>uClipMax.y||vW.z<uClipMin.z||vW.z>uClipMax.z)) discard;
     // Screen-door opacity: order-independent, no sorting/copying of huge point buffers.
@@ -149,13 +158,17 @@
     float splat=1.0;
     if(uRound>0.5){ vec2 pc=gl_PointCoord*2.0-1.0; float r2=dot(pc,pc); if(r2>1.0) discard; splat=0.82+0.18*sqrt(max(0.0,1.0-r2)); }
     vec3 c;
-    if(uCloudPass>0.5 && uElevMode>0.5){
+    if(uCloudPass>0.5 && uAttrMode>2.5){
+      c = classColor(vClassification);
+    } else if(uCloudPass>0.5 && uAttrMode>1.5){
+      c = vec3(clamp(vIntensity,0.0,1.0));
+    } else if(uCloudPass>0.5 && uElevMode>0.5){
       float t = (uElevMax==uElevMin) ? 0.5 : clamp((vW.y-uElevMin)/(uElevMax-uElevMin),0.0,1.0);
       c = uPalette>1.5 ? vec3(1.0,1.0-t,0.0) : uPalette>0.5 ? vec3(t) : ramp(t);
     } else if(uUseVColor>0.5) c=vC; else c=uColor;
     if(uUnlit<0.5){ vec3 n=normalize(vN); float d=max(dot(n,normalize(uLightDir)),0.0); c=c*(uAmbient+(1.0-uAmbient)*d); }
     c *= uBright;
-    if(uGrade>0.5 && uUseVColor>0.5 && uElevMode<0.5){
+    if(uGrade>0.5 && uUseVColor>0.5 && uElevMode<0.5 && uAttrMode<1.5){
       c *= uExposure;
       c = mix(c, aces(c), uTone);
       c = clamp((c-0.5)*uContrast+0.5, 0.0, 1.0);
@@ -225,7 +238,8 @@
       this._fov = 50 * Math.PI / 180; this._run = false;
       this.showAI = true; this.selectedId = null;
       this.base = []; this.overlay = []; this.bbox = { mn: [-1, 0, -1], mx: [1, 3, 1] };
-      this._octActive = false; this._octIndex = null; this._octFetch = null; this._octCache = null; this._octBudget = Infinity;   // пункт 4: потоковый octree с диска
+      this._octActive = false; this._octIndex = null; this._octFetch = null; this._octCache = null; this._octBudget = Infinity;
+      this._octGeneration = 0; this._octFailures = null; this._octNow = null; // cancel stale node reads; bounded retry state
       this._interBudget = 128000000; this._perfProfile = 'balanced'; this._densityBoost = 1.8; // бюджет точек при движении камеры (порог плотности): 6 млн — без подвисаний на больших LAS
       this._selDepthMode = 0; this._selThrough = false; // режим глубины выделения: 0 тонко / 1 шире / 2 насквозь
       this._selGrowPx = null; // расширение точек-окклюдеров в pick-проходе (px); null = авто по режиму глубины
@@ -238,7 +252,8 @@
       this.theme = 'dark'; this._tween = null;
       // Качество облака (Патч 30): цветовой режим, яркость, множитель размера точки, EDL
       this._cloudDisplay = { pointSize: 1, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };
-      this._ptElev = false; this._ptBright = 1; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
+      this._ptElev = false; this._cloudColorMode = 'rgb';
+      this._ptBright = 1; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
       this._denseFill = false; this._frameBox = false; // плотная заливка при приближении; чёрные рамки точек
       // Фотореалистичная цветокоррекция (тонмаппинг) — включена по умолчанию: убирает выбитый белый, даёт контраст/цвет «как фото».
       this._grade = { on: false, exposure: 1.06, contrast: 1.14, saturation: 1.22, gamma: 1.02, tone: 0.85 };
@@ -272,8 +287,10 @@
       if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('link: ' + gl.getProgramInfoLog(p));
       this.prog = p; gl.useProgram(p);
       this.aPos = gl.getAttribLocation(p, 'aPos'); this.aNormal = gl.getAttribLocation(p, 'aNormal'); this.aColor = gl.getAttribLocation(p, 'aColor');
+      this.aIntensity = gl.getAttribLocation(p, 'aIntensity');
+      this.aClassification = gl.getAttribLocation(p, 'aClassification');
       this.u = {};
-      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette']) this.u[k] = gl.getUniformLocation(p, k);
+      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette']) this.u[k] = gl.getUniformLocation(p, k);
       gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
       const _tc = this._themeColors(); gl.clearColor(_tc.bg[0], _tc.bg[1], _tc.bg[2], 1);
     }
@@ -295,6 +312,20 @@
       gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
       if (o.nor) { const nb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nb); gl.bufferData(gl.ARRAY_BUFFER, o.nor, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aNormal); gl.vertexAttribPointer(this.aNormal, 3, gl.FLOAT, false, 0, 0); o._nb = nb; }
       if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, o.col, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, gl.FLOAT, false, 0, 0); o._cb = cb; }
+      if (o.intensity && this.aIntensity >= 0) {
+        const ib = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ib);
+        gl.bufferData(gl.ARRAY_BUFFER, o.intensity, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(this.aIntensity);
+        gl.vertexAttribPointer(this.aIntensity, 1, gl.FLOAT, false, 0, 0);
+        o._ib = ib;
+      }
+      if (o.classification && this.aClassification >= 0) {
+        const kb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, kb);
+        gl.bufferData(gl.ARRAY_BUFFER, o.classification, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(this.aClassification);
+        gl.vertexAttribPointer(this.aClassification, 1, gl.UNSIGNED_BYTE, false, 0, 0);
+        o._kb = kb;
+      }
       gl.bindVertexArray(null); o._vao = vao; o._pb = pb; o.count = o.pos.length / 3;
       if (!o.line) {
         let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
@@ -304,7 +335,7 @@
       }
       return o;
     }
-    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); } }
+    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._kb) gl.deleteBuffer(o._kb); } }
     _makeLodObj(o) {
       const gl = this.gl; const lb = o._lodBuild;
       const mkBuf = (pos, col) => {
@@ -557,7 +588,7 @@
       (meta.attributeWarnings || []).forEach(w => { if (w && !this._attributeWarnings.includes(w)) this._attributeWarnings.push(String(w)); });
       if (!preserve) {
         this._cloudDisplay = { pointSize:null, opacity:1, min:0, max:1, palette:0, hideOutside:false };
-        this.cloudVisible = true; this._ptElev = false; this._ptSizeMul = 1.45;
+        this.cloudVisible = true; this._ptElev = false; this._cloudColorMode = 'rgb'; this._ptSizeMul = 1.45;
         this._denseFill = false; this._attenuate = true; this._roundPoints = false;
       }
       let n = Math.min(Math.floor(cloud.count || cloud.pos.length / 3), Math.floor(cloud.pos.length / 3));
@@ -641,6 +672,10 @@
       }
       if (!preserve) { this._cloudDisplay.min = this.bbox.mn[1]; this._cloudDisplay.max = this.bbox.mx[1]; }
       this._cloudRecord={ sourceName:named || (preserve && previous.sourceName) || cloud.name || meta.name || 'Облако без имени', sourceCount:preserve?previous.sourceCount:(Number.isSafeInteger(meta.total)&&meta.total>=0?meta.total:null), loadedCount:n, format:meta.format || (preserve && previous.format) || '', hasRGB:(preserve && meta.colored==null)?previous.hasRGB:(meta.colored !== false && !!cloud.col), hasIntensity:!!this._intensityValues, hasClassification:!!this._classificationLabels, revision:((previous&&previous.revision)||0)+1 };
+      if (!this.getAvailableColorModes().includes(this.getColorMode())) {
+        this._cloudColorMode = 'rgb';
+        this._ptElev = false;
+      }
       this.modelDims = this._computeCloudDims(meta, n);
       this._notifyCloudChanged();
       if (opts && opts.preserveView && this.bbox && this.target) { this.render(); } else { this._frame(); this.render(); }
@@ -675,6 +710,8 @@
       this._srcUnits = null; this._srcMeta = {};
       this._cloudRecord = null;
       this._cloudDisplay = { pointSize: null, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };
+      this._cloudColorMode = 'rgb';
+      this._ptElev = false;
       this._sel = new Set();
       if (this._selObj) { this._delObjs([this._selObj]); this._selObj = null; }
       this._setOverlay([]);
@@ -692,6 +729,25 @@
       const data = labels instanceof Uint8Array ? labels : new Uint8Array(labels);
       this._classificationLabels = new Uint8Array(data);
       bo.classification = this._classificationLabels;
+      // A classification can be produced after the cloud VAO has been
+      // created. Upload the new label buffer and attach it to that VAO so the
+      // classification color mode does not silently render every point as
+      // the default generic-attribute value (class 0).
+      const gl = this.gl;
+      if (gl && bo._vao && this.aClassification >= 0) {
+        const kb = gl.createBuffer();
+        if (kb) {
+          gl.bindVertexArray(bo._vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, kb);
+          gl.bufferData(gl.ARRAY_BUFFER, this._classificationLabels, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(this.aClassification);
+          gl.vertexAttribPointer(this.aClassification, 1, gl.UNSIGNED_BYTE, false, 0, 0);
+          gl.bindVertexArray(null);
+          const previousBuffer = bo._kb;
+          bo._kb = kb;
+          if (previousBuffer) gl.deleteBuffer(previousBuffer);
+        }
+      }
       if (selectClass != null) {
         const selected = new Set();
         for (let i = 0; i < data.length; i++) if (data[i] === selectClass) selected.add(i);
@@ -699,7 +755,9 @@
         if (this._buildSelHighlight) this._buildSelHighlight();
         if (typeof this.onEditSelect === 'function') this.onEditSelect(selected.size);
       }
+      if (this._cloudRecord) this._cloudRecord.hasClassification = true;
       this.render();
+      this._notifyCloudChanged();
       return true;
     }
     getClassificationLabels() {
@@ -1532,7 +1590,16 @@
     }
     getCloudInfo() {
       const r=this._cloudRecord;if(!r || !(this.base.some(o=>o.points)||this._octActive))return null;
-      return Object.assign({},r,{loadedCount:this.base.filter(o=>o.points).reduce((n,o)=>n+o.count,0),bounds:{mn:this.bbox.mn.slice(),mx:this.bbox.mx.slice()},visible:this.cloudVisible!==false,streaming:!!this._octActive,display:Object.assign({},this._cloudDisplay,{mode:this._ptElev?'elev':'rgb'})});
+      const streamed = !!this._octActive && this._octIndex;
+      return Object.assign({},r,{
+        hasIntensity: streamed ? this._octIndex.hasIntensity === true : !!r.hasIntensity,
+        hasClassification: streamed ? this._octIndex.hasClassification === true : !!r.hasClassification,
+        loadedCount:this.base.filter(o=>o.points).reduce((n,o)=>n+o.count,0),
+        bounds:{mn:this.bbox.mn.slice(),mx:this.bbox.mx.slice()},
+        visible:this.cloudVisible!==false,streaming:!!this._octActive,
+        display:Object.assign({},this._cloudDisplay,{mode:this.getColorMode()}),
+        availableColorModes:this.getAvailableColorModes()
+      });
     }
     setCloudPointSize(value) {value=Number(value);if(!Number.isFinite(value))throw new RangeError('Некорректный размер точки');this._cloudDisplay.pointSize=Math.max(1,Math.min(10,value));this._ptSizeMul=1;this._attenuate=false;this._denseFill=false;this.render();this._notifyCloudChanged();return this._cloudDisplay.pointSize;}
     setCloudOpacity(value) {value=Number(value);if(!Number.isFinite(value))throw new RangeError('Некорректная непрозрачность');this._cloudDisplay.opacity=Math.max(0,Math.min(1,value));if(this._cloudDisplay.opacity===0)this.clearSelection();this.render();this._notifyCloudChanged();return this._cloudDisplay.opacity;}
@@ -1541,7 +1608,45 @@
     setCloudHideOutside(on) {this._cloudDisplay.hideOutside=!!on;this.clearSelection();this.render();this._notifyCloudChanged();}
     _heightFilter() {return !!(this._cloudRecord&&this._ptElev&&this._cloudDisplay&&this._cloudDisplay.hideOutside);}
     _clipActive() {return !!(this.section&&this.section.on)||this._heightFilter();}
-    setColorMode(mode) { this._ptElev = (mode === 'elev' || mode === true); this.render(); this._notifyCloudChanged(); return this._ptElev ? 'elev' : 'rgb'; }
+    getAvailableColorModes() {
+      let hasIntensity = false, hasClassification = false;
+      if (this._octActive && this._octIndex) {
+        hasIntensity = this._octIndex.hasIntensity === true;
+        hasClassification = this._octIndex.hasClassification === true;
+      } else {
+        const cloud = this._cloudRecord || {};
+        hasIntensity = !!(this._intensityValues || cloud.hasIntensity);
+        hasClassification = !!(this._classificationLabels || cloud.hasClassification);
+        // The legacy in-memory coarse LOD cells only retain XYZ/RGB.
+        if (this.base && this.base.some(o => o && o.points && o._lod)) {
+          hasIntensity = false;
+          hasClassification = false;
+        }
+      }
+      const modes = ['rgb', 'elev'];
+      if (hasIntensity) modes.push('intensity');
+      if (hasClassification) modes.push('classification');
+      return modes;
+    }
+    getColorMode() { return this._cloudColorMode || (this._ptElev ? 'elev' : 'rgb'); }
+    setColorMode(mode) {
+      if (mode === true) mode = 'elev';
+      else if (mode === false || mode == null) mode = 'rgb';
+      if (!['rgb', 'elev', 'intensity', 'classification'].includes(mode)) {
+        throw new RangeError('Неизвестный режим окраски облака');
+      }
+      if (!this.getAvailableColorModes().includes(mode)) {
+        throw new RangeError(mode === 'intensity'
+          ? 'В текущем облаке нет intensity в выбранном режиме'
+          : mode === 'classification'
+            ? 'В текущем облаке нет classification в выбранном режиме'
+            : 'Режим окраски недоступен');
+      }
+      this._cloudColorMode = mode;
+      this._ptElev = mode === 'elev';
+      this.render(); this._notifyCloudChanged();
+      return mode;
+    }
     setBrightness(v) { v = +v; if (!isFinite(v)) v = 1; this._ptBright = Math.max(0.2, Math.min(3, v)); this.render(); return this._ptBright; }
     // Фотореалистичная цветокоррекция облака (тонмаппинг). partial: true/false для вкл/выкл или объект с полями.
     setGrade(partial) {
@@ -1675,7 +1780,7 @@
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       const vp = this._vp(); this._lastVP = vp;
       gl.useProgram(this.prog);
-      gl.uniform1f(this.u.uBright, this._ptBright || 1); gl.uniform1f(this.u.uElevMode, 0);
+      gl.uniform1f(this.u.uBright, this._ptBright || 1); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0);
       { const G = this._grade || {}; gl.uniform1f(this.u.uGrade, G.on ? 1 : 0); gl.uniform1f(this.u.uExposure, G.exposure != null ? G.exposure : 1); gl.uniform1f(this.u.uContrast, G.contrast != null ? G.contrast : 1); gl.uniform1f(this.u.uSaturation, G.saturation != null ? G.saturation : 1); gl.uniform1f(this.u.uGamma, G.gamma != null ? G.gamma : 1); gl.uniform1f(this.u.uTone, G.tone != null ? G.tone : 0); }
       gl.uniform1f(this.u.uElevMin, this._cloudDisplay.min); gl.uniform1f(this.u.uElevMax, this._cloudDisplay.max); gl.uniform1f(this.u.uPalette,this._cloudDisplay.palette); gl.uniform1f(this.u.uCloudOpacity,this._cloudDisplay.opacity); gl.uniform1f(this.u.uCloudPass,0);
       this._edlOnThisFrame = _edlOn;
@@ -1701,8 +1806,13 @@
         // fragment-discard; круглые сплэты только для маркеров/выбора и фото-режима.
         const roundPt = (o._isStation || o._isSel) ? 1 : ((this._roundPoints && !this._frameBox) ? 1 : 0);
         gl.uniform1f(this.u.uRound, roundPt); gl.uniform1f(this.u.uAmbient, 1);
-        // цветовой режим RGB/высота — только для самого облака (маркеры станций/выбор не трогаем)
-        gl.uniform1f(this.u.uElevMode, (this._ptElev && !o._isStation && !o._isSel) ? 1 : 0);
+        // Атрибутивные цветовые режимы — только для основного облака.
+        const isMainCloud = o === (this.base && this.base[0]) && !o._isStation && !o._isSel;
+        const colorMode = isMainCloud ? this.getColorMode() : 'rgb';
+        const attrMode = colorMode === 'intensity' ? 2 :
+          colorMode === 'classification' ? 3 : 0;
+        gl.uniform1f(this.u.uAttrMode, attrMode);
+        gl.uniform1f(this.u.uElevMode, colorMode === 'elev' ? 1 : 0);
         const psm = (o._isStation || o._isSel) ? 1 : (this._ptSizeMul || 1);
         // По умолчанию — постоянный размер точки на экране (как в CloudCompare): чёткая ровная
         // Картинка. Опционально размер растёт при приближении (для прогулки поверхность плотнее).
@@ -1727,7 +1837,7 @@
           if (isCloud && this._interacting && o._shuffled) { const b = this._interBudget || 4000000; if (o.count > b) dc = b; }
           gl.drawArrays(gl.POINTS, 0, dc);
         }
-        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uElevMode, 0); gl.bindVertexArray(null); return;
+        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); gl.bindVertexArray(null); return;
       }
       gl.uniform1f(this.u.uCloudPass,0);
       let col = o.color; let amb = 0.4;
@@ -2607,7 +2717,17 @@
       const cloudRecord=this._cloudRecord;this._setBase([]);this._cloudRecord=cloudRecord;
       this._octIndex = opts.index; this._octFetch = opts.fetchNode;
       this._octCache = new Map(); this._octFrame = 0; this._octActive = true;
+      this._octFailures = new Map();
       this._octHasColor = !!opts.index.hasColor;
+      this._octHasIntensity = opts.index.hasIntensity === true;
+      this._octHasClassification = opts.index.hasClassification === true;
+      this._octFallbackColorMode = null;
+      const requestedColorMode = this.getColorMode();
+      if (!this.getAvailableColorModes().includes(requestedColorMode)) {
+        this._octFallbackColorMode = requestedColorMode;
+        this._cloudColorMode = 'rgb';
+        this._ptElev = false;
+      }
       const b = opts.index.bbox; if (b && b.mn && b.mx) this.bbox = { mn: b.mn.slice(), mx: b.mx.slice() };
       const c = this.bbox; const bw = c.mx[0] - c.mn[0], bh = c.mx[1] - c.mn[1], bd = c.mx[2] - c.mn[2];
       const area = 2 * (bw * bd + bw * bh + bd * bh) || 1; const diag = Math.sqrt(bw * bw + bh * bh + bd * bd) || 8;
@@ -2626,23 +2746,78 @@
       this._frame(); this.render();
       return true;
     }
-    clearOctreeStream() {
+    clearOctreeStream(restoreColorMode) {
       const gl = this.gl;
-      if (this._octCache && gl) { this._octCache.forEach(e => { if (e.buf) { gl.deleteVertexArray(e.buf.vao); gl.deleteBuffer(e.buf.pb); if (e.buf.cb) gl.deleteBuffer(e.buf.cb); } }); }
+      if (this._octCache && gl) { this._octCache.forEach(e => { if (e.buf) { gl.deleteVertexArray(e.buf.vao); gl.deleteBuffer(e.buf.pb); if (e.buf.cb) gl.deleteBuffer(e.buf.cb); if (e.buf.ib) gl.deleteBuffer(e.buf.ib); if (e.buf.kb) gl.deleteBuffer(e.buf.kb); } }); }
+      const fallback = this._octFallbackColorMode;
+      this._octGeneration = (this._octGeneration || 0) + 1;
       this._octCache = null; this._octIndex = null; this._octFetch = null; this._octActive = false;
+      this._octFailures = null;
+      this._octHasColor = false; this._octHasIntensity = false; this._octHasClassification = false;
+      this._octFallbackColorMode = null;
+      if (restoreColorMode !== false && fallback && this.getAvailableColorModes().includes(fallback)) {
+        this._cloudColorMode = fallback;
+        this._ptElev = fallback === 'elev';
+      }
     }
     octreeActive() { return !!this._octActive; }
-    _mkPtBuf(pos, col) {
+    _mkPtBuf(pos, col, intensity, classification) {
+      const count = pos && pos.length / 3;
+      if (!(pos instanceof Float32Array) || !Number.isSafeInteger(count) || count < 1 ||
+          (col && (!(col instanceof Float32Array) || col.length !== count * 3)) ||
+          (intensity && (!(intensity instanceof Float32Array) || intensity.length !== count)) ||
+          (classification && (!(classification instanceof Uint8Array) || classification.length !== count))) {
+        throw new RangeError('octree node attribute arrays do not match the point count');
+      }
       const gl = this.gl; const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
       const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
       gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
       let cb = null;
       if (col && this.aColor >= 0) { cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, col, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, gl.FLOAT, false, 0, 0); }
-      gl.bindVertexArray(null); return { vao, pb, cb, count: pos.length / 3 };
+      let ib = null, kb = null;
+      if (intensity && this.aIntensity >= 0) {
+        ib = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ib);
+        gl.bufferData(gl.ARRAY_BUFFER, intensity, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(this.aIntensity);
+        gl.vertexAttribPointer(this.aIntensity, 1, gl.FLOAT, false, 0, 0);
+      }
+      if (classification && this.aClassification >= 0) {
+        kb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, kb);
+        gl.bufferData(gl.ARRAY_BUFFER, classification, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(this.aClassification);
+        gl.vertexAttribPointer(this.aClassification, 1, gl.UNSIGNED_BYTE, false, 0, 0);
+      }
+      gl.bindVertexArray(null);
+      return {
+        vao, pb, cb, ib, kb, count,
+        bytes: pos.byteLength + (col ? col.byteLength : 0) +
+          (intensity ? intensity.byteLength : 0) +
+          (classification ? classification.byteLength : 0)
+      };
+    }
+    _recordOctreeNodeFailure(key, error) {
+      if (!this._octFailures) this._octFailures = new Map();
+      const previous = this._octFailures.get(key);
+      const attempt = (previous && previous.attempt || 0) + 1;
+      const retryInMs = Math.min(30000, 250 * Math.pow(2, Math.min(attempt - 1, 7)));
+      const now = typeof this._octNow === 'function' ? this._octNow() : Date.now();
+      const message = String(error && error.message || error || 'node read failed').slice(0, 256);
+      this._octFailures.delete(key);
+      this._octFailures.set(key, { attempt, retryAt: now + retryInMs });
+      while (this._octFailures.size > 512) {
+        this._octFailures.delete(this._octFailures.keys().next().value);
+      }
+      const detail = { key, attempt, retryInMs, error: message };
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' &&
+          typeof CustomEvent === 'function') {
+        try { window.dispatchEvent(new CustomEvent('bim-octree-node-error', { detail })); } catch (_) {}
+      }
+      return detail;
     }
     _drawOctree() {
       const gl = this.gl; if (!gl || !this._octActive || typeof window === 'undefined' || !window.OctreeStore || !this._octCache) return;
       const M = this._lastVP || this._vp(); const eye = this._eye(); const self = this;
+      const streamGeneration = this._octGeneration;
       this._octFrame++;
       const sel = window.OctreeStore.selectNodes(this._octIndex, {
         budget: this._octBudget || Infinity,
@@ -2658,6 +2833,10 @@
       gl.uniform1f(this.u.uPointSize, this._cloudDisplay.pointSize || 2.2);
       if(this._cloudDisplay.pointSize)gl.uniform1f(this.u.uAttenuate,0);
       gl.uniform1f(this.u.uCloudPass,1);gl.uniform1f(this.u.uElevMode,this._ptElev?1:0);
+      const streamMode = this.getColorMode();
+      const streamAttrMode = streamMode === 'intensity' ? 2 :
+        streamMode === 'classification' ? 3 : 0;
+      gl.uniform1f(this.u.uAttrMode, streamAttrMode);
       const cb=this._clipBounds();gl.uniform1f(this.u.uClipOn,this._clipActive()?1:0);if(cb){gl.uniform3fv(this.u.uClipMin,cb.mn);gl.uniform3fv(this.u.uClipMax,cb.mx);}
       if (!this._octHasColor) gl.uniform3fv(this.u.uColor, new Float32Array([0.82, 0.86, 0.93]));
       const selSet = new Set(sel.keys);
@@ -2665,14 +2844,37 @@
         let e = this._octCache.get(key);
         if (e && e.buf) { e.lastUsed = this._octFrame; gl.bindVertexArray(e.buf.vao); gl.drawArrays(gl.POINTS, 0, e.buf.count); continue; }
         if (e && e.loading) continue;
+        const failure = this._octFailures && this._octFailures.get(key);
+        const now = typeof this._octNow === 'function' ? this._octNow() : Date.now();
+        if (failure && failure.retryAt > now) continue;
         this._octCache.set(key, { buf: null, loading: true, lastUsed: this._octFrame });
         (function (k) {
-          Promise.resolve(self._octFetch(k)).then(function (res) {
+          Promise.resolve().then(function () { return self._octFetch(k); }).then(function (res) {
+            if (self._octGeneration !== streamGeneration || !self._octActive) return;
             const ent = self._octCache && self._octCache.get(k);
-            if (!ent || !self._octActive) return;
-            if (res && res.pos && res.pos.length) { try { ent.buf = self._mkPtBuf(res.pos, res.col || null); } catch (_) {} }
-            ent.loading = false; ent.lastUsed = self._octFrame; self.render();
-          }).catch(function () { const ent = self._octCache && self._octCache.get(k); if (ent) ent.loading = false; });
+            if (!ent) return;
+            try {
+              if (!res || !res.pos || !res.pos.length) throw new Error('empty octree node response');
+              ent.buf = self._mkPtBuf(res.pos, res.col || null,
+                res.intensity || null, res.classification || null);
+              if (self._octFailures) self._octFailures.delete(k);
+            } catch (error) {
+              if (self._octCache) self._octCache.delete(k);
+              self._recordOctreeNodeFailure(k, error);
+            } finally {
+              const current = self._octCache && self._octCache.get(k);
+              if (current === ent) {
+                ent.loading = false;
+                ent.lastUsed = self._octFrame;
+              }
+            }
+            self.render();
+          }).catch(function (error) {
+            if (self._octGeneration !== streamGeneration || !self._octActive) return;
+            if (self._octCache) self._octCache.delete(k);
+            self._recordOctreeNodeFailure(k, error);
+            self.render();
+          });
         })(key);
       }
       gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.bindVertexArray(null);
@@ -2681,7 +2883,8 @@
     _trimOctreeGpuCache(selSet, visiblePoints) {
       const gl = this.gl, cache = this._octCache;
       if (!gl || !cache) return;
-      const bytesPerPoint = this._octHasColor ? 24 : 12; // Float32 XYZ [+ Float32 RGB]
+      const bytesPerPoint = 12 + (this._octHasColor ? 12 : 0) +
+        (this._octHasIntensity ? 4 : 0) + (this._octHasClassification ? 1 : 0);
       const visibleBytes = Math.max(0, Number(visiblePoints) || 0) * bytesPerPoint;
       // Keep the current view plus a bounded 128 MiB working set for nearby
       // camera positions, while never retaining an unbounded GPU copy of the
@@ -2691,7 +2894,9 @@
       const evict = [];
       cache.forEach((entry, key) => {
         if (!entry || !entry.buf) return;
-        const bytes = (Number(entry.buf.count) || 0) * (entry.buf.cb ? 24 : 12);
+        const bytes = Number(entry.buf.bytes) ||
+          (Number(entry.buf.count) || 0) *
+            (12 + (entry.buf.cb ? 12 : 0) + (entry.buf.ib ? 4 : 0) + (entry.buf.kb ? 1 : 0));
         cachedBytes += bytes;
         if (!selSet.has(key)) evict.push({ key, bytes, lastUsed: Number(entry.lastUsed) || 0 });
       });
@@ -2704,6 +2909,8 @@
           gl.deleteVertexArray(entry.buf.vao);
           gl.deleteBuffer(entry.buf.pb);
           if (entry.buf.cb) gl.deleteBuffer(entry.buf.cb);
+          if (entry.buf.ib) gl.deleteBuffer(entry.buf.ib);
+          if (entry.buf.kb) gl.deleteBuffer(entry.buf.kb);
           cache.delete(item.key);
           cachedBytes -= item.bytes;
         }
