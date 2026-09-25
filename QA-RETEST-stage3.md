@@ -2,7 +2,7 @@
 
 ## Объём и среда
 
-Проверялись point-cloud I/O, source coordinates/CRS metadata, атрибуты точек, предохранители PCD и поведение renderer на пользовательском большом PLY. UI работал в fake-Electron IPC harness с Chromium/SwiftShader; в этом запуске project store использовал JSON fallback из-за отсутствия `better-sqlite3`. Настоящий Windows runtime недоступен локально: host — Amazon Linux 2023 без Wine/PowerShell/cmd.exe. Workflow `.github/workflows/ci.yml` настроен на Linux и Windows; удалённый Windows job для текущей PR-ветки ожидает запуска. Это не Windows/package acceptance и не тест на целевой CAD/BIM/GIS.
+Проверялись point-cloud I/O, source coordinates/CRS metadata, атрибуты точек, предохранители PCD и поведение renderer на пользовательском большом PLY. UI работал в fake-Electron IPC harness с Chromium/SwiftShader; в этом запуске project store использовал JSON fallback из-за отсутствия `better-sqlite3`. Настоящий Windows runtime недоступен локально: host — Amazon Linux 2023 без Wine/PowerShell/cmd.exe. Первый hosted Windows job текущего PR обнаружил `EPERM` при `fsync` временной резервной копии, открытой только для чтения. Ветка исправлена: backup temp handles открываются `r+`, добавлена отдельная regression; повторный hosted run ожидает результата. Это не Windows/package acceptance и не тест на целевой CAD/BIM/GIS.
 
 Для LAS/E57 независимых чтений временно вне проекта использовались `laspy 2.7.0` и `pye57 0.4.19`. LAZ suite запускался с временно подключённым optional `@loaders.gl/las 4.5.2`; зависимость и пользовательские исходники не включены в приложение или архив ревью.
 
@@ -10,7 +10,7 @@
 
 | Проверка | Результат |
 |---|---|
-| Повторный `node --test` на чистой копии (без локальных fixture-файлов и optional LAZ decoder) | 841 тест: 834 passed, 0 failed, 7 skipped; пропущены только сценарии, которым недоступны нужные fixtures/decoder |
+| Повторный `node --test` на чистой копии (без локальных fixture-файлов и optional LAZ decoder) | 842 теста: 835 passed, 0 failed, 7 skipped; пропущены только сценарии, которым недоступны нужные fixtures/decoder |
 | Stage 3 форматные round-trip + PTX parser/writer (`test/format-roundtrip-stage3.test.js`, `test/ptx-stage3.test.js`) | 23/23 passed: LAS/PLY/E57/PCD/PTS/XYZ/CSV, multi-scan PTX ranges/poses, RGB/intensity, stale metadata и malformed inputs |
 | PTX stream validator (`test/ptx-stream-export-stage4.test.js`) | 7/7 passed: single-/multi-scan grids, произвольные границы чанков, total point-count validation, malformed rows, sentinel, cancellation и IPC commit guards |
 | PTX export commit/round-trip (локальный harness, не включён в репозиторий) | 7 assertions passed для single scan: world XYZ/RGB/intensity, backup и отсутствие временных файлов |
@@ -20,7 +20,7 @@
 | LAZ reader (`test/laz-node.test.js`) | 5/5 passed в отдельном запуске с optional decoder; в текущем clean-checkout прогоне LAZ-часть пропущена, так как decoder не установлен |
 | Fixture-gated OBJ/STL/PLY tests | В чистой копии пропущены, если внешний fixture mount отсутствует; пользовательские модели и бинарные доказательства не включены в ветку |
 | Stage 2 focused regression suite | 30/30 passed; детали в `QA-RETEST-stage2.md` |
-| Синтаксис | 234 JavaScript/MJS/CJS-файла прошли `node --check` |
+| Синтаксис | 235 JavaScript/MJS/CJS-файлов прошли `node --check` |
 | `npm run test:store` | `ALL PHASE D TESTS PASSED`; `ALL PERSISTENCE TESTS PASSED` |
 
 В повторном чистом прогоне внешние пользовательские fixtures и optional LAZ decoder не подключались; соответствующие тесты пропущены. Для полной локальной fixture-проверки файлы должны оставаться вне Git, а optional decoder устанавливаться отдельно.

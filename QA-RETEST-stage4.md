@@ -2,7 +2,7 @@
 
 ## Цель и границы
 
-Проверялись background parsing, disk-octree LOD, отмена/очистка и bounded-working-set ветки для **scalar-property ASCII/binary LE/BE PLY, uncompressed LAS PDRF 0–10 и PCD ASCII/interleaved-binary/LZF binary_compressed**. Среда предыдущих локальных E2E — Linux/Node 24 и headless Chromium/SwiftShader с fake-Electron IPC; внешние пользовательские модели и локальные screenshots/evidence не включены в Git. Windows runtime недоступен на локальном host (Amazon Linux 2023 без Wine/PowerShell/cmd.exe). Workflow `.github/workflows/ci.yml` содержит job `windows-test` на `windows-latest`; удалённый результат для текущей PR-ветки ожидает запуска. Linux/fake-Electron проверки не выдаются за Windows-приёмку; packaged Windows/ASAR и целевой GPU/VRAM также не сертифицированы.
+Проверялись background parsing, disk-octree LOD, отмена/очистка и bounded-working-set ветки для **scalar-property ASCII/binary LE/BE PLY, uncompressed LAS PDRF 0–10 и PCD ASCII/interleaved-binary/LZF binary_compressed**. Среда предыдущих локальных E2E — Linux/Node 24 и headless Chromium/SwiftShader с fake-Electron IPC; внешние пользовательские модели и локальные screenshots/evidence не включены в Git. Windows runtime недоступен на локальном host (Amazon Linux 2023 без Wine/PowerShell/cmd.exe). Первый hosted job `windows-test` на `windows-latest` завершился `EPERM` в regression хранилища: Node/Windows не поддержал `fsync` read-only backup descriptor. Исправление перевело backup temp handles на `r+`, добавлена regression; повторный hosted run ещё не завершён. Linux/fake-Electron проверки не выдаются за Windows-приёмку; packaged Windows/ASAR и целевой GPU/VRAM также не сертифицированы.
 
 ## Что теперь делает out-of-core ветка
 
@@ -18,16 +18,17 @@
 
 | Проверка | Результат |
 |---|---|
-| Повторный `node --test` на чистой копии (без локальных fixture-файлов и optional LAZ decoder) | 841 тест: 834 passed, 0 failed, 7 skipped; пропущены только сценарии, которым недоступны нужные fixtures/decoder |
+| Повторный `node --test` на чистой копии (без локальных fixture-файлов и optional LAZ decoder) | 842 теста: 835 passed, 0 failed, 7 skipped; пропущены только сценарии, которым недоступны нужные fixtures/decoder |
 | `test/octree-out-of-core-ply-stage4.test.js` | 12/12 passed: LE/BE, Y/Z-up, ASCII/CRLF/mixed whitespace/no final newline, RGB/ramp, sampling, preview transform, invalid/truncated rows, coincident points, count/fingerprint checks |
 | `test/octree-out-of-core-las-stage4.test.js` | 4/4 passed: LAS 1.2 fmt 3/RGB16/WKT, LAS 1.4 fmt 7/extended count/modern offsets, no-RGB elevation ramp/sampling, compressed/truncated/stale-file rejection |
 | `test/octree-out-of-core-pcd-stage4.test.js` | 7/7 passed: packed RGB binary, ASCII/Y-up >8 MiB CRLF/no-final-newline, deterministic sampling/non-finite XYZ, >8 MiB LZF chunk streaming, disk-space preflight/cleanup, overlapping back-reference, malformed/truncated/stale rejection and scratch cleanup |
 | `test/cloud-parse-worker-stage4.test.js` | 6/6 passed: worker progress, PCD LZF progress monotonicity, malformed/scratch cleanup, cancellation after disk scratch creation and parent cleanup after worker termination, отказ RAM preflight до allocation |
 | `test/octree-resource-budget-stage4.test.js` | 10/10 passed: in-memory/out-of-core RAM/disk preflight, LZF scratch allowance, sampled preview RAM estimate/thresholds и неизвестная telemetry |
+| `test/atomic-file-windows.test.js` | 1/1 passed: backup rotation сохраняет предыдущую revision, а fsync открывает backup temp с `r+` для Windows |
 | `test/octree-build-stage4.test.js`, `test/octree-store.test.js`, `test/webgl-octree-stream.test.js` | Вошли в полный успешный прогон: build/read, node ranges, LOD selection/budget, cache eviction, degenerate input |
 | `npm run check` | Успешно |
 | `npm run test:store` | `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
-| Синтаксис | 234 JS/MJS/CJS-файла прошли `node --check` |
+| Синтаксис | 235 JS/MJS/CJS-файлов прошли `node --check` |
 | Focused out-of-core/resource/PTX stream + cloud Worker suite (`octree-out-of-core-las`, `octree-out-of-core-ply`, `octree-out-of-core-pcd`, `octree-build-stage4`, `octree-resource-budget-stage4`, `ptx-stream-export-stage4`, `cloud-parse-worker-stage4`) | 51/51 passed |
 | Stage 3 format/PTX regressions | 23/23 форматных+parser/writer tests и 7/7 PTX stream tests прошли; Stage 3 всё ещё частичный, см. `QA-RETEST-stage3.md` |
 
@@ -65,4 +66,4 @@
 - Нужны repeatable cold/warm benches на нескольких размерах и машинах, pressure tests с конкурирующим RAM/disk use, target GPU/VRAM/frame-time, Windows packaged/ASAR, 100 GB scale и внешние CAD/BIM/GIS проверки.
 - Порог индекса в main сейчас 40M точек; это технический cap, не обещание ёмкости для каждого компьютера. Оценки ресурсов и node fallback не заменяют производственный stress test.
 
-**Вывод:** Stage 4 расширяет bounded-working-set ingest и disk octree для ASCII/binary point-cloud PLY с поддерживаемыми scalar properties, uncompressed LAS formats 0–10 и PCD ASCII/interleaved-binary/LZF; LZF preview использует ограниченный disk scratch и point budget. Текущий clean-checkout regression suite прошёл 834/841 tests, 0 failures, 7 fixture/decoder skips; это не эквивалент Windows UI приёмки. Этап остаётся **частичным, не принят и не завершён**: другие форматы/mesh memory-bound, intensity/classification и дополнительные атрибуты не стримятся, нет resumable stores и stream-aware инструментов; требуются фактический Windows CI, packaged/ASAR и GPU/VRAM проверки, повторяемые benchmarks и CAD/BIM/GIS round-trip.
+**Вывод:** Stage 4 расширяет bounded-working-set ingest и disk octree для ASCII/binary point-cloud PLY с поддерживаемыми scalar properties, uncompressed LAS formats 0–10 и PCD ASCII/interleaved-binary/LZF; LZF preview использует ограниченный disk scratch и point budget. Текущий clean-checkout regression suite прошёл 835/842 tests, 0 failures, 7 fixture/decoder skips; это не эквивалент Windows UI приёмки. Этап остаётся **частичным, не принят и не завершён**: другие форматы/mesh memory-bound, intensity/classification и дополнительные атрибуты не стримятся, нет resumable stores и stream-aware инструментов; требуются фактический Windows CI, packaged/ASAR и GPU/VRAM проверки, повторяемые benchmarks и CAD/BIM/GIS round-trip.

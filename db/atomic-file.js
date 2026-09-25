@@ -26,7 +26,9 @@ function syncDirectory(dir, fsImpl) {
 function fsyncFile(file, fsImpl) {
   let fd;
   try {
-    fd = fsImpl.openSync(file, 'r');
+    // Windows may reject fsync on a read-only descriptor (EPERM). Backups are
+    // our own temporary files, so open them read/write before forcing metadata.
+    fd = fsImpl.openSync(file, 'r+');
     fsImpl.fsyncSync(fd);
   } finally {
     if (fd !== undefined) fsImpl.closeSync(fd);

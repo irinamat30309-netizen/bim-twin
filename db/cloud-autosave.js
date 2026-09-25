@@ -80,7 +80,9 @@ function copyFileDurable(fsImpl, source, target) {
   try {
     fsImpl.mkdirSync(dir, { recursive: true });
     fsImpl.copyFileSync(source, tmp, fs.constants.COPYFILE_EXCL);
-    fd = fsImpl.openSync(tmp, 'r');
+    // A read-only descriptor can make fsync fail with EPERM on Windows.
+    // This is a newly copied temp file owned by the app, so use read/write.
+    fd = fsImpl.openSync(tmp, 'r+');
     fsImpl.fsyncSync(fd);
     fsImpl.closeSync(fd);
     fd = undefined;

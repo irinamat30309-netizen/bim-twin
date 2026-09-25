@@ -33,7 +33,7 @@ Stage 4 расширен до bounded/two-pass out-of-core пути для по�
 - Headless Chromium/SwiftShader UI E2E: LOD budget 1M выбрал 1 055 059 points/9 nodes; GPU cache 24 012 888 bytes; source transform совпал; preview восстановлен и store удалён; PAGEERROR/IPCERR/NOHANDLER — 0.
 - Fake-Electron refusal tests with intentionally under-reported `expectedPoints` rejected the request before worker/store creation in separate RAM/disk insufficiency scenarios; external source files and resource telemetry are omitted. Cancellation during `parse-convert` cleaned partial canonical/output scratch.
 - `npm run check`, `npm run test:store` и syntax-check JavaScript source files вне `node_modules`, `vendor` и `dist` прошли; точное число указано в `QA-RETEST-stage4.md`.
-- Для native Windows regression в `.github/workflows/ci.yml` добавлен `windows-test` (`windows-latest`, Node 24, `npm run check`, `node --test`, `npm run test:store`, ручной `workflow_dispatch`). Он не исполнен из текущего Amazon Linux snapshot: здесь нет Windows/Wine и у копии проекта нет Git remote для запуска Actions.
+- Первый hosted Windows CI run (`windows-test`) реально выполнил syntax-check и обнаружил `EPERM` на `fsync` backup-файла, открытого read-only. `db/atomic-file.js` и `db/cloud-autosave.js` исправлены: backup temp handles теперь `r+`; добавлен `test/atomic-file-windows.test.js`. Локальный Linux повтор: 842 tests / 835 passed / 7 fixture-decoder skips, `npm run check`, syntax 235 files и `npm run test:store` — passed. Повторный Windows job после исправления ожидает результата; Windows release acceptance пока не заявляется.
 
 Подробные логи и caveats: `QA-RETEST-stage4.md`.
 
