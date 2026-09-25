@@ -22,7 +22,8 @@ function writeAllSync(fd, buffer, position) {
 
 function syncFile(filePath) {
   let fd;
-  try { fd = fs.openSync(filePath, 'r'); fs.fsyncSync(fd); }
+  // Windows can reject fsync on a read-only handle with EPERM.
+  try { fd = fs.openSync(filePath, 'r+'); fs.fsyncSync(fd); }
   finally { if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {} }
 }
 

@@ -82,6 +82,7 @@ function copyFileDurable(fsImpl, source, target) {
     fsImpl.copyFileSync(source, tmp, fs.constants.COPYFILE_EXCL);
     // A read-only descriptor can make fsync fail with EPERM on Windows.
     // This is a newly copied temp file owned by the app, so use read/write.
+    fsImpl.chmodSync(tmp, 0o600);
     fd = fsImpl.openSync(tmp, 'r+');
     fsImpl.fsyncSync(fd);
     fsImpl.closeSync(fd);

@@ -16,8 +16,14 @@ test('atomic backup fsync uses a writable descriptor for Windows compatibility',
     get(targetFs, property) {
       if (property === 'openSync') {
         return (file, flags, mode) => {
-          observed.push({ name: path.basename(String(file)), flags });
+          observed.push({ operation: 'open', name: path.basename(String(file)), flags });
           return targetFs.openSync(file, flags, mode);
+        };
+      }
+      if (property === 'chmodSync') {
+        return (file, mode) => {
+          observed.push({ operation: 'chmod', name: path.basename(String(file)), mode });
+          return targetFs.chmodSync(file, mode);
         };
       }
       const value = Reflect.get(targetFs, property, targetFs);
@@ -31,9 +37,18 @@ test('atomic backup fsync uses a writable descriptor for Windows compatibility',
 
     assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), { revision: 2 });
     assert.deepEqual(JSON.parse(fs.readFileSync(backup, 'utf8')), { revision: 1 });
-    const backupSyncOpen = observed.find(({ name }) => name.startsWith('.store.json.bak.tmp-'));
+    const backupName = observed.find(({ operation, name }) =>
+      operation === 'open' && name.startsWith('.store.json.bak.tmp-'))?.name;
+    assert.ok(backupName, 'backup temp file was opened before fsync');
+    const backupMode = observed.find(({ operation, name }) =>
+      operation === 'chmod' && name === backupName);
+    assert.equal(backupMode && backupMode.mode, 0o600, 'backup copy is writable/private before fsync');
+    const backupSyncOpen = observed.find(({ operation, name }) =>
+      operation === 'open' && name === backupName);
     assert.ok(backupSyncOpen, 'backup temp file was opened before fsync');
     assert.equal(backupSyncOpen.flags, 'r+');
+    assert.ok(observed.indexOf(backupMode) < observed.indexOf(backupSyncOpen),
+      'backup permissions must be normalized before opening for fsync');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

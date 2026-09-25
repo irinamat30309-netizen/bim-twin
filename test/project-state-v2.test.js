@@ -258,13 +258,16 @@ test('hard process exit after a committed save can be reopened with Unicode path
   } finally { fs.rmSync(parent, { recursive: true, force: true }); }
 });
 
-test('SIGKILL during atomic temp-file write preserves the previous commit and cleans stale temp files', () => {
+test('abrupt termination during atomic temp-file write preserves the previous commit and cleans stale temp files', () => {
   const dir = tempDir('bim-kill-during-save-');
   const storeModule = JSON.stringify(path.resolve(__dirname, '../db/jsonStore.js'));
   const directory = JSON.stringify(dir);
+  const terminateChild = process.platform === 'win32'
+    ? 'process.exit(86);'
+    : "process.kill(process.pid, 'SIGKILL');";
   try {
     let store = new JsonStore(dir);
-    store.updateProject({ name: 'Сохранённая версия до SIGKILL' });
+    store.updateProject({ name: 'Сохранённая версия до остановки процесса' });
     const script = `
       const fs = require('node:fs');
       const { JsonStore } = require(${storeModule});
@@ -272,7 +275,7 @@ test('SIGKILL during atomic temp-file write preserves the previous commit and cl
       fs.writeFileSync = function (file, data, ...args) {
         if (typeof file === 'number') {
           originalWrite(file, Buffer.from(data).subarray(0, 32));
-          process.kill(process.pid, 'SIGKILL');
+          ${terminateChild}
         }
         return originalWrite(file, data, ...args);
       };
@@ -280,9 +283,13 @@ test('SIGKILL during atomic temp-file write preserves the previous commit and cl
       store.updateProject({ name: 'Эта версия не должна стать commit' });
     `;
     const child = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 10000 });
-    assert.equal(child.signal, 'SIGKILL', child.stderr || 'child must be terminated inside the temp-file write');
+    if (process.platform === 'win32') {
+      assert.equal(child.status, 86, child.stderr || 'child must exit inside the temp-file write');
+    } else {
+      assert.equal(child.signal, 'SIGKILL', child.stderr || 'child must be terminated inside the temp-file write');
+    }
     store = new JsonStore(dir);
-    assert.equal(store.getData().project.name, 'Сохранённая версия до SIGKILL');
+    assert.equal(store.getData().project.name, 'Сохранённая версия до остановки процесса');
     assert.equal(fs.readdirSync(dir).some(name => name.startsWith('.store.json.tmp-')), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

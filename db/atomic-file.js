@@ -64,6 +64,9 @@ function atomicWriteFileSync(target, data, options) {
     // version fails, abort rather than replacing the only known-good copy.
     if (backupPath && fsImpl.existsSync(abs)) {
       fsImpl.copyFileSync(abs, backupTmp);
+      // Make the private temporary backup writable even when the source file
+      // carried read-only permissions; Windows fsync requires a writable handle.
+      fsImpl.chmodSync(backupTmp, 0o600);
       fsyncFile(backupTmp, fsImpl);
       fsImpl.renameSync(backupTmp, backupPath);
     }

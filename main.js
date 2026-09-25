@@ -237,7 +237,8 @@ function sha256File(filePath) {
 }
 function fsyncPath(filePath) {
   let fd;
-  try { fd = fs.openSync(filePath, 'r'); fs.fsyncSync(fd); }
+  // Windows can reject fsync on a read-only handle with EPERM.
+  try { fd = fs.openSync(filePath, 'r+'); fs.fsyncSync(fd); }
   finally { if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {} }
 }
 function fsyncDirectory(dirPath) {
@@ -283,6 +284,7 @@ async function saveCloudOutput(target, data, options) {
       backupPath = path.join(dir, backupName);
       try {
         fs.copyFileSync(abs, backupPath, fs.constants.COPYFILE_EXCL);
+        fs.chmodSync(backupPath, 0o600);
         fsyncPath(backupPath);
       } catch (e) {
         try { fs.unlinkSync(backupPath); } catch (_) {}
@@ -336,6 +338,7 @@ async function saveCloudOutputFromTemp(target, tempPath, options) {
       backupPath = path.join(dir, backupName);
       try {
         fs.copyFileSync(abs, backupPath, fs.constants.COPYFILE_EXCL);
+        fs.chmodSync(backupPath, 0o600);
         fsyncPath(backupPath);
       } catch (e) {
         try { fs.unlinkSync(backupPath); } catch (_) {}

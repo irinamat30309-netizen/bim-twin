@@ -2,7 +2,7 @@
 
 ## Цель и границы
 
-Проверялись background parsing, disk-octree LOD, отмена/очистка и bounded-working-set ветки для **scalar-property ASCII/binary LE/BE PLY, uncompressed LAS PDRF 0–10 и PCD ASCII/interleaved-binary/LZF binary_compressed**. Среда предыдущих локальных E2E — Linux/Node 24 и headless Chromium/SwiftShader с fake-Electron IPC; внешние пользовательские модели и локальные screenshots/evidence не включены в Git. Windows runtime недоступен на локальном host (Amazon Linux 2023 без Wine/PowerShell/cmd.exe). Первый hosted job `windows-test` на `windows-latest` завершился `EPERM` в regression хранилища: Node/Windows не поддержал `fsync` read-only backup descriptor. Исправление перевело backup temp handles на `r+`, добавлена regression; повторный hosted run ещё не завершён. Linux/fake-Electron проверки не выдаются за Windows-приёмку; packaged Windows/ASAR и целевой GPU/VRAM также не сертифицированы.
+Проверялись background parsing, disk-octree LOD, отмена/очистка и bounded-working-set ветки для **scalar-property ASCII/binary LE/BE PLY, uncompressed LAS PDRF 0–10 и PCD ASCII/interleaved-binary/LZF binary_compressed**. Среда предыдущих локальных E2E — Linux/Node 24 и headless Chromium/SwiftShader с fake-Electron IPC; внешние пользовательские модели и локальные screenshots/evidence не включены в Git. Windows runtime недоступен на локальном host (Amazon Linux 2023 без Wine/PowerShell/cmd.exe). Первый hosted job `windows-test` на `windows-latest` выявил `EPERM` на read-only backup descriptor; следующая hosted проверка обнаружила те же read-only `fsync` пути в octree/export, CRLF-sensitive hash assertion и SIGKILL assertion, недоступный Windows. Исправлено: собственные временные backup/node файлы синхронизируются с `r+` и writable/private mode; hash check сравнивает нормализованный текст; child-termination test использует аварийный exit на Windows и SIGKILL на POSIX. Новая hosted проверка ещё не завершена. Linux/fake-Electron проверки не выдаются за Windows-приёмку; packaged Windows/ASAR и целевой GPU/VRAM также не сертифицированы.
 
 ## Что теперь делает out-of-core ветка
 
@@ -24,11 +24,11 @@
 | `test/octree-out-of-core-pcd-stage4.test.js` | 7/7 passed: packed RGB binary, ASCII/Y-up >8 MiB CRLF/no-final-newline, deterministic sampling/non-finite XYZ, >8 MiB LZF chunk streaming, disk-space preflight/cleanup, overlapping back-reference, malformed/truncated/stale rejection and scratch cleanup |
 | `test/cloud-parse-worker-stage4.test.js` | 6/6 passed: worker progress, PCD LZF progress monotonicity, malformed/scratch cleanup, cancellation after disk scratch creation and parent cleanup after worker termination, отказ RAM preflight до allocation |
 | `test/octree-resource-budget-stage4.test.js` | 10/10 passed: in-memory/out-of-core RAM/disk preflight, LZF scratch allowance, sampled preview RAM estimate/thresholds и неизвестная telemetry |
-| `test/atomic-file-windows.test.js` | 1/1 passed: backup rotation сохраняет предыдущую revision, а fsync открывает backup temp с `r+` для Windows |
+| `test/atomic-file-windows.test.js` | 1/1 passed: backup rotation сохраняет предыдущую revision; temp backup сначала переводится в private writable mode, затем fsync открывает его с `r+` для Windows |
 | `test/octree-build-stage4.test.js`, `test/octree-store.test.js`, `test/webgl-octree-stream.test.js` | Вошли в полный успешный прогон: build/read, node ranges, LOD selection/budget, cache eviction, degenerate input |
 | `npm run check` | Успешно |
 | `npm run test:store` | `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
-| Синтаксис | 235 JS/MJS/CJS-файлов прошли `node --check` |
+| Синтаксис | 232 JS/MJS/CJS-файлов прошли `node --check` |
 | Focused out-of-core/resource/PTX stream + cloud Worker suite (`octree-out-of-core-las`, `octree-out-of-core-ply`, `octree-out-of-core-pcd`, `octree-build-stage4`, `octree-resource-budget-stage4`, `ptx-stream-export-stage4`, `cloud-parse-worker-stage4`) | 51/51 passed |
 | Stage 3 format/PTX regressions | 23/23 форматных+parser/writer tests и 7/7 PTX stream tests прошли; Stage 3 всё ещё частичный, см. `QA-RETEST-stage3.md` |
 
