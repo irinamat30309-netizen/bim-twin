@@ -1,0 +1,86 @@
+{
+  "name": "bim-twin",
+  "version": "1.1.17",
+  "description": "BIM Twin — desktop 3D + документация помещений с АИ-проверкой (offline-first)",
+  "main": "main.js",
+  "author": "bobuy",
+  "license": "MIT",
+  "scripts": {
+    "prestart": "node scripts/build-xls-viewer.mjs && node scripts/build-dxf-viewer.mjs && node scripts/build-pdf-viewer.mjs && node scripts/build-docx-viewer.mjs && node scripts/build-superdoc.mjs && node scripts/build-pcsplat.mjs && node scripts/build-potree.mjs",
+    "start": "electron .",
+    "test": "node --test",
+    "test:store": "node db/_test.js",
+    "check": "node --check main.js && node --check preload.js && node --check db/sqliteStore.js && node --check db/jsonStore.js",
+    "build:viewer": "node scripts/build-xls-viewer.mjs",
+    "build:dxf": "node scripts/build-dxf-viewer.mjs",
+    "build:pdf": "node scripts/build-pdf-viewer.mjs",
+    "build:docx": "node scripts/build-docx-viewer.mjs",
+    "build:superdoc": "node scripts/build-superdoc.mjs",
+    "build:dwg": "node scripts/build-dwg-viewer.mjs",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg",
+    "publish": "electron-builder --publish always"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5",
+    "@univerjs/presets": "^0.5.0",
+    "three": "^0.137.5",
+    "dxf-parser": "^1.1.2",
+    "three-dxf": "^1.0.5",
+    "pdfjs-dist": "^4.6.82",
+    "docx-preview": "^0.3.5",
+    "superdoc": "^2.6.0",
+    "playcanvas": "^2.19.0",
+    "@playcanvas/splat-transform": "^2.4.0",
+    "@pnext/three-loader": "^0.3.6",
+    "@mlightcad/libredwg-web": "^0.7.0",
+    "@loaders.gl/las": "4.5.2"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.3.0",
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "@electron/rebuild": "^3.6.0",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.23.0"
+  },
+  "build": {
+    "appId": "com.bimtwin.app",
+    "productName": "BIM Twin",
+    "npmRebuild": true,
+    "asarUnpack": ["**/*.node", "cloud-parse-worker.js", "app-config.js", "las-node.js", "las-core.js", "e57-core.js", "scan2bim-ai-server/**"],
+    "files": ["main.js", "preload.js", "scan2bim-server.js", "app-config.js", "cloud-parse-worker.js", "las-core.js", "e57-core.js", "las-node.js", "db/**", "renderer/**", "scripts/**", "ai/**", "tools/**", "scan2bim-ai-server/**"],
+    "extraResources": [{ "from": "scripts/setup-python.ps1", "to": "setup-python.ps1" }, { "from": "scripts/setup-ai-server.ps1", "to": "setup-ai-server.ps1" }, { "from": "scripts/setup-cloudcompare.ps1", "to": "setup-cloudcompare.ps1" }, { "from": "scripts/embed-window.ps1", "to": "embed-window.ps1" }, { "from": "resources/cloudcompare", "to": "cloudcompare", "filter": ["**/*"] }],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://updates.bimtwin.app/${os}/${arch}/",
+        "channel": "latest"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "certificateFile": null,
+      "certificateSubjectName": null,
+      "signingHashAlgorithms": ["sha256"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "include": "build/installer.nsh"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "linux": { "target": "AppImage" }
+  }
+}
