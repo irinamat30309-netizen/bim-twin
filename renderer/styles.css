@@ -548,7 +548,7 @@ label.btn.file{ }
 /* Форма/подтверждение всегда поверх панельных модалок, открытых под ней */
 #formModal{ z-index:66; }
 
-/* ��ерево: добавление этажа/помещения доступно всегда */
+/* Дерево: добавление этажа/помещения доступно всегда */
 .addfloor{ display:inline-flex; align-items:center; gap:4px; }
 .addfloor .ic{ width:13px; height:13px; }
 .floor{ position:relative; }

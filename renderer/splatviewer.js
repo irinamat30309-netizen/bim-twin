@@ -658,9 +658,9 @@
     '}\n';
 
   // ---------- point-cloud shaders (быстрый gl.POINTS для сырых XYZ+RGB облаков) ----------
-  // У сырого облака нет гауссовой ковариации; рисоват�� его инстансными квадами с тяжёлым
+  // У сырого облака нет гауссовой ковариации; рисовать его инстансными квадами с тяжёлым
   // шейдером ковариации (4 вершины/точка) — именно это вешало «Чёткие» на 20М+ точках.
-  // gl.POINTS = 1 вершина на точку + л��гки�� шейдер -> тянет 100М+ точек без лагов.
+  // gl.POINTS = 1 вершина на точку + лёгкий шейдер -> тянет 100М+ точек без лагов.
   var VS_PTS = '#version 300 es\n' +
     'precision highp float;\n' +
     'uniform mat4 projection, view;\n' +
@@ -974,7 +974,7 @@
     gl.uniformMatrix4fv(S.ptU.view, false, view);
     gl.uniform1f(S.ptU.focal, proj.fy);
     gl.uniform1f(S.ptU.bright, S.exposure || 1.0);
-    // Базовый мировой разм������р точки от размаха сцены, масштабируется ползунком «Точки».
+    // Базовый мировой размер точки от размаха сцены, масштабируется ползунком «Точки».
     var r = (S.bounds && S.bounds.radius) ? S.bounds.radius : 1;
     var world = r * 0.006 * (S.sizeMul || 0.35) * (S.sharp ? 0.55 : 1.1);
     gl.uniform1f(S.ptU.ptSize, world);
@@ -1402,7 +1402,7 @@
         var num = document.createElement('span'); num.textContent = (idx + 1) + '.'; num.style.cssText = 'opacity:.7;width:18px;flex:none;text-align:right';
         var nameBtn = document.createElement('button');
         nameBtn.textContent = sts[idx].name || ('Точка ' + (idx + 1));
-        nameBtn.title = 'Перейти к точк��';
+        nameBtn.title = 'Перейти к точке';
         nameBtn.style.cssText = 'flex:1;min-width:0;text-align:left;background:transparent;border:none;color:#e6edf3;cursor:pointer;font:13px sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 2px';
         nameBtn.onclick = function () { cancelTour(); S.tourIndex = idx; goToStation(idx); };
         var upB = miniBtn('↑'); upB.onclick = function () { moveStation(idx, idx - 1); };
@@ -1786,7 +1786,7 @@
       a.href = url; a.download = 'bimtwin-tour.json';
       document.body.appendChild(a); a.click();
       setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
-      toast('Маршрут сохранён: ' + S.stations.length + ' точе��');
+      toast('Маршрут сохранён: ' + S.stations.length + ' точек');
     } catch (e) { toast('Не удалось сохранить: ' + e.message); }
   }
   function applyImportedTour(str) {
@@ -1796,7 +1796,7 @@
       if (S.tourBtn) setBtn(S.tourBtn, 'play', 'Тур');
       buildMarkers();
       toast('Маршрут загружен: ' + st.length + ' точек');
-    } catch (e) { toast('Ошибка з��грузки: ' + e.message); }
+    } catch (e) { toast('Ошибка загрузки: ' + e.message); }
   }
 
   function exportTourVideo() {
@@ -1920,7 +1920,7 @@
     buildMarkers();
     toast('Добавлена точка ' + (n + 1) + ' (всего ' + S.stations.length + ')');
   }
-  // v1042: Electron блокирует window.prompt — свой DOM-модал (Promise, Enter/Esc, клик мимо = От��ена).
+  // v1042: Electron блокирует window.prompt — свой DOM-модал (Promise, Enter/Esc, клик мимо = Отмена).
   function promptModal(message, defVal) {
     return new Promise(function (resolve) {
       try {
@@ -1969,7 +1969,7 @@
   function setEdit(on) {
     S.editMode = !!on;
     if (S.editBtn) S.editBtn.style.background = S.editMode ? '#2563eb' : '#2a2f3a';
-    toast(S.editMode ? 'П��авка точек: клик по маркеру — переименовать/удалить' : 'Правка выключена');
+    toast(S.editMode ? 'Правка точек: клик по маркеру — переименовать/удалить' : 'Правка выключена');
   }
 
   function doPick(e) {
@@ -2084,7 +2084,7 @@
     loopRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
     var loopCb = document.createElement('input'); loopCb.type = 'checkbox'; loopCb.checked = !!S.tourLoop;
     loopCb.onchange = function () { S.tourLoop = loopCb.checked; };
-    var loopTx = document.createElement('span'); loopTx.textContent = 'Зациклит�� тур';
+    var loopTx = document.createElement('span'); loopTx.textContent = 'Зациклить тур';
     loopRow.appendChild(loopCb); loopRow.appendChild(loopTx);
     var routeRow = document.createElement('label');
     routeRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
@@ -2097,7 +2097,7 @@
     smoothRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
     var smoothCb = document.createElement('input'); smoothCb.type = 'checkbox'; smoothCb.checked = !!S.smoothRoute;
     smoothCb.onchange = function () { S.smoothRoute = smoothCb.checked; };
-    var smoothTx = document.createElement('span'); smoothTx.textContent = 'Сглаживать м����ршрут';
+    var smoothTx = document.createElement('span'); smoothTx.textContent = 'Сглаживать маршрут';
     smoothRow.appendChild(smoothCb); smoothRow.appendChild(smoothTx);
     listPanel.appendChild(smoothRow);
     var vidHdr = document.createElement('div');
@@ -2119,7 +2119,7 @@
       row.appendChild(tx); row.appendChild(sel); return row;
     }
     listPanel.appendChild(mkSelect('Разрешение', [{ v: 0, t: 'Исходное' }, { v: 720, t: '720p' }, { v: 1080, t: '1080p' }, { v: 1440, t: '1440p' }], S.recRes, function (v) { S.recRes = v; }));
-    listPanel.appendChild(mkSelect('Битрейт', [{ v: 8, t: '��изкий' }, { v: 16, t: 'Средний' }, { v: 40, t: 'Высокий' }], S.recBitrate, function (v) { S.recBitrate = v; }));
+    listPanel.appendChild(mkSelect('Битрейт', [{ v: 8, t: 'Низкий' }, { v: 16, t: 'Средний' }, { v: 40, t: 'Высокий' }], S.recBitrate, function (v) { S.recBitrate = v; }));
     var titlesRow = document.createElement('label');
     titlesRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
     var titlesCb = document.createElement('input'); titlesCb.type = 'checkbox'; titlesCb.checked = !!S.recTitles;
@@ -2239,7 +2239,7 @@
     saveBtn.onclick = function () { saveToProject(); };
     var expBtn = document.createElement('button');
     setBtn(expBtn, 'download', '');
-    expBtn.title = 'Экспортировать координаты точе�� в файл .json';
+    expBtn.title = 'Экспортировать координаты точек в файл .json';
     expBtn.style.cssText = btnCss();
     expBtn.onclick = function () { exportTour(); };
     var openBtn2 = document.createElement('button');

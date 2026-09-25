@@ -21,6 +21,7 @@
 | Fixture-gated OBJ/STL/PLY tests | В чистой копии пропущены, если внешний fixture mount отсутствует; пользовательские модели и бинарные доказательства не включены в ветку |
 | Stage 2 focused regression suite | 30/30 passed; детали в `QA-RETEST-stage2.md` |
 | Синтаксис | 232 JavaScript/MJS/CJS-файла прошли `node --check` |
+| UI-текст/кодировка (`test/end-to-end-audit-v1215.test.js`) | 1/1 passed: проверены русский текст открытия облака/демо-проекта/тура и отсутствие U+FFFD в UI-файлах; битые подписи исправлены |
 | `npm run test:store` | `ALL PHASE D TESTS PASSED`; `ALL PERSISTENCE TESTS PASSED` |
 | Hosted GitHub Actions CI | Linux `test` and Windows `windows-test` passed for commit `d6c0215`; packaged Windows/ASAR remains untested |
 
