@@ -330,10 +330,15 @@ function lasPointFileInfoFromFd(fd, absPath) {
   const fileSize = Number(stat.size);
   if (!Number.isSafeInteger(fileSize) || fileSize < 227) throw new Error('LAS file size is outside safe limits');
   const parsed = readLasHeaderInfo(fd, fileSize);
+  const hasIntensity = parsed.H.hasIntensity && parsed.H.intensityOff + 2 <= parsed.H.recLen;
+  const hasClassification = parsed.H.hasClassification &&
+    parsed.H.classificationOff + 1 <= parsed.H.recLen;
   const info = Object.assign(plyBigintStatIdentity(stat), {
     pointCount: parsed.H.count,
     pointFormat: parsed.format,
     recordLength: parsed.H.recLen,
+    hasIntensity: !!hasIntensity,
+    hasClassification: !!hasClassification,
     pointDataOffset: parsed.H.offToPts,
     versionMajor: parsed.versionMajor,
     versionMinor: parsed.versionMinor,
@@ -356,7 +361,8 @@ function lasPointFileInfoFromFd(fd, absPath) {
 function sameLasPointFileInfo(a, b) {
   if (!a || !b) return false;
   const keys = ['fileSize', 'mtimeNs', 'device', 'inode', 'pointCount', 'pointFormat',
-    'recordLength', 'pointDataOffset', 'versionMajor', 'versionMinor', 'layoutSignature'];
+    'recordLength', 'hasIntensity', 'hasClassification', 'pointDataOffset',
+    'versionMajor', 'versionMinor', 'layoutSignature'];
   return keys.every(key => String(a[key]) === String(b[key]));
 }
 
@@ -482,10 +488,11 @@ function prepareLasOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
     const height = mxz - mnz;
     const outputBounds = { mn: [Infinity, Infinity, Infinity], mx: [-Infinity, -Infinity, -Infinity] };
 
+    const recordStride = 15 + (hasIntensity ? 4 : 0) + (hasClassification ? 1 : 0);
     const outputPath = path.resolve(canonicalPath);
     canonicalFd = fs.openSync(outputPath, 'wx', 0o600);
-    const outputRecords = Math.max(1, Math.floor(CHUNK_BYTES / 15));
-    const outputBuffer = Buffer.allocUnsafe(outputRecords * 15);
+    const outputRecords = Math.max(1, Math.floor(CHUNK_BYTES / recordStride));
+    const outputBuffer = Buffer.allocUnsafe(outputRecords * recordStride);
     let outputPosition = 0, outputCount = 0;
     function clampByte(value) {
       if (!Number.isFinite(value)) return 0;
@@ -541,7 +548,16 @@ function prepareLasOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
         outputBuffer[offset + 13] = clampByte(Math.fround(ramp[1]));
         outputBuffer[offset + 14] = clampByte(Math.fround(ramp[2]));
       }
-      outputPosition += 15;
+      let attributeOffset = offset + 15;
+      if (hasIntensity) {
+        outputBuffer.writeFloatLE(buffer.readUInt16LE(base + H.intensityOff) / 65535, attributeOffset);
+        attributeOffset += 4;
+      }
+      if (hasClassification) {
+        const rawClass = buffer[base + H.classificationOff];
+        outputBuffer[attributeOffset++] = parsed.format >= 6 ? rawClass : (rawClass & 0x1f);
+      }
+      outputPosition += recordStride;
       outputCount++;
       if (outputPosition === outputBuffer.length) flushOutput();
     }, readCount => {
@@ -557,17 +573,13 @@ function prepareLasOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
     }
     const eps = outputBounds.mn.map((mn, i) => Math.max(1e-6, (outputBounds.mx[i] - mn) * 1e-6));
     for (let i = 0; i < 3; i++) outputBounds.mx[i] += eps[i];
-    const omissions = [
-      hasIntensity ? 'intensity' : null,
-      hasClassification ? 'classification' : null
-    ].filter(Boolean);
     const metaOut = {
       kind: 'points', points: outputCount, total: H.count,
       w: mxx - mnx, d: mxy - mny, h: mxz - mnz,
       format: 'LAS fmt ' + parsed.format + ' (out-of-core two-pass)',
       colored,
       hasIntensity, hasClassification,
-      streamAttributeOmissions: omissions,
+      streamAttributeOmissions: [],
       crsWkt: parsed.crsWkt || null,
       offset: { cx: transform[0], cy: transform[1], mnz: transform[2] },
       srcXform: { axis: 'zup', t: transform.slice() },
@@ -819,7 +831,9 @@ function binaryPlyInfoFromFd(fd, absPath) {
     vertexCount: layout.vertexCount,
     recordLength: layout.recordLength,
     dataOffset: meta.dataOffset,
-    format: String(meta.format)
+    format: String(meta.format),
+    hasIntensity: !!layout.intensity,
+    hasClassification: !!layout.classification
   });
   if (absPath) {
     const pathStat = fs.statSync(absPath, { bigint: true });
@@ -848,6 +862,8 @@ function plyPointInfoFromFd(fd, absPath) {
     propertyCount: Number(layout.propertyCount) || (layout.properties || []).length,
     dataOffset: meta.dataOffset,
     format: String(meta.format),
+    hasIntensity: !!layout.intensity,
+    hasClassification: !!layout.classification,
     layoutSignature: plyLayoutSignature(meta, layout)
   });
   if (absPath) {
@@ -866,7 +882,8 @@ function plyPointInfoFromFd(fd, absPath) {
 
 function sameBinaryPlyPointFileInfo(a, b) {
   if (!a || !b) return false;
-  const keys = ['fileSize', 'mtimeNs', 'device', 'inode', 'vertexCount', 'recordLength', 'propertyCount', 'dataOffset', 'format', 'layoutSignature'];
+  const keys = ['fileSize', 'mtimeNs', 'device', 'inode', 'vertexCount', 'recordLength',
+    'propertyCount', 'dataOffset', 'format', 'hasIntensity', 'hasClassification', 'layoutSignature'];
   return keys.every(key => String(a[key]) === String(b[key]));
 }
 
@@ -1018,6 +1035,8 @@ function preparePlyOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
       propertyCount: Number(layout.propertyCount) || (layout.properties || []).length,
       dataOffset: meta.dataOffset,
       format: String(meta.format),
+      hasIntensity: !!layout.intensity,
+      hasClassification: !!layout.classification,
       layoutSignature: plyLayoutSignature(meta, layout)
     });
     if (expectedSourceInfo && !samePlyPointFileInfo(sourceInfo, expectedSourceInfo)) {
@@ -1108,11 +1127,17 @@ function preparePlyOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
     const outputBounds = { mn: [Infinity, Infinity, Infinity], mx: [-Infinity, -Infinity, -Infinity] };
     const outputPath = path.resolve(canonicalPath);
     canonicalFd = fs.openSync(outputPath, 'wx', 0o600);
-    const outputRecords = Math.max(1, Math.floor(CHUNK_BYTES / 15));
-    const outputBuffer = Buffer.alloc(outputRecords * 15);
+    const hasIntensity = !!layout.intensity;
+    const hasClassification = !!layout.classification;
+    const recordStride = 15 + (hasIntensity ? 4 : 0) + (hasClassification ? 1 : 0);
+    const outputRecords = Math.max(1, Math.floor(CHUNK_BYTES / recordStride));
+    const outputBuffer = Buffer.alloc(outputRecords * recordStride);
     let outputPosition = 0, outputCount = 0;
     const rampHeight = zUp ? (mxz - mnz) : (mxy - mny);
     const colorDiv = layout.colorDivisor || 1;
+    const intensityDiv = hasIntensity
+      ? plyIntensityDiv(layout.intensity.type, intensityMax)
+      : 1;
 
     function clampByte(value) {
       if (!Number.isFinite(value)) return 0;
@@ -1163,7 +1188,22 @@ function preparePlyOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
         outputBuffer[recordOffset + 13] = clampByte(ramp[1]);
         outputBuffer[recordOffset + 14] = clampByte(ramp[2]);
       }
-      outputPosition += 15;
+      let attributeOffset = recordOffset + 15;
+      if (hasIntensity) {
+        const value = plyRecordValue(record, layout.intensity, layout);
+        const normalized = Number.isFinite(value)
+          ? Math.max(0, Math.min(1, value / (intensityDiv || 1)))
+          : 0;
+        outputBuffer.writeFloatLE(normalized, attributeOffset);
+        attributeOffset += 4;
+      }
+      if (hasClassification) {
+        const value = plyRecordValue(record, layout.classification, layout);
+        outputBuffer[attributeOffset++] = Number.isFinite(value)
+          ? Math.max(0, Math.min(255, Math.round(value)))
+          : 0;
+      }
+      outputPosition += recordStride;
       outputCount++;
       if (outputPosition === outputBuffer.length) flushOutput();
     }, (readCount) => {
@@ -1196,11 +1236,8 @@ function preparePlyOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
       format: 'PLY cloud (' + (layout.encoding === 'ascii' ? 'ASCII' : 'binary') +
         ', out-of-core ' + (zUp ? 'Z-up' : 'Y-up') + ')',
       colored: layout.hasColor,
-      hasIntensity: !!layout.intensity, hasClassification: !!layout.classification,
-      streamAttributeOmissions: [
-        layout.intensity ? 'intensity' : null,
-        layout.classification ? 'classification' : null
-      ].filter(Boolean),
+      hasIntensity, hasClassification,
+      streamAttributeOmissions: [],
       crsWkt: sourceCrsWkt || null, units: units || null,
       offset: zUp
         ? { cx: preferredT ? preferredT[0] : centerX + shX,

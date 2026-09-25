@@ -176,6 +176,9 @@ test('build-file set includes both the unpacked worker and its local parser/inde
   assert.match(main, /new Worker\(path\.join\(__dirname, 'octree-build-worker\.js'\)/);
   assert.match(main, /ipcMain\.on\('bim:cancelOctreeBuild'/);
   assert.match(main, /ipcMain\.handle\('bim:readOctreeNode'/);
+  assert.match(main, /validateOctreeIndex\(index, dataStat\.size\)/);
+  assert.match(main, /hasIntensity:\s*!!index\.hasIntensity/);
+  assert.match(main, /hasClassification:\s*!!index\.hasClassification/);
   assert.match(main, /ipcMain\.handle\('bim:deleteOctree'/);
   assert.match(main, /lstatSync\(rd\)\.isSymbolicLink/);
   assert.match(preload, /onOctreeProgress:/);

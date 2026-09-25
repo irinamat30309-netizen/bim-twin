@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const Cloud = require('../las-node');
+const Octree = require('../renderer/octree-store');
 
 function writeBinaryPly(file, options) {
   options = options || {};
@@ -127,7 +128,11 @@ function runWorker(sourcePath, outputDir, options) {
 }
 
 function readAllNodes(outputDir, index) {
-  const fd = fs.openSync(path.join(outputDir, 'nodes.bin'), 'r');
+  const layout = Octree.getNodePointLayout(index);
+  assert.ok(layout, 'node index has a supported point layout');
+  const nodeFilePath = path.join(outputDir, 'nodes.bin');
+  assert.equal(Octree.validateOctreeIndex(index, fs.statSync(nodeFilePath).size), true);
+  const fd = fs.openSync(nodeFilePath, 'r');
   const points = [];
   let nextOffset = 0;
   try {
@@ -139,10 +144,21 @@ function readAllNodes(outputDir, index) {
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       for (let i = 0; i < node.count; i++) {
         const at = i * index.stride;
-        points.push([
+        const point = [
           view.getFloat32(at, true), view.getFloat32(at + 4, true), view.getFloat32(at + 8, true),
-          view.getUint8(at + 12), view.getUint8(at + 13), view.getUint8(at + 14)
-        ]);
+        ];
+        let attributeOffset = 12;
+        if (layout.hasColor) {
+          point.push(view.getUint8(at + attributeOffset), view.getUint8(at + attributeOffset + 1),
+            view.getUint8(at + attributeOffset + 2));
+          attributeOffset += 3;
+        }
+        if (layout.hasIntensity) {
+          point.push(view.getFloat32(at + attributeOffset, true));
+          attributeOffset += 4;
+        }
+        if (layout.hasClassification) point.push(view.getUint8(at + attributeOffset));
+        points.push(point);
       }
       nextOffset += node.byteLength;
     }
@@ -155,12 +171,15 @@ function previewRecords(parsed) {
   const out = new Map();
   for (let i = 0; i < parsed.count; i++) {
     const key = [parsed.pos[i * 3], parsed.pos[i * 3 + 1], parsed.pos[i * 3 + 2]].join(',');
-    out.set(key, [
+    const point = [
       parsed.pos[i * 3], parsed.pos[i * 3 + 1], parsed.pos[i * 3 + 2],
       Math.max(0, Math.min(255, Math.round(parsed.col[i * 3] * 255))),
       Math.max(0, Math.min(255, Math.round(parsed.col[i * 3 + 1] * 255))),
       Math.max(0, Math.min(255, Math.round(parsed.col[i * 3 + 2] * 255)))
-    ]);
+    ];
+    if (parsed.intensity) point.push(parsed.intensity[i]);
+    if (parsed.classification) point.push(parsed.classification[i]);
+    out.set(key, point);
   }
   return out;
 }
@@ -179,8 +198,12 @@ test('binary PLY out-of-core worker matches Z-up preview coordinates/colors and 
     assert.equal(result.index.ingest, 'binary-ply-two-pass');
     assert.equal(result.index.pointCount, count);
     assert.equal(result.sourcePointCount, count);
+    assert.equal(result.index.version, 2);
+    assert.equal(result.index.hasIntensity, true);
+    assert.equal(result.index.hasClassification, true);
+    assert.equal(result.index.stride, 20);
     assert.deepEqual(result.index.sourceMeta.srcXform, preview.meta.srcXform);
-    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, ['intensity', 'classification']);
+    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, []);
     assert.ok(progress.some(p => p.phase === 'parse-scan'));
     assert.ok(progress.some(p => p.phase === 'parse-convert'));
     assert.ok(progress.some(p => p.phase === 'octree-partition'));
@@ -193,7 +216,8 @@ test('binary PLY out-of-core worker matches Z-up preview coordinates/colors and 
     assert.equal(expected.size, count);
     for (const point of actual) {
       const key = point.slice(0, 3).join(',');
-      assert.deepEqual(expected.get(key), point, 'point coordinates and quantized RGB match the existing parser');
+      assert.deepEqual(expected.get(key), point,
+        'point coordinates, quantized RGB, intensity and classification match the existing parser');
       expected.delete(key);
     }
     assert.equal(expected.size, 0, 'no point is missing or duplicated');
@@ -372,7 +396,7 @@ test('ASCII PLY two-pass ingest matches preview coordinates/colors with CRLF, ar
     assert.equal(result.index.sourceMeta.units, 'm');
     assert.equal(result.index.sourceMeta.crsWkt, 'EPSG:32636 & local');
     assert.deepEqual(result.index.sourceMeta.srcXform, preview.meta.srcXform);
-    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, ['intensity', 'classification']);
+    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, []);
     assert.ok(progress.some(p => p.phase === 'parse-scan'));
     assert.ok(progress.some(p => p.phase === 'parse-convert'));
     const expected = previewRecords(preview);
@@ -380,7 +404,8 @@ test('ASCII PLY two-pass ingest matches preview coordinates/colors with CRLF, ar
     assert.equal(actual.length, count);
     for (const point of actual) {
       const key = point.slice(0, 3).join(',');
-      assert.deepEqual(expected.get(key), point, 'ASCII point XYZ and RGB match the regular parser');
+      assert.deepEqual(expected.get(key), point,
+        'ASCII point XYZ/RGB/intensity/classification match the regular parser');
       expected.delete(key);
     }
     assert.equal(expected.size, 0, 'no ASCII point is missing or duplicated');

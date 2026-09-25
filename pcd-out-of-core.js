@@ -13,8 +13,6 @@ const HEADER_LIMIT = 1024 * 1024;
 const LINE_LIMIT = 1024 * 1024;
 const READ_CHUNK_BYTES = 8 * 1024 * 1024;
 const LZF_HISTORY_BYTES = 1 << 13;
-const CANONICAL_RECORD_BYTES = 15;
-
 function progressAt(callback, phase, fraction, detail) {
   if (typeof callback !== 'function') return;
   const value = { phase, fraction: Math.max(0, Math.min(1, Number(fraction) || 0)) };
@@ -227,6 +225,8 @@ function infoFromFd(fd, absPath) {
     compressedSize: header.compressedSize,
     uncompressedSize: header.uncompressedSize,
     recordLength: header.recordLength,
+    hasIntensity: header.indices.intensity >= 0,
+    hasClassification: header.indices.classification >= 0,
     layoutSignature: header.layoutSignature
   });
   if (absPath) {
@@ -254,7 +254,7 @@ function samePcdPointFileInfo(a, b) {
   if (!a || !b) return false;
   const keys = ['fileSize', 'mtimeNs', 'device', 'inode', 'pointCount',
     'mode', 'dataOffset', 'pointBytes', 'compressedSize', 'uncompressedSize',
-    'recordLength', 'layoutSignature'];
+    'recordLength', 'hasIntensity', 'hasClassification', 'layoutSignature'];
   return keys.every(key => String(a[key]) === String(b[key]));
 }
 
@@ -666,6 +666,7 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
     const budget = Number.isSafeInteger(maxPoints) && maxPoints > 0 ? maxPoints : 3000000;
     const sampleStride = header.pointCount > budget ? Math.ceil(header.pointCount / budget) : 1;
     let selectedValid = 0, invalidCount = 0, selectedInvalidCount = 0;
+    let intensityRawMax = 0;
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     const idx = header.indices;
@@ -687,6 +688,10 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
       selectedValid++;
       minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
       maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
+      if (idx.intensity >= 0) {
+        const intensity = numberValue(read(idx.intensity));
+        if (Number.isFinite(intensity) && intensity > intensityRawMax) intensityRawMax = intensity;
+      }
     }, (pointsRead, bytesRead, bytesTotal) => {
       const fraction = header.mode !== 'ascii'
         ? scanStart + (scanEnd - scanStart) * pointsRead / header.pointCount
@@ -695,7 +700,8 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
         pointsRead, pointsTotal: header.pointCount,
         validPoints: selectedValid, bytesRead, bytesTotal
       });
-    }, null, null, null, planarFd);
+    }, null, null, null, planarFd,
+    [idx.intensity, idx.classification]);
     if (!selectedValid || !Number.isFinite(minX + minY + minZ + maxX + maxY + maxZ)) {
       throw new Error('PCD has no finite indexed XYZ points');
     }
@@ -723,7 +729,12 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
 
     const outputPath = String(canonicalPath);
     canonicalFd = fs.openSync(outputPath, 'wx', 0o600);
-    const outputBuffer = Buffer.allocUnsafe(READ_CHUNK_BYTES - (READ_CHUNK_BYTES % CANONICAL_RECORD_BYTES));
+    const hasIntensity = idx.intensity >= 0;
+    const hasClassification = idx.classification >= 0;
+    const recordStride = 15 + (hasIntensity ? 4 : 0) + (hasClassification ? 1 : 0);
+    const outputBuffer = Buffer.allocUnsafe(
+      READ_CHUNK_BYTES - (READ_CHUNK_BYTES % recordStride)
+    );
     let outputPosition = 0, outputCount = 0, bufferUsed = 0;
     function flushOutput() {
       if (!bufferUsed) return;
@@ -739,6 +750,11 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
 
     const packed = idx.packed;
     const separateColors = idx.r >= 0 && idx.g >= 0 && idx.b >= 0;
+    const intensityDivisor = hasIntensity
+      ? (header.types[idx.intensity] === 'F'
+        ? (intensityRawMax > 1.0001 ? intensityRawMax : 1)
+        : pcdMaxFor(header, idx.intensity))
+      : 1;
     const colorDivisor = separateColors
       ? Math.max(pcdMaxFor(header, idx.r), pcdMaxFor(header, idx.g), pcdMaxFor(header, idx.b))
       : 1;
@@ -792,7 +808,22 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
         outputBuffer[recordOffset + 13] = clampByte(ramp[1]);
         outputBuffer[recordOffset + 14] = clampByte(ramp[2]);
       }
-      bufferUsed += CANONICAL_RECORD_BYTES;
+      let attributeOffset = recordOffset + 15;
+      if (hasIntensity) {
+        const raw = numberValue(read(idx.intensity));
+        const normalized = Number.isFinite(raw)
+          ? Math.max(0, Math.min(1, raw / (intensityDivisor || 1)))
+          : 0;
+        outputBuffer.writeFloatLE(normalized, attributeOffset);
+        attributeOffset += 4;
+      }
+      if (hasClassification) {
+        const value = numberValue(read(idx.classification));
+        outputBuffer[attributeOffset++] = Number.isFinite(value)
+          ? Math.max(0, Math.min(255, Math.round(value)))
+          : 0;
+      }
+      bufferUsed += recordStride;
       outputCount++;
       if (bufferUsed === outputBuffer.length) flushOutput();
     }, (pointsRead, bytesRead, bytesTotal) => {
@@ -803,7 +834,8 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
         pointsRead, pointsTotal: header.pointCount,
         pointsWritten: outputCount, bytesRead, bytesTotal
       });
-    }, null, null, null, planarFd);
+    }, null, null, null, planarFd,
+    [idx.intensity, idx.classification]);
     flushOutput();
     if (outputCount !== selectedValid || secondInvalidCount !== selectedInvalidCount) {
       throw new Error('PCD changed or point validity differed between the two indexing passes');
@@ -821,10 +853,6 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
     const epsilon = outputBounds.mn.map((minimum, index) =>
       Math.max(1e-6, (outputBounds.mx[index] - minimum) * 1e-6));
     for (let i = 0; i < 3; i++) outputBounds.mx[i] += epsilon[i];
-    const omissions = [
-      idx.intensity >= 0 ? 'intensity' : null,
-      idx.classification >= 0 ? 'classification' : null
-    ].filter(Boolean);
     const sourceMeta = {
       kind: 'points', points: outputCount, total: header.pointCount,
       w: maxX - minX,
@@ -832,9 +860,9 @@ function preparePcdOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress,
       h: axis === 'zup' ? maxZ - minZ : maxY - minY,
       format: 'PCD ' + header.mode + ' (out-of-core two-pass)',
       colored: header.hasColor,
-      hasIntensity: idx.intensity >= 0,
-      hasClassification: idx.classification >= 0,
-      streamAttributeOmissions: omissions,
+      hasIntensity,
+      hasClassification,
+      streamAttributeOmissions: [],
       crsWkt: commentCrs(header.comments),
       units: commentValue(header.comments, 'units'),
       viewpoint: header.viewpoint && header.viewpoint.every(Number.isFinite) ? header.viewpoint : null,

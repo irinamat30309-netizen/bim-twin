@@ -8,7 +8,6 @@ const Octree = require('./renderer/octree-store');
 const { atomicWriteJsonSync } = require('./db/atomic-file');
 
 const MAX_INDEX_POINTS = 40000000;
-const CANONICAL_POINT_STRIDE = 15;
 const CANONICAL_PARTITION_BUFFER_RECORDS = 16384;
 
 function writeAllSync(fd, buffer, position) {
@@ -50,7 +49,11 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
     }
 
     const pointCount = prepared.count;
-    const totalNodeBytes = pointCount * CANONICAL_POINT_STRIDE;
+    const sourceMeta = prepared.meta || {};
+    const hasIntensity = sourceMeta.hasIntensity === true;
+    const hasClassification = sourceMeta.hasClassification === true;
+    const recordStride = 15 + (hasIntensity ? 4 : 0) + (hasClassification ? 1 : 0);
+    const totalNodeBytes = pointCount * recordStride;
     if (!Number.isSafeInteger(totalNodeBytes)) throw new Error('out-of-core point-store byte size exceeds safe file limits');
     const rootStat = fs.statSync(canonicalPath);
     if (!rootStat.isFile() || rootStat.size !== totalNodeBytes) throw new Error('canonical point store has an invalid size');
@@ -60,12 +63,12 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
     const descriptors = [];
     let offset = 0, emittedPoints = 0, workDone = 0, partitionCount = 0;
     const maxDepth = 14; // fixed deterministic safety bound
-    const readRecords = Math.max(1, Math.floor(8 * 1024 * 1024 / CANONICAL_POINT_STRIDE));
-    const readBuffer = Buffer.alloc(readRecords * CANONICAL_POINT_STRIDE);
-    const partBuffer = Buffer.alloc(CANONICAL_PARTITION_BUFFER_RECORDS * CANONICAL_POINT_STRIDE);
+    const readRecords = Math.max(1, Math.floor(8 * 1024 * 1024 / recordStride));
+    const readBuffer = Buffer.alloc(readRecords * recordStride);
+    const partBuffer = Buffer.alloc(CANONICAL_PARTITION_BUFFER_RECORDS * recordStride);
 
     function writeNodeBytes(key, level, mn, mx, childKeys, splitMode, bytes, count) {
-      const byteLength = count * CANONICAL_POINT_STRIDE;
+      const byteLength = count * recordStride;
       if (bytes.length !== byteLength) throw new Error('out-of-core node buffer has an invalid size');
       const descriptor = {
         key, level, mn: mn.slice(), mx: mx.slice(), count,
@@ -97,7 +100,7 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
     function processNode(key, level, mn, mx, inputPath, count) {
       if (!Number.isSafeInteger(count) || count < 1) throw new Error('invalid point count in out-of-core partition');
       const st = fs.statSync(inputPath);
-      if (!st.isFile() || st.size !== count * CANONICAL_POINT_STRIDE) {
+      if (!st.isFile() || st.size !== count * recordStride) {
         throw new Error('out-of-core partition size/count mismatch at node ' + key);
       }
       if (count <= nodeCapacity) {
@@ -106,10 +109,10 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
           let record = 0;
           while (record < count) {
             const take = Math.min(readRecords, count - record);
-            const bytes = take * CANONICAL_POINT_STRIDE;
+            const bytes = take * recordStride;
             let got = 0;
             while (got < bytes) {
-              const n = fs.readSync(fd, readBuffer, got, bytes - got, record * CANONICAL_POINT_STRIDE + got);
+              const n = fs.readSync(fd, readBuffer, got, bytes - got, record * recordStride + got);
               if (n <= 0) throw new Error('short read in out-of-core leaf node ' + key);
               got += n;
             }
@@ -123,8 +126,8 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
         } finally { fs.closeSync(fd); }
         const descriptor = {
           key, level, mn: mn.slice(), mx: mx.slice(), count,
-          offset: offset - count * CANONICAL_POINT_STRIDE,
-          byteLength: count * CANONICAL_POINT_STRIDE, childKeys: []
+          offset: offset - count * recordStride,
+          byteLength: count * recordStride, childKeys: []
         };
         descriptors.push(descriptor);
         emittedPoints += count;
@@ -143,7 +146,7 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
       const ownCount = Math.min(nodeCapacity, Math.ceil(count / sampleStep));
       const selected = Octree.sampleNodePositions(count, ownCount, key);
       selected.sort();
-      const ownBytes = Buffer.alloc(ownCount * CANONICAL_POINT_STRIDE);
+      const ownBytes = Buffer.alloc(ownCount * recordStride);
       const remainingCount = count - ownCount;
       const cx = (mn[0] + mx[0]) / 2, cy = (mn[1] + mx[1]) / 2, cz = (mn[2] + mx[2]) / 2;
       const balancedFallback = level >= maxDepth;
@@ -154,18 +157,18 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
       try {
         while (record < count) {
           const take = Math.min(readRecords, count - record);
-          const bytes = take * CANONICAL_POINT_STRIDE;
+          const bytes = take * recordStride;
           let got = 0;
           while (got < bytes) {
-            const n = fs.readSync(inputFd, readBuffer, got, bytes - got, record * CANONICAL_POINT_STRIDE + got);
+            const n = fs.readSync(inputFd, readBuffer, got, bytes - got, record * recordStride + got);
             if (n <= 0) throw new Error('short read in out-of-core partition ' + key);
             got += n;
           }
           for (let i = 0; i < take; i++) {
             const globalRecord = record + i;
-            const src = i * CANONICAL_POINT_STRIDE;
+            const src = i * recordStride;
             if (nextSelected < ownCount && selected[nextSelected] === globalRecord) {
-              readBuffer.copy(ownBytes, nextSelected * CANONICAL_POINT_STRIDE, src, src + CANONICAL_POINT_STRIDE);
+              readBuffer.copy(ownBytes, nextSelected * recordStride, src, src + recordStride);
               nextSelected++;
               continue;
             }
@@ -185,8 +188,8 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
               const fd = fs.openSync(partPath, 'wx', 0o600);
               sink = sinks[octant] = { key: childKey, path: partPath, fd, buffer: Buffer.from(partBuffer), used: 0, position: 0, count: 0 };
             }
-            readBuffer.copy(sink.buffer, sink.used, src, src + CANONICAL_POINT_STRIDE);
-            sink.used += CANONICAL_POINT_STRIDE;
+            readBuffer.copy(sink.buffer, sink.used, src, src + recordStride);
+            sink.used += recordStride;
             sink.count++;
             bucketCounts[octant]++;
             if (sink.used === sink.buffer.length) flushSink(sink);
@@ -259,13 +262,13 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
       throw new Error('out-of-core octree point/byte totals do not match');
     }
     const index = {
-      version: 1, root: 'r', hasColor: true, stride: CANONICAL_POINT_STRIDE,
+      version: (hasIntensity || hasClassification) ? 2 : 1,
+      root: 'r', hasColor: true, hasIntensity, hasClassification, stride: recordStride,
       pointCount, nodeCount: descriptors.length,
       bbox: { mn: prepared.bbox.mn.slice(), mx: prepared.bbox.mx.slice() },
       nodes: descriptors,
       outOfCore: true, ingest: prepared.ingest || (sourceKind + '-two-pass')
     };
-    const sourceMeta = prepared.meta || {};
     index.sourcePointCount = prepared.sourcePointCount;
     index.indexedPointCount = pointCount;
     index.samplingRatio = prepared.sourcePointCount > 0 ? prepared.sourcePointCount / pointCount : 1;

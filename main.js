@@ -19,6 +19,7 @@ const verify = require('./ai/verify');
 const llm = require('./ai/llm');
 const report = require('./ai/report');
 const cloud = require('./las-node');
+const octreeStore = require('./renderer/octree-store');
 const e57 = require('./renderer/e57-stations');
 const { PTXStreamValidator } = require('./renderer/ptx-stream-validator');
 const { atomicWriteFileSync, atomicWriteJsonSync } = require('./db/atomic-file');
@@ -1492,6 +1493,9 @@ function registerIpc() {
         try { sourcePreflightInfo = cloud.getOutOfCorePcdPointFileInfo(abs); } catch (_) {}
       }
       const useOutOfCore = !!sourcePreflightInfo;
+      const outOfCoreRecordStride = 15 +
+        (useOutOfCore && sourcePreflightInfo.hasIntensity ? 4 : 0) +
+        (useOutOfCore && sourcePreflightInfo.hasClassification ? 1 : 0);
       const advertisedSourcePoints = Number(a.expectedPoints);
       const sourcePointCount = useOutOfCore
         ? Number(sourcePreflightInfo.pointCount || sourcePreflightInfo.vertexCount)
@@ -1524,7 +1528,13 @@ function registerIpc() {
         const disk = useOutOfCore
           ? assessOutOfCoreOctreeDiskSpace(
             estimatePointCount, currentAvailableDiskBytes(base),
-            { extraBytes: pcdLzfScratchBytes }
+            {
+              // Canonical scratch and final node blob each contain one record.
+              // Include the v2 intensity/classification payload instead of
+              // preflighting the older XYZ+RGB-only 30-byte estimate.
+              bytesPerPoint: outOfCoreRecordStride * 2,
+              extraBytes: pcdLzfScratchBytes
+            }
           )
           : assessOctreeBuildDiskSpace(estimatePointCount, currentAvailableDiskBytes(base));
         if (!disk.ok) {
@@ -1617,7 +1627,13 @@ function registerIpc() {
         const idxStat = fs.statSync(idxPath);
         if (!idxStat.isFile() || idxStat.size > 64 * 1024 * 1024) return { ok: false, error: 'index_too_large' };
         index = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
-        if (!index || !Array.isArray(index.nodes) || ![12, 15].includes(index.stride)) return { ok: false, error: 'invalid_index' };
+        if (!index || !Array.isArray(index.nodes) ||
+            !octreeStore.validateOctreeIndex) return { ok: false, error: 'invalid_index' };
+        const dataStat = fs.statSync(binPath);
+        if (!dataStat.isFile() ||
+            !octreeStore.validateOctreeIndex(index, dataStat.size)) {
+          return { ok: false, error: 'invalid_index' };
+        }
         octreeIndexCache.set(dir, index);
       }
       if (typeof a.key !== 'string' || !/^r[0-7]*$/.test(a.key)) return { ok: false, error: 'invalid_node_key' };
@@ -1633,7 +1649,11 @@ function registerIpc() {
       const buf = Buffer.alloc(node.byteLength);
       const read = fs.readSync(fd, buf, 0, node.byteLength, node.offset);
       if (read !== node.byteLength) return { ok: false, error: 'short_node_read' };
-      return { ok: true, key: node.key, count: node.count, hasColor: !!index.hasColor, bytes: buf };
+      return {
+        ok: true, key: node.key, count: node.count, hasColor: !!index.hasColor,
+        hasIntensity: !!index.hasIntensity, hasClassification: !!index.hasClassification,
+        bytes: buf
+      };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     finally { if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} } }
   });

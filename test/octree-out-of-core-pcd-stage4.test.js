@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const Cloud = require('../las-node');
+const Octree = require('../renderer/octree-store');
 
 const CRS = 'PROJCRS["PCD test",ID["EPSG",32636]]';
 
@@ -182,7 +183,11 @@ function runWorker(sourcePath, outputDir, options) {
 }
 
 function readAllNodes(outputDir, index) {
-  const fd = fs.openSync(path.join(outputDir, 'nodes.bin'), 'r');
+  const layout = Octree.getNodePointLayout(index);
+  assert.ok(layout, 'node index has a supported point layout');
+  const nodeFilePath = path.join(outputDir, 'nodes.bin');
+  assert.equal(Octree.validateOctreeIndex(index, fs.statSync(nodeFilePath).size), true);
+  const fd = fs.openSync(nodeFilePath, 'r');
   const points = [];
   let nextOffset = 0;
   try {
@@ -193,10 +198,20 @@ function readAllNodes(outputDir, index) {
       assert.equal(fs.readSync(fd, bytes, 0, bytes.length, node.offset), bytes.length);
       for (let i = 0; i < node.count; i++) {
         const at = i * index.stride;
-        points.push([
+        const point = [
           bytes.readFloatLE(at), bytes.readFloatLE(at + 4), bytes.readFloatLE(at + 8),
-          bytes[at + 12], bytes[at + 13], bytes[at + 14]
-        ]);
+        ];
+        let attributeOffset = at + 12;
+        if (layout.hasColor) {
+          point.push(bytes[attributeOffset], bytes[attributeOffset + 1], bytes[attributeOffset + 2]);
+          attributeOffset += 3;
+        }
+        if (layout.hasIntensity) {
+          point.push(bytes.readFloatLE(attributeOffset));
+          attributeOffset += 4;
+        }
+        if (layout.hasClassification) point.push(bytes[attributeOffset]);
+        points.push(point);
       }
       nextOffset += node.byteLength;
     }
@@ -216,6 +231,8 @@ function previewMap(parsed) {
       Math.round(parsed.col[i * 3 + 1] * 255),
       Math.round(parsed.col[i * 3 + 2] * 255)
     ];
+    if (parsed.intensity) point.push(parsed.intensity[i]);
+    if (parsed.classification) point.push(parsed.classification[i]);
     result.set(point.slice(0, 3).map(value => value.toFixed(4)).join(','), point);
   }
   return result;
@@ -228,7 +245,8 @@ function assertMatchesPreview(expected, actual) {
   for (let axis = 0; axis < 3; axis++) {
     assert.ok(Math.abs(match[axis] - actual[axis]) <= 1e-5);
   }
-  assert.deepEqual(actual.slice(3), match.slice(3), 'RGB8 should match regular PCD import');
+  assert.deepEqual(actual.slice(3), match.slice(3),
+    'RGB8/intensity/classification should match regular PCD import');
   expected.delete(key);
 }
 
@@ -256,8 +274,12 @@ test('PCD binary out-of-core index matches source-frame preview, packed RGB, CRS
     assert.equal(result.index.pointCount, count);
     assert.equal(result.index.sourceMeta.crsWkt, CRS);
     assert.equal(result.index.sourceMeta.colored, true);
+    assert.equal(result.index.version, 2);
+    assert.equal(result.index.hasIntensity, true);
+    assert.equal(result.index.hasClassification, true);
+    assert.equal(result.index.stride, 20);
     assert.deepEqual(result.index.sourceMeta.srcXform, preview.meta.srcXform);
-    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, ['intensity', 'classification']);
+    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, []);
     assert.ok(progress.some(value => value.phase === 'parse-scan'));
     assert.ok(progress.some(value => value.phase === 'parse-convert'));
     const expected = previewMap(preview);
@@ -290,7 +312,7 @@ test('PCD ASCII out-of-core index matches Y-up source transform and RGB with CRL
     assert.equal(result.index.pointCount, count);
     assert.equal(result.index.sourceMeta.crsWkt, CRS);
     assert.deepEqual(result.index.sourceMeta.srcXform, preview.meta.srcXform);
-    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, ['intensity', 'classification']);
+    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, []);
     const expected = previewMap(preview);
     const actual = readAllNodes(output, result.index);
     assert.equal(actual.length, count);
@@ -349,7 +371,7 @@ test('PCD binary_compressed LZF is decoded to disk in bounded chunks and matches
     assert.equal(result.index.sourcePointCount, count);
     assert.equal(result.index.pointCount, count);
     assert.deepEqual(result.index.sourceMeta.srcXform, preview.meta.srcXform);
-    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, ['intensity', 'classification']);
+    assert.deepEqual(result.index.sourceMeta.streamAttributeOmissions, []);
     assert.ok(progress.some(value => value.phase === 'parse-decompress-pcd'));
     assert.ok(progress.some(value => value.phase === 'parse-scan'));
     const expected = previewMap(preview);

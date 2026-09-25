@@ -105,6 +105,100 @@ test('serialize colorless node uses 12-byte stride and null color', () => {
   for (let i = 0; i < pos.length; i++) assert.ok(Math.abs(back.pos[i] - pos[i]) < 1e-3);
 });
 
+test('version 2 node records round-trip every RGB/intensity/classification layout', () => {
+  const pos = new Float32Array([1.25, -2.5, 3.75, 10, 20, 30, -4, 5, 6]);
+  const col = new Float32Array([1, 0, 0.5, 0.25, 0.5, 0.75, 0, 1, 0]);
+  const intensity = new Float32Array([0, 0.375, 1]);
+  const classification = new Uint8Array([2, 42, 255]);
+
+  for (const hasColor of [false, true]) {
+    for (const hasIntensity of [false, true]) {
+      for (const hasClassification of [false, true]) {
+        if (!hasIntensity && !hasClassification) continue;
+        const index = {
+          version: 2, hasColor, hasIntensity, hasClassification,
+          stride: (hasColor ? 15 : 12) + (hasIntensity ? 4 : 0) + (hasClassification ? 1 : 0)
+        };
+        const bytes = OS.serializeNodePoints(pos, col, hasColor, {
+          intensity: hasIntensity ? intensity : null,
+          classification: hasClassification ? classification : null
+        });
+        assert.equal(bytes.byteLength, pos.length / 3 * index.stride);
+        const layout = OS.getNodePointLayout(index);
+        assert.deepEqual(layout, {
+          version: 2, stride: index.stride, hasColor, hasIntensity, hasClassification,
+          colorOffset: hasColor ? 12 : null,
+          intensityOffset: hasIntensity ? (hasColor ? 15 : 12) : null,
+          classificationOffset: hasClassification
+            ? (hasColor ? 15 : 12) + (hasIntensity ? 4 : 0)
+            : null
+        });
+        const back = OS.deserializeNodePoints(bytes, 3, hasColor, index);
+        assert.deepEqual(Array.from(back.pos), Array.from(pos));
+        if (hasColor) {
+          assert.deepEqual(Array.from(back.col), Array.from(col, value =>
+            Math.fround(Math.round(value * 255) / 255)));
+        } else assert.equal(back.col, null);
+        if (hasIntensity) assert.deepEqual(Array.from(back.intensity), Array.from(intensity));
+        else assert.equal(back.intensity, null);
+        if (hasClassification) assert.deepEqual(Array.from(back.classification), Array.from(classification));
+        else assert.equal(back.classification, null);
+      }
+    }
+  }
+});
+
+test('version 2 node layout and serialized lengths reject corrupt descriptors and truncated data', () => {
+  const valid = { version: 2, hasColor: true, hasIntensity: true, hasClassification: true, stride: 20 };
+  assert.equal(OS.getNodePointLayout(valid).stride, 20);
+  assert.equal(OS.getNodePointLayout({ ...valid, stride: 19 }), null);
+  assert.equal(OS.getNodePointLayout({ ...valid, version: 3 }), null);
+  assert.equal(OS.getNodePointLayout({ version: 1, hasColor: true, hasIntensity: true }), null);
+
+  const bytes = OS.serializeNodePoints(new Float32Array([0, 0, 0]), new Float32Array([1, 1, 1]), true, {
+    intensity: new Float32Array([0.5]), classification: new Uint8Array([7])
+  });
+  assert.throws(() => OS.deserializeNodePoints(bytes.subarray(0, bytes.length - 1), 1, true, valid),
+    /byte length/);
+  assert.throws(() => OS.deserializeNodePoints(bytes, 1, true, { ...valid, stride: 19 }),
+    /invalid octree node point layout/);
+  assert.throws(() => OS.serializeNodePoints(new Float32Array([0, 0, 0]), null, false, {
+    intensity: new Float32Array(0)
+  }), /shorter than the point count/);
+});
+
+test('version 1 point record decoding remains backward-compatible', () => {
+  const { pos, col } = makeCloud(3, true);
+  const bytes = OS.serializeNodePoints(pos, col, true);
+  const oldIndex = { version: 1, hasColor: true, stride: 15 };
+  const back = OS.deserializeNodePoints(bytes, 3, true, oldIndex);
+  assert.deepEqual(Array.from(back.pos), Array.from(pos));
+  assert.equal(back.intensity, null);
+  assert.equal(back.classification, null);
+});
+
+test('persistent octree index validation rejects corrupt ranges, graph edges and totals', () => {
+  const { pos, col } = makeCloud(5000, true);
+  const packed = OS.packOctree(OS.buildOctree(pos, col, { nodeCapacity: 1000 }));
+  assert.equal(OS.validateOctreeIndex(packed.index, packed.blob.byteLength), true);
+  assert.equal(OS.validateOctreeIndex(packed.index, packed.blob.byteLength - 1), false);
+
+  const corruptions = [
+    index => { index.nodes[1].offset += 1; },
+    index => { index.nodes[1].byteLength -= index.stride; },
+    index => { index.nodes[0].childKeys[0] = 'r8'; },
+    index => { index.nodes[0].childKeys.push(index.nodes[0].childKeys[0]); },
+    index => { index.nodes[0].count += 1; },
+    index => { index.nodes[0].mn[0] = NaN; },
+    index => { index.nodes[0].childKeys = []; }
+  ];
+  for (const corrupt of corruptions) {
+    const index = JSON.parse(JSON.stringify(packed.index));
+    corrupt(index);
+    assert.equal(OS.validateOctreeIndex(index), false);
+  }
+});
+
 test('packOctree builds contiguous blob matching index offsets', () => {
   const { pos, col } = makeCloud(70000, true);
   const built = OS.buildOctree(pos, col, { nodeCapacity: 4000 });
