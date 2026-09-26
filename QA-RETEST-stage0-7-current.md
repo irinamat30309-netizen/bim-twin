@@ -2,7 +2,7 @@
 
 ## База и объём
 
-- QA-правки и synthetic LAZ/fixture tests опубликованы в review-ветке `agent/windows-package-qa` в commit `85e05cb5a3fa37fb259a056cf4016f752b6bedb7`. GitHub Actions на этом head завершились **4/4 passed** (`test`, `windows-test`, два `windows-package`).
+- QA-правки, synthetic fixtures и запрос high-performance NVIDIA WebGL опубликованы в review-ветке `agent/windows-package-qa`; GPU-код проверен на commit `4c6cddeede0ea05387afdb028341de59f5b46a60`. GitHub Actions на этом head завершились **4/4 passed** (`test`, `windows-test`, два `windows-package`); hosted runners пропускают self-hosted physical-GPU smoke.
 - Локальная среда: Linux, Node `v24.14.1`, npm `11.11.0`. Это чистая Git worktree, не Windows installer и не целевой GPU стенд.
 - Этот прогон обновляет автоматическую регрессию и её QA-покрытие. Он не является независимой геодезической, CAD/GIS или пользовательской приёмкой.
 
@@ -25,8 +25,8 @@
 | `node --check pointcloud-ply-io.js` | passed |
 | `python scripts/check-python-syntax.py` | passed, **28 Python source files** (tracked + new non-ignored files) |
 | `npm run test:store` | passed: `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
-| GitHub Actions на commit `85e05cb5` | **4/4 passed**: `test`, `windows-test`, два `windows-package`; это hosted CI, а не независимый physical-GPU или пользовательский acceptance test |
-| Приватный Windows hardware-QA run #7 | По скриншоту пользователя workflow завершился успешно за 5:09; шаги regression, сборки NSIS/ASAR и проверки ASAR зелёные. Точный адаптер/renderer и VRAM stress по сводному скриншоту не подтверждаются |
+| GitHub Actions на GPU-коде commit `4c6cdde` | **4/4 passed**: `test`, `windows-test`, два `windows-package`; это hosted CI, не physical-GPU acceptance |
+| Приватный Windows hardware-QA run #8 | Скриншот показывает `Success`, 5:17, private workflow repo `main` @ `92c0db6`; `source_ref` и `[BIMTWIN_GPU_WEBGL]` renderer/adapter в сводке не видны, поэтому использование RTX 5070 и текущего кода не подтверждено |
 
 ## Что исправлено в проверках
 
@@ -34,10 +34,11 @@
 2. Scan-to-BIM room regression создаёт временные synthetic LAS/PLY из аналитической комнаты с известной геометрией.
 3. Добавлен large-PLY parser regression на 600 000 synthetic points с детерминированной budget sampling.
 4. Добавлены компактные synthetic LAZ 1.2/1.4/decimation fixtures с manifest/hash и генератором; LAZ regression test теперь 5/5. Ранее предоставленные OBJ/STL/large PLY прошли локально и остались вне Git.
+5. Основные WebGL viewer contexts запрашивают `powerPreference: high-performance`; hardware smoke включает Electron high-performance GPU flags, непрерывно рисует 1 000 000 точек в течение 10 секунд и требует NVIDIA adapter вместо software renderer. Этот аппаратный вариант ждёт повторного запуска на runner пользователя.
 
 ## Пропуски полного набора
 
-- В portable full suite без `BIM_TWIN_USER_FIXTURES` пропускаются только две проверки user-supplied OBJ/STL/large-PLY файлов и один physical-GPU smoke.
+- В portable full suite без `BIM_TWIN_USER_FIXTURES` пропускаются только две проверки user-supplied OBJ/STL/large-PLY файлов и один NVIDIA hardware smoke (1 млн точек/10 с).
 - При локальном подключении ранее предоставленных user fixtures обе dataset-проверки проходят; остаётся только GPU smoke вне приватного Windows runner. Исходные пользовательские файлы не копировались и не коммитились.
 - Четыре прежних LAZ skips сняты compact synthetic fixtures; `test/laz-node.test.js` проходит 5/5. Room и large binary PLY regressions тоже запускаются без внешних файлов.
 
