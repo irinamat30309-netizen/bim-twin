@@ -82,7 +82,18 @@
       if (ps.loadClassification) {
         ps.loadClassification(cloud.id).then(function (classification) {
           if (serial !== _projectRestoreSerial || !classification || !classification.ok) return;
-          v.applyClassificationLabels(classification.labels);
+          var applied = v.applyClassificationLabels && v.applyClassificationLabels(classification.labels);
+          if (!applied) {
+            var savedCount = classification.classification && Number(classification.classification.pointCount);
+            var current = v.getEditedCloud && v.getEditedCloud();
+            var loadedCount = current && current.pos ? Math.floor(current.pos.length / 3) : null;
+            toast('Сохранённая разметка не применена: число точек в скане изменилось');
+            try {
+              window.dispatchEvent(new CustomEvent('bim-project-classification-mismatch', {
+                detail: { cloudId: cloud.id, savedPointCount: Number.isFinite(savedCount) ? savedCount : null, loadedPointCount: loadedCount }
+              }));
+            } catch (_) {}
+          }
         }).catch(function () {});
       }
     }).catch(function (error) {

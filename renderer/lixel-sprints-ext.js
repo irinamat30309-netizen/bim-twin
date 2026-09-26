@@ -243,7 +243,11 @@
     var meta = Object.assign({}, src.meta || {}), crs = t && t.getSourceCrs ? t.getSourceCrs() : null;
     if (crs) meta.crsWkt = crs;
     setPct(0.65, 'Запись LAS 1.4 / ASPRS…'); await yieldFrame();
-    var bytes = window.ExportHub.exportLAS({ pos: src.pos, col: src.col || c.col || null, count: r.labels.length, meta: meta, classification: classes });
+    var bytes = window.ExportHub.exportLAS({
+      pos: src.pos, col: src.col || c.col || null,
+      intensity: src.intensity || c.intensity || null,
+      count: r.labels.length, meta: meta, classification: classes
+    });
     download('classified-' + Date.now() + '.las', bytes, 'application/vnd.las'); setPct(1, 'Готово');
     toast('Классифицированный LAS: грунт ' + nfmt(ground) + ', прочее ' + nfmt(r.labels.length - ground) + ' (ASPRS 2/1, WKT сохранён при наличии)');
   }); }
@@ -251,29 +255,47 @@
   // ---- Спринт 5: Геопривязка по GCP (Гельмерт 3D) ------------------------
   function opGeoref() { return run('Геопривязка…', async function (setPct) {
     var c = needCloud(); if (!c) return; var G = window.Georef; if (!G) { toast('Модуль геопривязки недоступен'); return; }
-    var txt = (typeof window.prompt === 'function') ? window.prompt('GCP (CSV): name,srcX,srcY,srcZ,dstX,dstY,dstZ — исходные XYZ облака → целевые XYZ (Z вверх), ≥3 неколлинеарных точек:', '') : null;
+    var txt = (typeof window.prompt === 'function') ? window.prompt('GCP (CSV): name,srcX,srcY,srcZ,dstX,dstY,dstZ,weight,role. Координаты источника → целевые XYZ (Z вверх); минимум 3 неколлинеарных control. role=check — независимая проверка, она не участвует в подгонке. weight — относительный вес (обычно 1/σ²):', '') : null;
     if (!txt) { toast('Геопривязка отменена'); return; }
     var mgr = new G.GCPManager();
-    txt.split(/\r?\n/).forEach(function (line) {
-      var p = line.split(/[,;\t]/).map(function (s) { return s.trim(); });
-      if (p.length >= 7) { var src = [+p[1], +p[2], +p[3]], dst = [+p[4], +p[5], +p[6]]; if (src.every(isFinite) && dst.every(isFinite)) mgr.add(p[0] || ('P' + (mgr.list().length + 1)), src, dst); }
-    });
-    if (mgr.list().length < 3) { toast('Нужно ≥3 корректных GCP (получено ' + mgr.list().length + ')'); return; }
-    setPct(0.6, 'Решение (Гельмерт 3D)…'); await yieldFrame();
-    var sol = mgr.solve();
+    var parsed = G.parseGcpCsv ? G.parseGcpCsv(txt) : null;
+    if (!parsed) { toast('Парсер GCP CSV недоступен'); return; }
+    if (parsed.errors && parsed.errors.length) {
+      var issues = parsed.errors.slice(0, 3).map(function (e) { return 'строка ' + e.line + ': ' + e.error; }).join('; ');
+      toast('GCP CSV содержит ошибки (' + parsed.errors.length + '): ' + issues + (parsed.errors.length > 3 ? '; …' : '')); return;
+    }
+    parsed.points.forEach(function (p) { mgr.add(p.name, p.src, p.dst, { weight: p.weight, sigma: p.sigma, role: p.role }); });
+    var controls = mgr.list().filter(function (g) { return g.role !== 'check'; }).length;
+    var checkCount = mgr.list().filter(function (g) { return g.role === 'check'; }).length;
+    if (controls < 3) { toast('Нужно ≥3 контрольных GCP; получено ' + controls + ' control и ' + checkCount + ' независимых check'); return; }
+    setPct(0.6, 'Взвешенное robust-решение (Гельмерт 3D)…'); await yieldFrame();
+    var sol = mgr.solve({ robust: true });
     if(!sol){toast('Геопривязка: точки GCP должны быть конечными и не лежать на одной прямой');return;}
+    var independentError = sol.checkRms == null ? null : sol.checkRms;
+    if ((sol.maxControlResidual > 0.05 || (independentError != null && independentError > 0.05)) &&
+        typeof window.confirm === 'function' &&
+        !window.confirm('Большая ошибка GCP: control RMS ' + sol.controlRms.toFixed(4) + ' м, максимум control ' + sol.maxControlResidual.toFixed(4) + ' м' +
+          (independentError == null ? '' : ', независимый check RMS ' + independentError.toFixed(4) + ' м') +
+          '. Проверьте единицы, точки и CRS. Всё равно применить преобразование?')) {
+      toast('Геопривязка отменена: ошибка превышает 5 см'); return;
+    }
     var source=T().getSourceCloud?T().getSourceCloud():c;
     if(!source||!source.pos||source.pos.length!==c.pos.length){toast('Не удалось получить координаты исходного облака');return;}
     var dstCrs=window.prompt('WKT целевой системы координат. Пустое значение снимет прежнюю CRS, чтобы не приписывать её новым координатам:', '');
     if(dstCrs===null){toast('Геопривязка отменена');return;}
     var world=G.applyTransform(source.pos,c.count,sol);
-    var result=G.toViewerCloud(world,source.col||c.col,{crsWkt:dstCrs});
-    T().loadCloud(result,'georef'); setPct(1, 'Готово');
-    var maxResidual=0;sol.residuals.forEach(function(r){if(r.residual>maxResidual)maxResidual=r.residual;});
-    toast('Геопривязка: RMS ' + sol.rms.toFixed(4) + ' м, максимум ' + maxResidual.toFixed(4) + ' м, масштаб ' + sol.scale.toFixed(7) + ', GCP ' + sol.gcpCount + (result.meta.crsWkt?' · CRS задана':' · CRS не задана'));
+    var result=G.toViewerCloud(world,source.col||c.col,{crsWkt:dstCrs,
+      intensity:source.intensity||c.intensity||null,classification:source.classification||c.classification||null});
+    T().loadCloud(result); setPct(1, 'Готово');
+    toast('Геопривязка: control RMS ' + sol.controlRms.toFixed(4) + ' м, max ' + sol.maxControlResidual.toFixed(4) + ' м' +
+      (sol.checkRms == null ? ' · независимых check нет' : ' · check RMS ' + sol.checkRms.toFixed(4) + ' м (' + sol.checkCount + ')') +
+      ', масштаб ' + sol.scale.toFixed(7) + ', GCP ' + sol.controlCount + '+' + sol.checkCount +
+      (sol.warnings && sol.warnings.includes('low_control_redundancy') ? ' · сеть минимальна: добавьте ещё контрольные точки' : '') +
+      (sol.warnings && sol.warnings.includes('control_outlier_downweighted') ? ' · вес выброса снижен' : '') +
+      (result.meta.crsWkt?' · CRS задана':' · CRS не задана'));
   }); }
   function opGcpTemplate() {
-    download('gcp-template.csv', 'name,srcX,srcY,srcZ,dstX,dstY,dstZ\nP1,0,0,0,100,200,10\nP2,1,0,0,101,200,10\nP3,0,0,1,100,201,10\n', 'text/csv');
+    download('gcp-template.csv', 'name,src_x,src_y,src_z,dst_x,dst_y,dst_z,weight,role\nP1,0,0,0,100,200,10,1,control\nP2,1,0,0,101,200,10,1,control\nP3,0,0,1,100,201,10,1,control\nPcheck,1,1,1,101,201,10,1,check\n', 'text/csv');
     toast('Шаблон GCP CSV сохранён');
   }
 

@@ -2,12 +2,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const S = require('../renderer/scan2bim.js');
 const { parseCloudFile } = require('../las-node.js');
+const ExportHub = require('../renderer/export-hub.js');
 
 // Analytic 6 × 4 × 3 m interior. All generated geometry has known dimensions.
-function analyticScene({ column = false, beam = false, cable = false } = {}) {
+function analyticScene({ column = false, beam = false, cable = false, opening = false } = {}) {
   const pts = [], W = 6, D = 4, H = 3, step = 0.05;
   for (let i = 0; i <= W / step; i++) for (let k = 0; k <= H / step; k++) {
     const x = i * step, y = k * step;
@@ -15,7 +17,8 @@ function analyticScene({ column = false, beam = false, cable = false } = {}) {
   }
   for (let j = 0; j <= D / step; j++) for (let k = 0; k <= H / step; k++) {
     const z = j * step, y = k * step;
-    pts.push([0, y, z], [W, y, z]);
+    if (!(opening && y < 2.1 && z >= 1 && z <= 1.9)) pts.push([0, y, z]);
+    pts.push([W, y, z]);
   }
   for (let i = 0; i <= W / 0.1; i++) for (let j = 0; j <= D / 0.1; j++) {
     const x = i * 0.1, z = j * 0.1;
@@ -80,29 +83,58 @@ test('real ceiling cable remains detectable after false-positive suppression', (
   assert.ok(cable.drop >= 1.3 && cable.drop <= 1.7, `cable drop=${cable.drop}`);
 });
 
-const roomFixtureDir = path.join(__dirname, '..', 'QA-artifacts', 'v9.7', 'repro', 'fixtures');
-const roomFixturesAvailable = ['las', 'ply'].every(ext => fs.existsSync(path.join(roomFixtureDir, `room.${ext}`)));
+test('synthetic LAS and PLY room fixtures preserve parsing and geometric ground truth', () => {
+  const points = analyticScene({ column: true, opening: true });
+  const count = points.length;
+  const viewerPos = Float64Array.from(points.flat());
+  const lasPos = new Float64Array(viewerPos.length);
+  for (let i = 0; i < count; i++) {
+    const offset = i * 3;
+    // Convert the viewer's Y-up coordinates to LAS world X/Y/Z (Z-up).
+    lasPos[offset] = viewerPos[offset];
+    lasPos[offset + 1] = -viewerPos[offset + 2];
+    lasPos[offset + 2] = viewerPos[offset + 1];
+  }
 
-test('LAS and PLY room fixtures: geometry matches the shared ground truth without sparse-noise MEP', {
-  skip: roomFixturesAvailable ? false : 'optional synthetic room fixtures are not included in the repository'
-}, () => {
-  for (const ext of ['las', 'ply']) {
-    const file = path.join(roomFixtureDir, `room.${ext}`);
-    const parsed = parseCloudFile(file, { maxPoints: 1_000_000 });
-    assert.equal(parsed.ok, true, `${ext}: ${parsed.message || 'fixture parse failed'}`);
-    assert.equal(parsed.count, 205526, `${ext}: point count`);
-    assert.equal(parsed.meta.srcXform.axis, 'zup', `${ext}: source axis`);
-    const model = reconstruct(parsed.pos, {
-      voxel: 0.03, wallThreshold: 0.05, minWallLen: 0.4,
-      defaultThickness: 0.15, snapAngles: true, closeCorners: true
-    });
-    assert.equal(model.stats.wallCount, 4, `${ext}: wall count`);
-    assert.equal(model.stats.openingCount, 1, `${ext}: opening count`);
-    assert.ok(Math.abs(model.storey.height - 3) <= 0.15, `${ext}: height=${model.storey.height}`);
-    assert.ok(Math.abs(model.stats.floorArea - 24) <= 2, `${ext}: floor area=${model.stats.floorArea}`);
-    assert.equal(model.stats.columnCount, 1, `${ext}: column count`);
-    assert.equal(model.stats.pipeCount, 0, `${ext}: false pipes: ${JSON.stringify(model.pipes)}`);
-    assert.equal(model.stats.cableCount, 0, `${ext}: false cables: ${JSON.stringify(model.cables)}`);
-    assert.equal(model.stats.beamCount, 0, `${ext}: false beams: ${JSON.stringify(model.beams)}`);
+  const fixtures = [
+    {
+      ext: 'las',
+      axis: 'zup',
+      bytes: ExportHub.exportLAS({
+        pos: lasPos, count, meta: { srcXform: { axis: 'zup', t: [0, 0, 0] }, units: 'm' }
+      })
+    },
+    {
+      ext: 'ply',
+      axis: 'yup',
+      bytes: ExportHub.exportPLY({
+        pos: viewerPos, count, meta: { srcXform: { axis: 'yup', t: [0, 0, 0] }, units: 'm' }
+      })
+    }
+  ];
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bimtwin-room-roundtrip-'));
+  try {
+    for (const fixture of fixtures) {
+      const file = path.join(fixtureDir, `room.${fixture.ext}`);
+      fs.writeFileSync(file, fixture.bytes);
+      const parsed = parseCloudFile(file, { maxPoints: 100_000 });
+      assert.equal(parsed.ok, true, `${fixture.ext}: ${parsed.message || 'fixture parse failed'}`);
+      assert.equal(parsed.count, count, `${fixture.ext}: point count`);
+      assert.equal(parsed.meta.srcXform.axis, fixture.axis, `${fixture.ext}: source axis`);
+      const model = reconstruct(parsed.pos, {
+        voxel: 0.03, wallThreshold: 0.05, minWallLen: 0.4,
+        defaultThickness: 0.15, snapAngles: true, closeCorners: true
+      });
+      assert.equal(model.stats.wallCount, 4, `${fixture.ext}: wall count`);
+      assert.equal(model.stats.openingCount, 1, `${fixture.ext}: opening count`);
+      assert.ok(Math.abs(model.storey.height - 3) <= 0.15, `${fixture.ext}: height=${model.storey.height}`);
+      assert.ok(Math.abs(model.stats.floorArea - 24) <= 0.5, `${fixture.ext}: floor area=${model.stats.floorArea}`);
+      assert.equal(model.stats.columnCount, 1, `${fixture.ext}: column count`);
+      assert.equal(model.stats.pipeCount, 0, `${fixture.ext}: false pipes: ${JSON.stringify(model.pipes)}`);
+      assert.equal(model.stats.cableCount, 0, `${fixture.ext}: false cables: ${JSON.stringify(model.cables)}`);
+      assert.equal(model.stats.beamCount, 0, `${fixture.ext}: false beams: ${JSON.stringify(model.beams)}`);
+    }
+  } finally {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
   }
 });

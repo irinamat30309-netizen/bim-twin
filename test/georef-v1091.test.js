@@ -123,13 +123,16 @@ test('applyTransform: retains millimetres at geodetic magnitudes', () => {
 
 test('toViewerCloud: centres target XYZ and retains an invertible source transform', () => {
   const world=new Float64Array([500000.012,6000000.023,104.034,500002.045,6000003.056,105.067]);
-  const c=G.toViewerCloud(world,null,{crsWkt:'PROJCRS["Test"]'}),t=c.meta.srcXform.t;
+  const intensity=new Float32Array([0.25,0.75]),classification=new Uint8Array([2,6]);
+  const c=G.toViewerCloud(world,null,{crsWkt:'PROJCRS["Test"]',intensity,classification}),t=c.meta.srcXform.t;
   assert.equal(c.meta.srcXform.axis,'zup');assert.equal(c.meta.crsWkt,'PROJCRS["Test"]');
+  assert.equal(c.intensity,intensity);assert.equal(c.classification,classification);
   for(let i=0;i<world.length/3;i++){
     assert.ok(Math.abs((c.pos[i*3]+t[0])-world[i*3])<1e-5);
     assert.ok(Math.abs((-c.pos[i*3+2]+t[1])-world[i*3+1])<1e-5);
     assert.ok(Math.abs((c.pos[i*3+1]+t[2])-world[i*3+2])<1e-5);
   }
+  assert.throws(()=>G.toViewerCloud(world,null,{intensity:new Float32Array([0.1])}),/интенсивности/);
 });
 
 test('compareCrsWkt: recognizes equivalent EPSG, mismatch, and unknown', () => {
@@ -140,4 +143,72 @@ test('compareCrsWkt: recognizes equivalent EPSG, mismatch, and unknown', () => {
   assert.equal(G.compareCrsWkt('PROJCRS["Custom A",BASEGEOGCRS["WGS",ID["EPSG",4326]],CONVERSION["A"]]','PROJCRS["Custom B",BASEGEOGCRS["WGS",ID["EPSG",4326]],CONVERSION["B"]]'),'unknown');
   assert.equal(G.compareCrsWkt(null,'PROJCRS["Grid",ID["EPSG",32610]]'),'unknown');
   assert.equal(G.compareCrsWkt(' PROJCRS["Same"] ','PROJCRS["Same"]'),'same');
+});
+
+test('weighted Helmert uses observation weights and rejects invalid weights', () => {
+  const src=[[0,0,0],[10,0,0],[0,10,0],[0,0,10],[5,3,7]];
+  const dst=src.map(p=>[p[0]+500000,p[1]+6000000,p[2]+120]);
+  dst[4]=[dst[4][0]+1,dst[4][1]-1,dst[4][2]+0.5];
+  const unweighted=G.helmert3D(src,dst);
+  const weighted=G.helmert3D(src,dst,[1,1,1,1,0.001]);
+  assert.ok(unweighted && weighted);
+  assert.ok(weighted.rms<unweighted.rms);
+  const p=G.transformPt([2,4,6],weighted.scale,weighted.R,weighted.t);
+  assert.ok(Math.abs(p[0]-500002)<0.01);
+  assert.ok(Math.abs(p[1]-6000004)<0.01);
+  assert.ok(Math.abs(p[2]-126)<0.01);
+  assert.equal(G.helmert3D(src,dst,[1,1,0,1,1]),null);
+  assert.equal(G.helmert3D(src,dst,[1,1]),null);
+});
+
+test('GCPManager separates independent checks and robustly downweights a control outlier', () => {
+  const src=[[0,0,0],[10,0,0],[0,10,0],[0,0,10],[10,10,3],[5,2,7]];
+  const dst=src.map(p=>[p[0]+100,p[1]+200,p[2]+50]);
+  dst[5]=[dst[5][0]+3,dst[5][1]-2,dst[5][2]+1];
+  const gm=new G.GCPManager();
+  src.forEach((p,i)=>gm.add('C'+i,p,dst[i],{weight:i===4?4:1}));
+  gm.add('CHECK-1',[2,3,4],[102,203,54],{role:'check',sigma:0.01});
+  const solved=gm.solve({robust:true});
+  assert.ok(solved);
+  assert.equal(solved.controlCount,6);
+  assert.equal(solved.checkCount,1);
+  assert.ok(solved.robustIterations>0);
+  assert.ok(solved.robustWeights[5]<0.01,'gross control outlier should be visibly downweighted');
+  assert.ok(solved.checkRms<1e-3,'independent check point is not used in fit and validates the transform');
+  assert.ok(solved.maxControlResidual>3);
+  assert.ok(solved.warnings.includes('control_outlier_downweighted'));
+  assert.equal(solved.residualCovariance.length,3);
+  assert.ok(solved.residuals.some(r=>r.name==='CHECK-1'&&r.role==='check'));
+});
+
+test('GCPManager validates measurements and exports role/weight columns', () => {
+  const gm=new G.GCPManager();
+  assert.throws(()=>gm.add('bad',[0,0,NaN],[1,2,3]),/finite/);
+  assert.throws(()=>gm.add('bad',[0,0,0],[1,2,3],{weight:0}),/positive/);
+  assert.throws(()=>gm.add('bad',[0,0,0],[1,2,3],{role:'fit?'}),/role/);
+  gm.add('P,1',[0,0,0],[1,2,3],{weight:2,role:'control'});
+  gm.add('CHECK',[1,0,0],[2,2,3],{role:'check'});
+  const csv=gm.toCSV();
+  assert.match(csv,/src_x.*weight.*role/);
+  assert.match(csv,/"P,1",/);
+  assert.match(csv,/CHECK,[^\n]*,check/);
+});
+
+test('parseGcpCsv supports headers, quoted names, weights, checks, and decimal-comma semicolon files', () => {
+  const comma=G.parseGcpCsv('name,src_x,src_y,src_z,dst_x,dst_y,dst_z,weight,role\n"Point, one",0,0,0,10,20,30,4,control\nPcheck,1,1,1,11,21,31,2,check');
+  assert.equal(comma.errors.length,0);
+  assert.equal(comma.points.length,2);
+  assert.equal(comma.points[0].name,'Point, one');
+  assert.equal(comma.points[0].weight,4);
+  assert.equal(comma.points[1].role,'check');
+
+  const semi=G.parseGcpCsv('name;src_x;src_y;src_z;dst_x;dst_y;dst_z;weight;role\nP1;0,5;0;0;10,5;20;30;2;control\nP2;1,5;0;0;11,5;20;30;1;check');
+  assert.equal(semi.errors.length,0);
+  assert.equal(semi.delimiter,';');
+  assert.equal(semi.points[0].src[0],0.5);
+  assert.equal(semi.points[1].role,'check');
+
+  const bad=G.parseGcpCsv('name,src_x,src_y,src_z,dst_x,dst_y,dst_z\nP1,0,0,0,1,2,3\nbroken,x,0,0,1,2,3');
+  assert.equal(bad.points.length,1);
+  assert.deepEqual(bad.errors.map(e=>e.line),[3]);
 });

@@ -2,9 +2,9 @@
 """BIM-Twin point-cloud geometry sidecar.
 
 Reads a JSON request on stdin, performs a geometry operation, and prints a JSON
-result on stdout. Prefers Open3D / SciPy / PDAL when installed, and falls back
-to pure-NumPy implementations so the core features still work with just
-Python + NumPy.
+result on stdout. Registration uses deterministic trimmed ICP with SciPy's
+exact nearest-neighbour index when available or a bounded-memory, exact
+NumPy fallback. Open3D/PDAL are optional for operations that need them.
 
 Modes (JSON on stdin):
   {"mode":"status"}
@@ -52,8 +52,10 @@ def read_ply_numpy(path):
         if f.readline().strip() != b'ply':
             raise ValueError('not a ply file')
         fmt = None
-        count = 0
+        count = None
         props = []
+        current_element = None
+        vertex_seen = False
         while True:
             line = f.readline()
             if not line:
@@ -64,52 +66,126 @@ def read_ply_numpy(path):
             k = t[0]
             if k == b'format':
                 fmt = t[1]
-            elif k == b'element' and t[1] == b'vertex':
-                count = int(t[2])
             elif k == b'element':
-                # another element (e.g. face) - stop capturing vertex props
-                pass
-            elif k == b'property' and len(t) >= 3 and t[1] != b'list':
-                props.append((t[2].decode(), _PLY_TYPES.get(t[1].decode(), 'f4')))
+                current_element = t[1].decode()
+                if current_element == 'vertex':
+                    if vertex_seen:
+                        raise ValueError('duplicate_vertex_element')
+                    count = int(t[2])
+                    if count < 0:
+                        raise ValueError('invalid_vertex_count')
+                    vertex_seen = True
+                elif not vertex_seen:
+                    # This reader consumes the first PLY data block as vertices.
+                    # Refuse unusual element order rather than misreading bytes.
+                    raise ValueError('vertex_element_must_be_first')
+            elif k == b'property' and current_element == 'vertex' and len(t) >= 3:
+                if t[1] == b'list':
+                    raise ValueError('unsupported_vertex_list_property')
+                name, type_name = t[2].decode(), t[1].decode()
+                if type_name not in _PLY_TYPES:
+                    raise ValueError('unsupported_ply_property_type:' + type_name)
+                props.append((name, _PLY_TYPES[type_name]))
             elif k == b'end_header':
                 break
+        if fmt not in (b'ascii', b'binary_little_endian', b'binary_big_endian'):
+            raise ValueError('unsupported_ply_format')
+        if count is None:
+            raise ValueError('missing_vertex_element')
+        if not props or not all(name in [p[0] for p in props] for name in ('x', 'y', 'z')):
+            raise ValueError('missing_xyz_properties')
         names = [p[0] for p in props]
         if fmt == b'ascii':
-            data = np.loadtxt(f, max_rows=count)
-            if data.ndim == 1:
-                data = data.reshape(count, -1)
+            if count:
+                data = np.loadtxt(f, max_rows=count)
+                if data.ndim == 1:
+                    data = data.reshape(count, -1)
+            else:
+                data = np.empty((0, len(names)), dtype=np.float64)
             cols = {n: data[:, i] for i, n in enumerate(names)}
         else:
             dt = np.dtype([(n, ('<' if b'little' in fmt else '>') + t) for n, t in props])
-            data = np.frombuffer(f.read(count * dt.itemsize), dtype=dt, count=count)
+            payload = f.read(count * dt.itemsize)
+            if len(payload) != count * dt.itemsize:
+                raise ValueError('truncated_vertex_data')
+            data = np.frombuffer(payload, dtype=dt, count=count)
             cols = {n: data[n] for n in names}
     xyz = np.stack([cols['x'], cols['y'], cols['z']], axis=1).astype(np.float64)
     rgb = None
     if all(c in cols for c in ('red', 'green', 'blue')):
         rgb = np.stack([cols['red'], cols['green'], cols['blue']], axis=1).astype(np.float64)
-        if rgb.max() <= 1.0 + 1e-6:
+        if rgb.size and rgb.max() <= 1.0 + 1e-6:
             rgb = rgb * 255.0
+    prop_names = {n.lower(): n for n in names}
+    intensity_name = next((prop_names[n] for n in ('intensity', 'scalar_intensity', 'reflectance')
+                           if n in prop_names), None)
+    class_name = next((prop_names[n] for n in ('classification', 'class', 'label', 'scalar_classification')
+                       if n in prop_names), None)
+    intensity = None
+    if intensity_name is not None:
+        intensity = np.asarray(cols[intensity_name], dtype=np.float64)
+        if not np.isfinite(intensity).all():
+            raise ValueError('non_finite_intensity')
+    classification = None
+    if class_name is not None:
+        class_values = np.asarray(cols[class_name], dtype=np.float64)
+        if (not np.isfinite(class_values).all() or
+                np.any(class_values < 0) or np.any(class_values > 255) or
+                np.any(class_values != np.floor(class_values))):
+            raise ValueError('invalid_classification_values')
+        classification = class_values.astype(np.uint8)
     finite = np.isfinite(xyz).all(axis=1)
     if not finite.all():
         xyz = xyz[finite]
         if rgb is not None:
             rgb = rgb[finite]
-    return xyz, rgb
+        if intensity is not None:
+            intensity = intensity[finite]
+        if classification is not None:
+            classification = classification[finite]
+    return xyz, rgb, intensity, classification
 
 
 def write_ply_numpy(path, xyz, rgb=None, up_axis=None, crs_wkt=None,
-                    double_precision=False, coordinate_frame=None):
+                    double_precision=False, coordinate_frame=None,
+                    intensity=None, classification=None):
     from urllib.parse import quote
     import numpy as np
+    xyz = np.asarray(xyz, dtype=np.float64)
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError('invalid_xyz_shape')
+    if not np.isfinite(xyz).all():
+        raise ValueError('non_finite_coordinates')
     xyz_dtype = '<f8' if double_precision else '<f4'
     xyz = np.ascontiguousarray(xyz, dtype=xyz_dtype)
     n = xyz.shape[0]
     fields = [('x', xyz_dtype), ('y', xyz_dtype), ('z', xyz_dtype)]
     arrs = [xyz[:, 0], xyz[:, 1], xyz[:, 2]]
     if rgb is not None:
-        rgb = np.clip(np.asarray(rgb), 0, 255).astype('u1')
+        rgb = np.asarray(rgb)
+        if rgb.shape != (n, 3) or not np.isfinite(rgb).all():
+            raise ValueError('invalid_rgb_shape_or_values')
+        rgb = np.clip(rgb, 0, 255).astype('u1')
         fields += [('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
         arrs += [rgb[:, 0], rgb[:, 1], rgb[:, 2]]
+    if intensity is not None:
+        intensity = np.asarray(intensity, dtype=np.float64)
+        if intensity.shape != (n,) or not np.isfinite(intensity).all():
+            raise ValueError('invalid_intensity_shape_or_values')
+        intensity = np.asarray(intensity, dtype='<f4')
+        if not np.isfinite(intensity).all():
+            raise ValueError('intensity_out_of_float32_range')
+        fields.append(('intensity', '<f4'))
+        arrs.append(intensity)
+    if classification is not None:
+        class_values = np.asarray(classification, dtype=np.float64)
+        if (class_values.shape != (n,) or not np.isfinite(class_values).all() or
+                np.any(class_values < 0) or np.any(class_values > 255) or
+                np.any(class_values != np.floor(class_values))):
+            raise ValueError('invalid_classification_values')
+        classification = class_values.astype('u1')
+        fields.append(('classification', 'u1'))
+        arrs.append(classification)
     dt = np.dtype(fields)
     out = np.empty(n, dtype=dt)
     for (name, _), a in zip(fields, arrs):
@@ -128,6 +204,10 @@ def write_ply_numpy(path, xyz, rgb=None, up_axis=None, crs_wkt=None,
     header += 'property %s x\nproperty %s y\nproperty %s z\n' % (coord_property, coord_property, coord_property)
     if rgb is not None:
         header += 'property uchar red\nproperty uchar green\nproperty uchar blue\n'
+    if intensity is not None:
+        header += 'property float intensity\n'
+    if classification is not None:
+        header += 'property uchar classification\n'
     header += 'end_header\n'
     with open(path, 'wb') as f:
         f.write(header.encode('ascii'))
@@ -285,8 +365,8 @@ def run_status():
 
 def run_deviate(req):
     import numpy as np
-    ref, _ = read_ply_numpy(req['reference'])
-    cmp, _ = read_ply_numpy(req['compared'])
+    ref, _, _, _ = read_ply_numpy(req['reference'])
+    cmp, _, cmp_intensity, cmp_classification = read_ply_numpy(req['compared'])
     if ref.shape[0] == 0 or cmp.shape[0] == 0:
         _fail('empty_cloud')
     max_dist = float(req.get('maxDist') or 0.0)
@@ -300,7 +380,8 @@ def run_deviate(req):
     output_crs = req.get('outputCrsWkt') if coordinate_frame == 'target-source' else None
     write_ply_numpy(req['output'], output, rgb, up_axis=up_axis,
                     crs_wkt=output_crs, double_precision=double_precision,
-                    coordinate_frame=coordinate_frame)
+                    coordinate_frame=coordinate_frame, intensity=cmp_intensity,
+                    classification=cmp_classification)
     st = _stats(d)
     st.update({'ok': True, 'mode': 'deviate', 'engine': eng, 'path': req['output'],
                'scale': scale, 'points': int(cmp.shape[0]),
@@ -311,46 +392,43 @@ def run_deviate(req):
 
 def run_register(req):
     import numpy as np
-    src, srgb = read_ply_numpy(req['source'])
-    tgt, _ = read_ply_numpy(req['target'])
+    src, srgb, src_intensity, src_classification = read_ply_numpy(req['source'])
+    tgt, _, _, _ = read_ply_numpy(req['target'])
     if src.shape[0] < 3 or tgt.shape[0] < 3:
         _fail('empty_cloud')
+    if src.ndim != 2 or tgt.ndim != 2 or src.shape[1] != 3 or tgt.shape[1] != 3:
+        _fail('invalid_cloud_shape')
+    if not np.isfinite(src).all() or not np.isfinite(tgt).all():
+        _fail('non_finite_coordinates')
     if np.linalg.matrix_rank(src - src.mean(axis=0)) < 2 or np.linalg.matrix_rank(tgt - tgt.mean(axis=0)) < 2:
         _fail('degenerate_cloud')
-    voxel = float(req.get('voxel') or 0.0)
-    threshold = float(req.get('threshold') or 0.0)
+    try:
+        voxel = float(req.get('voxel') or 0.0)
+        threshold = float(req.get('threshold') or 0.0)
+        trim_fraction = float(req.get('trimFraction', 0.85))
+        min_overlap = float(req.get('minOverlap', 0.05))
+        max_pairs = int(req.get('maxPairs', 20000))
+        max_iter = int(req.get('maxIter') or 50)
+    except (TypeError, ValueError, OverflowError):
+        _fail('invalid_registration_parameters')
     if not np.isfinite(voxel) or voxel < 0:
-        voxel = 0.0
+        _fail('invalid_voxel')
     if not np.isfinite(threshold) or threshold < 0:
-        threshold = 0.0
-    max_iter = max(1, min(1000, int(req.get('maxIter') or 50)))
-    if _have('open3d'):
-        import open3d as o3d
-        ps = o3d.geometry.PointCloud(); ps.points = o3d.utility.Vector3dVector(src)
-        pt = o3d.geometry.PointCloud(); pt.points = o3d.utility.Vector3dVector(tgt)
-        if voxel > 0:
-            ps_d = ps.voxel_down_sample(voxel); pt_d = pt.voxel_down_sample(voxel)
-        else:
-            ps_d, pt_d = ps, pt
-        thr = threshold if threshold > 0 else (voxel * 1.5 if voxel > 0 else 0.1)
-        init = np.eye(4)
-        init[:3, 3] = tgt.mean(axis=0) - src.mean(axis=0)
-        reg = o3d.pipelines.registration.registration_icp(
-            ps_d, pt_d, thr, init,
-            o3d.pipelines.registration.TransformationEstimationPointToPoint(),
-            o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iter))
-        T = np.asarray(reg.transformation)
-        fitness, rmse = float(reg.fitness), float(reg.inlier_rmse)
-        try:
-            if len(reg.correspondence_set) < 3:
-                _fail('insufficient_correspondences', correspondences=len(reg.correspondence_set))
-        except AttributeError:
-            if fitness <= 0:
-                _fail('insufficient_correspondences')
-        eng = 'open3d'
-    else:
-        T, fitness, rmse = _icp_numpy(src, tgt, threshold, max_iter, voxel)
-        eng = 'numpy'
+        _fail('invalid_threshold')
+    if not np.isfinite(trim_fraction) or not 0.1 <= trim_fraction <= 1.0:
+        _fail('invalid_trim_fraction')
+    if not np.isfinite(min_overlap) or not 0.0 < min_overlap <= 1.0:
+        _fail('invalid_min_overlap')
+    if max_pairs < 3 or max_pairs > 200000:
+        _fail('invalid_max_pairs')
+    max_iter = max(1, min(500, max_iter))
+    try:
+        T, registration = _icp_numpy(
+            src, tgt, threshold, max_iter, voxel,
+            trim_fraction=trim_fraction, min_overlap=min_overlap,
+            max_pairs=max_pairs)
+    except ValueError as exc:
+        _fail(str(exc))
     src_h = np.hstack([src, np.ones((src.shape[0], 1))])
     moved = (src_h @ T.T)[:, :3]
     moved, output_axis, double_precision, coordinate_frame = _restore_source_coordinates(
@@ -358,44 +436,216 @@ def run_register(req):
     output_crs = req.get('outputCrsWkt') if coordinate_frame == 'target-source' else None
     write_ply_numpy(req['output'], moved, srgb, up_axis=output_axis,
                     crs_wkt=output_crs, double_precision=double_precision,
-                    coordinate_frame=coordinate_frame)
-    _emit({'ok': True, 'mode': 'register', 'engine': eng, 'path': req['output'],
-           'transform': T.flatten().tolist(), 'fitness': fitness, 'rmse': rmse,
-           'points': int(src.shape[0]), 'coordinateFrame': coordinate_frame,
-           'georeferenced': bool(coordinate_frame == 'target-source' and output_crs)})
+                    coordinate_frame=coordinate_frame, intensity=src_intensity,
+                    classification=src_classification)
+    registration.update({
+        'ok': True, 'mode': 'register', 'engine': registration['engine'],
+        'path': req['output'], 'transform': T.flatten().tolist(),
+        'points': int(src.shape[0]), 'targetPoints': int(tgt.shape[0]),
+        'coordinateFrame': coordinate_frame,
+        'georeferenced': bool(coordinate_frame == 'target-source' and output_crs)
+    })
+    _emit(registration)
 
 
-def _icp_numpy(src, tgt, threshold, max_iter, voxel):
+def _icp_numpy(src, tgt, threshold, max_iter, voxel, *,
+               trim_fraction=0.85, min_overlap=0.05, max_pairs=20000):
+    """Deterministic, trimmed coarse-to-fine rigid ICP.
+
+    Correspondences are bounded by a distance gate, trimmed by residual rank,
+    and fitted with Huber weights. The reported RMSE is over the retained
+    inliers; fitness is the fraction of sampled source points inside the final
+    distance gate. This is still a local ICP solver, not a global initializer.
+    """
     import numpy as np
+    import math
+    src = np.asarray(src, dtype=np.float64)
+    tgt = np.asarray(tgt, dtype=np.float64)
+    if src.ndim != 2 or tgt.ndim != 2 or src.shape[1:] != (3,) or tgt.shape[1:] != (3,):
+        raise ValueError('invalid_cloud_shape')
+    if src.shape[0] < 3 or tgt.shape[0] < 3:
+        raise ValueError('empty_cloud')
+    if not np.isfinite(src).all() or not np.isfinite(tgt).all():
+        raise ValueError('non_finite_coordinates')
+    if np.linalg.matrix_rank(src - src.mean(axis=0)) < 2 or np.linalg.matrix_rank(tgt - tgt.mean(axis=0)) < 2:
+        raise ValueError('degenerate_cloud')
+    if not np.isfinite(trim_fraction) or not 0.1 <= float(trim_fraction) <= 1.0:
+        raise ValueError('invalid_trim_fraction')
+    if not np.isfinite(min_overlap) or not 0.0 < float(min_overlap) <= 1.0:
+        raise ValueError('invalid_min_overlap')
+    trim_fraction = float(trim_fraction)
+    min_overlap = float(min_overlap)
+    max_pairs = max(3, min(200000, int(max_pairs)))
+
     T = np.eye(4)
     shift = tgt.mean(axis=0) - src.mean(axis=0)
     cur = src + shift
     T[:3, 3] = shift
     if not threshold or threshold <= 0:
         span = tgt.max(0) - tgt.min(0)
-        threshold = float(np.linalg.norm(span)) / 20.0
-    prev = None
-    for _ in range(max_iter):
-        d, _eng = _nn_dist(cur, tgt, voxel=voxel)
-        # nearest target index via same grid approach but we need indices; recompute simply
-        idx = _nn_index(cur, tgt, voxel)
-        mask = d <= threshold
-        if mask.sum() < 3:
-            _fail('insufficient_correspondences', correspondences=int(mask.sum()), threshold=threshold)
-        P = cur[mask]; Q = tgt[idx[mask]]
-        Tc = _best_fit_transform(P, Q)
-        cur = (np.hstack([cur, np.ones((cur.shape[0], 1))]) @ Tc.T)[:, :3]
-        T = Tc @ T
-        err = float(d[mask].mean())
-        if prev is not None and abs(prev - err) < 1e-6:
-            break
-        prev = err
-    d, _eng = _nn_dist(cur, tgt, voxel=voxel)
-    rmse = float(np.sqrt((d * d).mean()))
-    fitness = float((d <= threshold).mean())
-    if not np.isfinite(rmse) or not np.isfinite(fitness) or fitness <= 0:
-        _fail('registration_failed')
-    return T, fitness, rmse
+        threshold = max(float(np.linalg.norm(span)) / 20.0, 1e-6)
+    threshold = float(threshold)
+    if not math.isfinite(threshold) or threshold <= 0:
+        raise ValueError('invalid_threshold')
+    max_iter = max(1, min(500, int(max_iter)))
+    voxel = float(voxel or 0.0)
+    if not math.isfinite(voxel) or voxel < 0:
+        raise ValueError('invalid_voxel')
+
+    sample_step = max(1, int(math.ceil(src.shape[0] / float(max_pairs))))
+    sample_ids = np.arange(0, src.shape[0], sample_step, dtype=np.int64)
+    if sample_ids.size < 3:
+        sample_ids = np.arange(src.shape[0], dtype=np.int64)
+
+    # Build the target index once. Never silently use the old 27-cell
+    # approximation for registration: it can select a farther point whenever
+    # an adjacent occupied cell happens to exist.
+    tree = None
+    engine = 'numpy-exact-trimmed-icp'
+    try:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(tgt)
+        engine = 'scipy-trimmed-icp'
+    except Exception:
+        pass
+    if tree is None and sample_ids.size * tgt.shape[0] > 50000000:
+        raise ValueError('scipy_required_for_large_icp')
+
+    def nearest(points):
+        if tree is not None:
+            d, idx = tree.query(points, k=1)
+            return np.asarray(d, dtype=np.float64), np.asarray(idx, dtype=np.int64)
+        # Exact bounded-memory fallback for small/medium clouds. The cap above
+        # prevents an unexpectedly quadratic registration from locking the UI.
+        idx = np.empty(points.shape[0], dtype=np.int64)
+        dist = np.empty(points.shape[0], dtype=np.float64)
+        bytes_per_query = max(1, tgt.shape[0] * 3 * np.dtype(np.float64).itemsize)
+        batch = max(1, min(64, (32 * 1024 * 1024) // bytes_per_query))
+        for start in range(0, points.shape[0], batch):
+            end = min(points.shape[0], start + batch)
+            diff = tgt[None, :, :] - points[start:end, None, :]
+            d2 = np.einsum('ijk,ijk->ij', diff, diff)
+            nearest_ids = np.argmin(d2, axis=1)
+            idx[start:end] = nearest_ids
+            dist[start:end] = np.sqrt(d2[np.arange(end - start), nearest_ids])
+        return dist, idx
+
+    initial_distances, _ = nearest(cur[sample_ids])
+    initial_valid = np.isfinite(initial_distances) & (initial_distances <= threshold)
+    initial_values = initial_distances[initial_valid]
+    initial_fitness = float(initial_values.size / sample_ids.size)
+    initial_rmse = float(np.sqrt(np.mean(initial_values * initial_values))) if initial_values.size else None
+
+    # A distance schedule gives ICP a wider capture range first and tightens it
+    # over the last passes. If voxel size is known it controls the coarse gate.
+    coarse_gate = max(threshold * 4.0, voxel * 4.0)
+    gates = [coarse_gate, max(threshold * 2.0, voxel * 2.0), threshold]
+    total_iterations = 0
+    final_converged = False
+    last_rmse = float('inf')
+    last_correspondences = 0
+    last_inliers = 0
+    last_gate = threshold
+    base_budget, extra_budget = divmod(max_iter, len(gates))
+    level_budgets = [base_budget + (1 if level < extra_budget else 0)
+                     for level in range(len(gates))]
+
+    for level, gate in enumerate(gates):
+        previous_rmse = None
+        level_converged = False
+        for _ in range(level_budgets[level]):
+            total_iterations += 1
+            points = cur[sample_ids]
+            distances, indices = nearest(points)
+            valid = np.isfinite(distances) & (distances <= gate)
+            valid_ids = np.flatnonzero(valid)
+            correspondences = int(valid_ids.size)
+            min_required = max(3, int(math.ceil(min_overlap * sample_ids.size)))
+            if correspondences < min_required:
+                raise ValueError('insufficient_correspondences')
+
+            valid_dist = distances[valid_ids]
+            keep_n = max(3, int(math.floor(correspondences * trim_fraction)))
+            keep_n = min(keep_n, correspondences)
+            if keep_n < correspondences:
+                local = np.argpartition(valid_dist, keep_n - 1)[:keep_n]
+                fit_ids = valid_ids[local]
+            else:
+                fit_ids = valid_ids
+
+            fit_dist = distances[fit_ids]
+            median = float(np.median(fit_dist))
+            mad = float(np.median(np.abs(fit_dist - median))) * 1.4826
+            robust_scale = max(mad, gate * 1e-4, 1e-9)
+            huber_cut = max(median + 1.345 * robust_scale, 1e-9)
+            weights = np.minimum(1.0, huber_cut / np.maximum(fit_dist, 1e-12))
+            source_ids = sample_ids[fit_ids]
+            P = cur[source_ids]
+            Q = tgt[indices[fit_ids]]
+            Tc = _best_fit_transform(P, Q, weights)
+            cur = (cur @ Tc[:3, :3].T) + Tc[:3, 3]
+            T = Tc @ T
+
+            residual = cur[source_ids] - Q
+            residual_dist = np.sqrt(np.einsum('ij,ij->i', residual, residual))
+            last_rmse = float(np.sqrt(np.average(residual_dist * residual_dist, weights=weights)))
+            last_correspondences = correspondences
+            last_inliers = int(fit_ids.size)
+            last_gate = gate
+            if previous_rmse is not None and abs(previous_rmse - last_rmse) <= max(1e-9, threshold * 1e-5):
+                level_converged = True
+                break
+            previous_rmse = last_rmse
+        if level == len(gates) - 1:
+            final_converged = level_converged
+
+    final_points = cur[sample_ids]
+    final_dist, _ = nearest(final_points)
+    final_valid = np.isfinite(final_dist) & (final_dist <= threshold)
+    valid_values = final_dist[final_valid]
+    if valid_values.size < max(3, int(math.ceil(min_overlap * sample_ids.size))):
+        raise ValueError('insufficient_final_overlap')
+    keep_n = max(3, int(math.floor(valid_values.size * trim_fraction)))
+    keep_n = min(keep_n, valid_values.size)
+    if keep_n < valid_values.size:
+        inlier_dist = np.partition(valid_values, keep_n - 1)[:keep_n]
+    else:
+        inlier_dist = valid_values
+    if not np.isfinite(inlier_dist).all():
+        raise ValueError('registration_failed')
+    fitness = float(valid_values.size / sample_ids.size)
+    inlier_ratio = float(inlier_dist.size / sample_ids.size)
+    rmse = float(np.sqrt(np.mean(inlier_dist * inlier_dist)))
+    median = float(np.median(inlier_dist))
+    p95 = float(np.percentile(inlier_dist, 95))
+    if not all(math.isfinite(x) for x in (fitness, inlier_ratio, rmse, median, p95)) or fitness <= 0:
+        raise ValueError('registration_failed')
+
+    warnings = []
+    if fitness < 0.2:
+        warnings.append('low_overlap')
+    if not final_converged:
+        warnings.append('max_iterations')
+    return T, {
+        'engine': engine,
+        'fitness': fitness,
+        'inlierRatio': inlier_ratio,
+        'initialFitness': initial_fitness,
+        'initialRmse': initial_rmse,
+        'initialCorrespondences': int(initial_values.size),
+        'rmse': rmse,
+        'medianResidual': median,
+        'p95Residual': p95,
+        'correspondences': int(valid_values.size),
+        'inliers': int(inlier_dist.size),
+        'sampledSourcePoints': int(sample_ids.size),
+        'iterations': int(total_iterations),
+        'converged': bool(final_converged),
+        'trimFraction': trim_fraction,
+        'maxCorrespondenceDistance': threshold,
+        'lastGate': float(last_gate),
+        'warnings': warnings,
+    }
 
 
 def _nn_index(query, ref, voxel):
@@ -434,10 +684,24 @@ def _nn_index(query, ref, voxel):
     return out
 
 
-def _best_fit_transform(P, Q):
+def _best_fit_transform(P, Q, weights=None):
     import numpy as np
-    cP = P.mean(0); cQ = Q.mean(0)
-    H = (P - cP).T @ (Q - cQ)
+    P = np.asarray(P, dtype=np.float64)
+    Q = np.asarray(Q, dtype=np.float64)
+    if P.ndim != 2 or Q.shape != P.shape or P.shape[1] != 3 or P.shape[0] < 3:
+        raise ValueError('insufficient_correspondences')
+    if weights is None:
+        w = np.ones(P.shape[0], dtype=np.float64)
+    else:
+        w = np.asarray(weights, dtype=np.float64)
+        if w.shape != (P.shape[0],) or not np.isfinite(w).all() or np.any(w <= 0):
+            raise ValueError('invalid_correspondence_weights')
+    sum_w = float(w.sum())
+    if not np.isfinite(sum_w) or sum_w <= 0:
+        raise ValueError('invalid_correspondence_weights')
+    cP = np.sum(P * w[:, None], axis=0) / sum_w
+    cQ = np.sum(Q * w[:, None], axis=0) / sum_w
+    H = (P - cP).T @ ((Q - cQ) * w[:, None])
     U, _, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
     if np.linalg.det(R) < 0:
@@ -454,7 +718,7 @@ def run_mesh(req):
     if not _have('open3d'):
         _fail('need_open3d', needOpen3d=True)
     import open3d as o3d
-    xyz, rgb = read_ply_numpy(req['input'])
+    xyz, rgb, _, _ = read_ply_numpy(req['input'])
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
     if rgb is not None:

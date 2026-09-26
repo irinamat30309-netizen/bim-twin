@@ -12,6 +12,7 @@
   var projectId = null, revision = 0, historyRevision = 0, canUndo = false, canRedo = false;
   var pending = {}, pendingOptions = {}, pendingWaiters = [], timer = null;
   var flushPromise = null, ready = Promise.resolve(null);
+  var classificationQueue = Promise.resolve();
   var destroyed = false;
 
   function emptyState() {
@@ -78,6 +79,11 @@
   }
 
   function hasPending() { return Object.keys(pending).length > 0; }
+  function enqueueClassification(task) {
+    var result = classificationQueue.then(task, task);
+    classificationQueue = result.then(function () {}, function () {});
+    return result;
+  }
   function recordConflictError(error) {
     return !!(error && (error.code === 'REVISION_CONFLICT' || error.error === 'REVISION_CONFLICT' ||
       /project state changed since it was loaded/i.test(error.message || '')));
@@ -275,21 +281,53 @@
   }
 
   function saveClassification(input) {
-    input = input || {};
-    return flush().then(function (saved) {
-      if (saved && saved.ok === false) return saved;
-      if (!api || typeof api.saveProjectClassification !== 'function') return { ok: false, error: 'classification_asset_storage_unavailable' };
-      var body = Object.assign({}, input, { projectId: projectId, expectedRevision: revision });
-      return api.saveProjectClassification(body).then(function (result) {
-        if (result && result.ok && result.state && result.state.payload) {
-          applyRecord(result.state, 'bim-project-state-saved', { assetOperation: 'classification' });
-          emit('bim-project-classification-saved', {
-            projectId: projectId,
-            classification: clone(result.classification),
-            revision: revision
-          });
-        }
-        return result;
+    input = Object.assign({}, input || {});
+    // The viewer produces immutable Uint8Array snapshots and replaces them on
+    // each edit. Keep those large buffers zero-copy in the renderer queue;
+    // Electron's IPC serialization owns the transport copy.
+    if (input.labels instanceof ArrayBuffer) input.labels = new Uint8Array(input.labels);
+    else if (Array.isArray(input.labels)) input.labels = new Uint8Array(input.labels);
+    return enqueueClassification(function () {
+      return flush().then(function (saved) {
+        if (saved && saved.ok === false) return saved;
+        if (!api || typeof api.saveProjectClassification !== 'function') return { ok: false, error: 'classification_asset_storage_unavailable' };
+        var body = Object.assign({}, input, { projectId: projectId, expectedRevision: revision });
+        return api.saveProjectClassification(body).then(function (result) {
+          if (result && result.ok && result.state && result.state.payload) {
+            applyRecord(result.state, 'bim-project-state-saved', { assetOperation: 'classification' });
+            emit('bim-project-classification-saved', {
+              projectId: projectId,
+              classification: clone(result.classification),
+              revision: revision
+            });
+          }
+          return result;
+        });
+      });
+    });
+  }
+
+  function clearClassification(cloudId) {
+    return enqueueClassification(function () {
+      return flush().then(function (saved) {
+        if (saved && saved.ok === false) return saved;
+        if (!api || typeof api.clearProjectClassification !== 'function') return { ok: false, error: 'classification_asset_storage_unavailable' };
+        return api.clearProjectClassification({
+          projectId: projectId,
+          cloudId: cloudId,
+          expectedRevision: revision
+        }).then(function (result) {
+          if (result && result.ok && result.state && result.state.payload) {
+            applyRecord(result.state, 'bim-project-state-saved', { assetOperation: 'classification-clear' });
+            emit('bim-project-classification-cleared', {
+              projectId: projectId,
+              cloudId: cloudId,
+              cleared: result.cleared !== false,
+              revision: revision
+            });
+          }
+          return result;
+        });
       });
     });
   }
@@ -314,6 +352,7 @@
     updateCollection: updateCollection,
     recordOperation: recordOperation,
     saveClassification: saveClassification,
+    clearClassification: clearClassification,
     loadClassification: loadClassification,
     undo: function () { return move('undo'); },
     redo: function () { return move('redo'); },

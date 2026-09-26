@@ -53,7 +53,7 @@
     "productName": "BIM Twin",
     "npmRebuild": true,
     "asarUnpack": ["**/*.node", "cloud-parse-worker.js", "octree-build-worker.js", "octree-build-core.js", "app-config.js", "las-node.js", "las-core.js", "e57-core.js", "renderer/octree-store.js", "db/atomic-file.js", "scan2bim-ai-server/**"],
-    "files": ["main.js", "preload.js", "scan2bim-server.js", "app-config.js", "cloud-parse-worker.js", "octree-build-worker.js", "octree-build-core.js", "octree-resource-budget.js", "las-core.js", "e57-core.js", "pcd-out-of-core.js", "las-node.js", "db/**", "renderer/**", "scripts/**", "ai/**", "tools/**", "scan2bim-ai-server/**"],
+    "files": ["main.js", "preload.js", "scan2bim-server.js", "app-config.js", "cloud-parse-worker.js", "octree-build-worker.js", "octree-build-core.js", "octree-resource-budget.js", "las-core.js", "e57-core.js", "pcd-out-of-core.js", "las-node.js", "pointcloud-ply-io.js", "db/**", "renderer/**", "scripts/**", "ai/**", "tools/**", "scan2bim-ai-server/**"],
     "extraResources": [{ "from": "scripts/setup-python.ps1", "to": "setup-python.ps1" }, { "from": "scripts/setup-ai-server.ps1", "to": "setup-ai-server.ps1" }, { "from": "scripts/setup-cloudcompare.ps1", "to": "setup-cloudcompare.ps1" }, { "from": "scripts/embed-window.ps1", "to": "embed-window.ps1" }, { "from": "resources/cloudcompare", "to": "cloudcompare", "filter": ["**/*"] }],
     "publish": [
       {

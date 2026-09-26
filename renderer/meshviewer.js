@@ -509,7 +509,7 @@
     return sh;
   }
   function initGL() {
-    var gl = S.canvas.getContext('webgl2', { antialias: true, alpha: true, preserveDrawingBuffer: false });
+    var gl = S.canvas.getContext('webgl2', { antialias: true, alpha: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
     if (!gl) { toast('WebGL2 недоступен — меш не показать'); return false; }
     S.gl = gl;
     var prog = gl.createProgram();

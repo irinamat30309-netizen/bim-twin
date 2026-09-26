@@ -776,7 +776,7 @@
   }
 
   function initGL() {
-    var gl = S.canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: true, alpha: true });
+    var gl = S.canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: true, alpha: true, powerPreference: 'high-performance' });
     if (!gl) { throw new Error('WebGL2 недоступен'); }
     console.log('%c BIM Twin v1148 | GPU SH3 фотореализм ', 'background:#4a90d9;color:white;font-size:14px;padding:4px');
     S.gl = gl;

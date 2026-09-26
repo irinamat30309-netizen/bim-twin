@@ -116,3 +116,86 @@ test('meshHeightGrid / meshToOBJ: строит меш и экспортируе�
   const obj = P.meshToOBJ(mesh);
   assert.ok(obj.indexOf('v ') >= 0 && obj.indexOf('f ') >= 0, 'OBJ содержит вершины и грани');
 });
+
+test('point filters preserve intensity/classification/RGB alignment in kept and removed points', () => {
+  const n = 51, pos = new Float32Array(n * 3), col = new Uint8Array(n * 3);
+  const intensity = new Float32Array(n), classification = new Uint8Array(n);
+  for (let i = 0; i < n - 1; i++) {
+    pos[i * 3] = i * 0.01; pos[i * 3 + 1] = (i % 2) * 0.002; pos[i * 3 + 2] = 0;
+    intensity[i] = i + 0.25; classification[i] = i % 31;
+    col[i * 3] = i; col[i * 3 + 1] = 200 - i; col[i * 3 + 2] = 100 + (i % 50);
+  }
+  pos.set([20, 20, 20], (n - 1) * 3); intensity[n - 1] = n - 0.75; classification[n - 1] = 30;
+  col.set([250, 251, 252], (n - 1) * 3);
+  const cloud = { pos, col, intensity, classification };
+  function assertAligned(result) {
+    for (const [points, colors, intensities, classes] of [
+      [result.pos, result.col, result.intensity, result.classification],
+      [result.removedPos, result.removedCol, result.removedAttributes && result.removedAttributes.intensity,
+        result.removedAttributes && result.removedAttributes.classification]
+    ]) {
+      if (!points || !points.length) continue;
+      const count = points.length / 3;
+      assert.ok(colors && colors.length === count * 3, 'RGB remains point-aligned');
+      assert.ok(intensities && intensities.length === count, 'intensity remains point-aligned');
+      assert.ok(classes && classes.length === count, 'classification remains point-aligned');
+      for (let i = 0; i < count; i++) {
+        const sourceIndex = points[i * 3] > 10 ? n - 1 : Math.round(points[i * 3] / 0.01);
+        assert.equal(intensities[i], intensity[sourceIndex]);
+        assert.equal(classes[i], classification[sourceIndex]);
+        assert.equal(colors[i * 3], col[sourceIndex * 3]);
+      }
+    }
+  }
+  const cases = [
+    P.deleteByIndices(cloud, [3, n - 1]),
+    P.keepByIndices(cloud, [0, 4, n - 1]),
+    P.cropBox(cloud, [0.04, -1, -1], [0.18, 1, 1]),
+    P.sliceSection(cloud, { axis: 0, at: 0.1, thickness: 0.08 }),
+    P.cleanRadiusOutliers(cloud, { radius: 0.06, minNeighbors: 2 }),
+    P.cleanStatisticalOutliers(cloud, { voxel: 0.1, k: 3, stdRatio: 1 }),
+    P.cleanVoxelDensity(cloud, { voxel: 0.1, minPts: 2 }),
+    P.cleanClusters(cloud, { voxel: 0.05, minClusterPts: 2 }),
+    P.cleanIslands(cloud, { voxel: 0.05, minClusterPts: 2 }),
+    P.cleanAuto(cloud, { voxel: 0.1, maxPasses: 1, minRemovedFrac: 0 })
+  ];
+  for (const result of cases) assertAligned(result);
+});
+
+test('voxel downsample averages intensity and uses majority class, without averaging class codes', () => {
+  const cloud = {
+    pos: new Float32Array([0.001,0,0, 0.011,0,0, 0.021,0,0, 0.031,0,0, 0.041,0,0]),
+    col: new Uint8Array([10,20,30, 20,30,40, 30,40,50, 40,50,60, 50,60,70]),
+    intensity: new Float32Array([0.1,0.3,0.5,0.7,0.9]),
+    classification: new Uint8Array([2,2,3,2,4])
+  };
+  const result = P.voxelDownsample(cloud, { voxel: 0.1 });
+  assert.equal(result.kept, 1);
+  assert.ok(Math.abs(result.intensity[0] - 0.5) < 1e-6);
+  assert.equal(result.classification[0], 2);
+  assert.equal(result.col[0], 30);
+  assert.equal(result.col[1], 40);
+  assert.equal(result.col[2], 50);
+});
+
+test('legacy LAS 1.2 PDRF 2 export writes intensity/classification and refuses extended class codes', () => {
+  const cloud = {
+    pos: new Float32Array([1,2,3, 10,20,30]),
+    col: new Uint8Array([255,0,128, 0,255,64]),
+    intensity: new Float32Array([0.25,1]),
+    classification: new Uint8Array([2,31])
+  };
+  const bytes = P.toLASBinary(cloud), view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const header = 227, record = 26;
+  assert.equal(bytes.length, header + 2 * record);
+  assert.equal(String.fromCharCode(...bytes.slice(0,4)), 'LASF');
+  assert.equal(view.getUint8(24), 1); assert.equal(view.getUint8(25), 2);
+  assert.equal(view.getUint8(104), 2); assert.equal(view.getUint16(105, true), 26);
+  assert.equal(view.getUint16(header + 12, true), 16384);
+  assert.equal(bytes[header + 15], 2);
+  assert.equal(view.getUint16(header + 20, true), 65535);
+  assert.equal(view.getUint16(header + record + 12, true), 65535);
+  assert.equal(bytes[header + record + 15], 31);
+  assert.throws(() => P.toLASBinary(Object.assign({}, cloud, { classification: new Uint8Array([32, 0]) })), /LAS 1\.2/);
+  assert.throws(() => P.toLASBinary(Object.assign({}, cloud, { intensity: new Float32Array([0.5]) })), /intensity array length/);
+});

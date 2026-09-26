@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BIM Twin WebGL runtime smoke test</title>
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #111318; }
+      #view { display: block; width: 860px; height: 620px; }
+      #result { position: fixed; left: 0; bottom: 0; max-width: 100%; max-height: 100px; overflow: auto; color: #fff; background: #111318; font: 12px monospace; }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <pre id="result">Waiting for WebGL smoke test…</pre>
+    <script src="../../renderer/webgl-viewer.js"></script>
+    <script>
+      (async function () {
+        const electron = typeof window.require === 'function' ? window.require('electron') : null;
+        const send = (result) => {
+          window.__BIMTWIN_WEBGL_SMOKE_RESULT__ = result;
+          document.getElementById('result').textContent = JSON.stringify(result);
+          if (electron && electron.ipcRenderer) {
+            electron.ipcRenderer.send('bimtwin:webgl-smoke-result', result);
+          }
+        };
+
+        try {
+          if (!window.Viewer3DGL || !window.Viewer3DGL.isSupported()) {
+            throw new Error('The production WebGL viewer did not obtain a WebGL2 context.');
+          }
+
+          // One million points keep the real production renderer busy long
+          // enough for the hardware adapter to be observable in the GPU monitor.
+          const side = 100;
+          const count = side * side * side;
+          const pos = new Float32Array(count * 3);
+          const col = new Float32Array(count * 3);
+          const intensity = new Float32Array(count);
+          const classification = new Uint8Array(count);
+          let index = 0;
+
+          for (let z = 0; z < side; z++) {
+            for (let y = 0; y < side; y++) {
+              for (let x = 0; x < side; x++) {
+                const i3 = index * 3;
+                pos[i3] = -1 + (2 * x) / (side - 1);
+                pos[i3 + 1] = -1 + (2 * y) / (side - 1);
+                pos[i3 + 2] = -1 + (2 * z) / (side - 1);
+                col[i3] = x / (side - 1);
+                col[i3 + 1] = y / (side - 1);
+                col[i3 + 2] = z / (side - 1);
+                intensity[index] = (x + y + z) / (3 * (side - 1));
+                classification[index] = (x + y + z) % 2 ? 6 : 2;
+                index++;
+              }
+            }
+          }
+
+          const canvas = document.getElementById('view');
+          const viewer = new window.Viewer3DGL(canvas);
+          viewer.loadCloud({
+            pos,
+            col,
+            intensity,
+            classification,
+            count,
+            meta: { name: 'synthetic-webgl-runtime-smoke', format: 'synthetic', total: count, units: 'm' }
+          });
+
+          const uploaded = viewer.base && viewer.base[0];
+          if (!uploaded || uploaded.count !== count || !uploaded._pb || !uploaded._ib || !uploaded._kb) {
+            throw new Error('The point, intensity, or classification GPU buffer was not created.');
+          }
+          if (!viewer.getAvailableColorModes().includes('classification')) {
+            throw new Error('Classification coloring is unavailable for a cloud with labels.');
+          }
+
+          viewer.setColorMode('classification');
+          await new Promise((resolve) => setTimeout(resolve, 250));
+
+          const gl = viewer.gl;
+          gl.finish();
+          const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+          gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+          const clear = gl.getParameter(gl.COLOR_CLEAR_VALUE);
+          const clearRgb = clear.slice(0, 3).map((channel) => Math.round(channel * 255));
+          let changedPixels = 0;
+          for (let i = 0; i < pixels.length; i += 4) {
+            if (
+              Math.abs(pixels[i] - clearRgb[0]) > 12 ||
+              Math.abs(pixels[i + 1] - clearRgb[1]) > 12 ||
+              Math.abs(pixels[i + 2] - clearRgb[2]) > 12
+            ) changedPixels++;
+          }
+
+          const gpuStressMs = 10000;
+          const gpuStressStarted = performance.now();
+          let renderFrames = 0;
+          await new Promise((resolve) => {
+            const renderStressFrame = (now) => {
+              viewer.yaw += 0.002;
+              viewer.render();
+              renderFrames++;
+              if (now - gpuStressStarted >= gpuStressMs) resolve();
+              else requestAnimationFrame(renderStressFrame);
+            };
+            requestAnimationFrame(renderStressFrame);
+          });
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          gl.finish();
+          const gpuStressDurationMs = Math.round(performance.now() - gpuStressStarted);
+
+          const debugRenderer = gl.getExtension('WEBGL_debug_renderer_info');
+          const renderer = debugRenderer
+            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
+            : gl.getParameter(gl.RENDERER);
+          const vendor = debugRenderer
+            ? gl.getParameter(debugRenderer.UNMASKED_VENDOR_WEBGL)
+            : gl.getParameter(gl.VENDOR);
+          const glError = gl.getError();
+          const cloudInfo = viewer.getCloudInfo();
+
+          send({
+            ok: true,
+            webgl2: gl instanceof WebGL2RenderingContext,
+            renderer: String(renderer || ''),
+            vendor: String(vendor || ''),
+            pointsUploaded: uploaded.count,
+            intensityBuffer: !!uploaded._ib,
+            classificationBuffer: !!uploaded._kb,
+            colorMode: cloudInfo && cloudInfo.display && cloudInfo.display.mode,
+            gpuStress: {
+              points: uploaded.count,
+              durationMs: gpuStressDurationMs,
+              renderFrames
+            },
+            changedPixels,
+            glError,
+            contextLost: gl.isContextLost()
+          });
+        } catch (error) {
+          send({ ok: false, error: error && error.stack || String(error) });
+        }
+      })();
+    </script>
+  </body>
+</html>

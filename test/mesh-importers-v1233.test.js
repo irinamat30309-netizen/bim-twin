@@ -3,6 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const Mesh = require('../renderer/meshviewer.js');
 const Utils = require('../renderer/app-utils.js');
@@ -175,6 +176,68 @@ test('OBJ/STL are available through both model and mesh pickers; importer script
 });
 
 const userFixtureDir = process.env.BIM_TWIN_USER_FIXTURES || '';
+
+function writeSyntheticBinaryPly(file, count) {
+  const header = Buffer.from([
+    'ply',
+    'format binary_little_endian 1.0',
+    `element vertex ${count}`,
+    'property float x',
+    'property float y',
+    'property float z',
+    'property uchar red',
+    'property uchar green',
+    'property uchar blue',
+    'end_header',
+    ''
+  ].join('\n'), 'ascii');
+  const fd = fs.openSync(file, 'w');
+  const chunkPoints = 8192;
+  const chunk = Buffer.allocUnsafe(chunkPoints * 15);
+  try {
+    fs.writeSync(fd, header);
+    for (let start = 0; start < count; start += chunkPoints) {
+      const points = Math.min(chunkPoints, count - start);
+      for (let j = 0; j < points; j++) {
+        const i = start + j, offset = j * 15;
+        chunk.writeFloatLE((i % 1000) * 0.01, offset);
+        chunk.writeFloatLE((Math.floor(i / 1000) % 1000) * 0.01, offset + 4);
+        chunk.writeFloatLE((i % 97) * 0.001, offset + 8);
+        chunk[offset + 12] = i & 255;
+        chunk[offset + 13] = (i * 7) & 255;
+        chunk[offset + 14] = (i * 13) & 255;
+      }
+      fs.writeSync(fd, chunk, 0, points * 15);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+test('synthetic large binary PLY streams and budget-samples deterministically', async () => {
+  const total = 600_000;
+  const maxPoints = 100_000;
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bimtwin-large-ply-'));
+  const file = path.join(fixtureDir, 'synthetic.ply');
+  try {
+    writeSyntheticBinaryPly(file, total);
+    const first = await Cloud.parseCloudFileAsync(file, { maxPoints });
+    const second = await Cloud.parseCloudFileAsync(file, { maxPoints });
+    assert.equal(first.ok, true, first.message || 'first PLY parse failed');
+    assert.equal(second.ok, true, second.message || 'second PLY parse failed');
+    assert.equal(first.meta.total, total);
+    assert.equal(first.count, 200_000, 'parser enforces its documented minimum in-memory budget');
+    assert.equal(second.count, first.count);
+    assert.deepEqual(first.pos, second.pos);
+    assert.deepEqual(first.col, second.col);
+    assert.equal(first.pos.length, first.count * 3);
+    assert.equal(first.col.length, first.count * 3);
+    for (let i = 0; i < first.pos.length; i += 997) assert.ok(Number.isFinite(first.pos[i]));
+  } finally {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+  }
+});
+
 test('uploaded full OBJ/STL user fixtures parse with expected geometry and honest capability warnings', { skip: !userFixtureDir }, () => {
   const objPath = path.join(userFixtureDir, 'EXAMPLES__Untitled+(1).obj');
   const stlPath = path.join(userFixtureDir, 'EXAMPLES__Untitled.stl');
