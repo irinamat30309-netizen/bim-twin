@@ -2,7 +2,7 @@
 
 ## База и объём
 
-- QA-правки и synthetic fixtures опубликованы в review-ветке `agent/windows-package-qa`. Текущий public commit `0746bf3e6f1a447367ce92c6d6e85ed02a53b621` прошёл **4/4 GitHub-hosted checks**. Private Windows hardware-QA run #9 на этом же commit завершился успешно и подтвердил RTX 5070 в production WebGL smoke; hosted runners по-прежнему пропускают этот self-hosted physical-GPU gate.
+- QA-правки и synthetic fixtures опубликованы в review-ветке `agent/windows-package-qa`. Application-code commit `0746bf3e6f1a447367ce92c6d6e85ed02a53b621`, проверенный в run #9, прошёл **4/4 GitHub-hosted checks**. Private Windows hardware-QA run #9 на этом же commit завершился успешно и подтвердил RTX 5070 в production WebGL smoke; hosted runners по-прежнему пропускают этот self-hosted physical-GPU gate.
 - Локальная среда: Linux, Node `v24.14.1`, npm `11.11.0`. Это чистая Git worktree, не Windows installer и не целевой GPU стенд.
 - Этот прогон обновляет автоматическую регрессию и её QA-покрытие. Он не является независимой геодезической, CAD/GIS или пользовательской приёмкой.
 

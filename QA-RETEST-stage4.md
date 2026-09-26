@@ -2,7 +2,7 @@
 
 ## Цель и границы
 
-Проверялись background parsing, disk-octree LOD, отмена/очистка и bounded-working-set ветки для **scalar-property ASCII/binary LE/BE PLY, uncompressed LAS PDRF 0–10 и PCD ASCII/interleaved-binary/LZF binary_compressed**. Локальная среда — Linux/Node 24; headless Chromium/SwiftShader проверяет WebGL2, а fake-Electron harness используется для IPC E2E; внешние пользовательские модели и screenshots/evidence не включены в Git. Windows runtime недоступен на локальном host (Amazon Linux 2023 без Wine/PowerShell/cmd.exe). Исторические hosted checks для commit `76173ad` подтверждают только ту версию. На актуальном PR head `0746bf3` все **4/4 hosted checks** прошли. Дополнительно пользовательский private Windows run #9 на том же commit завершился успешно за 5:36: build NSIS/ASAR и проверка содержимого ASAR прошли; WebGL smoke обнаружил RTX 5070 и нарисовал 1 000 000 точек 10 секунд. Это подтверждает package/ASAR contents и базовый rendering smoke, но не clean-machine install/launch, длительный VRAM stress или CAD/BIM/GIS-приёмку.
+Проверялись background parsing, disk-octree LOD, отмена/очистка и bounded-working-set ветки для **scalar-property ASCII/binary LE/BE PLY, uncompressed LAS PDRF 0–10 и PCD ASCII/interleaved-binary/LZF binary_compressed**. Локальная среда — Linux/Node 24; headless Chromium/SwiftShader проверяет WebGL2, а fake-Electron harness используется для IPC E2E; внешние пользовательские модели и screenshots/evidence не включены в Git. Windows runtime недоступен на локальном host (Amazon Linux 2023 без Wine/PowerShell/cmd.exe). Исторические hosted checks для commit `76173ad` подтверждают только ту версию. Application-code commit `0746bf3`, проверенный в run #9, прошёл все **4/4 GitHub-hosted checks**. Дополнительно пользовательский private Windows run #9 на том же commit завершился успешно за 5:36: build NSIS/ASAR и проверка содержимого ASAR прошли; WebGL smoke обнаружил RTX 5070 и нарисовал 1 000 000 точек 10 секунд. Это подтверждает package/ASAR contents и базовый rendering smoke, но не clean-machine install/launch, длительный VRAM stress или CAD/BIM/GIS-приёмку.
 
 ## Что теперь делает out-of-core ветка
 
@@ -29,7 +29,7 @@
 | `test/octree-build-stage4.test.js`, `test/octree-store.test.js`, `test/webgl-octree-stream.test.js` | Вошли в полный успешный прогон: build/read, index corruption/ranges, LOD selection/budget, cache eviction, degenerate input, v2 attr layouts и асинхронная GPU-подгрузка узла |
 | `npm run check` | Успешно |
 | `npm run test:store` | `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
-| GitHub-hosted CI на актуальном PR head `0746bf3` | **4/4 passed**: `test`, `windows-test`, два `windows-package`; физический GPU smoke hosted runner не выполняет |
+| GitHub-hosted CI на application-code commit `0746bf3`, проверенном в run #9 | **4/4 passed**: `test`, `windows-test`, два `windows-package`; физический GPU smoke hosted runner не выполняет |
 | Private Windows hardware-QA run #9 на `0746bf3` | **Passed**; GPU smoke на RTX 5070, full regression 883/880/0/3, NSIS/ASAR build и проверка содержимого ASAR прошли |
 | Синтаксис | 232 JS/MJS/CJS-файла прошли `node --check` в последнем полном source scan |
 | Focused out-of-core/resource/PTX stream + cloud Worker suite (`octree-out-of-core-las`, `octree-out-of-core-ply`, `octree-out-of-core-pcd`, `octree-build-stage4`, `octree-resource-budget-stage4`, `ptx-stream-export-stage4`, `cloud-parse-worker-stage4`, `octree-store`, `webgl-octree-stream`) | 79/79 passed in the latest focused run |
