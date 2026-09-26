@@ -22,7 +22,7 @@
 | `npm run test:store` | passed: `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
 | `python scripts/check-python-syntax.py` | passed для **28 Python-файлов**; проверяются tracked и новые non-ignored sources без `.pyc` |
 | Synthetic ICP без SciPy | `numpy-exact-trimmed-icp`; 250 точек, fitness 1.0, 6 итераций, RMSE `1.30e-15`, translation error `6.34e-17` в заданной метрической synthetic-сцене |
-| GitHub-hosted Windows CI | **4/4 passed** на предшествующем commit `b2ea035`; новый run после добавления synthetic LAZ fixtures ожидает завершения |
+| GitHub-hosted Windows CI | **4/4 passed** на review commit `85e05cb5`: `test`, `windows-test`, два `windows-package`; это не physical-GPU acceptance |
 | Приватный Windows hardware-QA run #7 | по скриншоту пользователя все шаги зелёные за 5:09, включая полный regression suite, NSIS/ASAR build, проверку ASAR и upload артефакта; новый GPU smoke включён env `BIMTWIN_GPU_SMOKE=1` |
 | Локальный WebGL runtime smoke | **PASS только как software-WebGL draw test:** production `Viewer3DGL` загрузил 4096 точек и RGB/intensity/classification buffers, classification mode нарисовал 114229 изменённых пикселей; `glError=0`, контекст не потерян. Renderer — SwiftShader, не физическая видеокарта |
 | Electron/Windows package | run #7 собрал installer и проверил обязательные файлы ASAR; установка/запуск установленного приложения на чистой Windows-машине отдельно не подтверждались |

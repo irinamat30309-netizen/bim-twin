@@ -2,7 +2,7 @@
 
 ## База и объём
 
-- Рабочая копия синхронизирована с review-веткой `agent/windows-package-qa`; последняя проверенная remote-база до новых LAZ fixtures — commit `b2ea03582320cdb692f8fe02bc0150cb90f809bb`. Текущий набор QA-правок проверяется отдельным новым Windows Actions run после push.
+- QA-правки и synthetic LAZ/fixture tests опубликованы в review-ветке `agent/windows-package-qa` в commit `85e05cb5a3fa37fb259a056cf4016f752b6bedb7`. GitHub Actions на этом head завершились **4/4 passed** (`test`, `windows-test`, два `windows-package`).
 - Локальная среда: Linux, Node `v24.14.1`, npm `11.11.0`. Это чистая Git worktree, не Windows installer и не целевой GPU стенд.
 - Этот прогон обновляет автоматическую регрессию и её QA-покрытие. Он не является независимой геодезической, CAD/GIS или пользовательской приёмкой.
 
@@ -25,7 +25,7 @@
 | `node --check pointcloud-ply-io.js` | passed |
 | `python scripts/check-python-syntax.py` | passed, **28 Python source files** (tracked + new non-ignored files) |
 | `npm run test:store` | passed: `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
-| GitHub Actions на предшествующем commit `b2ea035` | **4/4 passed**: `test`, `windows-test`, два `windows-package`; Actions для нового LAZ/fixture commit должны быть перепроверены после push |
+| GitHub Actions на commit `85e05cb5` | **4/4 passed**: `test`, `windows-test`, два `windows-package`; это hosted CI, а не независимый physical-GPU или пользовательский acceptance test |
 | Приватный Windows hardware-QA run #7 | По скриншоту пользователя workflow завершился успешно за 5:09; шаги regression, сборки NSIS/ASAR и проверки ASAR зелёные. Точный адаптер/renderer и VRAM stress по сводному скриншоту не подтверждаются |
 
 ## Что исправлено в проверках
