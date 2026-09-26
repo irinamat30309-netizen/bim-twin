@@ -73,7 +73,8 @@ jobs:
             $normalized = ([string]$entry).Trim().Trim('/').Replace([string][char]92, '/').TrimEnd('/')
             if ($normalized) { [void]$entrySet.Add($normalized) }
           }
-          $requiredEntries = @('main.js', 'preload.js', 'pointcloud-ply-io.js', 'renderer/app.js', 'renderer/pointcloud-edit.js')
+          # Match the application's explicit build.files list on the base branch.
+          $requiredEntries = @('main.js', 'preload.js', 'renderer/app.js', 'renderer/pointcloud-edit.js')
           foreach ($required in $requiredEntries) {
             if (-not $entrySet.Contains($required)) {
               throw "ASAR is missing required application file: $required"
@@ -81,7 +82,7 @@ jobs:
           }
           Write-Host "Installer: $($installer.Name) ($($installer.Length) bytes)"
           Write-Host "ASAR: $($asar.FullName) ($($asar.Length) bytes)"
-          Write-Host 'Required main, preload, renderer, and point-cloud files are present in app.asar.'
+          Write-Host 'Required main, preload, and renderer files are present in app.asar.'
 
       - name: Upload Windows QA artifacts
         if: always()
