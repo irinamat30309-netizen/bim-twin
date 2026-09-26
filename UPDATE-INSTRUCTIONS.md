@@ -24,6 +24,6 @@
 
 ## Что проверено локально перед упаковкой
 
-Linux / Node 24 / Python 3.13: полный набор — 881 тест (874 passed, 0 failed, 7 skipped); целевой Stage 5–7 набор — 103/103; `npm run check`, `node scripts/check-syntax.mjs` (236 JS/MJS/CJS-файлов), `npm run test:store`, `node --check pointcloud-ply-io.js` и Python compileall прошли. Пропуски относятся к необязательным LAZ/внешним пользовательским fixtures — подробности в `QA-RETEST-stage5-7.md`.
+Актуальный clean Linux/Node 24 retest на review-ветке: `npm test` — 883 total / 876 passed / 0 failed / 7 skipped; Stage 2/3/4/5–7 focused suites — 31/41/81/103 passed соответственно; `npm run check`, JS syntax (241 файлов), `node --check pointcloud-ply-io.js`, Python syntax (27 файлов) и `npm run test:store` — passed. Два synthetic fixture gaps закрыты генераторами LAS/PLY room и 600k-point PLY; оставшиеся skips перечислены в `QA-RETEST-stage0-7-current.md`.
 
 **Важно:** это не доказывает, что архив уже прошёл Windows сборку. Workflow специально обновлён для запуска после вашего push. Ранее прошедший GitHub Actions run собирал предыдущее состояние исходников. GitHub-hosted `windows-2022` проверит Windows/Electron/ASAR, но не физический GPU/драйвер и не внешние CAD/GIS-приложения. Для аппаратной проверки нужен отдельный безопасно настроенный Windows runner; для публичного репозитория self-hosted runner напрямую не подключайте.

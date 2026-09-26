@@ -52,7 +52,7 @@ jobs:
           npm run check
           node scripts/check-syntax.mjs
           node --check pointcloud-ply-io.js
-          python -m compileall -q scan2bim-ai-server/app scan2bim-ai-server/tests tools/pointcloud_geometry.py
+          python scripts/check-python-syntax.py
           npm run test:store
 
       - name: Full regression suite

@@ -13,12 +13,12 @@
 | Проверка | Итог |
 |---|---|
 | Focused Stage 5–7 suite: `node --test test/pointcloud-ply-io-stage7.test.js test/geometry-registration-v1167.test.js test/georef-v1091.test.js test/pcedit-phase123.test.js test/pcedit.test.js test/viewer-edit-attributes-stage7.test.js test/lixel-sprints-ext-v1151.test.js test/format-roundtrip-stage3.test.js test/project-state-bridge-stage2.test.js test/multicloud-classification-restore-stage7.test.js test/webgl-octree-stream.test.js` | **103/103 passed**, 0 failed, 0 skipped; повторно подтверждено перед упаковкой обновления |
-| Полный `npm test` после добавления GPU smoke | **882 total / 874 passed / 0 failed / 8 skipped**; 7 пропусков требуют optional decoder/fixtures, ещё 1 — ожидаемый пропуск real-GPU теста вне self-hosted Windows |
+| Полный `npm test` после новых synthetic fixtures | **883 total / 876 passed / 0 failed / 7 skipped**: 4 отсутствующих LAZ fixtures, 2 пользовательских fixture checks, 1 GPU smoke, требующий self-hosted Windows |
 | `npm run check` | passed (`main.js`, `preload.js`, SQLite/JSON stores) |
 | `node --check pointcloud-ply-io.js` | passed |
-| `node scripts/check-syntax.mjs` | passed для **238 JS/MJS/CJS-файлов** |
+| `node scripts/check-syntax.mjs` | passed для **241 JS/MJS/CJS-файла** |
 | `npm run test:store` | passed: `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
-| `python3 -m py_compile tools/pointcloud_geometry.py` | passed; созданный `__pycache__` удалён |
+| `python scripts/check-python-syntax.py` | passed для **27 Python-файлов**; проверяются все tracked Python sources без `.pyc` |
 | Synthetic ICP без SciPy | `numpy-exact-trimmed-icp`; 250 точек, fitness 1.0, 6 итераций, RMSE `1.30e-15`, translation error `6.34e-17` в заданной метрической synthetic-сцене |
 | GitHub-hosted Windows CI | **4/4 checks passed:** `test`, `windows-test`, два `windows-package`; hosted runner не заменяет физическую GPU-проверку |
 | Приватный Windows hardware-QA run #7 | по скриншоту пользователя все шаги зелёные за 5:09, включая полный regression suite, NSIS/ASAR build, проверку ASAR и upload артефакта; новый GPU smoke включён env `BIMTWIN_GPU_SMOKE=1` |
@@ -40,7 +40,13 @@
 
 ### Пропущенные тесты
 
-Семь ресурсных пропусков текущего полного прогона связаны не с падением тестов, а с отсутствием необязательных ресурсов: три теста требуют optional LAZ decoder, один — внешние LAZ fixtures, два — загруженные полные OBJ/STL пользовательские файлы и внешний большой PLY fixture, один — synthetic room fixtures. Восьмой пропуск — новый real-GPU тест, намеренно не запускаемый в Linux/hosted-среде.
+Шесть fixture-gated пропусков текущего полного прогона связаны не с падением тестов, а с отсутствием необязательных ресурсов:
+
+- Четыре LAZ-проверки требуют отсутствующие `laz12-sample.laz`, `laz14-sample.laz`, `laz-decimation-200005.laz` и компактный LAZ regression fixture.
+- Два теста проверки пользовательских OBJ/STL/большого PLY требуют внешний каталог `BIM_TWIN_USER_FIXTURES`; приватные файлы не включаются в репозиторий.
+- Седьмой пропуск — physical-GPU smoke вне приватного self-hosted Windows runner. Synthetic room и large-PLY тесты теперь генерируют свои fixtures и больше не пропускаются.
+
+Восьмой прежний пропуск room fixture снят отдельным повторяемым тестом, который экспортирует synthetic room в LAS и PLY во временной директории. Он проверяет parser и известные размеры, но не заменяет пользовательский point-cloud corpus.
 
 ## Риски, требующие следующей итерации
 
@@ -55,4 +61,4 @@
 
 ## Повторный прогон перед публикацией overlay
 
-После добавления smoke harness повторно прогнаны Linux проверки: `npm test` — 882 total / 874 passed / 0 failed / 8 skipped; `npm run check`, `node scripts/check-syntax.mjs` (238 файлов), `npm run test:store` и `python3 -m py_compile tools/pointcloud_geometry.py` — passed. Локальный Chromium подтвердил draw только на SwiftShader; затем приватный Windows hardware-QA run #7 завершил workflow целиком с зелёными шагами и включённым self-hosted GPU smoke. Сводный скриншот не содержит подробный renderer/device log; VRAM stress, external CAD/GIS и clean-machine install остаются вне этой проверки.
+После добавления smoke harness и synthetic fixtures повторно прогнаны Linux проверки: `npm test` — 883 total / 876 passed / 0 failed / 7 skipped; `npm run check`, `node scripts/check-syntax.mjs` (241 файлов), `node --check pointcloud-ply-io.js`, `python scripts/check-python-syntax.py` (27 Python files) и `npm run test:store` — passed. Новые synthetic room LAS/PLY и large-PLY streaming regressions прошли; stage-by-stage результаты находятся в `QA-RETEST-stage0-7-current.md`. Локальный Chromium подтвердил draw только на SwiftShader; затем приватный Windows hardware-QA run #7 завершил workflow с включённым self-hosted GPU smoke. Сводный скриншот не содержит подробный renderer/device log; VRAM stress, external CAD/GIS и clean-machine install остаются вне этой проверки.
