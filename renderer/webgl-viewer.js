@@ -255,10 +255,10 @@
   }
 
   class Viewer3DGL {
-    static isSupported() { try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2')); } catch (e) { return false; } }
+    static isSupported() { try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2', { powerPreference: 'high-performance' })); } catch (e) { return false; } }
     constructor(canvas, onSelect) {
       this.canvas = canvas; this.onSelect = onSelect || function () { }; this.onHover = null; this.onMeasure = null;
-      const gl = canvas.getContext('webgl2', { antialias: true, preserveDrawingBuffer: true }); if (!gl) throw new Error('WebGL2 unavailable');
+      const gl = canvas.getContext('webgl2', { antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }); if (!gl) throw new Error('WebGL2 unavailable');
       this.gl = gl; this.supportsTools = true;
       this.yaw = -0.7; this.pitch = -0.5; this.dist = 14; this.target = [0, 1.5, 0];
       this._fov = 50 * Math.PI / 180; this._run = false;

@@ -75,13 +75,16 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
     const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
     assert.equal(result.ok, true, JSON.stringify(result, null, 2));
     assert.equal(result.webgl2, true, JSON.stringify(result, null, 2));
-    assert.equal(result.pointsUploaded, 4096, JSON.stringify(result, null, 2));
+    assert.equal(result.pointsUploaded, 1000000, JSON.stringify(result, null, 2));
     assert.equal(result.intensityBuffer, true, JSON.stringify(result, null, 2));
     assert.equal(result.classificationBuffer, true, JSON.stringify(result, null, 2));
     assert.equal(result.colorMode, 'classification', JSON.stringify(result, null, 2));
     assert.ok(result.changedPixels > 20, `Expected visible WebGL output; result: ${JSON.stringify(result)}`);
     assert.equal(result.glError, 0, `WebGL error ${result.glError}; result: ${JSON.stringify(result)}`);
     assert.equal(result.contextLost, false, JSON.stringify(result, null, 2));
+    assert.equal(result.gpuStress && result.gpuStress.points, 1000000, JSON.stringify(result, null, 2));
+    assert.ok(result.gpuStress.durationMs >= 8000, `GPU render load was too short: ${JSON.stringify(result.gpuStress)}`);
+    assert.ok(result.gpuStress.renderFrames >= 30, `Too few production render frames: ${JSON.stringify(result.gpuStress)}`);
 
     const gpuFeatures = result.gpu && result.gpu.featureStatus || {};
     const webglStatus = String(gpuFeatures.webgl2 || gpuFeatures.webgl || '');
@@ -98,12 +101,25 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
       /swiftshader|llvmpipe|software rasterizer|microsoft basic render driver|\bwarp\b/i,
       `WebGL fell back to a software renderer: ${rendererEvidence}`
     );
+    const isNvidiaVendor = (vendorId) => {
+      const value = String(vendorId == null ? '' : vendorId).trim().toLowerCase();
+      const numeric = /^0x[0-9a-f]+$/i.test(value)
+        ? Number.parseInt(value.slice(2), 16)
+        : (/^\d+$/.test(value) ? Number(value) : NaN);
+      return numeric === 0x10de;
+    };
+    const nvidiaAdapter = (result.gpu && result.gpu.activeAdapters || [])
+      .find((adapter) => isNvidiaVendor(adapter.vendorId) || /nvidia/i.test(adapter.name || ''));
+    assert.ok(nvidiaAdapter || /nvidia/i.test(rendererEvidence),
+      `The NVIDIA adapter is not active: ${JSON.stringify(result.gpu && result.gpu.activeAdapters || [])}; renderer=${rendererEvidence}`);
 
     console.log(`[BIMTWIN_GPU_WEBGL] ${JSON.stringify({
       renderer: result.renderer,
       vendor: result.vendor,
       activeAdapters: result.gpu && result.gpu.activeAdapters || [],
       pointsUploaded: result.pointsUploaded,
+      gpuStress: result.gpuStress,
+      nvidiaAdapterDetected: !!nvidiaAdapter || /nvidia/i.test(rendererEvidence),
       changedPixels: result.changedPixels,
       webgl2: webglStatus
     })}`);

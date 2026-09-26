@@ -30,7 +30,9 @@
             throw new Error('The production WebGL viewer did not obtain a WebGL2 context.');
           }
 
-          const side = 16;
+          // One million points keep the real production renderer busy long
+          // enough for the hardware adapter to be observable in the GPU monitor.
+          const side = 100;
           const count = side * side * side;
           const pos = new Float32Array(count * 3);
           const col = new Float32Array(count * 3);
@@ -92,6 +94,23 @@
             ) changedPixels++;
           }
 
+          const gpuStressMs = 10000;
+          const gpuStressStarted = performance.now();
+          let renderFrames = 0;
+          await new Promise((resolve) => {
+            const renderStressFrame = (now) => {
+              viewer.yaw += 0.002;
+              viewer.render();
+              renderFrames++;
+              if (now - gpuStressStarted >= gpuStressMs) resolve();
+              else requestAnimationFrame(renderStressFrame);
+            };
+            requestAnimationFrame(renderStressFrame);
+          });
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          gl.finish();
+          const gpuStressDurationMs = Math.round(performance.now() - gpuStressStarted);
+
           const debugRenderer = gl.getExtension('WEBGL_debug_renderer_info');
           const renderer = debugRenderer
             ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
@@ -111,6 +130,11 @@
             intensityBuffer: !!uploaded._ib,
             classificationBuffer: !!uploaded._kb,
             colorMode: cloudInfo && cloudInfo.display && cloudInfo.display.mode,
+            gpuStress: {
+              points: uploaded.count,
+              durationMs: gpuStressDurationMs,
+              renderFrames
+            },
             changedPixels,
             glError,
             contextLost: gl.isContextLost()

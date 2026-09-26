@@ -28,7 +28,10 @@ function finish(result, exitCode) {
 }
 
 app.commandLine.appendSwitch('enable-webgl');
+app.commandLine.appendSwitch('force_high_performance_gpu');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 
 app.whenReady().then(async () => {
