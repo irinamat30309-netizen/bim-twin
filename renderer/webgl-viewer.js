@@ -228,6 +228,32 @@
     frag = uvec4(vId, 0u, 0u, 1u);
   }`;
 
+  const EDIT_POINT_ATTRIBUTES = ['intensity', 'classification'];
+  function _editAttrsFor(viewer, bo) {
+    const count = bo && bo.pos ? Math.floor(bo.pos.length / 3) : 0, attrs = {};
+    EDIT_POINT_ATTRIBUTES.forEach(function (key) {
+      const data = (bo && bo[key]) || (viewer && (key === 'intensity' ? viewer._intensityValues : viewer._classificationLabels));
+      attrs[key] = data && data.length === count ? data : null;
+    });
+    return attrs;
+  }
+  function _subsetPointAttribute(values, indices) {
+    if (!values) return null;
+    const out = new values.constructor(indices.length);
+    for (let i = 0; i < indices.length; i++) out[i] = values[indices[i]];
+    return out;
+  }
+  function _concatPointAttribute(a, b) {
+    if (!a && !b) return null;
+    if (!a || !b) return null; // mismatched attribute coverage must not be fabricated
+    const out = new a.constructor(a.length + b.length);
+    out.set(a, 0); out.set(b, a.length);
+    return out;
+  }
+  function _removeTail(values, count) {
+    return values && count > 0 ? values.subarray(0, Math.max(0, values.length - count)) : values;
+  }
+
   class Viewer3DGL {
     static isSupported() { try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2')); } catch (e) { return false; } }
     constructor(canvas, onSelect) {
@@ -577,6 +603,11 @@
       const previous = this._cloudRecord;
       const named = opts && opts.sourceName;
       const preserve = !!(opts && opts.preserveView && previous && (!named || named === previous.sourceName));
+      // Undo records reference point indices/arrays from one concrete cloud.
+      // Never let Ctrl+Z from an unrelated import or project switch mutate a
+      // newly loaded cloud; edits that explicitly preserve the same cloud keep
+      // their history (delete/downsample/undo reloads).
+      if (!preserve) this._undo = [];
       this._srcXform = meta.srcXform || (preserve ? priorSrc : null);
       this._srcCrs = meta.crsWkt || (preserve ? priorCrs : null);
       this._srcUnits = meta.units || (preserve ? this._srcUnits || priorMeta.units || null : null);
@@ -703,6 +734,7 @@
       this.isolate = false;
       this.lod = false;
       this._modelFull = null;
+      this._undo = [];
       this._classificationLabels = null;
       this._intensityValues = null; this._attributeWarnings = [];
       this._srcXform = null;
@@ -763,9 +795,33 @@
     getClassificationLabels() {
       return this._classificationLabels ? new Uint8Array(this._classificationLabels) : null;
     }
+    clearClassificationLabels() {
+      const bo = this.base && this.base[0];
+      if (!bo || !bo.pos || (!this._classificationLabels && !bo.classification)) return false;
+      this._classificationLabels = null;
+      bo.classification = null;
+      const gl = this.gl;
+      if (gl && bo._vao && this.aClassification >= 0) {
+        gl.bindVertexArray(bo._vao);
+        if (typeof gl.disableVertexAttribArray === 'function') gl.disableVertexAttribArray(this.aClassification);
+        if (typeof gl.vertexAttrib1f === 'function') gl.vertexAttrib1f(this.aClassification, 0);
+        gl.bindVertexArray(null);
+      }
+      if (gl && bo._kb && typeof gl.deleteBuffer === 'function') gl.deleteBuffer(bo._kb);
+      bo._kb = null;
+      if (this._cloudRecord) this._cloudRecord.hasClassification = false;
+      if (this._cloudColorMode === 'classification') {
+        this._cloudColorMode = 'rgb';
+        this._ptElev = false;
+      }
+      this.render();
+      this._notifyCloudChanged();
+      return true;
+    }
     // Меш с поточечным цветом (напр. PLY с vertex colours)
     loadColoredMesh(mesh) {
       this.room = null; this.selectedId = null; this.isolate = false; this._clearMeasure();
+      this._undo = [];
       this._classificationLabels = null;
       this._intensityValues = null; this._attributeWarnings = [];
       const meta = mesh && mesh.meta || {};
@@ -975,19 +1031,50 @@
     _applyEditOp(runFn) {
       const bo = this.base && this.base[0]; if (!bo || !bo.pos) return null;
       const P = bo.pos, C = bo.col || null; const n = P.length / 3;
+      const attrs = _editAttrsFor(this, bo);
       const active = this._clipActive(); const b = active ? this._clipBounds() : null;
-      if (!b) return runFn({ pos: P, col: C });
+      if (!b) return runFn(Object.assign({ pos: P, col: C }, attrs));
       const mn = b.mn, mx = b.mx; const inside = new Uint8Array(n); const inIdx = []; let outCount = 0;
       for (let i = 0; i < n; i++) { const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2]; if (x >= mn[0] && x <= mx[0] && y >= mn[1] && y <= mx[1] && z >= mn[2] && z <= mx[2]) { inside[i] = 1; inIdx.push(i); } else outCount++; }
-      const inN = inIdx.length; if (!inN) return { pos: P, col: C, removed: 0 };
-      const inPos = new Float32Array(inN * 3); const inCol = C ? new Float32Array(inN * 3) : null;
-      for (let j = 0; j < inN; j++) { const i = inIdx[j]; inPos[j * 3] = P[i * 3]; inPos[j * 3 + 1] = P[i * 3 + 1]; inPos[j * 3 + 2] = P[i * 3 + 2]; if (C) { inCol[j * 3] = C[i * 3]; inCol[j * 3 + 1] = C[i * 3 + 1]; inCol[j * 3 + 2] = C[i * 3 + 2]; } }
-      const r = runFn({ pos: inPos, col: inCol }); if (!r || !r.pos) return r;
+      const inN = inIdx.length;
+      if (!inN) return Object.assign({ pos: P, col: C, removed: 0 }, attrs);
+      const inPos = new Float32Array(inN * 3);
+      const inCol = C ? new C.constructor(inN * 3) : null;
+      for (let j = 0; j < inN; j++) {
+        const i = inIdx[j]; inPos[j * 3] = P[i * 3]; inPos[j * 3 + 1] = P[i * 3 + 1]; inPos[j * 3 + 2] = P[i * 3 + 2];
+        if (C) { inCol[j * 3] = C[i * 3]; inCol[j * 3 + 1] = C[i * 3 + 1]; inCol[j * 3 + 2] = C[i * 3 + 2]; }
+      }
+      const inAttrs = {};
+      EDIT_POINT_ATTRIBUTES.forEach(function (key) { inAttrs[key] = _subsetPointAttribute(attrs[key], inIdx); });
+      const r = runFn(Object.assign({ pos: inPos, col: inCol }, inAttrs)); if (!r || !r.pos) return r;
       const keptIn = r.pos.length / 3; const total = outCount + keptIn;
-      const mPos = new Float32Array(total * 3); const mCol = (C && r.col) ? new Float32Array(total * 3) : null; let w = 0;
-      for (let i = 0; i < n; i++) { if (inside[i]) continue; mPos[w * 3] = P[i * 3]; mPos[w * 3 + 1] = P[i * 3 + 1]; mPos[w * 3 + 2] = P[i * 3 + 2]; if (mCol) { mCol[w * 3] = C[i * 3]; mCol[w * 3 + 1] = C[i * 3 + 1]; mCol[w * 3 + 2] = C[i * 3 + 2]; } w++; }
-      for (let j = 0; j < keptIn; j++) { mPos[w * 3] = r.pos[j * 3]; mPos[w * 3 + 1] = r.pos[j * 3 + 1]; mPos[w * 3 + 2] = r.pos[j * 3 + 2]; if (mCol) { mCol[w * 3] = r.col[j * 3]; mCol[w * 3 + 1] = r.col[j * 3 + 1]; mCol[w * 3 + 2] = r.col[j * 3 + 2]; } w++; }
-      return { pos: mPos, col: mCol, removed: r.removed, removedPos: r.removedPos, removedCol: r.removedCol };
+      const mPos = new Float32Array(total * 3);
+      const mCol = (C && r.col) ? new C.constructor(total * 3) : null;
+      const mergedAttrs = {};
+      EDIT_POINT_ATTRIBUTES.forEach(function (key) {
+        const original = attrs[key], kept = r[key];
+        if (!original && !kept) { mergedAttrs[key] = null; return; }
+        if (!original || !kept || kept.length !== keptIn) { mergedAttrs[key] = null; return; }
+        const merged = new original.constructor(total);
+        let dst = 0;
+        for (let i = 0; i < n; i++) if (!inside[i]) merged[dst++] = original[i];
+        merged.set(kept, dst);
+        mergedAttrs[key] = merged;
+      });
+      let w = 0;
+      for (let i = 0; i < n; i++) {
+        if (inside[i]) continue;
+        mPos[w * 3] = P[i * 3]; mPos[w * 3 + 1] = P[i * 3 + 1]; mPos[w * 3 + 2] = P[i * 3 + 2];
+        if (mCol) { mCol[w * 3] = C[i * 3]; mCol[w * 3 + 1] = C[i * 3 + 1]; mCol[w * 3 + 2] = C[i * 3 + 2]; }
+        w++;
+      }
+      for (let j = 0; j < keptIn; j++) {
+        mPos[w * 3] = r.pos[j * 3]; mPos[w * 3 + 1] = r.pos[j * 3 + 1]; mPos[w * 3 + 2] = r.pos[j * 3 + 2];
+        if (mCol) { mCol[w * 3] = r.col[j * 3]; mCol[w * 3 + 1] = r.col[j * 3 + 1]; mCol[w * 3 + 2] = r.col[j * 3 + 2]; }
+        w++;
+      }
+      return Object.assign({ pos: mPos, col: mCol, removed: r.removed, removedPos: r.removedPos, removedCol: r.removedCol,
+        removedAttributes: r.removedAttributes || {} }, mergedAttrs);
     }
     setIsolate(on) {
       on = !!on;
@@ -2486,6 +2573,41 @@
       try { return this._applyEdit(false); }
       finally { this._planeProtect = wasProtect; this._holeFill = wasHoleFill; this._lastProtectRemoved = 0; }
     }
+    _pushRemovedEditUndo(result, addedFill) {
+      if (!result || !result.removedPos || !result.removedPos.length) return false;
+      const removedAttributes = Object.assign({}, result.removedAttributes || {});
+      EDIT_POINT_ATTRIBUTES.forEach(function (key) {
+        const cap = key.charAt(0).toUpperCase() + key.slice(1);
+        if (!removedAttributes[key] && result['removed' + cap]) removedAttributes[key] = result['removed' + cap];
+      });
+      (this._undo = this._undo || []).push({
+        removedPos: result.removedPos, removedCol: result.removedCol || null,
+        removedAttributes: removedAttributes, addedFill: addedFill | 0
+      });
+      if (this._undo.length > 6) this._undo.shift();
+      return true;
+    }
+    _pushSnapshotEditUndo(bo) {
+      if (!bo || !bo.pos) return false;
+      const attrs = _editAttrsFor(this, bo);
+      (this._undo = this._undo || []).push({
+        pos: bo.pos, col: bo.col || null, intensity: attrs.intensity, classification: attrs.classification,
+        snapshot: true
+      });
+      if (this._undo.length > 6) this._undo.shift();
+      return true;
+    }
+    _editCloudInput(bo) {
+      return Object.assign({ pos: bo.pos, col: bo.col || null }, _editAttrsFor(this, bo));
+    }
+    _loadEditedResult(result, bo) {
+      const attrs = {};
+      EDIT_POINT_ATTRIBUTES.forEach(function (key) { attrs[key] = result && result[key] || null; });
+      this.loadCloud(Object.assign({
+        pos: result.pos, col: result.col || null, count: result.pos.length / 3,
+        spacing: (bo && bo._spacing) || 0
+      }, attrs), { preserveView: true });
+    }
     _applyEdit(keep) {
       const bo = this.base && this.base[0]; if (!bo || !this._sel || !this._sel.size || typeof window === 'undefined' || !window.PCEdit) return 0;
       if (!keep && this._planeProtect && window.PCEdit.protectFloorLocal) {
@@ -2499,7 +2621,7 @@
         this._lastProtectRemoved = Math.max(0, beforeN - sel.length);
         this._sel = new Set(sel); if (!this._sel.size) { this._buildSelHighlight(); if (typeof this.onEditSelect === "function") this.onEditSelect(0); return 0; }
       } else { this._lastProtectRemoved = 0; }
-      const cur = { pos: bo.pos, col: bo.col || null };
+      const cur = Object.assign({ pos: bo.pos, col: bo.col || null }, _editAttrsFor(this, bo));
       const r = keep ? window.PCEdit.keepByIndices(cur, this._sel) : window.PCEdit.deleteByIndices(cur, this._sel);
       // Латание дыр на защищённых плоскостях (пол/стены) после удаления объекта (человек/мебель).
       let addedFill = 0;
@@ -2512,16 +2634,20 @@
             let nc = r.col;
             if (r.col && fr.addedCol) { nc = new r.col.constructor(r.col.length + fr.addedCol.length); nc.set(r.col, 0); nc.set(fr.addedCol, r.col.length); }
             r.pos = np; r.col = nc; addedFill = fr.added;
+            EDIT_POINT_ATTRIBUTES.forEach(function (key) {
+              if (!r[key]) return;
+              const expanded = new r[key].constructor(r[key].length + fr.added);
+              expanded.set(r[key], 0);
+              r[key] = expanded; // synthetic fill points are intentionally unclassified/zero-intensity
+            });
           }
         } catch (e) { console.warn('fillPlaneHoles', e); }
       }
       // Компактный undo: храним ТОЛЬКО удалённые точки + число синтетических точек-заплаток (для отката).
-      if (r.removedPos && r.removedPos.length) {
-        (this._undo = this._undo || []).push({ removedPos: r.removedPos, removedCol: r.removedCol || null, addedFill: addedFill });
-        if (this._undo.length > 6) this._undo.shift();
-      }
+      this._pushRemovedEditUndo(r, addedFill);
       this._sel = new Set(); if (this._selObj) { this._delObjs([this._selObj]); this._selObj = null; }
-      this.loadCloud({ pos: r.pos, col: r.col, count: r.pos.length / 3, spacing: (bo && bo._spacing) || 0 }, { preserveView: true });
+      this.loadCloud(Object.assign({ pos: r.pos, col: r.col, count: r.pos.length / 3, spacing: (bo && bo._spacing) || 0 },
+        r.intensity ? { intensity: r.intensity } : {}, r.classification ? { classification: r.classification } : {}), { preserveView: true });
       if (typeof this.onEditSelect === 'function') this.onEditSelect(0);
       if (typeof this.onEditChange === 'function') this.onEditChange(r.pos.length / 3);
       return r.removed;
@@ -2529,21 +2655,73 @@
     undoEdit() {
       if (!this._undo || !this._undo.length) return false;
       const prev = this._undo.pop();
+      if (prev && prev.classificationEdit) {
+        const bo = this.base && this.base[0];
+        const current = this._classificationLabels;
+        const n = bo && bo.pos ? Math.floor(bo.pos.length / 3) : 0;
+        const indices = prev.indices;
+        const hasSnapshot = prev.previousLabels instanceof Uint8Array && prev.previousLabels.length === n;
+        const hasDelta = indices && prev.previousValues && prev.previousValues.length === indices.length;
+        if (!bo || !current || current.length !== n ||
+            (prev.hadClassification && !hasSnapshot && !hasDelta)) {
+          this._undo.push(prev);
+          return false;
+        }
+        if (prev.hadClassification) {
+          let restored;
+          if (hasSnapshot) {
+            restored = prev.previousLabels;
+          } else {
+            restored = new Uint8Array(current);
+            for (let i = 0; i < indices.length; i++) {
+              if (indices[i] >= n) { this._undo.push(prev); return false; }
+              restored[indices[i]] = prev.previousValues[i];
+            }
+          }
+          if (!this.applyClassificationLabels(restored)) { this._undo.push(prev); return false; }
+          this._lastClassificationPromise = this._persistClassificationAsset(
+            this._classificationLabels,
+            'manual LAS/ASPRS class assignment (undo)',
+            { undo: true, restoredPointCount: prev.changedPointCount || indices.length },
+            { restoredPointCount: prev.changedPointCount || indices.length },
+            prev.target
+          );
+        } else {
+          if (!this.clearClassificationLabels()) { this._undo.push(prev); return false; }
+          this._lastClassificationPromise = this._persistClassificationClear(prev.target);
+        }
+        return true;
+      }
       const bo = this.base && this.base[0];
-      let pos, col;
+      let pos, col, restoredAttrs = {};
       if (prev.removedPos) {
         // Возвращаем удалённые точки обратно (порядок для облака не важен).
         let curPos = bo ? bo.pos : new Float32Array(0);
         let curCol = bo ? (bo.col || null) : null;
+        const currentAttrs = _editAttrsFor(this, bo);
         const af = (prev.addedFill | 0);
-        if (af > 0) { curPos = curPos.subarray(0, Math.max(0, curPos.length - af * 3)); if (curCol) curCol = curCol.subarray(0, Math.max(0, curCol.length - af * 3)); }
+        if (af > 0) {
+          curPos = curPos.subarray(0, Math.max(0, curPos.length - af * 3));
+          if (curCol) curCol = curCol.subarray(0, Math.max(0, curCol.length - af * 3));
+          EDIT_POINT_ATTRIBUTES.forEach(function (key) { currentAttrs[key] = _removeTail(currentAttrs[key], af); });
+        }
         const rp = prev.removedPos, rc = prev.removedCol || null;
         pos = new Float32Array(curPos.length + rp.length);
         pos.set(curPos, 0); pos.set(rp, curPos.length);
         if (curCol && rc) { col = new curCol.constructor(curCol.length + rc.length); col.set(curCol, 0); col.set(rc, curCol.length); } else { col = null; }
-      } else if (prev.pos) { pos = prev.pos; col = prev.col || null; if (prev.srcXform !== undefined) this._srcXform = prev.srcXform; if (prev.crsWkt !== undefined) this._srcCrs = prev.crsWkt; } else { return false; }
+        EDIT_POINT_ATTRIBUTES.forEach(function (key) {
+          const removed = (prev.removedAttributes && prev.removedAttributes[key]) || null;
+          const joined = _concatPointAttribute(currentAttrs[key], removed);
+          if (joined) restoredAttrs[key] = joined;
+        });
+      } else if (prev.pos) {
+        pos = prev.pos; col = prev.col || null;
+        EDIT_POINT_ATTRIBUTES.forEach(function (key) { if (prev[key]) restoredAttrs[key] = prev[key]; });
+        if (prev.srcXform !== undefined) this._srcXform = prev.srcXform;
+        if (prev.crsWkt !== undefined) this._srcCrs = prev.crsWkt;
+      } else { return false; }
       this._sel = new Set(); if (this._selObj) { this._delObjs([this._selObj]); this._selObj = null; }
-      this.loadCloud({ pos: pos, col: col, count: pos.length / 3, spacing: (bo && bo._spacing) || 0 }, { preserveView: true });
+      this.loadCloud(Object.assign({ pos: pos, col: col, count: pos.length / 3, spacing: (bo && bo._spacing) || 0 }, restoredAttrs), { preserveView: true });
       if (typeof this.onEditSelect === 'function') this.onEditSelect(0);
       if (typeof this.onEditChange === 'function') this.onEditChange(pos.length / 3);
       return true;
@@ -2576,11 +2754,11 @@
       if (!bo || !bo.pos || typeof window === 'undefined' || !window.PCEdit || !window.PCEdit.cleanVoxelDensity) return 0;
       const o = Object.assign({}, opts || {});
       if (o.voxel == null && bo._spacing > 0) o.voxel = bo._spacing * (o.voxelFactor || 3);
-      const r = window.PCEdit.cleanVoxelDensity({ pos: bo.pos, col: bo.col || null }, o);
+      const r = this._applyEditOp(function (sub) { return window.PCEdit.cleanVoxelDensity(sub, o); });
       if (!r || !r.removed) return 0;
-      if (r.removedPos && r.removedPos.length) { (this._undo = this._undo || []).push({ removedPos: r.removedPos, removedCol: r.removedCol || null }); if (this._undo.length > 6) this._undo.shift(); }
+      this._pushRemovedEditUndo(r, 0);
       this._sel = new Set(); if (this._selObj) { this._delObjs([this._selObj]); this._selObj = null; }
-      this.loadCloud({ pos: r.pos, col: r.col, count: r.pos.length / 3, spacing: (bo && bo._spacing) || 0 }, { preserveView: true });
+      this._loadEditedResult(r, bo);
       if (typeof this.onEditSelect === 'function') this.onEditSelect(0);
       if (typeof this.onEditChange === 'function') this.onEditChange(r.pos.length / 3);
       return r.removed;
@@ -2592,11 +2770,11 @@
       if (!bo || !bo.pos || typeof window === 'undefined' || !window.PCEdit || !window.PCEdit.cleanClusters) return 0;
       const o = Object.assign({}, opts || {});
       if (o.voxel == null && bo._spacing > 0) o.voxel = bo._spacing * (o.connect || 4);
-      const r = window.PCEdit.cleanClusters({ pos: bo.pos, col: bo.col || null }, o);
+      const r = this._applyEditOp(function (sub) { return window.PCEdit.cleanClusters(sub, o); });
       if (!r || !r.removed) return 0;
-      if (r.removedPos && r.removedPos.length) { (this._undo = this._undo || []).push({ removedPos: r.removedPos, removedCol: r.removedCol || null }); if (this._undo.length > 6) this._undo.shift(); }
+      this._pushRemovedEditUndo(r, 0);
       this._sel = new Set(); if (this._selObj) { this._delObjs([this._selObj]); this._selObj = null; }
-      this.loadCloud({ pos: r.pos, col: r.col, count: r.pos.length / 3, spacing: (bo && bo._spacing) || 0 }, { preserveView: true });
+      this._loadEditedResult(r, bo);
       if (typeof this.onEditSelect === 'function') this.onEditSelect(0);
       if (typeof this.onEditChange === 'function') this.onEditChange(r.pos.length / 3);
       return r.removed;
@@ -2610,27 +2788,43 @@
       const factor = o.voxelFactor || 2;
       if (o.voxel == null && bo._spacing > 0) o.voxel = bo._spacing * factor;
       if (o.minClusterPts == null) o.minClusterPts = Math.max(120, Math.round(n * 0.0003));
-      let r = window.PCEdit.cleanClusters({ pos: bo.pos, col: bo.col || null }, o);
+      let r = this._applyEditOp(function (sub) { return window.PCEdit.cleanClusters(sub, o); });
       if (!r) return 0;
       // v1048: второй микропроход убирает одиночные «мушки», которые остаются
       // после удаления островков (они примыкают к большому кластеру, поэтому
       // выживают при связном анализе). Тесный радиус (≈2·шаг) + минимум соседей:
       // изолированные точки удаляются, а поверхности (пол/стены/фасад) — нет.
       let curPos = r.pos, curCol = r.col, remPos = r.removedPos || null, remCol = r.removedCol || null, remN = r.removed | 0;
-      if (o.despeckle !== false && window.PCEdit.cleanRadiusOutliers && curPos && curPos.length && bo._spacing > 0) {
-        const rr = window.PCEdit.cleanRadiusOutliers({ pos: curPos, col: curCol || null }, { radius: bo._spacing * (o.despeckleRadius || 3), minNeighbors: (o.despeckleMinN || 1) });
+      let curIntensity = r.intensity || null, curClassification = r.classification || null;
+      let removedAttributes = Object.assign({}, r.removedAttributes || {});
+      if (!this._clipActive() && o.despeckle !== false && window.PCEdit.cleanRadiusOutliers && curPos && curPos.length && bo._spacing > 0) {
+        const rr = window.PCEdit.cleanRadiusOutliers({
+          pos: curPos, col: curCol || null, intensity: curIntensity, classification: curClassification
+        }, { radius: bo._spacing * (o.despeckleRadius || 3), minNeighbors: (o.despeckleMinN || 1) });
         if (rr && rr.removed && rr.removed <= n * (o.despeckleMaxFrac || 0.03)) {
-          curPos = rr.pos; curCol = rr.col; remN += rr.removed | 0;
+          curPos = rr.pos; curCol = rr.col; curIntensity = rr.intensity || null; curClassification = rr.classification || null; remN += rr.removed | 0;
           if (rr.removedPos && rr.removedPos.length) {
             if (remPos && remPos.length) { const m = new Float32Array(remPos.length + rr.removedPos.length); m.set(remPos, 0); m.set(rr.removedPos, remPos.length); remPos = m; } else { remPos = rr.removedPos; }
             if (remCol && remCol.length && rr.removedCol && rr.removedCol.length) { const mc = new remCol.constructor(remCol.length + rr.removedCol.length); mc.set(remCol, 0); mc.set(rr.removedCol, remCol.length); remCol = mc; } else if (rr.removedCol && rr.removedCol.length && !(remCol && remCol.length)) { remCol = rr.removedCol; }
+            const nextRemoved = rr.removedAttributes || {};
+            EDIT_POINT_ATTRIBUTES.forEach(function (key) {
+              const left = removedAttributes[key] || null, right = nextRemoved[key] || null;
+              if (left && right) removedAttributes[key] = _concatPointAttribute(left, right);
+              else if (right) removedAttributes[key] = right;
+            });
           }
         }
       }
       if (remN <= 0) return 0;
-      if (remPos && remPos.length) { (this._undo = this._undo || []).push({ removedPos: remPos, removedCol: remCol || null }); if (this._undo.length > 6) this._undo.shift(); }
+      r = Object.assign({}, r, { pos: curPos, col: curCol, intensity: curIntensity, classification: curClassification,
+        removed: remN, removedPos: remPos, removedCol: remCol, removedAttributes: removedAttributes });
+      EDIT_POINT_ATTRIBUTES.forEach(function (key) {
+        const cap = key.charAt(0).toUpperCase() + key.slice(1);
+        if (removedAttributes[key]) r['removed' + cap] = removedAttributes[key];
+      });
+      this._pushRemovedEditUndo(r, 0);
       this._sel = new Set(); if (this._selObj) { this._delObjs([this._selObj]); this._selObj = null; }
-      this.loadCloud({ pos: curPos, col: curCol, count: curPos.length / 3, spacing: (bo && bo._spacing) || 0 }, { preserveView: true });
+      this._loadEditedResult(r, bo);
       if (typeof this.onEditSelect === 'function') this.onEditSelect(0);
       if (typeof this.onEditChange === 'function') this.onEditChange(curPos.length / 3);
       return remN;
@@ -2641,12 +2835,12 @@
       if (!bo || !bo.pos || typeof window === 'undefined' || !window.PCEdit || !window.PCEdit.cleanAuto) return null;
       const o = Object.assign({}, opts || {});
       if (o.voxel == null && bo._spacing > 0) o.voxel = bo._spacing * (o.voxelFactor || 3);
-      const r = window.PCEdit.cleanAuto({ pos: bo.pos, col: bo.col || null }, o);
+      const r = this._applyEditOp(function (sub) { return window.PCEdit.cleanAuto(sub, o); });
       if (!r) return null;
-      if (r.removed && r.removedPos && r.removedPos.length) { (this._undo = this._undo || []).push({ removedPos: r.removedPos, removedCol: r.removedCol || null, addedFill: 0 }); if (this._undo.length > 6) this._undo.shift(); }
+      if (r.removed) this._pushRemovedEditUndo(r, 0);
       if (r.removed) {
         this._sel = new Set(); if (this._selObj) { this._delObjs([this._selObj]); this._selObj = null; }
-        this.loadCloud({ pos: r.pos, col: r.col, count: r.pos.length / 3, spacing: (bo && bo._spacing) || 0 }, { preserveView: true });
+        this._loadEditedResult(r, bo);
         if (typeof this.onEditSelect === 'function') this.onEditSelect(0);
         if (typeof this.onEditChange === 'function') this.onEditChange(r.pos.length / 3);
       }
@@ -2669,41 +2863,214 @@
     selectSphereAt(cx,cy,radius){var bo=this.base&&this.base[0];if(!bo||!bo.pos||!window.PCEdit||!window.PCEdit.selectBySphere)return 0;var hit=this._pick(cx,cy);if(!hit||!hit.point)return 0;var idx=window.PCEdit.selectBySphere(bo.pos,bo.pos.length/3,hit.point,radius||0.5);this._sel=new Set(this._clipFilter(idx));this._buildSelHighlight();if(typeof this.onEditSelect==='function')this.onEditSelect(this._sel.size);this.render();return this._sel.size;}
     selectSphere(center,radius){var bo=this.base&&this.base[0];if(!bo||!bo.pos||!window.PCEdit||!window.PCEdit.selectBySphere)return 0;this._sel=new Set(this._clipFilter(window.PCEdit.selectBySphere(bo.pos,bo.pos.length/3,center,radius)));this._buildSelHighlight();if(typeof this.onEditSelect==='function')this.onEditSelect(this._sel.size);this.render();return this._sel.size;}
     selectBox(mn,mx){var bo=this.base&&this.base[0];if(!bo||!bo.pos||!window.PCEdit||!window.PCEdit.selectByBox)return 0;this._sel=new Set(this._clipFilter(window.PCEdit.selectByBox(bo.pos,bo.pos.length/3,mn,mx)));this._buildSelHighlight();if(typeof this.onEditSelect==='function')this.onEditSelect(this._sel.size);this.render();return this._sel.size;}
-    cleanSORInApp(opts){var bo=this.base&&this.base[0];if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.cleanStatisticalOutliers)return 0;var o=Object.assign({},opts||{});if(o.voxel==null&&bo._spacing>0)o.voxel=bo._spacing*3;var r=this._applyEditOp(function(sub){return window.PCEdit.cleanStatisticalOutliers(sub,o);});if(!r||!r.removed)return 0;if(r.removedPos&&r.removedPos.length){(this._undo=this._undo||[]).push({removedPos:r.removedPos,removedCol:r.removedCol||null});if(this._undo.length>6)this._undo.shift();}this._sel=new Set();if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}this.loadCloud({pos:r.pos,col:r.col,count:r.pos.length/3,spacing:(bo&&bo._spacing)||0},{preserveView:true});if(typeof this.onEditSelect==='function')this.onEditSelect(0);if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);return r.removed;}
+    cleanSORInApp(opts) {
+      var bo=this.base&&this.base[0];
+      if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.cleanStatisticalOutliers)return 0;
+      var o=Object.assign({},opts||{});if(o.voxel==null&&bo._spacing>0)o.voxel=bo._spacing*3;
+      var r=this._applyEditOp(function(sub){return window.PCEdit.cleanStatisticalOutliers(sub,o);});
+      if(!r||!r.removed)return 0;
+      this._pushRemovedEditUndo(r,0);this._sel=new Set();
+      if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}
+      this._loadEditedResult(r,bo);
+      if(typeof this.onEditSelect==='function')this.onEditSelect(0);
+      if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);
+      return r.removed;
+    }
     // v1046 — Phase 1: radius outlier removal (редкие «мушки», что пропускает SOR).
-    cleanRadiusInApp(opts){var bo=this.base&&this.base[0];if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.cleanRadiusOutliers)return 0;var o=Object.assign({},opts||{});if(o.radius==null&&bo._spacing>0)o.radius=bo._spacing*(o.radiusFactor||5);var r=this._applyEditOp(function(sub){return window.PCEdit.cleanRadiusOutliers(sub,o);});if(!r||!r.removed)return 0;if(r.removedPos&&r.removedPos.length){(this._undo=this._undo||[]).push({removedPos:r.removedPos,removedCol:r.removedCol||null});if(this._undo.length>6)this._undo.shift();}this._sel=new Set();if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}this.loadCloud({pos:r.pos,col:r.col,count:r.pos.length/3,spacing:(bo&&bo._spacing)||0},{preserveView:true});if(typeof this.onEditSelect==='function')this.onEditSelect(0);if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);return r.removed;}
+    cleanRadiusInApp(opts) {
+      var bo=this.base&&this.base[0];
+      if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.cleanRadiusOutliers)return 0;
+      var o=Object.assign({},opts||{});if(o.radius==null&&bo._spacing>0)o.radius=bo._spacing*(o.radiusFactor||5);
+      var r=this._applyEditOp(function(sub){return window.PCEdit.cleanRadiusOutliers(sub,o);});
+      if(!r||!r.removed)return 0;
+      this._pushRemovedEditUndo(r,0);this._sel=new Set();
+      if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}
+      this._loadEditedResult(r,bo);
+      if(typeof this.onEditSelect==='function')this.onEditSelect(0);
+      if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);
+      return r.removed;
+    }
     // v1046 — Phase 1: noise filter по локальной плоскости (сглаживает «толщину» поверхностей).
-    noiseFilterInApp(opts){var bo=this.base&&this.base[0];if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.noiseFilterLocalPlane)return 0;var o=Object.assign({},opts||{});if(o.voxel==null&&bo._spacing>0)o.voxel=bo._spacing*(o.voxelFactor||2);var r=this._applyEditOp(function(sub){return window.PCEdit.noiseFilterLocalPlane(sub,o);});if(!r||!r.removed)return 0;if(r.removedPos&&r.removedPos.length){(this._undo=this._undo||[]).push({removedPos:r.removedPos,removedCol:r.removedCol||null});if(this._undo.length>6)this._undo.shift();}this._sel=new Set();if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}this.loadCloud({pos:r.pos,col:r.col,count:r.pos.length/3,spacing:(bo&&bo._spacing)||0},{preserveView:true});if(typeof this.onEditSelect==='function')this.onEditSelect(0);if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);return r.removed;}
+    noiseFilterInApp(opts) {
+      var bo=this.base&&this.base[0];
+      if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.noiseFilterLocalPlane)return 0;
+      var o=Object.assign({},opts||{});if(o.voxel==null&&bo._spacing>0)o.voxel=bo._spacing*(o.voxelFactor||2);
+      var r=this._applyEditOp(function(sub){return window.PCEdit.noiseFilterLocalPlane(sub,o);});
+      if(!r||!r.removed)return 0;
+      this._pushRemovedEditUndo(r,0);this._sel=new Set();
+      if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}
+      this._loadEditedResult(r,bo);
+      if(typeof this.onEditSelect==='function')this.onEditSelect(0);
+      if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);
+      return r.removed;
+    }
     // v1046 — Phase 2: реальное воксельное прореживание (сохраняется, не только дисплей).
-    voxelDownsampleInApp(opts){var bo=this.base&&this.base[0];if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.voxelDownsample)return 0;var o=Object.assign({},opts||{});if(o.voxel==null&&bo._spacing>0)o.voxel=bo._spacing*(o.voxelFactor||2);var before=bo.pos.length/3;var r=this._applyEditOp(function(sub){return window.PCEdit.voxelDownsample(sub,o);});if(!r||!r.pos||!r.pos.length||r.removed<=0)return 0;this._undo=[];this._sel=new Set();if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}this.loadCloud({pos:r.pos,col:r.col,count:r.pos.length/3,spacing:(bo&&bo._spacing)||0},{preserveView:true});if(typeof this.onEditSelect==='function')this.onEditSelect(0);if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);return before-(r.pos.length/3);}
+    voxelDownsampleInApp(opts) {
+      var bo=this.base&&this.base[0];
+      if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.voxelDownsample)return 0;
+      var o=Object.assign({},opts||{});if(o.voxel==null&&bo._spacing>0)o.voxel=bo._spacing*(o.voxelFactor||2);
+      var before=bo.pos.length/3;
+      var r=this._applyEditOp(function(sub){return window.PCEdit.voxelDownsample(sub,o);});
+      if(!r||!r.pos||!r.pos.length||r.removed<=0)return 0;
+      this._pushSnapshotEditUndo(bo);this._sel=new Set();
+      if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}
+      this._loadEditedResult(r,bo);
+      if(typeof this.onEditSelect==='function')this.onEditSelect(0);
+      if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);
+      return before-(r.pos.length/3);
+    }
     // v1046 — Phase 2: горизонтальный/вертикальный срез (сечение).
-    sliceKeepInApp(opts){var bo=this.base&&this.base[0];if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.sliceSection)return 0;var r=this._applyEditOp(function(sub){return window.PCEdit.sliceSection(sub,opts||{});});if(!r||!r.removed)return 0;if(r.removedPos&&r.removedPos.length){(this._undo=this._undo||[]).push({removedPos:r.removedPos,removedCol:r.removedCol||null});if(this._undo.length>6)this._undo.shift();}this._sel=new Set();if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}this.loadCloud({pos:r.pos,col:r.col,count:r.pos.length/3,spacing:(bo&&bo._spacing)||0},{preserveView:true});if(typeof this.onEditSelect==='function')this.onEditSelect(0);if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);return r.removed;}
+    sliceKeepInApp(opts) {
+      var bo=this.base&&this.base[0];
+      if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.sliceSection)return 0;
+      var r=this._applyEditOp(function(sub){return window.PCEdit.sliceSection(sub,opts||{});});
+      if(!r||!r.removed)return 0;
+      this._pushRemovedEditUndo(r,0);this._sel=new Set();
+      if(this._selObj){this._delObjs([this._selObj]);this._selObj=null;}
+      this._loadEditedResult(r,bo);
+      if(typeof this.onEditSelect==='function')this.onEditSelect(0);
+      if(typeof this.onEditChange==='function')this.onEditChange(r.pos.length/3);
+      return r.removed;
+    }
+    _classificationTarget() {
+      let cloudInfo = null;
+      try {
+        const browserWindow = typeof window !== 'undefined' ? window : null;
+        cloudInfo = browserWindow && browserWindow.MultiCloud && browserWindow.MultiCloud.getActive
+          ? browserWindow.MultiCloud.getActive() : null;
+      } catch (_) {}
+      const cloudId = (cloudInfo && (cloudInfo.id || cloudInfo.path)) ||
+        (this._cloudRecord && this._cloudRecord.sourceName) || 'active-cloud';
+      const sourcePath = (cloudInfo && cloudInfo.path) ||
+        (this._cloudRecord && this._cloudRecord.sourceName) || '';
+      return { cloudId: String(cloudId), sourcePath: String(sourcePath || '') };
+    }
+    _persistClassificationAsset(labels, algorithm, parameters, counts, target) {
+      const projectState = typeof window !== 'undefined' && window.BimProjectState;
+      if (!projectState || typeof projectState.saveClassification !== 'function') {
+        return Promise.resolve({ ok: false, error: 'classification_asset_storage_unavailable' });
+      }
+      const source = target || this._classificationTarget();
+      const payload = {
+        cloudId: source.cloudId,
+        sourcePath: source.sourcePath,
+        pointCount: labels.length,
+        labels: labels,
+        operation: String(algorithm).indexOf('manual LAS/ASPRS class assignment') === 0 ? 'cloud.classify.manual' : 'cloud.classify.structure',
+        algorithm: algorithm,
+        parameters: parameters || {},
+        counts: counts || {},
+        sourceTransform: this._srcXform || null,
+        crsWkt: this._srcCrs || null
+      };
+      const self = this;
+      return Promise.resolve().then(function () {
+        return projectState.saveClassification(payload);
+      }).catch(function (error) {
+        const message = String(error && error.message || error);
+        try {
+          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('bim-project-classification-error', { detail: { error: message } }));
+          }
+        } catch (_) {}
+        return { ok: false, error: message };
+      });
+    }
+    _persistClassificationClear(target) {
+      const projectState = typeof window !== 'undefined' && window.BimProjectState;
+      if (!projectState || typeof projectState.clearClassification !== 'function') {
+        return Promise.resolve({ ok: false, error: 'classification_asset_storage_unavailable' });
+      }
+      const source = target || this._classificationTarget();
+      return Promise.resolve().then(function () {
+        return projectState.clearClassification(source.cloudId);
+      }).catch(function (error) {
+        const message = String(error && error.message || error);
+        try {
+          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('bim-project-classification-error', { detail: { error: message } }));
+          }
+        } catch (_) {}
+        return { ok: false, error: message };
+      });
+    }
+    assignClassificationInApp(classCode) {
+      const code = Number(classCode);
+      if (!Number.isInteger(code) || code < 0 || code > 255) return { ok: false, error: 'invalid_class_code' };
+      const bo = this.base && this.base[0];
+      if (!bo || !bo.pos || !bo.pos.length) return { ok: false, error: 'cloud_not_loaded' };
+      const n = Math.floor(bo.pos.length / 3);
+      if (!Number.isSafeInteger(n) || n < 1 || n > 0xffffffff) return { ok: false, error: 'invalid_point_count' };
+      const sourceCount = this._cloudRecord && Number(this._cloudRecord.sourceCount);
+      if (this._octActive || this.lod || bo._lod || bo._lodBuild || this._decimatedFrom > 0) {
+        return { ok: false, error: 'streaming_cloud_edit_not_supported' };
+      }
+      if (Number.isSafeInteger(sourceCount) && sourceCount > 0 && sourceCount !== n) {
+        return { ok: false, error: 'partial_cloud_edit_not_supported' };
+      }
+      const prior = this._classificationLabels || null;
+      if (prior && prior.length !== n) return { ok: false, error: 'classification_point_count_mismatch' };
+      const selection = this._sel;
+      if (!selection || typeof selection.forEach !== 'function' || !selection.size) {
+        return { ok: false, error: 'no_selected_points' };
+      }
+      let changed = 0, validSelected = 0;
+      selection.forEach(function (index) {
+        if (!Number.isSafeInteger(index) || index < 0 || index >= n) return;
+        validSelected++;
+        if ((prior ? prior[index] : 0) !== code) changed++;
+      });
+      if (!validSelected) return { ok: false, error: 'no_valid_selected_points' };
+      if (!changed) return { ok: true, unchanged: true, changed: 0, classCode: code };
+      // Store a sparse delta for small edits (4 bytes/index + 1 byte/value).
+      // For dense edits, keep the old immutable label buffer instead; this is
+      // substantially smaller than an index/value pair for every point.
+      const storeDelta = !!prior && changed * 5 <= n;
+      const indices = storeDelta ? new Uint32Array(changed) : null;
+      const previousValues = storeDelta ? new Uint8Array(changed) : null;
+      const next = prior ? new Uint8Array(prior) : new Uint8Array(n);
+      let write = 0;
+      selection.forEach(function (index) {
+        if (!Number.isSafeInteger(index) || index < 0 || index >= n || next[index] === code) return;
+        if (indices) {
+          indices[write] = index;
+          previousValues[write] = next[index];
+        }
+        next[index] = code;
+        write++;
+      });
+      if (write !== changed) return { ok: false, error: 'selection_changed_during_assignment' };
+      if (!this.applyClassificationLabels(next)) return { ok: false, error: 'classification_apply_failed' };
+      const target = this._classificationTarget();
+      (this._undo = this._undo || []).push({
+        classificationEdit: true,
+        hadClassification: !!prior,
+        indices: indices,
+        previousValues: previousValues,
+        previousLabels: prior && !storeDelta ? prior : null,
+        changedPointCount: changed,
+        target: target
+      });
+      if (this._undo.length > 6) this._undo.shift();
+      const counts = { classCode: code, assignedPointCount: changed };
+      this._lastClassificationPromise = this._persistClassificationAsset(
+        this._classificationLabels,
+        'manual LAS/ASPRS class assignment',
+        { classCode: code, selectionCount: validSelected },
+        counts,
+        target
+      );
+      return { ok: true, changed: changed, classCode: code };
+    }
     // v1046 — Phase 3: классификация конструктива и выделение выбранного класса для проверки.
     classifyInApp(opts){
       var bo=this.base&&this.base[0];
       if(!bo||!bo.pos||typeof window==='undefined'||!window.PCEdit||!window.PCEdit.classifyStructure)return null;
       var o=opts||{},res=window.PCEdit.classifyStructure({pos:bo.pos},o);
       if(!res||!res.labels)return null;
-      this.applyClassificationLabels(res.labels,o.selectClass);
-      var cloudInfo=null;
-      try{cloudInfo=window.MultiCloud&&window.MultiCloud.getActive?window.MultiCloud.getActive():null;}catch(_){}
-      var cloudId=cloudInfo&&cloudInfo.id||cloudInfo&&cloudInfo.path||this._cloudRecord&&this._cloudRecord.sourceName||'active-cloud';
-      var sourcePath=cloudInfo&&cloudInfo.path||this._cloudRecord&&this._cloudRecord.sourceName||'';
-      var ps=window.BimProjectState;
-      this._lastClassificationPromise=ps&&ps.saveClassification?ps.saveClassification({
-        cloudId:String(cloudId),
-        sourcePath:String(sourcePath||''),
-        pointCount:res.labels.length,
-        labels:res.labels,
-        algorithm:'RANSAC structural planes',
-        parameters:o,
-        counts:res.counts,
-        sourceTransform:this._srcXform||null,
-        crsWkt:this._srcCrs||null
-      }).catch(function(error){
-        try{window.dispatchEvent(new CustomEvent('bim-project-classification-error',{detail:{error:String(error&&error.message||error)}}));}catch(_){}
-        return {ok:false,error:String(error&&error.message||error)};
-      }):null;
+      if(!this.applyClassificationLabels(res.labels,o.selectClass))return null;
+      this._lastClassificationPromise=this._persistClassificationAsset(
+        this._classificationLabels,'RANSAC structural planes',o,res.counts);
       return res.counts;
     }
     // ---------- Пункт 4: потоковый octree с диска ----------

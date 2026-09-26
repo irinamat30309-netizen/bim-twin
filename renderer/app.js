@@ -2253,7 +2253,56 @@
           const frameNote = r.outputCrsWkt
             ? ' · CRS целевого облака сохранена'
             : (r.outputFrame === 'target-source' ? ' · координаты target, CRS не задана' : ' · локальные координаты target');
-          toast('Готово · совмещение (' + r.engine + '): RMSE ' + mmv(r.rmse) + ' мм, перекрытие ' + Math.round((r.fitness || 0) * 100) + '%' + frameNote);
+          const warningNote = Array.isArray(r.warnings) && r.warnings.length
+            ? ' · предупреждения: ' + r.warnings.join(', ')
+            : '';
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const basename = value => String(value || '').split(/[\\/]/).pop() || '';
+          const report = {
+            schema: 'bim-twin.registration-report.v1',
+            generatedAt: new Date().toISOString(),
+            algorithm: 'trimmed coarse-to-fine point-to-point ICP (local solver; no global feature initialization)',
+            source: basename(source),
+            target: basename(f.path),
+            outputCloud: basename(r.path),
+            coordinateFrame: r.coordinateFrame || r.outputFrame || 'unknown',
+            outputCrsWkt: r.outputCrsWkt || null,
+            frameCheck: r.frameCheck || null,
+            transformConvention: 'row-major 4x4 homogeneous matrix; maps source XYZ to target XYZ',
+            transform: Array.isArray(r.transform) ? r.transform : null,
+            baseline: {
+              stage: 'centroid-only initialization, before ICP iterations',
+              fitness: r.initialFitness == null ? null : r.initialFitness,
+              rmse: r.initialRmse == null ? null : r.initialRmse,
+              correspondences: r.initialCorrespondences == null ? null : r.initialCorrespondences
+            },
+            metrics: {
+              fitness: r.fitness == null ? null : r.fitness,
+              fitnessDefinition: 'fraction of sampled source points with nearest target within maxCorrespondenceDistance',
+              inlierRatio: r.inlierRatio == null ? null : r.inlierRatio,
+              rmse: r.rmse == null ? null : r.rmse,
+              medianResidual: r.medianResidual == null ? null : r.medianResidual,
+              p95Residual: r.p95Residual == null ? null : r.p95Residual,
+              maxCorrespondenceDistance: r.maxCorrespondenceDistance == null ? null : r.maxCorrespondenceDistance,
+              correspondences: r.correspondences == null ? null : r.correspondences,
+              inliers: r.inliers == null ? null : r.inliers,
+              sampledSourcePoints: r.sampledSourcePoints == null ? null : r.sampledSourcePoints,
+              sourcePoints: r.points == null ? null : r.points,
+              targetPoints: r.targetPoints == null ? null : r.targetPoints,
+              iterations: r.iterations == null ? null : r.iterations,
+              converged: r.converged == null ? null : r.converged,
+              trimFraction: r.trimFraction == null ? null : r.trimFraction
+            },
+            warnings: Array.isArray(r.warnings) ? r.warnings : [],
+            independentCheck: null,
+            accuracyNote: 'Initial RMSE is computed on in-gate correspondences before ICP; final RMSE is over trimmed final inliers, so the populations differ. ICP residuals describe internal fit, not independent survey accuracy; use separate check points for acceptance.'
+          };
+          downloadBlob(JSON.stringify(report, null, 2), 'registration-report-' + stamp + '.json', 'application/json');
+          const residualNote = r.p95Residual == null ? '' : ', P95 ' + mmv(r.p95Residual) + ' мм';
+          const inlierNote = r.inlierRatio == null ? '' : ', inliers ' + Math.round(r.inlierRatio * 100) + '%';
+          toast('Готово · совмещение (' + r.engine + '): RMSE ' + mmv(r.rmse) + ' мм' + residualNote +
+            inlierNote + ', fitness ' + Math.round((r.fitness || 0) * 100) + '%' + frameNote + warningNote +
+            ' · JSON-отчёт скачан');
         } else if (r && r.error === 'crs_mismatch') {
           toast('Совмещение отменено: CRS облаков различаются. Сначала преобразуйте облака в одну систему координат.');
         } else {
@@ -2637,6 +2686,33 @@
           ['🌫 Убрать редкие «мушки» (radius outlier)', 'Удаляет точки, у которых мало соседей в заданном радиусе — редкий шум, который пропускает SOR (как remove_radius_outlier в Open3D). Ctrl+Z — отмена', () => { if (!viewer || !viewer.cleanRadiusInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.cleanRadiusInApp({ minNeighbors: (cleanParams && cleanParams.minNeighbors) || 4 }); if (rem > 0) toast('Удалено редких точек: ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Редких изолированных точек не найдено'); }],
           ['🪶 Фильтр шума по поверхности (noise filter)', 'Убирает точки, выступающие над локальной плоскостью стен/пола — сглаживает «толщину» поверхности (как Noise filter в CloudCompare). Ctrl+Z — отмена', () => { if (!viewer || !viewer.noiseFilterInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.noiseFilterInApp({ stdRatio: (cleanParams && cleanParams.stdRatio) || 1.0, k: (cleanParams && cleanParams.k) || 16 }); if (rem > 0) toast('Сглажено (удалено шумовых точек): ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Шумовых выступов над поверхностью не найдено'); }],
           ['🛡 Защита конструктива (лассо не режет пол/стены/потолок)', 'ВКЛ по умолчанию при ручном лассо: пол, стены и потолок (RANSAC) не удаляются — режется только объект. Здесь можно включить/выключить и увидеть, сколько плоскостей распознано', () => { if (!viewer || !viewer.setPlaneProtect) { toast('Недоступно в этом режиме'); return; } const cur = viewer.getPlaneProtect ? viewer.getPlaneProtect() : true; const nv = !cur; viewer.setPlaneProtect(nv); const np = (viewer._planes && viewer._planes.length) || 0; const eP = document.getElementById('edProtect'); if (eP) { eP.classList.toggle('on', nv); eP.textContent = nv ? ('🛡 Защита пол/стены/потолок: вкл (' + np + ')') : '🛡 Защита: выкл'; } toast(nv ? ('🛡 Защита конструктива ВКЛ · распознано плоскостей: ' + np + (np ? '' : ' — мало данных в кадре, отдалите камеру и повторите')) : '🛡 Защита ВЫКЛ — лассо удаляет всё внутри контура'); }],
+          ['🏷 Назначить LAS-класс выделенным точкам', 'Вручную назначает выбранным точкам код ASPRS LAS 0–255 (например, 2 — грунт, 6 — здание). Ctrl+Z отменяет и восстанавливает метки проекта', () => {
+            if (!viewer || !viewer.assignClassificationInApp) { toast('Недоступно в этом режиме'); return; }
+            if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; }
+            if (!viewer.selectionCount || !viewer.selectionCount()) { toast('Сначала выделите точки лассо или рамкой'); return; }
+            if (typeof window.prompt !== 'function') { toast('Ввод кода класса недоступен в этом режиме'); return; }
+            const answer = window.prompt('Код класса ASPRS LAS (целое число 0–255). Примеры: 2 — грунт, 6 — здание', '6');
+            if (answer == null) return;
+            const text = String(answer).trim();
+            if (!/^[0-9]{1,3}$/.test(text) || Number(text) > 255) { toast('Введите целый код класса от 0 до 255'); return; }
+            const result = viewer.assignClassificationInApp(Number(text));
+            if (!result || !result.ok) {
+              const messages = {
+                no_selected_points: 'Сначала выделите точки лассо или рамкой',
+                streaming_cloud_edit_not_supported: 'Для ручной разметки отключите потоковый LOD и загрузите облако полностью',
+                partial_cloud_edit_not_supported: 'Разметка отключена для выборочного облака: загрузите все точки без прореживания',
+                classification_point_count_mismatch: 'Число меток не совпадает с числом точек — разметка отменена'
+              };
+              toast(messages[result && result.error] || ('Не удалось назначить класс: ' + ((result && result.error) || 'ошибка')));
+              return;
+            }
+            if (result.unchanged) { toast('Выделенные точки уже имеют этот класс'); return; }
+            toast('Назначен LAS-класс ' + result.classCode + ' точкам: ' + nfmt(result.changed) + ' · Ctrl+Z — отмена');
+            if (viewer._lastClassificationPromise) viewer._lastClassificationPromise.then(r => {
+              if (r && r.ok) toast('Разметка сохранена в проекте');
+              else toast('Разметка применена, но не сохранена в проект: ' + ((r && (r.message || r.error)) || 'ошибка'));
+            });
+          }],
           ['🏗 Разметить конструктив (пол/стены/потолок)', 'RANSAC определяет пол, стены и потолок и выделяет всё остальное (мебель/люди/шум) для проверки перед удалением. Затем 🗑 или Ctrl+Z', () => { if (!viewer || !viewer.classifyInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const c = viewer.classifyInApp({ selectClass: 0 }); if (!c) { toast('Не удалось классифицировать'); return; } toast('Пол ' + nfmt(c.floor) + ' · стены ' + nfmt(c.wall) + ' · потолок ' + nfmt(c.ceiling) + ' · прочее ' + nfmt(c.other) + ' (выделено «прочее» — проверьте)'); if (viewer._lastClassificationPromise) viewer._lastClassificationPromise.then(r => { if (r && r.ok) toast('Метки классификации сохранены в проекте'); else toast('Метки рассчитаны, но не сохранены: ' + ((r && (r.message || r.error)) || 'ошибка')); }); }],
           ['◼ Обводка точек чёрным: ' + ((viewer && viewer._edl) ? 'вкл' : 'выкл'), 'Возвращает тонкую чёрную обводку вокруг точек (эффект EDL) — помогает различать отдельные точки и грани при редактировании. По умолчанию выкл. Нажмите, чтобы переключить', () => { if (!viewer || !viewer.setEDL) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = !viewer._edl; const ok = viewer.setEDL(on); if (on && !ok) { toast('Обводка (EDL) недоступна на этом GPU'); return; } const qE = $('qEDL'); if (qE) { qE.classList.toggle('on', on); qE.textContent = on ? 'EDL: вкл' : 'EDL: выкл'; } toast(on ? '◼ Чёрная обводка точек включена' : 'Чёрная обводка точек выключена'); }],
           ['💾 Сохранить облако (.ply)', 'Сохранить результат правки в файл', () => { const s = $('edSave'); if (s) s.click(); else toast('Сначала включите «Ручное лассо»'); }],

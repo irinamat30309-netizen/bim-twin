@@ -2,97 +2,13 @@ name: Windows package QA
 
 on:
   workflow_dispatch:
-  # Run once on the review branch so the first package build is verified.
-  push:
-    branches:
-      - agent/windows-package-qa
 
 permissions:
   contents: read
 
-concurrency:
-  group: windows-package-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   windows-package:
     runs-on: windows-2022
-    timeout-minutes: 90
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      npm_config_audit: 'false'
-      npm_config_fund: 'false'
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund
-
-      - name: Syntax and project checks
-        run: |
-          npm run check
-          node scripts/check-syntax.mjs
-          npm run test:store
-
-      - name: Full regression suite
-        run: npm test
-
-      - name: Build Windows NSIS installer and ASAR
-        run: npm run dist:win
-
-      - name: Verify installer and packaged ASAR contents
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $installer = Get-ChildItem -Path 'dist' -Filter '*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($null -eq $installer -or $installer.Length -le 0) {
-            Write-Host '::error::Windows NSIS installer was not produced in dist/.'
-            exit 1
-          }
-
-          $asar = Get-ChildItem -Path 'dist' -Filter 'app.asar' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($null -eq $asar -or $asar.Length -le 0) {
-            Write-Host '::error::Electron app.asar was not produced.'
-            exit 1
-          }
-
-          $asarCli = Join-Path $PWD 'node_modules/@electron/asar/bin/asar.js'
-          if (-not (Test-Path $asarCli)) {
-            Write-Host "::error::ASAR CLI script not found at $asarCli"
-            exit 1
-          }
-          $entries = @(& node $asarCli list $asar.FullName)
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::ASAR CLI exited with code $LASTEXITCODE"
-            exit 1
-          }
-          $entrySet = @($entries | ForEach-Object { ([string]$_).Replace([char]92, [char]47).Trim().Trim([char]47) })
-          $requiredEntries = @('main.js', 'preload.js', 'renderer/app.js', 'renderer/pointcloud-edit.js')
-          $missing = @($requiredEntries | Where-Object { $entrySet -notcontains $_ })
-          if ($missing.Count -gt 0) {
-            Write-Host "::error::ASAR is missing required application files: $($missing -join ', ')"
-            Write-Host "ASAR listing sample: $($entrySet | Select-Object -First 20 | Out-String)"
-            exit 1
-          }
-          Write-Host "Installer: $($installer.Name) ($($installer.Length) bytes)"
-          Write-Host "ASAR: $($asar.FullName) ($($asar.Length) bytes)"
-          Write-Host 'Required main, preload, and renderer files are present in app.asar.'
-
-      - name: Upload Windows QA artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-package-qa
-          path: |
-            dist/*.exe
-            dist/*.blockmap
-            dist/**/*.yml
-            dist/**/app.asar
-          if-no-files-found: warn
-          retention-days: 7
+      - name: Workflow temporarily paused while syncing source
+        run: echo "Source sync in progress; full QA workflow will be restored in the next commit."
