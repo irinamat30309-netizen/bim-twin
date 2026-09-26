@@ -52,33 +52,33 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $installer = Get-ChildItem -Path 'dist' -Filter '*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($null -eq $installer -or $installer.Length -le 0) {
-            throw 'Windows NSIS installer was not produced in dist/.'
+            Write-Host '::error::Windows NSIS installer was not produced in dist/.'
+            exit 1
           }
 
           $asar = Get-ChildItem -Path 'dist' -Filter 'app.asar' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($null -eq $asar -or $asar.Length -le 0) {
-            throw 'Electron app.asar was not produced.'
+            Write-Host '::error::Electron app.asar was not produced.'
+            exit 1
           }
 
-          $asarCli = Join-Path $PWD 'node_modules/.bin/asar.cmd'
+          $asarCli = Join-Path $PWD 'node_modules/@electron/asar/bin/asar.js'
           if (-not (Test-Path $asarCli)) {
-            throw 'ASAR CLI is missing after npm ci; cannot inspect archive contents.'
+            Write-Host "::error::ASAR CLI script not found at $asarCli"
+            exit 1
           }
-          $entries = @(& $asarCli list $asar.FullName)
+          $entries = @(& node $asarCli list $asar.FullName)
           if ($LASTEXITCODE -ne 0) {
-            throw 'ASAR archive could not be listed.'
+            Write-Host "::error::ASAR CLI exited with code $LASTEXITCODE"
+            exit 1
           }
-          $entrySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-          foreach ($entry in $entries) {
-            $normalized = ([string]$entry).Trim().Trim('/').Replace([string][char]92, '/').TrimEnd('/')
-            if ($normalized) { [void]$entrySet.Add($normalized) }
-          }
-          # Match the application's explicit build.files list on the base branch.
+          $entrySet = @($entries | ForEach-Object { ([string]$_).Replace([char]92, [char]47).Trim().Trim([char]47) })
           $requiredEntries = @('main.js', 'preload.js', 'renderer/app.js', 'renderer/pointcloud-edit.js')
-          foreach ($required in $requiredEntries) {
-            if (-not $entrySet.Contains($required)) {
-              throw "ASAR is missing required application file: $required"
-            }
+          $missing = @($requiredEntries | Where-Object { $entrySet -notcontains $_ })
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::ASAR is missing required application files: $($missing -join ', ')"
+            Write-Host "ASAR listing sample: $($entrySet | Select-Object -First 20 | Out-String)"
+            exit 1
           }
           Write-Host "Installer: $($installer.Name) ($($installer.Length) bytes)"
           Write-Host "ASAR: $($asar.FullName) ($($asar.Length) bytes)"
