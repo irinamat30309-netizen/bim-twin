@@ -1,25 +1,30 @@
-# BIM TWIN — повторная локальная проверка этапов 5–7
+# BIM TWIN — повторная проверка этапов 5–7
 
 ## Среда и границы
 
 - Рабочая среда: Amazon Linux 2023, Node 24, Python 3.13; это не Windows-машина.
-- Проверялась текущая рабочая копия `bim-twin-publish`; hosted CI и packaged Electron/ASAR installer для этой копии не запускались.
+- Повторно проверялась рабочая копия `bim-twin-publish`. 4 GitHub checks (`windows-package` ×2, `windows-test`, `test`) прошли для PR head `124b2d9` до текущего follow-up.
+- По присланному пользователем скриншоту приватный ручной Windows hardware-QA run #5 прошёл: зелёные шаги hardware report, checkout, `npm ci`, syntax/store/Python checks, полный regression suite, NSIS/ASAR build, required-file verification и upload артефакта. Точный commit SHA, сведения об адаптере и полный лог в этой сессии недоступны.
+- Новый Electron/WebGL runtime smoke добавлен после run #5; его реальный физический GPU результат пока ожидает следующего запуска приватного workflow.
 - UI JSON-отчёта ICP не подтверждался кликом в запущенном Electron UI. Нет независимо измеренного контрольного облака/GCP-набора и внешних CAD/GIS readers для сертификации точности.
-- Это reproducible unit/regression verification, не приёмка профессиональной точности, не GPU/VRAM stress-test и не подтверждение «100% функциональности».
+- Это reproducible unit/regression verification и ограниченная проверка Windows-сборки, не приёмка профессиональной точности, не GPU/VRAM stress-test и не подтверждение «100% функциональности».
 
 ## Результаты
 
 | Проверка | Итог |
 |---|---|
 | Focused Stage 5–7 suite: `node --test test/pointcloud-ply-io-stage7.test.js test/geometry-registration-v1167.test.js test/georef-v1091.test.js test/pcedit-phase123.test.js test/pcedit.test.js test/viewer-edit-attributes-stage7.test.js test/lixel-sprints-ext-v1151.test.js test/format-roundtrip-stage3.test.js test/project-state-bridge-stage2.test.js test/multicloud-classification-restore-stage7.test.js test/webgl-octree-stream.test.js` | **103/103 passed**, 0 failed, 0 skipped; повторно подтверждено перед упаковкой обновления |
-| Полный `npm test` | **881 total / 874 passed / 0 failed / 7 skipped**; полный вывод сохранён в рабочей среде агента и не включён в архив |
+| Полный `npm test` после добавления GPU smoke | **882 total / 874 passed / 0 failed / 8 skipped**; 7 пропусков требуют optional decoder/fixtures, ещё 1 — ожидаемый пропуск real-GPU теста вне self-hosted Windows |
 | `npm run check` | passed (`main.js`, `preload.js`, SQLite/JSON stores) |
 | `node --check pointcloud-ply-io.js` | passed |
-| `node scripts/check-syntax.mjs` | passed для **236 JS/MJS/CJS-файлов** |
+| `node scripts/check-syntax.mjs` | passed для **238 JS/MJS/CJS-файлов** |
 | `npm run test:store` | passed: `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
 | `python3 -m py_compile tools/pointcloud_geometry.py` | passed; созданный `__pycache__` удалён |
 | Synthetic ICP без SciPy | `numpy-exact-trimmed-icp`; 250 точек, fitness 1.0, 6 итераций, RMSE `1.30e-15`, translation error `6.34e-17` в заданной метрической synthetic-сцене |
-| Electron build inclusion | regression проверяет, что `pointcloud-ply-io.js` включён в `build.files`; сам installer не собирался |
+| GitHub-hosted Windows CI (предыдущий PR head `124b2d9`) | **4/4 checks passed:** `test`, `windows-test`, два `windows-package`; результат предшествует новому GPU smoke |
+| Приватный Windows package-QA run #5 | по скриншоту пользователя все шаги зелёные, включая NSIS/ASAR build, required-file verification и upload артефакта |
+| Локальный WebGL runtime smoke | **PASS только как software-WebGL draw test:** production `Viewer3DGL` загрузил 4096 точек и RGB/intensity/classification buffers, classification mode нарисовал 114229 изменённых пикселей; `glError=0`, контекст не потерян. Renderer — SwiftShader, не физическая видеокарта |
+| Electron/Windows package | run #5 собрал installer и проверил обязательные файлы ASAR; установка/запуск установленного приложения на чистой Windows-машине отдельно не подтверждались |
 
 ### Что конкретно проверяет focused-suite
 
@@ -32,10 +37,11 @@
 - GCP проверки: weighted Helmert, независимые check-точки, downweight выброса, CSV headers/quotes/weights/roles/decimal separators и отказ на коллинеарной геометрии.
 - Point editing: выравнивание всех атрибутов в kept/removed рядах, selection/section, crop/filters, undo, voxel intensity average/class majority и LAS 1.2 class field/refusal. LAS 1.4 format round-trip проверяет intensity/class значения; отдельная source-level regression проверяет, что ground-classification action прокидывает исходный intensity вместе с новыми labels.
 - Добавочные Stage 7 regressions: ручной ASPRS class assignment меняет только выделенные точки; Ctrl+Z восстанавливает sparse delta или dense label snapshot и сохраняет восстановленную классификацию; отмена первой ручной разметки очищает текущую project-ссылку, не удаляя content-addressed asset. Range, empty-selection, no-op, LOD/streaming и source-count-mismatch проверки; save/clear bridge сериализует конкурирующие операции; restore point-count mismatch видимо предупреждает; clearing классификации отключает GPU attribute buffer и переключает режим цвета обратно в RGB.
+- `test/webgl-runtime-smoke.test.js` запускает production `Viewer3DGL` в Electron только на self-hosted Windows runner: проверяет WebGL2, VBO точек/intensity/classification, реальный draw/readback пикселей, GL errors, context loss и признаки software fallback. Private run #5 был до добавления smoke и его ещё не проверял.
 
 ### Пропущенные тесты
 
-Семь пропусков текущего полного прогона связаны не с падением тестов, а с отсутствием необязательных ресурсов: три теста требуют optional LAZ decoder, один — внешние LAZ fixtures, два — загруженные полные OBJ/STL пользовательские файлы и внешний большой PLY fixture, один — synthetic room fixtures. Ресурсы/decoder в этой среде не установлены или не включены в репозиторий.
+Семь ресурсных пропусков текущего полного прогона связаны не с падением тестов, а с отсутствием необязательных ресурсов: три теста требуют optional LAZ decoder, один — внешние LAZ fixtures, два — загруженные полные OBJ/STL пользовательские файлы и внешний большой PLY fixture, один — synthetic room fixtures. Восьмой пропуск — новый real-GPU тест, намеренно не запускаемый в Linux/hosted-среде.
 
 ## Риски, требующие следующей итерации
 
@@ -44,10 +50,10 @@
 3. Подключить документированную CRS/datum/geoid библиотеку и известные survey control/check данные; заменить 5 cm эвристику параметризованными требованиями точности.
 4. Подготовить versioned annotated classification corpus, метрики precision/recall/F1 и human review flow; проверить неизвестные/unsupported LAS extra dimensions.
 5. Расширить stream-aware edits для disk-backed источника: ручная разметка сейчас явно запрещена для LOD/прореженного cloud; фильтры и прочие операции полного облака всё ещё требуют отдельного out-of-core workflow.
-6. Повторить test/syntax/build на Windows CI, собрать и запустить packaged Windows/ASAR, проверить target GPU и внешние GIS/CAD readers.
+6. Повторно запустить приватный Windows workflow после добавления WebGL smoke и проверить аппаратный renderer по логу. Отдельно нужны clean-machine install/launch, реальный dataset/VRAM stress, независимые GIS/CAD readers и точностные контрольные данные.
 
-**Итог:** регрессионная база этапов 5–7 зелёная в Linux; добавлен human-in-the-loop LAS-class assignment с undo/persist/mismatch protections; syntax и store checks тоже зелёные. Этапы 5–7 всё ещё **частичные, не приняты и не завершены** из-за перечисленных алгоритмических, геодезических, данных и runtime gates.
+**Итог:** регрессионная база этапов 5–7 зелёная в Linux; приватный Windows package-QA run #5 и hosted Windows checks прежнего PR head прошли; новый Electron/WebGL runtime test локально прошёл только на SwiftShader. Этапы 5–7 всё ещё **частичные, не приняты и не завершены** из-за перечисленных алгоритмических, геодезических, данных и runtime gates.
 
 ## Повторный прогон перед публикацией overlay
 
-Непосредственно перед упаковкой обновления тесты повторно прогнаны в Linux-среде: `npm test` — 881 total / 874 passed / 0 failed / 7 skipped; focused Stage 5–7 suite — 103/103; `npm run check`, `node scripts/check-syntax.mjs` (236 файлов), `npm run test:store`, `node --check pointcloud-ply-io.js` и Python `compileall` — passed. Это не Windows-проверка данного overlay: Windows workflow включён в архив, но запустится на GitHub только после push обновлённой ветки. Прежний GitHub Windows run относится к предыдущему состоянию ветки, не к этому архиву.
+После добавления smoke harness повторно прогнаны Linux проверки: `npm test` — 882 total / 874 passed / 0 failed / 8 skipped; `npm run check`, `node scripts/check-syntax.mjs` (238 файлов), `npm run test:store` и `python3 -m py_compile tools/pointcloud_geometry.py` — passed. Локальный Chromium подтвердил WebGL2 draw, но использовал SwiftShader. GitHub Windows checks и приватный Windows run #5 относятся к версии до этого follow-up; после push обновлённой review-ветки требуется повторить hosted CI и вручную запустить приватный workflow для проверки реального GPU.
