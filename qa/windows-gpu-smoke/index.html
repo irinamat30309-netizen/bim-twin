@@ -30,29 +30,80 @@
             throw new Error('The production WebGL viewer did not obtain a WebGL2 context.');
           }
 
-          // One million points keep the real production renderer busy long
-          // enough for the hardware adapter to be observable in the GPU monitor.
-          const side = 100;
-          const count = side * side * side;
-          const pos = new Float32Array(count * 3);
-          const col = new Float32Array(count * 3);
-          const intensity = new Float32Array(count);
-          const classification = new Uint8Array(count);
-          let index = 0;
+          const env = typeof process === 'object' && process.env ? process.env : {};
+          const samplePath = env.BIMTWIN_GPU_WEBGL_SAMPLE_FILE || '';
+          const metadataPath = env.BIMTWIN_GPU_WEBGL_SAMPLE_META_FILE || '';
+          let count;
+          let pos;
+          let col;
+          let intensity;
+          let classification;
+          let dataSource = 'synthetic';
+          let lasMeta = null;
 
-          for (let z = 0; z < side; z++) {
-            for (let y = 0; y < side; y++) {
-              for (let x = 0; x < side; x++) {
-                const i3 = index * 3;
-                pos[i3] = -1 + (2 * x) / (side - 1);
-                pos[i3 + 1] = -1 + (2 * y) / (side - 1);
-                pos[i3 + 2] = -1 + (2 * z) / (side - 1);
-                col[i3] = x / (side - 1);
-                col[i3 + 1] = y / (side - 1);
-                col[i3 + 2] = z / (side - 1);
-                intensity[index] = (x + y + z) / (3 * (side - 1));
-                classification[index] = (x + y + z) % 2 ? 6 : 2;
-                index++;
+          if (samplePath || metadataPath) {
+            if (!samplePath || !metadataPath || typeof window.require !== 'function') {
+              throw new Error('The real LAS GPU sample files were not configured correctly.');
+            }
+            const fs = window.require('node:fs');
+            const sampleBytes = fs.readFileSync(samplePath);
+            lasMeta = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+            count = Number(lasMeta.samplePoints);
+            if (!Number.isSafeInteger(count) || count < 1 ||
+                sampleBytes.byteLength !== lasMeta.byteLength ||
+                lasMeta.formatVersion !== 1) {
+              throw new Error('The real LAS GPU sample has invalid metadata or length.');
+            }
+
+            function readFloatSection(name, valueCount) {
+              const section = lasMeta.sections && lasMeta.sections[name];
+              if (!section || section.byteLength !== valueCount * 4 ||
+                  section.offset < 0 || section.offset + section.byteLength > sampleBytes.byteLength) {
+                throw new Error(`The LAS sample ${name} section is invalid.`);
+              }
+              const start = sampleBytes.byteOffset + section.offset;
+              return new Float32Array(sampleBytes.buffer.slice(start, start + section.byteLength));
+            }
+
+            function readByteSection(name, valueCount) {
+              const section = lasMeta.sections && lasMeta.sections[name];
+              if (!section || section.byteLength !== valueCount ||
+                  section.offset < 0 || section.offset + section.byteLength > sampleBytes.byteLength) {
+                throw new Error(`The LAS sample ${name} section is invalid.`);
+              }
+              const start = sampleBytes.byteOffset + section.offset;
+              return new Uint8Array(sampleBytes.buffer.slice(start, start + section.byteLength));
+            }
+
+            pos = readFloatSection('positions', count * 3);
+            col = readFloatSection('colors', count * 3);
+            intensity = readFloatSection('intensity', count);
+            classification = readByteSection('classification', count);
+            dataSource = 'las';
+          } else {
+            // Without a local LAS path, retain the portable synthetic WebGL smoke.
+            const side = 100;
+            count = side * side * side;
+            pos = new Float32Array(count * 3);
+            col = new Float32Array(count * 3);
+            intensity = new Float32Array(count);
+            classification = new Uint8Array(count);
+            let index = 0;
+
+            for (let z = 0; z < side; z++) {
+              for (let y = 0; y < side; y++) {
+                for (let x = 0; x < side; x++) {
+                  const i3 = index * 3;
+                  pos[i3] = -1 + (2 * x) / (side - 1);
+                  pos[i3 + 1] = -1 + (2 * y) / (side - 1);
+                  pos[i3 + 2] = -1 + (2 * z) / (side - 1);
+                  col[i3] = x / (side - 1);
+                  col[i3 + 1] = y / (side - 1);
+                  col[i3 + 2] = z / (side - 1);
+                  intensity[index] = (x + y + z) / (3 * (side - 1));
+                  classification[index] = (x + y + z) % 2 ? 6 : 2;
+                  index++;
+                }
               }
             }
           }
@@ -65,7 +116,15 @@
             intensity,
             classification,
             count,
-            meta: { name: 'synthetic-webgl-runtime-smoke', format: 'synthetic', total: count, units: 'm' }
+            meta: lasMeta
+              ? {
+                name: 'real-las-webgl-runtime-smoke',
+                format: lasMeta.format,
+                total: lasMeta.totalPoints,
+                units: 'unknown',
+                colored: lasMeta.hasColor
+              }
+              : { name: 'synthetic-webgl-runtime-smoke', format: 'synthetic', total: count, units: 'm' }
           });
 
           const uploaded = viewer.base && viewer.base[0];
@@ -123,6 +182,18 @@
 
           send({
             ok: true,
+            source: dataSource,
+            las: lasMeta
+              ? {
+                format: lasMeta.format,
+                fileBytes: lasMeta.fileBytes,
+                totalPoints: lasMeta.totalPoints,
+                samplePoints: lasMeta.samplePoints,
+                hasColor: lasMeta.hasColor,
+                hasIntensity: lasMeta.hasIntensity,
+                hasClassification: lasMeta.hasClassification
+              }
+              : null,
             webgl2: gl instanceof WebGL2RenderingContext,
             renderer: String(renderer || ''),
             vendor: String(vendor || ''),

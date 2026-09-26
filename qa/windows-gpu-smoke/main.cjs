@@ -49,7 +49,8 @@ app.whenReady().then(async () => {
   });
 
   const fail = (message) => finish({ ok: false, error: String(message) }, 1);
-  timeout = setTimeout(() => fail('Timed out waiting for the WebGL smoke test.'), 45000);
+  const timeoutMs = process.env.BIMTWIN_GPU_WEBGL_SAMPLE_FILE ? 300000 : 45000;
+  timeout = setTimeout(() => fail('Timed out waiting for the WebGL smoke test.'), timeoutMs);
 
   ipcMain.once('bimtwin:webgl-smoke-result', async (_event, rendererResult) => {
     try {
