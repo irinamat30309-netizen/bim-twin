@@ -117,6 +117,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   recordProjectOperation: (entry) => inv('bim:recordProjectOperation', entry),
   listProjectOperations: (payload) => inv('bim:listProjectOperations', payload || {}),
   saveProjectClassification: (payload) => inv('bim:saveProjectClassification', payload),
+  clearProjectClassification: (payload) => inv('bim:clearProjectClassification', payload),
   loadProjectClassification: (payload) => inv('bim:loadProjectClassification', payload || {}),
   listSectionPresets: () => inv('bim:listSectionPresets'),
   saveSectionPreset: (preset) => inv('bim:saveSectionPreset', preset),

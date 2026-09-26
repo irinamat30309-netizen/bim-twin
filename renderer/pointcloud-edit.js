@@ -76,48 +76,176 @@
   function keepByIndices(cloud, indices) {
     return _rebuild(cloud, indices, true);
   }
-  function _rebuild(cloud, indices, keep) {
-    const pos = cloud.pos, col = cloud.col || null;
-    const n = pos.length / 3;
-    const set = normSet(indices);
-    // Типизированная маска (без разрастающегося JS-массива) + два прохода.
-    const mask = new Uint8Array(n);
-    let keepCount = 0;
-    for (let i = 0; i < n; i++) { const inSet = set.has(i); if (keep ? inSet : !inSet) { mask[i] = 1; keepCount++; } }
-    const removedCount = n - keepCount;
-    const outPos = new Float32Array(keepCount * 3);
-    const outCol = col ? new col.constructor(keepCount * 3) : null;
-    const remPos = new Float32Array(removedCount * 3);
-    const remCol = col ? new col.constructor(removedCount * 3) : null;
-    let a = 0, b = 0;
-    for (let i = 0; i < n; i++) {
-      if (mask[i]) {
-        outPos[a*3]=pos[i*3]; outPos[a*3+1]=pos[i*3+1]; outPos[a*3+2]=pos[i*3+2];
-        if (col) { outCol[a*3]=col[i*3]; outCol[a*3+1]=col[i*3+1]; outCol[a*3+2]=col[i*3+2]; }
-        a++;
-      } else {
-        remPos[b*3]=pos[i*3]; remPos[b*3+1]=pos[i*3+1]; remPos[b*3+2]=pos[i*3+2];
-        if (col) { remCol[b*3]=col[i*3]; remCol[b*3+1]=col[i*3+1]; remCol[b*3+2]=col[i*3+2]; }
-        b++;
-      }
-    }
-    return { pos: outPos, col: outCol, removed: removedCount, removedPos: remPos, removedCol: remCol };
+  // LAS/PLY data is point-indexed: rebuilding only XYZ/RGB silently detached
+  // intensity and classification from their points. Preserve known fields and
+  // other typed point arrays whose length is an unambiguous per-point stride.
+  const _POINT_ATTR_STRIDES = {
+    col: 3, color: 3, colors: 3, rgb: 3, normal: 3, normals: 3, nor: 3,
+    intensity: 1, classification: 1, gpsTime: 1, gps_time: 1, timestamp: 1,
+    time: 1, returnNumber: 1, numberOfReturns: 1, scanAngle: 1,
+    pointSourceId: 1, userData: 1, scanDirectionFlag: 1, edgeOfFlightLine: 1
+  };
+  const _NON_POINT_ARRAY_KEYS = new Set([
+    'pos', 'positions', 'indices', 'index', 'faces', 'triangles', 'meta',
+    'bbox', 'bounds', 'scans', 'count', 'pointAttributeStrides'
+  ]);
+
+  function _pointAttributeSpecs(cloud, count) {
+    if (!cloud || !count) return [];
+    const declared = cloud.pointAttributeStrides || {};
+    const specs = [];
+    Object.keys(cloud).forEach(function (key) {
+      if (_NON_POINT_ARRAY_KEYS.has(key)) return;
+      const values = cloud[key];
+      if (!ArrayBuffer.isView(values) || values instanceof DataView) return;
+      let stride = Number(declared[key] || _POINT_ATTR_STRIDES[key]);
+      if (!stride && values.length % count === 0) stride = values.length / count;
+      if (!Number.isInteger(stride) || stride < 1 || stride > 16 || values.length !== count * stride) return;
+      specs.push({ key: key, values: values, stride: stride });
+    });
+    return specs;
   }
 
-  // Экспорт в ASCII PLY. col может быть float 0..1 или uchar 0..255 — определяем автоматически.
-  function toPLY(cloud) {
-    const pos = cloud.pos, col = cloud.col || null;
+  function _emptyRemoval(values) {
+    return values ? new values.constructor(0) : null;
+  }
+
+  function _noRemoval(cloud, extra) {
+    const pos = cloud && cloud.pos || new Float32Array(0);
+    const count = Math.floor(pos.length / 3);
+    const result = {
+      pos: pos, col: cloud && cloud.col || null, removed: 0,
+      removedPos: new Float32Array(0), removedCol: _emptyRemoval(cloud && cloud.col)
+    };
+    const removedAttributes = {};
+    _pointAttributeSpecs(cloud, count).forEach(function (spec) {
+      if (spec.key === 'col') return;
+      result[spec.key] = spec.values;
+      removedAttributes[spec.key] = _emptyRemoval(spec.values);
+      result['removed' + spec.key.charAt(0).toUpperCase() + spec.key.slice(1)] = removedAttributes[spec.key];
+    });
+    result.removedAttributes = removedAttributes;
+    return Object.assign(result, extra || {});
+  }
+
+  function _rebuildMask(cloud, keep, keepN, count) {
+    const pos = cloud && cloud.pos;
+    const specs = _pointAttributeSpecs(cloud, count);
+    const removedN = count - keepN;
+    const outPos = new Float32Array(keepN * 3);
+    const remPos = new Float32Array(removedN * 3);
+    const arrays = specs.map(function (spec) {
+      return {
+        spec: spec,
+        kept: new spec.values.constructor(keepN * spec.stride),
+        removed: new spec.values.constructor(removedN * spec.stride)
+      };
+    });
+    let ki = 0, ri = 0;
+    for (let i = 0; i < count; i++) {
+      const isKept = !!keep[i];
+      const dstPoint = isKept ? ki++ : ri++;
+      const dstPos = isKept ? outPos : remPos;
+      dstPos[dstPoint * 3] = pos[i * 3];
+      dstPos[dstPoint * 3 + 1] = pos[i * 3 + 1];
+      dstPos[dstPoint * 3 + 2] = pos[i * 3 + 2];
+      for (let a = 0; a < arrays.length; a++) {
+        const entry = arrays[a], src = entry.spec.values;
+        const dst = isKept ? entry.kept : entry.removed;
+        const stride = entry.spec.stride, from = i * stride, to = dstPoint * stride;
+        for (let j = 0; j < stride; j++) dst[to + j] = src[from + j];
+      }
+    }
+    const result = { pos: outPos, col: null, removed: removedN, removedPos: remPos, removedCol: null, removedAttributes: {} };
+    for (let a = 0; a < arrays.length; a++) {
+      const entry = arrays[a], key = entry.spec.key;
+      if (key === 'col') {
+        result.col = entry.kept;
+        result.removedCol = entry.removed;
+      } else {
+        result[key] = entry.kept;
+        result.removedAttributes[key] = entry.removed;
+        result['removed' + key.charAt(0).toUpperCase() + key.slice(1)] = entry.removed;
+      }
+    }
+    return result;
+  }
+
+  function _rebuild(cloud, indices, keep) {
+    const pos = cloud && cloud.pos;
+    if (!pos || pos.length % 3) throw new TypeError('cloud.pos must contain complete XYZ triples');
     const n = pos.length / 3;
-    const L = ['ply', 'format ascii 1.0', 'comment BIM Twin point cloud export', 'element vertex ' + n,
-      'property float x', 'property float y', 'property float z'];
-    if (col) { L.push('property uchar red', 'property uchar green', 'property uchar blue'); }
-    L.push('end_header');
-    let scaled = true; // col в диапазоне 0..1 → умножить на 255
-    if (col) { let mx = 0; const lim = Math.min(col.length, 300); for (let i = 0; i < lim; i++) if (col[i] > mx) mx = col[i]; if (mx > 1.0001) scaled = false; }
-    const toByte = v => { v = scaled ? Math.round(v * 255) : Math.round(v); return v < 0 ? 0 : (v > 255 ? 255 : v); };
+    const set = normSet(indices);
+    const mask = new Uint8Array(n);
+    let keepCount = 0;
     for (let i = 0; i < n; i++) {
-      let line = pos[i * 3] + ' ' + pos[i * 3 + 1] + ' ' + pos[i * 3 + 2];
-      if (col) line += ' ' + toByte(col[i * 3]) + ' ' + toByte(col[i * 3 + 1]) + ' ' + toByte(col[i * 3 + 2]);
+      const inSet = set.has(i);
+      if (keep ? inSet : !inSet) { mask[i] = 1; keepCount++; }
+    }
+    return _rebuildMask(cloud, mask, keepCount, n);
+  }
+
+  function _plyExportInfo(cloud) {
+    const pos = cloud && cloud.pos;
+    if (!pos || !Number.isSafeInteger(pos.length) || pos.length % 3) throw new RangeError('invalid_position_array');
+    const n = pos.length / 3;
+    const col = cloud.col == null ? null : cloud.col;
+    const intensity = cloud.intensity == null ? null : cloud.intensity;
+    const classification = cloud.classification == null ? null : cloud.classification;
+    if (col && col.length !== n * 3) throw new RangeError('color_array_length_mismatch');
+    if (intensity && intensity.length !== n) throw new RangeError('intensity_array_length_mismatch');
+    if (classification && classification.length !== n) throw new RangeError('classification_array_length_mismatch');
+    return { pos: pos, col: col, intensity: intensity, classification: classification, n: n };
+  }
+  function _plyColorMode(col) {
+    if (!col) return false;
+    let mx = 0;
+    const lim = Math.min(col.length, 300);
+    for (let i = 0; i < lim; i++) {
+      const value = Number(col[i]);
+      if (!Number.isFinite(value)) throw new RangeError('invalid_color_value');
+      if (value > mx) mx = value;
+    }
+    return mx <= 1.0001;
+  }
+  function _plyColorByte(value, scaled) {
+    value = Number(value);
+    if (!Number.isFinite(value)) throw new RangeError('invalid_color_value');
+    value = scaled ? Math.round(value * 255) : Math.round(value);
+    return value < 0 ? 0 : (value > 255 ? 255 : value);
+  }
+  function _plyIntensity(value) {
+    value = Number(value);
+    if (!Number.isFinite(value) || Math.abs(value) > 3.402823466e38) throw new RangeError('invalid_intensity_value');
+    return value;
+  }
+  function _plyClass(value) {
+    value = Number(value);
+    if (!Number.isInteger(value) || value < 0 || value > 255) throw new RangeError('invalid_classification_value');
+    return value;
+  }
+  function _plyHeader(info, format, binary) {
+    const H = ['ply', 'format ' + format + ' 1.0', 'comment BIM Twin point cloud export' + (binary ? ' (binary)' : ''),
+      'element vertex ' + info.n, 'property float x', 'property float y', 'property float z'];
+    if (info.col) H.push('property uchar red', 'property uchar green', 'property uchar blue');
+    if (info.intensity) H.push('property float intensity');
+    if (info.classification) H.push('property uchar classification');
+    H.push('end_header');
+    if (binary) H.push('');
+    return H;
+  }
+  // Экспорт в ASCII PLY сохраняет поточечные атрибуты; class остаётся отдельным LAS-кодом.
+  function toPLY(cloud) {
+    const q = _plyExportInfo(cloud), scaled = _plyColorMode(q.col);
+    const L = _plyHeader(q, 'ascii', false);
+    for (let i = 0; i < q.n; i++) {
+      const p = i * 3;
+      const xyz = [Number(q.pos[p]), Number(q.pos[p + 1]), Number(q.pos[p + 2])];
+      if (!xyz.every(Number.isFinite)) throw new RangeError('non_finite_coordinates');
+      let line = xyz.join(' ');
+      if (q.col) line += ' ' + _plyColorByte(q.col[p], scaled) + ' ' + _plyColorByte(q.col[p + 1], scaled) + ' ' + _plyColorByte(q.col[p + 2], scaled);
+      if (q.intensity) line += ' ' + _plyIntensity(q.intensity[i]);
+      if (q.classification) line += ' ' + _plyClass(q.classification[i]);
       L.push(line);
     }
     return L.join('\n') + '\n';
@@ -128,31 +256,28 @@
   // длинных текстовых строк. Возвращает Uint8Array (заголовок ASCII + бинарное тело).
   // col может быть float 0..1 или uchar 0..255 — определяем автоматически, как в toPLY.
   function toPLYBinary(cloud) {
-    const pos = cloud.pos, col = cloud.col || null;
-    const n = pos.length / 3;
-    const H = ['ply', 'format binary_little_endian 1.0', 'comment BIM Twin point cloud export (binary)',
-      'element vertex ' + n, 'property float x', 'property float y', 'property float z'];
-    if (col) { H.push('property uchar red', 'property uchar green', 'property uchar blue'); }
-    H.push('end_header', '');
-    const headerStr = H.join('\n'); // завершается 'end_header\n'
+    const q = _plyExportInfo(cloud), scaled = _plyColorMode(q.col);
+    const headerStr = _plyHeader(q, 'binary_little_endian', true).join('\n');
     const headerBytes = new Uint8Array(headerStr.length);
     for (let i = 0; i < headerStr.length; i++) headerBytes[i] = headerStr.charCodeAt(i) & 0xff;
-    let scaled = true; // col в диапазоне 0..1 → умножить на 255
-    if (col) { let mx = 0; const lim = Math.min(col.length, 300); for (let i = 0; i < lim; i++) if (col[i] > mx) mx = col[i]; if (mx > 1.0001) scaled = false; }
-    const toByte = v => { v = scaled ? Math.round(v * 255) : Math.round(v); return v < 0 ? 0 : (v > 255 ? 255 : v); };
-    const stride = 12 + (col ? 3 : 0);
-    const body = new ArrayBuffer(n * stride);
+    const stride = 12 + (q.col ? 3 : 0) + (q.intensity ? 4 : 0) + (q.classification ? 1 : 0);
+    const body = new ArrayBuffer(q.n * stride);
     const dv = new DataView(body);
     let off = 0;
-    for (let i = 0; i < n; i++) {
-      dv.setFloat32(off, pos[i * 3], true); off += 4;
-      dv.setFloat32(off, pos[i * 3 + 1], true); off += 4;
-      dv.setFloat32(off, pos[i * 3 + 2], true); off += 4;
-      if (col) {
-        dv.setUint8(off, toByte(col[i * 3])); off += 1;
-        dv.setUint8(off, toByte(col[i * 3 + 1])); off += 1;
-        dv.setUint8(off, toByte(col[i * 3 + 2])); off += 1;
+    for (let i = 0; i < q.n; i++) {
+      const p = i * 3;
+      for (let a = 0; a < 3; a++) {
+        const value = Number(q.pos[p + a]);
+        if (!Number.isFinite(value) || Math.abs(value) > 3.402823466e38) throw new RangeError('invalid_position_value');
+        dv.setFloat32(off, value, true); off += 4;
       }
+      if (q.col) {
+        dv.setUint8(off, _plyColorByte(q.col[p], scaled)); off += 1;
+        dv.setUint8(off, _plyColorByte(q.col[p + 1], scaled)); off += 1;
+        dv.setUint8(off, _plyColorByte(q.col[p + 2], scaled)); off += 1;
+      }
+      if (q.intensity) { dv.setFloat32(off, _plyIntensity(q.intensity[i]), true); off += 4; }
+      if (q.classification) { dv.setUint8(off, _plyClass(q.classification[i])); off += 1; }
     }
     const out = new Uint8Array(headerBytes.length + body.byteLength);
     out.set(headerBytes, 0);
@@ -164,38 +289,35 @@
   // Пишет тело чанками и отдаёт управление event loop между ними, чтобы счётчик
   // процентов обновлялся и вкладка не «зависала» на больших облаках (авто-сохранение/экспорт).
   async function toPLYBinaryAsync(cloud, onProgress) {
-    const pos = cloud.pos, col = cloud.col || null;
-    const n = pos.length / 3;
-    const H = ['ply', 'format binary_little_endian 1.0', 'comment BIM Twin point cloud export (binary)',
-      'element vertex ' + n, 'property float x', 'property float y', 'property float z'];
-    if (col) { H.push('property uchar red', 'property uchar green', 'property uchar blue'); }
-    H.push('end_header', '');
-    const headerStr = H.join('\n');
+    const q = _plyExportInfo(cloud), scaled = _plyColorMode(q.col);
+    const headerStr = _plyHeader(q, 'binary_little_endian', true).join('\n');
     const headerBytes = new Uint8Array(headerStr.length);
     for (let i = 0; i < headerStr.length; i++) headerBytes[i] = headerStr.charCodeAt(i) & 0xff;
-    let scaled = true;
-    if (col) { let mx = 0; const lim = Math.min(col.length, 300); for (let i = 0; i < lim; i++) if (col[i] > mx) mx = col[i]; if (mx > 1.0001) scaled = false; }
-    const toByte = v => { v = scaled ? Math.round(v * 255) : Math.round(v); return v < 0 ? 0 : (v > 255 ? 255 : v); };
-    const stride = 12 + (col ? 3 : 0);
-    const body = new ArrayBuffer(n * stride);
+    const stride = 12 + (q.col ? 3 : 0) + (q.intensity ? 4 : 0) + (q.classification ? 1 : 0);
+    const body = new ArrayBuffer(q.n * stride);
     const dv = new DataView(body);
     const CHUNK = 300000;
     const yield_ = () => new Promise(r => (typeof setTimeout === 'function' ? setTimeout(r, 0) : r()));
-    let off = 0;
-    for (let i = 0; i < n; i += CHUNK) {
-      const end = Math.min(n, i + CHUNK);
-      for (let j = i; j < end; j++) {
-        dv.setFloat32(off, pos[j * 3], true); off += 4;
-        dv.setFloat32(off, pos[j * 3 + 1], true); off += 4;
-        dv.setFloat32(off, pos[j * 3 + 2], true); off += 4;
-        if (col) {
-          dv.setUint8(off, toByte(col[j * 3])); off += 1;
-          dv.setUint8(off, toByte(col[j * 3 + 1])); off += 1;
-          dv.setUint8(off, toByte(col[j * 3 + 2])); off += 1;
+    for (let start = 0; start < q.n; start += CHUNK) {
+      const end = Math.min(q.n, start + CHUNK);
+      for (let i = start; i < end; i++) {
+        const p = i * 3, base = i * stride;
+        for (let a = 0; a < 3; a++) {
+          const value = Number(q.pos[p + a]);
+          if (!Number.isFinite(value) || Math.abs(value) > 3.402823466e38) throw new RangeError('invalid_position_value');
+          dv.setFloat32(base + a * 4, value, true);
         }
+        let off = base + 12;
+        if (q.col) {
+          dv.setUint8(off++, _plyColorByte(q.col[p], scaled));
+          dv.setUint8(off++, _plyColorByte(q.col[p + 1], scaled));
+          dv.setUint8(off++, _plyColorByte(q.col[p + 2], scaled));
+        }
+        if (q.intensity) { dv.setFloat32(off, _plyIntensity(q.intensity[i]), true); off += 4; }
+        if (q.classification) dv.setUint8(off, _plyClass(q.classification[i]));
       }
-      if (typeof onProgress === 'function') { try { onProgress(end / n); } catch (e) {} }
-      if (end < n) await yield_();
+      if (typeof onProgress === 'function') { try { onProgress(q.n ? end / q.n : 1); } catch (e) {} }
+      if (end < q.n) await yield_();
     }
     const out = new Uint8Array(headerBytes.length + body.byteLength);
     out.set(headerBytes, 0);
@@ -291,7 +413,7 @@
     opts = opts || {};
     const pos = cloud.pos, col = cloud.col || null;
     const n = pos.length / 3;
-    const empty = { pos: pos, col: col, removed: 0, removedPos: new Float32Array(0), removedCol: col ? new col.constructor(0) : null, clusters: 0 };
+    const empty = _noRemoval(cloud, { clusters: 0 });
     if (n < 32) return empty;
     let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
     for (let i=0;i<n;i++){ const x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2]; if(x<minx)minx=x; if(x>maxx)maxx=x; if(y<miny)miny=y; if(y>maxy)maxy=y; if(z<minz)minz=z; if(z>maxz)maxz=z; }
@@ -354,18 +476,10 @@
     const mask = new Uint8Array(n);
     let keepCount=0;
     for (let i=0;i<n;i++){ const o=occOf[cellOf[i]]; if (o>=0 && keep[label[o]]){ mask[i]=1; keepCount++; } }
-    const removedCount = n - keepCount;
-    if (removedCount === 0) return empty;
-    const outPos=new Float32Array(keepCount*3);
-    const outCol=col?new col.constructor(keepCount*3):null;
-    const remPos=new Float32Array(removedCount*3);
-    const remCol=col?new col.constructor(removedCount*3):null;
-    let a=0,b=0;
-    for (let i=0;i<n;i++){
-      if (mask[i]) { outPos[a*3]=pos[i*3];outPos[a*3+1]=pos[i*3+1];outPos[a*3+2]=pos[i*3+2]; if(col){outCol[a*3]=col[i*3];outCol[a*3+1]=col[i*3+1];outCol[a*3+2]=col[i*3+2];} a++; }
-      else { remPos[b*3]=pos[i*3];remPos[b*3+1]=pos[i*3+1];remPos[b*3+2]=pos[i*3+2]; if(col){remCol[b*3]=col[i*3];remCol[b*3+1]=col[i*3+1];remCol[b*3+2]=col[i*3+2];} b++; }
-    }
-    return { pos: outPos, col: outCol, removed: removedCount, removedPos: remPos, removedCol: remCol, clusters: nComp };
+    if (n - keepCount === 0) return empty;
+    const result = _rebuildMask(cloud, mask, keepCount, n);
+    result.clusters = nComp;
+    return result;
   }
 
   // Готовая чистка шума: воксельный фильтр плотности (принцип SOR/voxel как в CloudCompare/Open3D).
@@ -374,7 +488,7 @@
     opts = opts || {};
     const pos = cloud.pos, col = cloud.col || null;
     const n = pos.length / 3;
-    const empty = { pos: pos, col: col, removed: 0, removedPos: new Float32Array(0), removedCol: col ? new col.constructor(0) : null, voxel: 0 };
+    const empty = _noRemoval(cloud, { voxel: 0 });
     if (n < 8) return empty;
     let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
     for (let i=0;i<n;i++){ const x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2]; if(x<minx)minx=x; if(x>maxx)maxx=x; if(y<miny)miny=y; if(y>maxy)maxy=y; if(z<minz)minz=z; if(z>maxz)maxz=z; }
@@ -399,18 +513,9 @@
     const mask = new Uint8Array(n);
     let keepCount=0;
     for (let i=0;i<n;i++){ if (counts[cell[i]] >= minPts) { mask[i]=1; keepCount++; } }
-    const removedCount = n - keepCount;
-    if (removedCount === 0) return empty;
-    const outPos=new Float32Array(keepCount*3);
-    const outCol=col?new col.constructor(keepCount*3):null;
-    const remPos=new Float32Array(removedCount*3);
-    const remCol=col?new col.constructor(removedCount*3):null;
-    let a=0,b=0;
-    for (let i=0;i<n;i++){
-      if (mask[i]) { outPos[a*3]=pos[i*3];outPos[a*3+1]=pos[i*3+1];outPos[a*3+2]=pos[i*3+2]; if(col){outCol[a*3]=col[i*3];outCol[a*3+1]=col[i*3+1];outCol[a*3+2]=col[i*3+2];} a++; }
-      else { remPos[b*3]=pos[i*3];remPos[b*3+1]=pos[i*3+1];remPos[b*3+2]=pos[i*3+2]; if(col){remCol[b*3]=col[i*3];remCol[b*3+1]=col[i*3+1];remCol[b*3+2]=col[i*3+2];} b++; }
-    }
-    return { pos: outPos, col: outCol, removed: removedCount, removedPos: remPos, removedCol: remCol, voxel: voxel };
+    const result = _rebuildMask(cloud, mask, keepCount, n);
+    result.voxel = voxel;
+    return result;
   }
 
   
@@ -422,7 +527,69 @@
   function selectByColor(col,count,seedRGB,opts){opts=opts||{};count=count|0;if(!col||count<1||!seedRGB)return [];var tol=opts.tol!=null?opts.tol:40;var maxc=0;var N=Math.min(col.length,count*3);for(var i=0;i<N;i++){var v=col[i];if(v>maxc)maxc=v;}var scale=maxc<=1.0001?255:1;var sr=seedRGB[0],sg=seedRGB[1],sb=seedRGB[2];var out=[];var t2=tol*tol;for(var i=0;i<count;i++){var r=col[i*3]*scale,g=col[i*3+1]*scale,b=col[i*3+2]*scale;var dr=r-sr,dg=g-sg,db=b-sb;if(dr*dr+dg*dg+db*db<=t2)out.push(i);}return out;}
   function selectBySphere(pos,count,center,radius){count=count|0;if(!pos||count<1||!center)return [];var r2=radius*radius;var cx=center[0],cy=center[1],cz=center[2];var out=[];for(var i=0;i<count;i++){var dx=pos[i*3]-cx,dy=pos[i*3+1]-cy,dz=pos[i*3+2]-cz;if(dx*dx+dy*dy+dz*dz<=r2)out.push(i);}return out;}
   function selectByBox(pos,count,mn,mx){count=count|0;if(!pos||count<1||!mn||!mx)return [];var out=[];for(var i=0;i<count;i++){var x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2];if(x>=mn[0]&&x<=mx[0]&&y>=mn[1]&&y<=mx[1]&&z>=mn[2]&&z<=mx[2])out.push(i);}return out;}
-  function cleanStatisticalOutliers(cloud,opts){opts=opts||{};var pos=cloud&&cloud.pos;var col=(cloud&&cloud.col)||null;var count=pos?pos.length/3:0;if(!pos||count<3)return{pos:pos||new Float32Array(0),col:col,removed:0,removedPos:new Float32Array(0),removedCol:col?new col.constructor(0):null,meanDist:0,threshold:0};var k=opts.k!=null?opts.k:16;var stdRatio=opts.stdRatio!=null?opts.stdRatio:1.0;var b=_p56bounds(pos,count);var dx=b.mx[0]-b.mn[0],dy=b.mx[1]-b.mn[1],dz=b.mx[2]-b.mn[2];var diag=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;var voxel=opts.voxel!=null?opts.voxel:diag*0.01;if(voxel<=0)voxel=diag*0.01||1e-3;var gx=new Int32Array(count),gy=new Int32Array(count),gz=new Int32Array(count);for(var i=0;i<count;i++){gx[i]=Math.floor((pos[i*3]-b.mn[0])/voxel);gy[i]=Math.floor((pos[i*3+1]-b.mn[1])/voxel);gz[i]=Math.floor((pos[i*3+2]-b.mn[2])/voxel);}var map=new Map();function key(x,y,z){return x+','+y+','+z;}for(var i=0;i<count;i++){var kk=key(gx[i],gy[i],gz[i]);var a=map.get(kk);if(!a){a=[];map.set(kk,a);}a.push(i);}var mean=new Float64Array(count);var K=Math.max(1,k);for(var i=0;i<count;i++){var xi=pos[i*3],yi=pos[i*3+1],zi=pos[i*3+2];var dists=[];for(var ox=-1;ox<=1;ox++)for(var oy=-1;oy<=1;oy++)for(var oz=-1;oz<=1;oz++){var a=map.get(key(gx[i]+ox,gy[i]+oy,gz[i]+oz));if(!a)continue;for(var j=0;j<a.length;j++){var ni=a[j];if(ni===i)continue;var ddx=pos[ni*3]-xi,ddy=pos[ni*3+1]-yi,ddz=pos[ni*3+2]-zi;dists.push(ddx*ddx+ddy*ddy+ddz*ddz);}}dists.sort(function(p,q){return p-q;});var m=Math.min(K,dists.length);if(m===0){mean[i]=Infinity;continue;}var ss=0;for(var j=0;j<m;j++)ss+=Math.sqrt(dists[j]);mean[i]=ss/m;}var sum=0,cnt=0;for(var i=0;i<count;i++){if(isFinite(mean[i])){sum+=mean[i];cnt++;}}var gm=cnt?sum/cnt:0;var vs=0;for(var i=0;i<count;i++){if(isFinite(mean[i])){var dd=mean[i]-gm;vs+=dd*dd;}}var std=cnt?Math.sqrt(vs/cnt):0;var thr=gm+stdRatio*std;var keep=new Uint8Array(count);var keepN=0;for(var i=0;i<count;i++){if(isFinite(mean[i])&&mean[i]<=thr){keep[i]=1;keepN++;}}var removedN=count-keepN;var outPos=new Float32Array(keepN*3);var outCol=col?new col.constructor(keepN*3):null;var remPos=new Float32Array(removedN*3);var remCol=col?new col.constructor(removedN*3):null;var ki=0,ri=0;for(var i=0;i<count;i++){if(keep[i]){outPos[ki*3]=pos[i*3];outPos[ki*3+1]=pos[i*3+1];outPos[ki*3+2]=pos[i*3+2];if(outCol){outCol[ki*3]=col[i*3];outCol[ki*3+1]=col[i*3+1];outCol[ki*3+2]=col[i*3+2];}ki++;}else{remPos[ri*3]=pos[i*3];remPos[ri*3+1]=pos[i*3+1];remPos[ri*3+2]=pos[i*3+2];if(remCol){remCol[ri*3]=col[i*3];remCol[ri*3+1]=col[i*3+1];remCol[ri*3+2]=col[i*3+2];}ri++;}}return{pos:outPos,col:outCol,removed:removedN,removedPos:remPos,removedCol:remCol,meanDist:gm,threshold:thr};}
+  function cleanStatisticalOutliers(cloud, opts) {
+    opts = opts || {};
+    const pos = cloud && cloud.pos;
+    const count = pos ? Math.floor(pos.length / 3) : 0;
+    if (!pos || pos.length % 3 || count < 3) return _noRemoval(cloud, { meanDist: 0, threshold: 0 });
+    const k = Math.max(1, Math.floor(Number(opts.k != null ? opts.k : 16) || 16));
+    const stdRatio = Math.max(0, Number(opts.stdRatio != null ? opts.stdRatio : 1.0));
+    const b = _p56bounds(pos, count);
+    const dx = b.mx[0] - b.mn[0], dy = b.mx[1] - b.mn[1], dz = b.mx[2] - b.mn[2];
+    const diag = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+    let voxel = opts.voxel != null ? Number(opts.voxel) : diag * 0.01;
+    if (!(voxel > 0) || !Number.isFinite(voxel)) voxel = diag * 0.01 || 1e-3;
+    const gx = new Int32Array(count), gy = new Int32Array(count), gz = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      gx[i] = Math.floor((pos[i * 3] - b.mn[0]) / voxel);
+      gy[i] = Math.floor((pos[i * 3 + 1] - b.mn[1]) / voxel);
+      gz[i] = Math.floor((pos[i * 3 + 2] - b.mn[2]) / voxel);
+    }
+    const map = new Map();
+    const key = (x, y, z) => x + ',' + y + ',' + z;
+    for (let i = 0; i < count; i++) {
+      const kk = key(gx[i], gy[i], gz[i]);
+      let bucket = map.get(kk);
+      if (!bucket) { bucket = []; map.set(kk, bucket); }
+      bucket.push(i);
+    }
+    const mean = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+      const xi = pos[i * 3], yi = pos[i * 3 + 1], zi = pos[i * 3 + 2];
+      const dists = [];
+      for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) for (let oz = -1; oz <= 1; oz++) {
+        const bucket = map.get(key(gx[i] + ox, gy[i] + oy, gz[i] + oz));
+        if (!bucket) continue;
+        for (let j = 0; j < bucket.length; j++) {
+          const ni = bucket[j]; if (ni === i) continue;
+          const ddx = pos[ni * 3] - xi, ddy = pos[ni * 3 + 1] - yi, ddz = pos[ni * 3 + 2] - zi;
+          dists.push(ddx * ddx + ddy * ddy + ddz * ddz);
+        }
+      }
+      dists.sort((a, b2) => a - b2);
+      const m = Math.min(k, dists.length);
+      if (!m) { mean[i] = Infinity; continue; }
+      let sum = 0;
+      for (let j = 0; j < m; j++) sum += Math.sqrt(dists[j]);
+      mean[i] = sum / m;
+    }
+    let sum = 0, finiteCount = 0;
+    for (let i = 0; i < count; i++) if (Number.isFinite(mean[i])) { sum += mean[i]; finiteCount++; }
+    const globalMean = finiteCount ? sum / finiteCount : 0;
+    let variance = 0;
+    for (let i = 0; i < count; i++) if (Number.isFinite(mean[i])) {
+      const delta = mean[i] - globalMean; variance += delta * delta;
+    }
+    const std = finiteCount ? Math.sqrt(variance / finiteCount) : 0;
+    const threshold = globalMean + stdRatio * std;
+    const keep = new Uint8Array(count);
+    let keepN = 0;
+    for (let i = 0; i < count; i++) if (Number.isFinite(mean[i]) && mean[i] <= threshold) { keep[i] = 1; keepN++; }
+    const result = _rebuildMask(cloud, keep, keepN, count);
+    result.meanDist = globalMean;
+    result.threshold = threshold;
+    return result;
+  }
 
   // ─────────── PATCH-58: авто-очистка за ОДИН проход + латание дыр на плоскостях ───────────
   function _p58concat(chunks, Ctor){ var t=0; for(var i=0;i<chunks.length;i++)t+=chunks[i].length; var out=new Ctor(t); var o=0; for(var i=0;i<chunks.length;i++){ out.set(chunks[i],o); o+=chunks[i].length; } return out; }
@@ -434,12 +601,45 @@
     var maxPasses = opts.maxPasses != null ? opts.maxPasses : 5;
     var minFrac = opts.minRemovedFrac != null ? opts.minRemovedFrac : 0.0008;
     var voxel = (opts.voxel && opts.voxel > 0) ? opts.voxel : 0;
+    var initialCount = cloud && cloud.pos ? Math.floor(cloud.pos.length / 3) : 0;
+    var attrSpecs = _pointAttributeSpecs(cloud, initialCount);
     var col0 = cloud.col || null;
-    var cur = { pos: cloud.pos, col: col0 };
-    var remP = [], remC = col0 ? [] : null; var colOK = true;
+    var cur = { pos: cloud.pos, col: cloud.col || null };
+    for (var ai = 0; ai < attrSpecs.length; ai++) if (attrSpecs[ai].key !== 'col') cur[attrSpecs[ai].key] = attrSpecs[ai].values;
+    var remP = [], remC = cloud.col ? [] : null; var colOK = true;
+    var remAttrChunks = {}, attrOK = {};
+    for (var ai = 0; ai < attrSpecs.length; ai++) {
+      var spec = attrSpecs[ai];
+      if (spec.key === 'col') continue;
+      remAttrChunks[spec.key] = [];
+      attrOK[spec.key] = true;
+    }
     var brk = { sor: 0, density: 0, clusters: 0 };
     var passes = 0;
-    function acc(rx, kind){ if (!rx || !rx.removed) return; cur = { pos: rx.pos, col: rx.col }; brk[kind] += rx.removed; if (rx.removedPos && rx.removedPos.length){ remP.push(rx.removedPos); if (remC){ if (rx.removedCol && rx.removedCol.length===rx.removedPos.length) remC.push(rx.removedCol); else colOK = false; } } }
+    function acc(rx, kind){
+      if (!rx || !rx.removed) return;
+      cur = { pos: rx.pos, col: rx.col };
+      for (var ai = 0; ai < attrSpecs.length; ai++) {
+        var spec = attrSpecs[ai];
+        if (spec.key !== 'col' && rx[spec.key]) cur[spec.key] = rx[spec.key];
+      }
+      brk[kind] += rx.removed;
+      if (rx.removedPos && rx.removedPos.length) {
+        remP.push(rx.removedPos);
+        if (remC) {
+          if (rx.removedCol && rx.removedCol.length === rx.removedPos.length) remC.push(rx.removedCol);
+          else colOK = false;
+        }
+        for (var ai = 0; ai < attrSpecs.length; ai++) {
+          var spec = attrSpecs[ai];
+          if (spec.key === 'col') continue;
+          var removed = rx.removedAttributes && rx.removedAttributes[spec.key];
+          if (!removed) removed = rx['removed' + spec.key.charAt(0).toUpperCase() + spec.key.slice(1)];
+          if (removed && removed.length === rx.removed * spec.stride) remAttrChunks[spec.key].push(removed);
+          else attrOK[spec.key] = false;
+        }
+      }
+    }
     for (var p = 0; p < maxPasses; p++){
       var before = cur.pos.length / 3;
       if (before < 32) break;
@@ -457,7 +657,19 @@
     }
     var removedPos = _p58concat(remP, Float32Array);
     var removedCol = (remC && colOK) ? _p58concat(remC, (col0 && col0.constructor) || Uint8Array) : null;
-    return { pos: cur.pos, col: cur.col, removed: removedPos.length / 3, removedPos: removedPos, removedCol: removedCol, passes: passes, breakdown: brk };
+    var removedAttributes = {};
+    for (var ai = 0; ai < attrSpecs.length; ai++) {
+      var spec = attrSpecs[ai];
+      if (spec.key === 'col') continue;
+      var chunks = remAttrChunks[spec.key];
+      var removed = attrOK[spec.key] ? _p58concat(chunks, spec.values.constructor) : null;
+      if (removed) {
+        removedAttributes[spec.key] = removed;
+        cur['removed' + spec.key.charAt(0).toUpperCase() + spec.key.slice(1)] = removed;
+      }
+    }
+    return Object.assign(cur, { removed: removedPos.length / 3, removedPos: removedPos, removedCol: removedCol,
+      removedAttributes: removedAttributes, passes: passes, breakdown: brk });
   }
 
   // Латание дыр («теней») на защищённых плоскостях (пол/стены) после удаления объекта.
@@ -539,14 +751,46 @@
     return { addedPos: addedPos, addedCol: addedCol, added: addedPos.length/3 };
   }
 
-  // Экспорт отредактированного облака в бинарный LAS 1.2 (PDRF 2: XYZ + RGB). Возвращает Uint8Array.
+  // Legacy export: LAS 1.2 PDRF 2 (XYZ + intensity + 5-bit classification + RGB).
+  // LAS 1.2 PDRF 2 cannot encode classes >31; refuse rather than silently corrupting them.
   function toLASBinary(cloud) {
-    var pos = cloud && cloud.pos; var col = (cloud && cloud.col) || null;
-    var n = pos ? (pos.length / 3) | 0 : 0;
+    var pos = cloud && cloud.pos;
+    if (!pos || pos.length % 3) throw new TypeError('LAS export requires complete XYZ triples');
+    var col = (cloud && cloud.col) || null;
+    var intensity = (cloud && cloud.intensity) || null;
+    var classification = (cloud && cloud.classification) || null;
+    var n = pos.length / 3;
+    if (!Number.isSafeInteger(n) || n > 0xffffffff) throw new RangeError('LAS 1.2 point count exceeds the supported legacy limit');
+    if (col && col.length !== n * 3) throw new RangeError('LAS export RGB array length does not match point count');
+    if (intensity && intensity.length !== n) throw new RangeError('LAS export intensity array length does not match point count');
+    if (classification && classification.length !== n) throw new RangeError('LAS export classification array length does not match point count');
     var minx = Infinity, miny = Infinity, minz = Infinity, maxx = -Infinity, maxy = -Infinity, maxz = -Infinity;
-    for (var i = 0; i < n; i++) { var x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2]; if (x < minx) minx = x; if (y < miny) miny = y; if (z < minz) minz = z; if (x > maxx) maxx = x; if (y > maxy) maxy = y; if (z > maxz) maxz = z; }
+    var maxIntensity = 0, maxColor = 0;
+    for (var i = 0; i < n; i++) {
+      var x = Number(pos[i * 3]), y = Number(pos[i * 3 + 1]), z = Number(pos[i * 3 + 2]);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) throw new RangeError('LAS export coordinates must be finite');
+      if (x < minx) minx = x; if (y < miny) miny = y; if (z < minz) minz = z;
+      if (x > maxx) maxx = x; if (y > maxy) maxy = y; if (z > maxz) maxz = z;
+      if (intensity) {
+        var iv = Number(intensity[i]);
+        if (!Number.isFinite(iv) || iv < 0) throw new RangeError('LAS intensity must be finite and non-negative');
+        if (iv > maxIntensity) maxIntensity = iv;
+      }
+      if (classification) {
+        var cls = Number(classification[i]);
+        if (!Number.isInteger(cls) || cls < 0 || cls > 31) throw new RangeError('LAS 1.2 PDRF 2 supports classification codes 0–31; use LAS 1.4 export for extended classes');
+      }
+      if (col) for (var c = 0; c < 3; c++) {
+        var cv = Number(col[i * 3 + c]);
+        if (!Number.isFinite(cv)) throw new RangeError('LAS RGB values must be finite');
+        if (cv > maxColor) maxColor = cv;
+      }
+    }
     if (!isFinite(minx)) { minx = miny = minz = 0; maxx = maxy = maxz = 0; }
-    var sx = 0.001, sy = 0.001, sz = 0.001; var ox = minx, oy = miny, oz = minz;
+    var sx = Math.max(0.001, (maxx - minx) / 2147483000);
+    var sy = Math.max(0.001, (maxy - miny) / 2147483000);
+    var sz = Math.max(0.001, (maxz - minz) / 2147483000);
+    var ox = minx, oy = miny, oz = minz;
     var HEADER = 227, REC = 26;
     var buf = new ArrayBuffer(HEADER + n * REC); var dv = new DataView(buf); var u8 = new Uint8Array(buf);
     u8[0] = 0x4C; u8[1] = 0x41; u8[2] = 0x53; u8[3] = 0x46; // 'LASF'
@@ -561,15 +805,24 @@
     dv.setFloat64(179, maxx, true); dv.setFloat64(187, minx, true);
     dv.setFloat64(195, maxy, true); dv.setFloat64(203, miny, true);
     dv.setFloat64(211, maxz, true); dv.setFloat64(219, minz, true);
-    var scale255 = false; if (col && col.length) { var mx = 0, lim = Math.min(col.length, 300); for (var i = 0; i < lim; i++) if (col[i] > mx) mx = col[i]; if (mx > 1.0001) scale255 = true; }
+    var scale255 = !!(col && maxColor > 1.0001);
+    var intensityScale = intensity && maxIntensity <= 1.0001 ? 65535 : 1;
     var o = HEADER;
     for (var i = 0; i < n; i++) {
       dv.setInt32(o, Math.round((pos[i * 3] - ox) / sx), true);
       dv.setInt32(o + 4, Math.round((pos[i * 3 + 1] - oy) / sy), true);
       dv.setInt32(o + 8, Math.round((pos[i * 3 + 2] - oz) / sz), true);
-      dv.setUint16(o + 12, 0, true); u8[o + 14] = 0x09; u8[o + 15] = 0; u8[o + 16] = 0; u8[o + 17] = 0; dv.setUint16(o + 18, 0, true);
+      var intensityValue = intensity ? Math.round(Number(intensity[i]) * intensityScale) : 0;
+      dv.setUint16(o + 12, Math.max(0, Math.min(65535, intensityValue)), true);
+      u8[o + 14] = 0x09;
+      u8[o + 15] = classification ? Number(classification[i]) : 0;
+      u8[o + 16] = 0; u8[o + 17] = 0; dv.setUint16(o + 18, 0, true);
       var r = 200, g = 200, b = 200;
-      if (col && col.length) { if (scale255) { r = col[i * 3] | 0; g = col[i * 3 + 1] | 0; b = col[i * 3 + 2] | 0; } else { r = Math.round(col[i * 3] * 255); g = Math.round(col[i * 3 + 1] * 255); b = Math.round(col[i * 3 + 2] * 255); } }
+      if (col) {
+        if (scale255) { r = Math.round(col[i * 3]); g = Math.round(col[i * 3 + 1]); b = Math.round(col[i * 3 + 2]); }
+        else { r = Math.round(col[i * 3] * 255); g = Math.round(col[i * 3 + 1] * 255); b = Math.round(col[i * 3 + 2] * 255); }
+        r = Math.max(0, Math.min(255, r)); g = Math.max(0, Math.min(255, g)); b = Math.max(0, Math.min(255, b));
+      }
       dv.setUint16(o + 20, (r * 257) & 0xffff, true); dv.setUint16(o + 22, (g * 257) & 0xffff, true); dv.setUint16(o + 24, (b * 257) & 0xffff, true);
       o += REC;
     }
@@ -669,7 +922,7 @@
   function cleanIslands(cloud, opts){
     opts = opts || {};
     var pos = cloud && cloud.pos; var count = pos ? pos.length/3 : 0;
-    if (!pos || count < 32) return { pos: pos || new Float32Array(0), col: (cloud&&cloud.col)||null, removed: 0, removedPos: new Float32Array(0), removedCol: null, clusters: 0 };
+    if (!pos || count < 32) return _noRemoval(cloud, { clusters: 0 });
     var minPts = opts.minClusterPts != null ? opts.minClusterPts : Math.max(200, Math.round(count*0.0004));
     return cleanClusters(cloud, { voxel: opts.voxel, minClusterPts: minPts, keepRatio: opts.keepRatio != null ? opts.keepRatio : 0 });
   }
@@ -678,21 +931,6 @@
   // v1046 — Phase 1-3: расширенный конвейер обработки (по образцу CloudCompare/Open3D).
   // Чистые алгоритмы без DOM/GPU — покрыты unit-тестами (test/pcedit-phase123.test.js).
   // =========================================================================
-
-  // Общий rebuild из маски keep (без Set) — как в cleanStatisticalOutliers.
-  function _rebuildMask(pos, col, keep, keepN, count){
-    var removedN = count - keepN;
-    var outPos = new Float32Array(keepN*3);
-    var outCol = col ? new col.constructor(keepN*3) : null;
-    var remPos = new Float32Array(removedN*3);
-    var remCol = col ? new col.constructor(removedN*3) : null;
-    var ki=0, ri=0;
-    for (var i=0;i<count;i++){
-      if (keep[i]){ outPos[ki*3]=pos[i*3];outPos[ki*3+1]=pos[i*3+1];outPos[ki*3+2]=pos[i*3+2]; if(outCol){outCol[ki*3]=col[i*3];outCol[ki*3+1]=col[i*3+1];outCol[ki*3+2]=col[i*3+2];} ki++; }
-      else { remPos[ri*3]=pos[i*3];remPos[ri*3+1]=pos[i*3+1];remPos[ri*3+2]=pos[i*3+2]; if(remCol){remCol[ri*3]=col[i*3];remCol[ri*3+1]=col[i*3+1];remCol[ri*3+2]=col[i*3+2];} ri++; }
-    }
-    return { pos: outPos, col: outCol, removed: removedN, removedPos: remPos, removedCol: remCol };
-  }
 
   // Собственные значения/векторы симметричной матрицы NxN методом Якоби (N=3 или 4).
   function _jacobiEig(A, n){
@@ -734,7 +972,7 @@
   function cleanRadiusOutliers(cloud, opts){
     opts=opts||{};
     var pos=cloud&&cloud.pos; var col=(cloud&&cloud.col)||null; var count=pos?pos.length/3:0;
-    var empty={pos:pos||new Float32Array(0),col:col,removed:0,removedPos:new Float32Array(0),removedCol:col?new col.constructor(0):null,radius:0,minNeighbors:0};
+    var empty=_noRemoval(cloud,{radius:0,minNeighbors:0});
     if(!pos||count<3)return empty;
     var b=_p56bounds(pos,count);var dx=b.mx[0]-b.mn[0],dy=b.mx[1]-b.mn[1],dz=b.mx[2]-b.mn[2];var diag=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
     var radius=opts.radius!=null?opts.radius:diag*0.01; if(!(radius>0))radius=diag*0.01||1e-3;
@@ -746,14 +984,14 @@
     for(var i=0;i<count;i++){var xi=pos[i*3],yi=pos[i*3+1],zi=pos[i*3+2];var cnt=0;
       for(var ox=-1;ox<=1&&cnt<minN;ox++)for(var oy=-1;oy<=1&&cnt<minN;oy++)for(var oz=-1;oz<=1&&cnt<minN;oz++){var a=map.get(key(gx[i]+ox,gy[i]+oy,gz[i]+oz));if(!a)continue;for(var j=0;j<a.length;j++){var ni=a[j];if(ni===i)continue;var ex=pos[ni*3]-xi,ey=pos[ni*3+1]-yi,ez=pos[ni*3+2]-zi;if(ex*ex+ey*ey+ez*ez<=r2){cnt++;if(cnt>=minN)break;}}}
       if(cnt>=minN){keep[i]=1;keepN++;}}
-    var r=_rebuildMask(pos,col,keep,keepN,count);r.radius=radius;r.minNeighbors=minN;return r;
+    var r=_rebuildMask(cloud,keep,keepN,count);r.radius=radius;r.minNeighbors=minN;return r;
   }
 
   // --- Phase 1: noise filter по локальной плоскости (аналог CloudCompare Noise filter). ---
   function noiseFilterLocalPlane(cloud, opts){
     opts=opts||{};
     var pos=cloud&&cloud.pos; var col=(cloud&&cloud.col)||null; var count=pos?pos.length/3:0;
-    var empty={pos:pos||new Float32Array(0),col:col,removed:0,removedPos:new Float32Array(0),removedCol:col?new col.constructor(0):null,threshold:0};
+    var empty=_noRemoval(cloud,{threshold:0});
     if(!pos||count<8)return empty;
     var k=opts.k!=null?opts.k:16; var stdRatio=opts.stdRatio!=null?opts.stdRatio:1.0;
     var b=_p56bounds(pos,count);var dx=b.mx[0]-b.mn[0],dy=b.mx[1]-b.mn[1],dz=b.mx[2]-b.mn[2];var diag=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
@@ -780,19 +1018,70 @@
     var thr=opts.absTol!=null?opts.absTol:(mean+stdRatio*std);
     var keep=new Uint8Array(count),keepN=0;
     for(var i=0;i<count;i++){if(dist[i]<=thr){keep[i]=1;keepN++;}}
-    var r=_rebuildMask(pos,col,keep,keepN,count);r.threshold=thr;return r;
+    var r=_rebuildMask(cloud,keep,keepN,count);r.threshold=thr;return r;
   }
 
   // --- Phase 2: реальное воксельное прореживание (один центроид на воксель). ---
   function voxelDownsample(cloud, opts){
-    opts=opts||{};var pos=cloud&&cloud.pos;var col=(cloud&&cloud.col)||null;var count=pos?pos.length/3:0;
-    if(!pos||count<1)return { pos:pos||new Float32Array(0), col:col, kept:count|0, removed:0, voxel:0 };
-    var b=_p56bounds(pos,count);var dx=b.mx[0]-b.mn[0],dy=b.mx[1]-b.mn[1],dz=b.mx[2]-b.mn[2];var diag=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
-    var voxel=opts.voxel!=null?opts.voxel:diag*0.01;if(!(voxel>0))voxel=diag*0.01||1e-3;var inv=1/voxel;var map=new Map();
-    for(var i=0;i<count;i++){var kx=Math.floor((pos[i*3]-b.mn[0])*inv),ky=Math.floor((pos[i*3+1]-b.mn[1])*inv),kz=Math.floor((pos[i*3+2]-b.mn[2])*inv);var kk=kx+','+ky+','+kz;var e=map.get(kk);if(!e){e={x:0,y:0,z:0,r:0,g:0,b:0,n:0};map.set(kk,e);}e.x+=pos[i*3];e.y+=pos[i*3+1];e.z+=pos[i*3+2];if(col){e.r+=col[i*3];e.g+=col[i*3+1];e.b+=col[i*3+2];}e.n++;}
-    var kept=map.size;var outPos=new Float32Array(kept*3);var outCol=col?new col.constructor(kept*3):null;var j=0;
-    map.forEach(function(e){outPos[j*3]=e.x/e.n;outPos[j*3+1]=e.y/e.n;outPos[j*3+2]=e.z/e.n;if(outCol){outCol[j*3]=e.r/e.n;outCol[j*3+1]=e.g/e.n;outCol[j*3+2]=e.b/e.n;}j++;});
-    return { pos:outPos, col:outCol, kept:kept, removed:count-kept, voxel:voxel };
+    opts=opts||{};
+    var pos=cloud&&cloud.pos, count=pos?Math.floor(pos.length/3):0;
+    if(!pos||pos.length%3||count<1)return Object.assign(_noRemoval(cloud,{voxel:0}),{kept:count,removed:0});
+    var b=_p56bounds(pos,count),dx=b.mx[0]-b.mn[0],dy=b.mx[1]-b.mn[1],dz=b.mx[2]-b.mn[2];
+    var diag=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
+    var voxel=opts.voxel!=null?Number(opts.voxel):diag*0.01;
+    if(!(voxel>0)||!Number.isFinite(voxel))voxel=diag*0.01||1e-3;
+    var inv=1/voxel, map=new Map();
+    var specs=_pointAttributeSpecs(cloud,count);
+    var color=specs.find(function(s){return s.key==='col';})||null;
+    var intensity=specs.find(function(s){return s.key==='intensity'&&s.stride===1;})||null;
+    var classification=specs.find(function(s){return s.key==='classification'&&s.stride===1;})||null;
+    for(var i=0;i<count;i++){
+      var kx=Math.floor((pos[i*3]-b.mn[0])*inv),ky=Math.floor((pos[i*3+1]-b.mn[1])*inv),kz=Math.floor((pos[i*3+2]-b.mn[2])*inv);
+      var kk=kx+','+ky+','+kz, e=map.get(kk);
+      if(!e){
+        e={x:0,y:0,z:0,r:0,g:0,b:0,n:0,firstIndex:i,intensitySum:0,classValue:0,classCount:0,classVotes:null};
+        map.set(kk,e);
+      }
+      e.x+=pos[i*3];e.y+=pos[i*3+1];e.z+=pos[i*3+2];
+      if(color){e.r+=color.values[i*3];e.g+=color.values[i*3+1];e.b+=color.values[i*3+2];}
+      if(intensity){var iv=Number(intensity.values[i]);e.intensitySum+=Number.isFinite(iv)?iv:0;}
+      if(classification){
+        var cv=Number(classification.values[i]);
+        if(Number.isFinite(cv)){
+          cv=Math.round(cv);
+          if(!e.classCount){e.classValue=cv;e.classCount=1;}
+          else if(e.classVotes){e.classVotes.set(cv,(e.classVotes.get(cv)||0)+1);}
+          else if(cv===e.classValue)e.classCount++;
+          else{e.classVotes=new Map([[e.classValue,e.classCount],[cv,1]]);e.classCount=0;}
+        }
+      }
+      e.n++;
+    }
+    var kept=map.size,outPos=new Float32Array(kept*3),outCol=color?new color.values.constructor(kept*3):null;
+    var outAttrs={};
+    specs.forEach(function(spec){if(spec.key!=='col')outAttrs[spec.key]=new spec.values.constructor(kept*spec.stride);});
+    var j=0;
+    map.forEach(function(e){
+      outPos[j*3]=e.x/e.n;outPos[j*3+1]=e.y/e.n;outPos[j*3+2]=e.z/e.n;
+      if(outCol){outCol[j*3]=e.r/e.n;outCol[j*3+1]=e.g/e.n;outCol[j*3+2]=e.b/e.n;}
+      for(var a=0;a<specs.length;a++){
+        var spec=specs[a],key=spec.key;
+        if(key==='col')continue;
+        var dst=outAttrs[key],stride=spec.stride,base=j*stride,source=spec.values;
+        if(key==='intensity'&&stride===1){dst[j]=e.intensitySum/e.n;continue;}
+        if(key==='classification'&&stride===1){
+          var best=e.classValue,bestCount=e.classVotes?0:e.classCount;
+          if(e.classVotes)e.classVotes.forEach(function(voteCount,label){if(voteCount>bestCount||(voteCount===bestCount&&label<best)){best=label;bestCount=voteCount;}});
+          dst[j]=best;continue;
+        }
+        var first=e.firstIndex*stride;
+        for(var c=0;c<stride;c++)dst[base+c]=source[first+c];
+      }
+      j++;
+    });
+    var result={pos:outPos,col:outCol,kept:kept,removed:count-kept,voxel:voxel};
+    Object.keys(outAttrs).forEach(function(key){result[key]=outAttrs[key];});
+    return result;
   }
 
   // --- Phase 2: оценка нормалей (PCA по kNN, ориентация к viewpoint). ---
@@ -843,19 +1132,19 @@
   // --- Phase 2: crop box / сечения / измерения. ---
   function cropBox(cloud, mn, mx, opts){
     opts=opts||{};var pos=cloud&&cloud.pos;var col=(cloud&&cloud.col)||null;var count=pos?pos.length/3:0;
-    if(!pos||count<1)return { pos:pos||new Float32Array(0), col:col, removed:0, removedPos:new Float32Array(0), removedCol:null };
+    if(!pos||count<1)return _noRemoval(cloud);
     var invert=!!opts.invert;var keep=new Uint8Array(count),keepN=0;
     for(var i=0;i<count;i++){var x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2];var inside=(x>=mn[0]&&x<=mx[0]&&y>=mn[1]&&y<=mx[1]&&z>=mn[2]&&z<=mx[2]);var kp=invert?!inside:inside;if(kp){keep[i]=1;keepN++;}}
-    return _rebuildMask(pos,col,keep,keepN,count);
+    return _rebuildMask(cloud,keep,keepN,count);
   }
   function sliceSection(cloud, opts){
     opts=opts||{};var pos=cloud&&cloud.pos;var col=(cloud&&cloud.col)||null;var count=pos?pos.length/3:0;
     var axis=opts.axis!=null?opts.axis:2;var thickness=opts.thickness!=null?opts.thickness:0.1;var at=opts.at;
-    if(!pos||count<1)return { pos:pos||new Float32Array(0), col:col, removed:0, removedPos:new Float32Array(0), removedCol:null };
+    if(!pos||count<1)return _noRemoval(cloud);
     if(at==null){var b=_p56bounds(pos,count);at=(b.mn[axis]+b.mx[axis])/2;}
     var lo=at-thickness/2,hi=at+thickness/2;var keep=new Uint8Array(count),keepN=0;
     for(var i=0;i<count;i++){var v=pos[i*3+axis];if(v>=lo&&v<=hi){keep[i]=1;keepN++;}}
-    return _rebuildMask(pos,col,keep,keepN,count);
+    return _rebuildMask(cloud,keep,keepN,count);
   }
   function measureDistance(a,b){var dx=a[0]-b[0],dy=a[1]-b[1],dz=a[2]-b[2];return Math.sqrt(dx*dx+dy*dy+dz*dz);}
   function pointToPlaneDistance(pt,plane){return Math.abs(plane.normal[0]*pt[0]+plane.normal[1]*pt[1]+plane.normal[2]*pt[2]+plane.d);}

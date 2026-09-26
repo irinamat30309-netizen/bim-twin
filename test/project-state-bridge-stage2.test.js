@@ -62,9 +62,19 @@ function harness() {
       const digest = crypto.createHash('sha256').update(labels).digest('hex');
       const classification = { cloudId: args.cloudId, pointCount: labels.length, asset: { sha256: digest } };
       const next = JSON.parse(JSON.stringify(state));
-      next.classifications.push(classification);
+      const at = next.classifications.findIndex(item => item && item.cloudId === args.cloudId);
+      if (at < 0) next.classifications.push(classification);
+      else next.classifications[at] = classification;
       const saved = commit({ expectedRevision: args.expectedRevision, state: next });
       return saved.ok ? { ok: true, classification, state: saved } : saved;
+    },
+    clearProjectClassification: async args => {
+      const next = JSON.parse(JSON.stringify(state));
+      const before = next.classifications.length;
+      next.classifications = next.classifications.filter(item => !item || item.cloudId !== args.cloudId);
+      if (before === next.classifications.length) return { ok: true, cleared: false, state: view() };
+      const saved = commit({ expectedRevision: args.expectedRevision, state: next });
+      return saved.ok ? { ok: true, cleared: true, state: saved } : saved;
     },
     loadProjectClassification: async args => ({ ok: true, projectId: args.projectId, cloudId: args.cloudId, sha256: args.sha256 }),
     recordProjectOperation: async entry => ({ ok: true, operation: entry })
@@ -150,4 +160,30 @@ test('project bridge routes undo/redo and large classification buffers through d
   assert.equal(loaded.ok, true);
   assert.equal(loaded.sha256, saved.classification.asset.sha256);
   assert.ok(h.events.some(event => event.type === 'bim-project-classification-saved'));
+
+  const cleared = await ps.clearClassification('облако-этаж-1');
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.cleared, true);
+  assert.equal(ps.snapshot().classifications.length, 0);
+  assert.ok(h.events.some(event => event.type === 'bim-project-classification-cleared' && event.detail.cloudId === 'облако-этаж-1'));
+
+  const raceLabels = new Uint8Array([4, 4, 2]);
+  const [queuedSave, queuedClear] = await Promise.all([
+    ps.saveClassification({ cloudId: 'serialized-cloud', labels: raceLabels, pointCount: raceLabels.length, algorithm: 'manual' }),
+    ps.clearClassification('serialized-cloud')
+  ]);
+  assert.equal(queuedSave.ok, true);
+  assert.equal(queuedClear.ok, true);
+  assert.equal(ps.snapshot().classifications.some(item => item.cloudId === 'serialized-cloud'), false);
+});
+
+test('classification clear IPC is exposed and removes only the active project reference', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
+  assert.ok(main.includes("ipcMain.handle('bim:clearProjectClassification'"), 'main-process clear handler is registered');
+  assert.ok(main.includes("operation: 'cloud.classification.clear'"), 'clear is recorded in the operation journal');
+  assert.ok(main.includes('next.classifications = retained'), 'only the project classification pointer is removed');
+  assert.ok(main.includes('Content-addressed label bytes are intentionally retained'), 'content-addressed label assets remain available to history');
+  assert.ok(main.includes('only the active pointer is cleared'), 'historical revisions retain their asset reference');
+  assert.ok(preload.includes("clearProjectClassification: (payload) => inv('bim:clearProjectClassification', payload)"), 'renderer bridge exposes clear IPC');
 });

@@ -279,6 +279,39 @@ test('newly calculated classifications replace the cloud VAO class buffer', () =
   ]);
 });
 
+test('clearing classification detaches its VAO buffer, clears availability, and exits class color mode', () => {
+  const calls = [];
+  const gl = {
+    bindVertexArray(value) { calls.push(['vao', value]); },
+    disableVertexAttribArray(location) { calls.push(['disable', location]); },
+    vertexAttrib1f(location, value) { calls.push(['constant', location, value]); },
+    deleteBuffer(value) { calls.push(['delete', value]); }
+  };
+  const viewer = makeBareViewer(1000);
+  const cloud = { points: true, pos: new Float32Array(6), classification: new Uint8Array([2, 6]), _vao: 'cloud-vao', _kb: 'class-buffer' };
+  Object.assign(viewer, {
+    gl, base: [cloud], aClassification: 3,
+    _classificationLabels: new Uint8Array([2, 6]),
+    _cloudColorMode: 'classification', _ptElev: false,
+    _cloudRecord: { hasClassification: true },
+    render() {}, _notifyCloudChanged() {}
+  });
+
+  assert.equal(viewer.clearClassificationLabels(), true);
+  assert.equal(cloud.classification, null);
+  assert.equal(cloud._kb, null);
+  assert.equal(viewer._classificationLabels, null);
+  assert.equal(viewer._cloudRecord.hasClassification, false);
+  assert.equal(viewer.getColorMode(), 'rgb');
+  assert.deepEqual(calls, [
+    ['vao', 'cloud-vao'],
+    ['disable', 3],
+    ['constant', 3, 0],
+    ['vao', null],
+    ['delete', 'class-buffer']
+  ]);
+});
+
 test('streamed octree fetches a visible node once, uploads attributes and draws both color modes', async () => {
   const previousWindow = global.window;
   global.window = { OctreeStore };

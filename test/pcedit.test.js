@@ -1,7 +1,15 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const E = require('../renderer/pointcloud-edit.js');
+const LAS = require('../las-node');
+
+function tempPly() {
+  return path.join(os.tmpdir(), 'bimtwin-pcedit-' + process.pid + '-' + Math.random().toString(36).slice(2) + '.ply');
+}
 
 test('pointInPolygon: inside/outside square', () => {
   const sq = [[0, 0], [10, 0], [10, 10], [0, 10]];
@@ -117,4 +125,51 @@ test('toPLYBinary: uchar color preserved (no scaling) + no-color 12-byte stride'
   const hs2 = headerString(b2);
   assert.ok(!hs2.includes('property uchar red'));
   assert.strictEqual(b2.length - hs2.length, 12);
+});
+
+test('PLY edit exporters preserve aligned RGB, intensity, and full 8-bit classification', async () => {
+  const cloud = {
+    pos: new Float32Array([0, 0, 0, 1, 2, 3, 4, 5, 6]),
+    col: new Uint8Array([255, 0, 0, 0, 255, 0, 0, 0, 255]),
+    intensity: new Float32Array([0.125, 0.5, 1]),
+    classification: new Uint8Array([2, 6, 255])
+  };
+  const asciiPath = tempPly(), binaryPath = tempPly();
+  try {
+    const ascii = E.toPLY(cloud);
+    assert.match(ascii, /property float intensity/);
+    assert.match(ascii, /property uchar classification/);
+    fs.writeFileSync(asciiPath, ascii, 'ascii');
+    const parsedAscii = LAS.parseCloudFile(asciiPath, { maxPoints: 100 });
+    assert.equal(parsedAscii.ok, true, parsedAscii.message);
+    assert.deepStrictEqual(Array.from(parsedAscii.col), Array.from(cloud.col, value => value / 255));
+    assert.deepStrictEqual(Array.from(parsedAscii.intensity), Array.from(cloud.intensity));
+    assert.deepStrictEqual(Array.from(parsedAscii.classification), Array.from(cloud.classification));
+
+    const sync = E.toPLYBinary(cloud);
+    const asyncBytes = await E.toPLYBinaryAsync(cloud);
+    assert.deepStrictEqual(Array.from(asyncBytes), Array.from(sync), 'sync and chunked writers must encode identical records');
+    const header = Buffer.from(sync).subarray(0, 512).toString('ascii');
+    assert.match(header, /property float intensity/);
+    assert.match(header, /property uchar classification/);
+    fs.writeFileSync(binaryPath, sync);
+    const parsedBinary = LAS.parseCloudFile(binaryPath, { maxPoints: 100 });
+    assert.equal(parsedBinary.ok, true, parsedBinary.message);
+    assert.deepStrictEqual(Array.from(parsedBinary.intensity), Array.from(cloud.intensity));
+    assert.deepStrictEqual(Array.from(parsedBinary.classification), Array.from(cloud.classification));
+    assert.deepStrictEqual(Array.from(parsedBinary.col), Array.from(cloud.col, value => value / 255));
+  } finally {
+    fs.rmSync(asciiPath, { force: true });
+    fs.rmSync(binaryPath, { force: true });
+  }
+});
+
+test('PLY edit exporters reject misaligned attributes and out-of-range LAS class codes', async () => {
+  const pos = new Float32Array([0, 0, 0, 1, 1, 1]);
+  assert.throws(() => E.toPLYBinary({ pos, intensity: new Float32Array([0.5]) }), /intensity_array_length_mismatch/);
+  assert.throws(() => E.toPLY({ pos, classification: new Uint16Array([2, 300]) }), /invalid_classification_value/);
+  await assert.rejects(
+    E.toPLYBinaryAsync({ pos, classification: new Uint8Array([2]) }),
+    /classification_array_length_mismatch/
+  );
 });

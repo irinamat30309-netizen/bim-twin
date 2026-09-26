@@ -42,6 +42,11 @@ test('sprints-ext: вызывает чистые функции спринт-м�
   assert.ok(EXT.includes('window.PotreeLoader'), 'PotreeLoader not used');
 });
 
+test('sprints-ext: classified LAS export keeps source intensity and writes generated classes', () => {
+  assert.match(EXT, /intensity:\s*src\.intensity\s*\|\|\s*c\.intensity\s*\|\|\s*null/);
+  assert.match(EXT, /meta:\s*meta,\s*classification:\s*classes/);
+});
+
 test('sprints-ext: мост к __pcTools и экспорт API', () => {
   assert.ok(EXT.includes('window.__pcTools'), 'no __pcTools bridge');
   assert.ok(EXT.includes('window.__lxSprintsExt'), 'no public API');

@@ -19,6 +19,7 @@ const verify = require('./ai/verify');
 const llm = require('./ai/llm');
 const report = require('./ai/report');
 const cloud = require('./las-node');
+const { writePlyBinaryToDisk: writePlyBinaryToDiskImpl } = require('./pointcloud-ply-io');
 const octreeStore = require('./renderer/octree-store');
 const e57 = require('./renderer/e57-stations');
 const { PTXStreamValidator } = require('./renderer/ptx-stream-validator');
@@ -1278,53 +1279,7 @@ function registerIpc() {
   // Парсим файл в main-процессе (Node, без GPU) и потоково пишем бинарный PLY на диск
   // чанками — не держим весь PLY в памяти, поэтому не вылетает на больших облаках.
   function writePlyBinaryToDisk(filePath, pos, col, hasColor, opts) {
-    opts = opts || {};
-    const n = (pos.length / 3) | 0;
-    const doublePrecision = opts.doublePrecision === true;
-    const coordType = doublePrecision ? 'double' : 'float';
-    const coordBytes = doublePrecision ? 8 : 4;
-    const H = ['ply', 'format binary_little_endian 1.0', 'comment BIM Twin cloud export'];
-    if (opts.upAxis === 'z' || opts.upAxis === 'y') H.push('comment up=' + opts.upAxis);
-    if (opts.crsWkt) H.push('comment crs_wkt_uri=' + encodeURIComponent(String(opts.crsWkt)));
-    if (opts.coordinateFrame) H.push('comment coordinate_frame=' + String(opts.coordinateFrame).replace(/[^A-Za-z0-9_.:-]/g, '_'));
-    H.push('element vertex ' + n, 'property ' + coordType + ' x', 'property ' + coordType + ' y', 'property ' + coordType + ' z');
-    if (hasColor) { H.push('property uchar red', 'property uchar green', 'property uchar blue'); }
-    H.push('end_header', '');
-    let scaled = true; // col в диапазоне 0..1 → умножаем на 255
-    if (hasColor && col) { let mx = 0; const lim = Math.min(col.length, 300); for (let i = 0; i < lim; i++) if (col[i] > mx) mx = col[i]; if (mx > 1.0001) scaled = false; }
-    const toByte = v => { v = scaled ? Math.round(v * 255) : Math.round(v); return v < 0 ? 0 : (v > 255 ? 255 : v); };
-    const fd = fs.openSync(filePath, 'w');
-    try {
-      fs.writeSync(fd, Buffer.from(H.join('\n'), 'ascii'));
-      const stride = coordBytes * 3 + (hasColor ? 3 : 0);
-      const CHUNK = 200000;
-      const buf = Buffer.allocUnsafe(CHUNK * stride);
-      let i = 0;
-      while (i < n) {
-        const mm = Math.min(CHUNK, n - i);
-        let off = 0;
-        for (let k = 0; k < mm; k++) {
-          const p = (i + k) * 3;
-          if (doublePrecision) {
-            buf.writeDoubleLE(pos[p], off); off += 8;
-            buf.writeDoubleLE(pos[p + 1], off); off += 8;
-            buf.writeDoubleLE(pos[p + 2], off); off += 8;
-          } else {
-            buf.writeFloatLE(pos[p], off); off += 4;
-            buf.writeFloatLE(pos[p + 1], off); off += 4;
-            buf.writeFloatLE(pos[p + 2], off); off += 4;
-          }
-          if (hasColor) {
-            buf.writeUInt8(toByte(col[p]), off); off += 1;
-            buf.writeUInt8(toByte(col[p + 1]), off); off += 1;
-            buf.writeUInt8(toByte(col[p + 2]), off); off += 1;
-          }
-        }
-        fs.writeSync(fd, buf, 0, off);
-        i += mm;
-      }
-    } finally { try { fs.closeSync(fd); } catch (_) {} }
-    return n;
+    return writePlyBinaryToDiskImpl(filePath, pos, col, hasColor, opts);
   }
 
   ipcMain.handle('bim:convertCloudToPly', async (_e, a) => {
@@ -1348,8 +1303,11 @@ function registerIpc() {
       const out = await dialog.showSaveDialog({ title: 'Сохранить PLY', defaultPath: def, filters: [{ name: 'PLY', extensions: ['ply'] }] });
       if (out.canceled || !out.filePath) return { ok: false, canceled: true };
       const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
-      const n = writePlyBinaryToDisk(out.filePath, pr.pos, pr.col, hasColor);
-      return { ok: true, path: out.filePath, count: n, colored: hasColor, total: (pr.meta && pr.meta.total) || n };
+      const n = writePlyBinaryToDisk(out.filePath, pr.pos, pr.col, hasColor, {
+        intensity: pr.intensity || null, classification: pr.classification || null
+      });
+      return { ok: true, path: out.filePath, count: n, colored: hasColor,
+        hasIntensity: !!pr.intensity, hasClassification: !!pr.classification, total: (pr.meta && pr.meta.total) || n };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
@@ -1943,7 +1901,9 @@ function registerIpc() {
         fs.mkdirSync(base, { recursive: true });
         tmpIn = path.join(base, 'in-' + Date.now() + '.ply');
         const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
-        writePlyBinaryToDisk(tmpIn, pr.pos, pr.col, hasColor);
+        writePlyBinaryToDisk(tmpIn, pr.pos, pr.col, hasColor, {
+          intensity: pr.intensity || null, classification: pr.classification || null
+        });
         inPly = tmpIn;
       }
       let outp = String(a.output || '');
@@ -2053,7 +2013,9 @@ function registerIpc() {
         if (!pr || !pr.ok) return { ok: false, error: 'parse_failed' };
         if (pr.kind && pr.kind !== 'points') return { ok: false, error: 'not_points' };
         const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
-        writePlyBinaryToDisk(work, pr.pos, pr.col, hasColor);
+        writePlyBinaryToDisk(work, pr.pos, pr.col, hasColor, {
+          intensity: pr.intensity || null, classification: pr.classification || null
+        });
       }
       let before = 0; try { before = fs.statSync(work).mtimeMs; } catch (_) {}
       const cp = require('child_process');
@@ -2203,7 +2165,9 @@ function registerIpc() {
     fs.mkdirSync(base, { recursive: true });
     const tmp = path.join(base, 'in-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '.ply');
     const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
-    writePlyBinaryToDisk(tmp, pr.pos, pr.col, hasColor);
+    writePlyBinaryToDisk(tmp, pr.pos, pr.col, hasColor, {
+      intensity: pr.intensity || null, classification: pr.classification || null
+    });
     return { ply: tmp, tmp };
   }
   // Registration must see both inputs in the same viewer-local Y-up frame.
@@ -2220,14 +2184,21 @@ function registerIpc() {
     fs.mkdirSync(base, { recursive: true });
     const tmp = path.join(base, 'register-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9) + '.ply');
     const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
+    const intensity = pr.intensity || null;
+    const classification = pr.classification || null;
     try {
       // pr.pos is already centred and converted to the viewer's Y-up frame.
-      writePlyBinaryToDisk(tmp, pr.pos, pr.col, hasColor, { upAxis: 'y', coordinateFrame: 'viewer-local' });
+      writePlyBinaryToDisk(tmp, pr.pos, pr.col, hasColor, {
+        upAxis: 'y', coordinateFrame: 'viewer-local',
+        intensity: intensity, classification: classification
+      });
     } catch (e) {
       try { fs.unlinkSync(tmp); } catch (_) {}
       return { error: 'ply_write_failed', message: String((e && e.message) || e) };
     }
-    return { ply: tmp, tmp, meta: pr.meta || {}, count: pr.count || pr.pos.length / 3, pos: pr.pos, col: pr.col || null, hasColor: hasColor };
+    return { ply: tmp, tmp, meta: pr.meta || {}, count: pr.count || pr.pos.length / 3,
+      pos: pr.pos, col: pr.col || null, hasColor: hasColor,
+      intensity: intensity, classification: classification };
   }
   function validGeomSourceTransform(meta) {
     const x = meta && meta.srcXform;
@@ -2262,7 +2233,8 @@ function registerIpc() {
   function writeGeomPointInput(input, pos, frameName) {
     if (!input || !input.tmp || !pos) return false;
     writePlyBinaryToDisk(input.tmp, pos, input.col, input.hasColor, {
-      upAxis: 'y', coordinateFrame: frameName || 'comparison-viewer-local'
+      upAxis: 'y', coordinateFrame: frameName || 'comparison-viewer-local',
+      intensity: input.intensity || null, classification: input.classification || null
     });
     input.pos = pos;
     return true;
@@ -2631,7 +2603,7 @@ function registerIpc() {
         expectedRevision: before.revision,
         appVersion: app.getVersion(),
         operation: {
-          operation: 'cloud.classify.structure',
+          operation: a.operation === 'cloud.classify.manual' ? 'cloud.classify.manual' : 'cloud.classify.structure',
           inputHash: metadata.sourceHash,
           parameters: {
             cloudId,
@@ -2646,6 +2618,47 @@ function registerIpc() {
         }
       });
       return { ok: true, classification: metadata, state: saved };
+    } catch (error) {
+      if (error && error.code === 'REVISION_CONFLICT') {
+        return { ok: false, error: 'REVISION_CONFLICT', currentRevision: error.currentRevision };
+      }
+      throw error;
+    }
+  });
+  ipcMain.handle('bim:clearProjectClassification', (_e, a) => {
+    a = a == null ? {} : vArgs(a);
+    if (!store || !store.projectAssets) throw new Error('project asset storage is unavailable');
+    const projectId = a.projectId ? vId(a.projectId) : store.getData().project.id;
+    const cloudId = vId(a.cloudId);
+    const expectedRevision = a.expectedRevision == null ? undefined : Number(a.expectedRevision);
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) {
+      throw new Error('invalid expectedRevision');
+    }
+    const before = store.getProjectState(projectId);
+    if (expectedRevision !== undefined && before.revision !== expectedRevision) {
+      return { ok: false, error: 'REVISION_CONFLICT', currentRevision: before.revision };
+    }
+    const next = before.payload;
+    const classifications = Array.isArray(next.classifications) ? next.classifications : [];
+    const retained = classifications.filter(item => !item || item.cloudId !== cloudId);
+    const removed = classifications.length - retained.length;
+    if (!removed) return { ok: true, cleared: false, state: before };
+    next.classifications = retained;
+    try {
+      const saved = store.saveProjectState(next, {
+        projectId,
+        expectedRevision: before.revision,
+        appVersion: app.getVersion(),
+        operation: {
+          operation: 'cloud.classification.clear',
+          parameters: { cloudId },
+          output: { removed: true },
+          warnings: []
+        }
+      });
+      // Content-addressed label bytes are intentionally retained. Old project
+      // revisions/backups may still reference them; only the active pointer is cleared.
+      return { ok: true, cleared: true, state: saved };
     } catch (error) {
       if (error && error.code === 'REVISION_CONFLICT') {
         return { ok: false, error: 'REVISION_CONFLICT', currentRevision: error.currentRevision };
