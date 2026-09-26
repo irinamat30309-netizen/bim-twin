@@ -1,8 +1,8 @@
 # BIM TWIN — локальный инкремент этапов 5–7
 
-**Статус:** этапы продвинуты, но ни один из трёх не принят и не завершён. Это кодовое продолжение review-пакета 1.1.17, а не обещание полного паритета с LixelStudio/CoProcess. Hosted Windows checks текущего head `5f6e146` и приватный ручной Windows package-QA run #5 прошли; однако run #5 был до добавления real WebGL smoke, а чистая установка и внешние CAD/GIS readers не проверялись.
+**Статус:** этапы продвинуты, но ни один из трёх не принят и не завершён. Это кодовое продолжение review-пакета 1.1.17, а не обещание полного паритета с LixelStudio/CoProcess. Hosted Windows checks и приватный ручной Windows hardware-QA run #7 прошли; в #7 прошёл self-hosted WebGL smoke, но clean-machine installation, VRAM stress и внешние CAD/GIS readers не проверялись.
 
-- Для закрытия именно пробела GPU-runtime добавлен `test/webgl-runtime-smoke.test.js`: он запускает production `Viewer3DGL` в Electron на self-hosted Windows runner, загружает 4096 синтетических точек с RGB/intensity/classification, переключает окраску по классам, проверяет реальные GPU-буферы, видимые пиксели, WebGL2 errors/context loss и пишет сведения об активном адаптере. Тест автоматически пропускается на Linux и GitHub-hosted runner, но завершится ошибкой при известном software renderer. Локальный Chromium/SwiftShader проверил тестовую страницу, но не засчитывается как физическая GPU-приёмка. Требуется новый запуск приватного workflow после этого изменения.
+- `test/webgl-runtime-smoke.test.js` запускает production `Viewer3DGL` в Electron на self-hosted Windows runner: загружает 4096 синтетических точек с RGB/intensity/classification, переключает окраску по классам, проверяет GPU-буферы, видимые пиксели, WebGL2 errors/context loss и отвергает известный software renderer. По скриншоту run #7 все workflow steps, включая полный regression suite, прошли. Локальный Chromium/SwiftShader не считался физической GPU-приёмкой; частный run #7 стал первым аппаратным smoke.
 
 ## Этап 5 — совмещение, регистрация и QC
 
