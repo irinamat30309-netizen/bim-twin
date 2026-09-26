@@ -3,7 +3,7 @@
 ## Среда и границы
 
 - Рабочая среда: Amazon Linux 2023, Node 24, Python 3.13; это не Windows-машина.
-- Повторно проверялась рабочая копия `bim-twin-publish`. 4 GitHub checks (`windows-package` ×2, `windows-test`, `test`) прошли для PR head `124b2d9` до текущего follow-up.
+- Повторно проверялась рабочая копия `bim-twin-publish`. Сначала 4 GitHub checks прошли на PR head `124b2d9`; после добавления smoke harness все 4 hosted checks также прошли на новом head `5f6e146` (`windows-package` ×2, `windows-test`, `test`). На hosted runner новый self-hosted-only WebGL smoke намеренно пропускается.
 - По присланному пользователем скриншоту приватный ручной Windows hardware-QA run #5 прошёл: зелёные шаги hardware report, checkout, `npm ci`, syntax/store/Python checks, полный regression suite, NSIS/ASAR build, required-file verification и upload артефакта. Точный commit SHA, сведения об адаптере и полный лог в этой сессии недоступны.
 - Новый Electron/WebGL runtime smoke добавлен после run #5; его реальный физический GPU результат пока ожидает следующего запуска приватного workflow.
 - UI JSON-отчёта ICP не подтверждался кликом в запущенном Electron UI. Нет независимо измеренного контрольного облака/GCP-набора и внешних CAD/GIS readers для сертификации точности.
@@ -21,7 +21,7 @@
 | `npm run test:store` | passed: `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
 | `python3 -m py_compile tools/pointcloud_geometry.py` | passed; созданный `__pycache__` удалён |
 | Synthetic ICP без SciPy | `numpy-exact-trimmed-icp`; 250 точек, fitness 1.0, 6 итераций, RMSE `1.30e-15`, translation error `6.34e-17` в заданной метрической synthetic-сцене |
-| GitHub-hosted Windows CI (предыдущий PR head `124b2d9`) | **4/4 checks passed:** `test`, `windows-test`, два `windows-package`; результат предшествует новому GPU smoke |
+| GitHub-hosted Windows CI (PR head `5f6e146`) | **4/4 checks passed:** `test`, `windows-test`, два `windows-package`; hosted runner не заменяет физическую GPU-проверку |
 | Приватный Windows package-QA run #5 | по скриншоту пользователя все шаги зелёные, включая NSIS/ASAR build, required-file verification и upload артефакта |
 | Локальный WebGL runtime smoke | **PASS только как software-WebGL draw test:** production `Viewer3DGL` загрузил 4096 точек и RGB/intensity/classification buffers, classification mode нарисовал 114229 изменённых пикселей; `glError=0`, контекст не потерян. Renderer — SwiftShader, не физическая видеокарта |
 | Electron/Windows package | run #5 собрал installer и проверил обязательные файлы ASAR; установка/запуск установленного приложения на чистой Windows-машине отдельно не подтверждались |
@@ -52,8 +52,8 @@
 5. Расширить stream-aware edits для disk-backed источника: ручная разметка сейчас явно запрещена для LOD/прореженного cloud; фильтры и прочие операции полного облака всё ещё требуют отдельного out-of-core workflow.
 6. Повторно запустить приватный Windows workflow после добавления WebGL smoke и проверить аппаратный renderer по логу. Отдельно нужны clean-machine install/launch, реальный dataset/VRAM stress, независимые GIS/CAD readers и точностные контрольные данные.
 
-**Итог:** регрессионная база этапов 5–7 зелёная в Linux; приватный Windows package-QA run #5 и hosted Windows checks прежнего PR head прошли; новый Electron/WebGL runtime test локально прошёл только на SwiftShader. Этапы 5–7 всё ещё **частичные, не приняты и не завершены** из-за перечисленных алгоритмических, геодезических, данных и runtime gates.
+**Итог:** регрессионная база этапов 5–7 зелёная в Linux; приватный Windows package-QA run #5 прошёл, а hosted Windows checks текущего head `5f6e146` — 4/4 зелёные; новый Electron/WebGL runtime test локально прошёл только на SwiftShader. Физическая GPU-проверка новой ревизии ещё ждёт ручного private run #6. Этапы 5–7 всё ещё **частичные, не приняты и не завершены** из-за перечисленных алгоритмических, геодезических, данных и runtime gates.
 
 ## Повторный прогон перед публикацией overlay
 
-После добавления smoke harness повторно прогнаны Linux проверки: `npm test` — 882 total / 874 passed / 0 failed / 8 skipped; `npm run check`, `node scripts/check-syntax.mjs` (238 файлов), `npm run test:store` и `python3 -m py_compile tools/pointcloud_geometry.py` — passed. Локальный Chromium подтвердил WebGL2 draw, но использовал SwiftShader. GitHub Windows checks и приватный Windows run #5 относятся к версии до этого follow-up; после push обновлённой review-ветки требуется повторить hosted CI и вручную запустить приватный workflow для проверки реального GPU.
+После добавления smoke harness повторно прогнаны Linux проверки: `npm test` — 882 total / 874 passed / 0 failed / 8 skipped; `npm run check`, `node scripts/check-syntax.mjs` (238 файлов), `npm run test:store` и `python3 -m py_compile tools/pointcloud_geometry.py` — passed. Локальный Chromium подтвердил WebGL2 draw, но использовал SwiftShader. Hosted CI для commit `5f6e146` повторно прошёл; приватный Windows run #5 был до этого follow-up. Остался один аппаратный шаг: вручную запустить приватный workflow на новой review-ветке, чтобы проверить реальный GPU smoke.
