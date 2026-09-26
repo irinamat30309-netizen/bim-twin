@@ -150,6 +150,11 @@ contextBridge.exposeInMainWorld('bimAPI', {
   saveCloud: (payload) => inv('bim:saveCloud', payload),
   // v1156 — умное сохранение: экспорт в любой формат (диалог), тихое сохранение в путь, закрытие с вопросом
   exportFile: (payload) => inv('bim:exportFile', payload),
+  // Bounded-memory single-scan PTX export; every token is scoped to this renderer.
+  beginExportStream: (payload) => inv('bim:beginExportStream', payload),
+  writeExportStreamChunk: (payload) => inv('bim:writeExportStreamChunk', payload),
+  finishExportStream: (streamId) => inv('bim:finishExportStream', { streamId }),
+  cancelExportStream: (streamId) => inv('bim:cancelExportStream', { streamId }),
   saveCloudToPath: (payload) => inv('bim:saveCloudToPath', payload),
   setDirty: (v) => ipcRenderer.send('bim:setDirty', v),
   setProjectDirty: (v) => ipcRenderer.send('bim:setProjectDirty', v),
@@ -169,5 +174,23 @@ contextBridge.exposeInMainWorld('bimAPI', {
 
   // Пункт 4 (patch 28): дисковый octree — сборка на диск и потоковая подгрузка узлов
   buildOctree: (payload) => inv('bim:buildOctree', payload),
-  readOctreeNode: (payload) => inv('bim:readOctreeNode', payload)
+  readOctreeNode: (payload) => inv('bim:readOctreeNode', payload),
+  deleteOctree: (payload) => inv('bim:deleteOctree', payload),
+  onOctreeProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => {
+      if (!payload || payload.jobId !== jobId) return;
+      try { callback(payload.progress); } catch (_) {}
+    };
+    ipcRenderer.on('bim:octreeProgress', listener);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      try { ipcRenderer.removeListener('bim:octreeProgress', listener); } catch (_) {}
+    };
+  },
+  cancelOctreeBuild: (jobId) => {
+    if (typeof jobId === 'string' && jobId) snd('bim:cancelOctreeBuild', { jobId });
+  }
 });

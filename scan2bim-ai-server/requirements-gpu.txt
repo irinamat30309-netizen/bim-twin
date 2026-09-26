@@ -1,0 +1,18 @@
+# GPU deep-learning dependencies (install on your NVIDIA machine).
+# 1) Install PyTorch matching your CUDA (example CUDA 12.1):
+#    pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+# 2) Install Pointcept + its ops (spconv, flash-attn, torch-scatter) per
+#    https://github.com/Pointcept/Pointcept#installation
+# 3) Then install the rest below.
+numpy>=1.24
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+spconv-cu121>=2.3
+torch-scatter>=2.1
+addict>=2.4
+timm>=0.9
+h5py>=3.10
+ifcopenshell>=0.7        # optional: richer IFC export than the built-in writer
+# flash-attn>=2.5         # optional, enables enable_flash=True for PTv3
+# pointcept: install from source: pip install git+https://github.com/Pointcept/Pointcept.git

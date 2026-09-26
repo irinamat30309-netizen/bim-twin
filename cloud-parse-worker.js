@@ -52,6 +52,7 @@ async function run() {
   } else {
     result = Cloud.parseCloudFile(absPath, {
       maxPoints: workerData.maxPoints,
+      scratchBaseDir: workerData.scratchBaseDir,
       onProgress: progress
     });
   }

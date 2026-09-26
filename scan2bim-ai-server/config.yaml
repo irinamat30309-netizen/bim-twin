@@ -1,0 +1,14 @@
+# Scan2BIM AI server configuration
+server:
+  host: 0.0.0.0
+  port: 8765
+model:
+  # Path to the PointTransformerV3 S3DIS checkpoint (see download_models.py)
+  checkpoint: models/ptv3_s3dis.pth
+  device: cuda
+  grid_size: 0.04
+  batch_points: 600000
+pipeline:
+  # auto: try AI (GPU) then fall back to geometric; ai: force GPU; geom: force CPU
+  mode: auto
+  voxel: 0.03

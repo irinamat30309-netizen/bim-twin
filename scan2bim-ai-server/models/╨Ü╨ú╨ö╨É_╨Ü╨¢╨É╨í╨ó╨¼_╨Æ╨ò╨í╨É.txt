@@ -1,0 +1,14 @@
+СЮДА нужно положить файл весов нейросети PointTransformerV3 (S3DIS).
+
+Самый простой способ:
+  Запустите файл  SKACHAT-VESA.bat  (лежит рядом со START.bat) — он всё скачает сам.
+
+Если хотите вручную:
+  1. Откройте в браузере:
+     https://huggingface.co/Pointcept/PointTransformerV3/tree/main/s3dis-semseg-pt-v3m1-1-ppt-extreme/model
+  2. Скачайте файл  model_best.pth
+  3. Положите его в ЭТУ папку (models).
+     Переименовывать не обязательно — сервер примет и model_best.pth, и ptv3_s3dis.pth,
+     и любой другой файл *.pth в этой папке.
+
+После этого в приложении нажмите «Проверить сервер» — должно стать «нейросеть: да».

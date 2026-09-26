@@ -1,0 +1,194 @@
+/* ============================================================
+   LixelStudio-style skin for BIM Twin (v1080)
+   Аддитивный слой: тёмная сине-серая палитра как в LixelStudio,
+   верхняя лента вкладок, нижняя строка координат X/Y/Z.
+   Активируется атрибутом html[data-lxskin="on"] (ставит lixel-ui.js).
+   Ничего не ломает: перекрывает только CSS-переменные и добавляет
+   собственные элементы .lx-*.
+   ============================================================ */
+
+/* ---- Палитра LixelStudio (тёмная сине-серая) ----
+   v1217: раньше эти токены перекрывали --bg/--panel/--txt/... из styles.css
+   БЕЗУСЛОВНО (при любой теме, т.к. data-lxskin="on" включён всегда), поэтому
+   светлая тема не могла достучаться до основной палитры — десятки элементов
+   оставались тёмными. Теперь применяем тёмную палитру только когда реально
+   активна тёмная тема (или тема ещё не выбрана); при data-theme="light"
+   действуют светлые значения из styles.css. */
+html[data-lxskin="on"]:not([data-theme="light"]){
+  --bg:#131314; --bg-soft:#0f0f10; --panel:#1c1d1f; --panel2:#2f3033; --line:#2a2b2e;
+  --txt:#e6e6e6; --muted:#8c8c8d; --accent:#1f47ca; --accent-soft:#16223f; --accent-glow:rgba(31,71,202,.34);
+  --ok:#3fb27f; --err:#ff4d4d; --warn:#e0a83f; --neutral:#6b7280;
+  --shadow:0 1px 2px rgba(0,0,0,.5),0 2px 10px rgba(0,0,0,.45);
+  --shadow-pop:0 16px 50px rgba(0,0,0,.6);
+  --viewport1:#2b2b2e; --viewport2:#161618;
+}
+
+/* ---- Тайтлбар в стиле LixelStudio ---- */
+html[data-lxskin="on"] .titlebar{background:var(--bg);border-bottom:1px solid #333a45}
+html[data-lxskin="on"] .titlebar .tb-title{color:#c8d0dc}
+html[data-lxskin="on"] .brand .logo{color:var(--accent)}
+
+/* ============================================================
+   Верхняя лента вкладок (ribbon)
+   ============================================================ */
+.lx-tabs{display:flex;align-items:flex-end;gap:2px;height:34px;padding:0 10px;
+  background:var(--bg);border-bottom:1px solid var(--line);user-select:none;flex:0 0 auto;position:relative;z-index:20}
+.lx-tab{display:inline-flex;align-items:center;height:30px;padding:0 15px;margin-top:4px;
+  font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer;
+  border:1px solid transparent;border-bottom:none;border-radius:7px 7px 0 0;
+  transition:background .16s ease,color .16s ease}
+.lx-tab:hover{color:var(--txt);background:rgba(255,255,255,.04)}
+.lx-tab.active{color:#fff;background:var(--panel);border-color:var(--line);
+  box-shadow:0 -2px 0 0 var(--accent) inset}
+.lx-tab .lx-star{color:var(--accent);margin-left:5px;font-size:11px}
+
+/* Лента показывает только группы активной вкладки */
+html[data-lxskin="on"] .toolbar{background:var(--panel);border-bottom:1px solid var(--line);
+  padding:8px 14px;min-height:64px;flex-wrap:wrap}
+html[data-lxskin="on"] .toolbar .ttitle{display:none}
+.tgroup[data-lxhidden="1"]{display:none !important}
+
+/* Красивые группы ленты */
+html[data-lxskin="on"] .tgroup{background:var(--panel2);border:1px solid var(--line);
+  border-radius:9px;padding:5px 9px 6px}
+html[data-lxskin="on"] .tglabel{color:var(--muted);font-size:10px;font-weight:700;
+  letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px}
+
+/* Новые группы вкладки «Объект» и «Рисование плоскости» */
+.lx-newgroup .tgrow{display:flex;gap:6px;flex-wrap:wrap}
+.lx-soon{font-size:11px;color:var(--muted);padding:6px 4px;max-width:360px;line-height:1.45}
+.lx-soon b{color:var(--accent)}
+
+/* ============================================================
+   Правая панель: «Управление данными» / «Свойства»
+   ============================================================ */
+html[data-lxskin="on"] .inspector{background:var(--panel);border-left:1px solid var(--line)}
+.lx-datahdr{display:flex;align-items:center;gap:7px;padding:9px 14px;
+  font-size:12px;font-weight:700;letter-spacing:.04em;color:#c8d0dc;
+  background:var(--bg);border-bottom:1px solid var(--line)}
+.lx-datahdr .lx-dot{width:8px;height:8px;border-radius:2px;background:var(--accent)}
+
+/* ============================================================
+   Нижняя строка координат X / Y / Z
+   ============================================================ */
+.lx-status{display:flex;align-items:center;gap:0;height:26px;flex:0 0 26px;
+  background:var(--bg);border-top:1px solid var(--line);
+  font-size:11.5px;color:var(--muted);padding:0 6px;user-select:none;z-index:30}
+.lx-status .lx-cell{display:inline-flex;align-items:center;gap:5px;padding:0 12px;height:100%;
+  border-right:1px solid #262b33;white-space:nowrap}
+.lx-status .lx-axis{font-weight:800;color:#c8d0dc}
+.lx-status .lx-x .lx-axis{color:#e0685c}
+.lx-status .lx-y .lx-axis{color:var(--ok)}
+.lx-status .lx-z .lx-axis{color:#4a9df8}
+.lx-status .lx-val{font-variant-numeric:tabular-nums;min-width:64px;color:#e6eaf0}
+.lx-status .lx-spacer{flex:1}
+.lx-status .lx-info{padding:0 12px;color:var(--muted)}
+.lx-status .lx-info b{color:#c8d0dc;font-weight:700}
+
+/* ===== v1081: дерево сцены / этажи / документация ===== */
+html[data-lxskin="on"] .lx-scene{padding:4px 6px 8px;border-bottom:1px solid rgba(255,255,255,.06)}
+html[data-lxskin="on"] .lx-tree{font-size:12.5px;line-height:1.5}
+html[data-lxskin="on"] .lx-node{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:6px;cursor:default;position:relative}
+html[data-lxskin="on"] .lx-node:hover{background:rgba(255,255,255,.05)}
+html[data-lxskin="on"] .lx-node.lx-root{font-weight:600;color:#cfe0ff}
+html[data-lxskin="on"] .lx-tw{width:12px;display:inline-block;text-align:center;color:#7f8aa3;cursor:pointer;font-size:10px}
+html[data-lxskin="on"] .lx-ico{width:16px;text-align:center;opacity:.9}
+html[data-lxskin="on"] .lx-nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+html[data-lxskin="on"] .lx-children{margin-left:12px;border-left:1px solid rgba(255,255,255,.06);padding-left:4px}
+html[data-lxskin="on"] .lx-z{font-size:10.5px;color:#8b97ad;font-variant-numeric:tabular-nums;margin-right:2px}
+html[data-lxskin="on"] .lx-eye{background:none;border:none;color:#6d7890;cursor:pointer;padding:1px 3px;display:inline-flex;align-items:center;border-radius:4px}
+html[data-lxskin="on"] .lx-eye.on{color:var(--accent)}
+html[data-lxskin="on"] .lx-eye:hover{background:rgba(255,255,255,.08)}
+html[data-lxskin="on"] .lx-mini{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:#c3ccdd;cursor:pointer;border-radius:4px;font-size:11px;line-height:1;padding:2px 5px;margin-left:2px}
+html[data-lxskin="on"] .lx-mini:hover{background:rgba(47,128,237,.25);border-color:var(--accent)}
+html[data-lxskin="on"] .lx-mini.danger:hover{background:rgba(235,87,87,.25);border-color:#eb5757}
+html[data-lxskin="on"] .lx-floor.active{background:rgba(47,128,237,.16);outline:1px solid rgba(47,128,237,.4)}
+html[data-lxskin="on"] .lx-empty{color:#7f8aa3;font-size:11.5px;padding:4px 6px;font-style:italic}
+html[data-lxskin="on"] .lx-floors-head{font-weight:600;color:#e6ecf7}
+/* документация */
+html[data-lxskin="on"] .lx-docs{padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.06)}
+html[data-lxskin="on"] .lx-docs-h{font-size:12px;color:#cfe0ff;margin-bottom:6px}
+html[data-lxskin="on"] .lx-docs-a{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+html[data-lxskin="on"] .btn.xs{font-size:11px;padding:3px 7px}
+html[data-lxskin="on"] .lx-doc{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:5px;font-size:12px}
+html[data-lxskin="on"] .lx-doc:hover{background:rgba(255,255,255,.05)}
+html[data-lxskin="on"] .lx-doc-ic{width:16px;text-align:center}
+html[data-lxskin="on"] .lx-doc-nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* модалка этажа */
+.lx-modal-back{position:fixed;inset:0;background:rgba(10,12,16,.55);display:flex;align-items:center;justify-content:center;z-index:9999}
+.lx-modal{background:#23272f;color:#e6ecf7;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:16px 18px;width:320px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.lx-modal-h{font-size:14px;font-weight:600;margin-bottom:12px}
+.lx-fld{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#aeb8cc;margin-bottom:10px}
+.lx-fld input{background:#1b1e24;border:1px solid rgba(255,255,255,.14);color:#e6ecf7;border-radius:6px;padding:6px 8px;font-size:13px}
+.lx-fld input:focus{outline:none;border-color:var(--accent)}
+.lx-fld2{display:flex;gap:10px}
+.lx-fld2 .lx-fld{flex:1}
+.lx-modal-a{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
+.lx-modal-a .btn{padding:6px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#e6ecf7;cursor:pointer}
+.lx-modal-a .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.lx-modal-a .btn:hover{filter:brightness(1.1)}
+
+/* ===== v1083: точная копия LixelStudio — вьюпорт, левый тулбар, окно, версия ===== */
+html[data-lxskin="on"] .stage{position:relative;background:radial-gradient(120% 120% at 50% 42%, var(--viewport1) 0%, var(--viewport2) 100%)}
+html[data-lxskin="on"] #viewer{background:transparent}
+
+/* Левая плавающая колонка инструментов */
+.lx-ltbar{position:absolute;left:12px;top:64px;z-index:16;display:flex;flex-direction:column;gap:8px;
+  padding:8px 6px;background:rgba(19,19,20,.86);border:1px solid var(--line);border-radius:12px;
+  box-shadow:var(--shadow);backdrop-filter:blur(3px)}
+.lx-ltbtn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;
+  background:transparent;border:1px solid transparent;border-radius:9px;color:#c9ccd2;cursor:pointer;
+  transition:background .14s ease,color .14s ease,border-color .14s ease}
+.lx-ltbtn:hover{background:rgba(255,255,255,.06);color:#fff}
+.lx-ltbtn.active{background:var(--accent-soft);border-color:var(--accent);color:#7ea6ff}
+.lx-ltbtn svg{display:block}
+
+/* Вкладка окна вьюпорта «Окно 0» (сверху-слева) */
+.lx-wintab{position:absolute;left:0;top:0;z-index:14;padding:5px 16px;
+  font-size:12px;color:#c8c8c9;background:rgba(19,19,20,.72);
+  border-right:1px solid var(--line);border-bottom:1px solid var(--line);border-bottom-right-radius:8px}
+
+/* Тег версии ПО (снизу-справа) */
+.lx-vertag{position:absolute;right:12px;bottom:10px;z-index:14;
+  font-size:11.5px;color:#9a9a9c;display:flex;align-items:center;gap:6px;
+  padding:3px 10px;background:rgba(19,19,20,.6);border:1px solid var(--line);border-radius:7px}
+.lx-vertag .lx-vt-ic{color:var(--accent);font-size:12px}
+
+/* Ярлык-пилюля группы ленты — под кнопками (как в LixelStudio) */
+html[data-lxskin="on"] .tgroup{display:flex;flex-direction:column;align-items:stretch}
+html[data-lxskin="on"] .tglabel{order:2;margin:6px auto 0;padding:2px 12px;background:#26272b;
+  border:1px solid var(--line);border-radius:11px;color:#b7bcc6;text-transform:none;letter-spacing:.02em;
+  font-size:10.5px;font-weight:600;align-self:center}
+html[data-lxskin="on"] .tgrow{order:1}
+
+/* v1217: светлая тема — элементы этого файла, у которых цвет был зашит
+   напрямую (не через переменные), иначе оставались тёмными при переключении
+   на светлую тему (тайтлбар, статус-бар координат, дерево сцены, панель
+   документации, модалка этажа, левая колонка инструментов, тег версии). */
+html[data-theme="light"][data-lxskin="on"] .titlebar{border-bottom-color:var(--line)}
+html[data-theme="light"][data-lxskin="on"] .titlebar .tb-title,
+html[data-theme="light"][data-lxskin="on"] .lx-datahdr,
+html[data-theme="light"][data-lxskin="on"] .lx-status .lx-axis,
+html[data-theme="light"][data-lxskin="on"] .lx-status .lx-info b{color:var(--txt)}
+html[data-theme="light"][data-lxskin="on"] .lx-status .lx-cell{border-right-color:var(--line)}
+html[data-theme="light"][data-lxskin="on"] .lx-status .lx-val{color:var(--txt);opacity:.85}
+html[data-theme="light"][data-lxskin="on"] .lx-node.lx-root{color:var(--accent)}
+html[data-theme="light"][data-lxskin="on"] .lx-tw,
+html[data-theme="light"][data-lxskin="on"] .lx-z,
+html[data-theme="light"][data-lxskin="on"] .lx-empty{color:var(--muted)}
+html[data-theme="light"][data-lxskin="on"] .lx-eye{color:var(--muted)}
+html[data-theme="light"][data-lxskin="on"] .lx-mini{background:var(--panel2);border-color:var(--line);color:var(--txt)}
+html[data-theme="light"][data-lxskin="on"] .lx-floors-head,
+html[data-theme="light"][data-lxskin="on"] .lx-docs-h{color:var(--accent)}
+html[data-theme="light"][data-lxskin="on"] .lx-modal-back{background:rgba(20,26,38,.4)}
+html[data-theme="light"][data-lxskin="on"] .lx-modal{background:var(--panel);color:var(--txt);border-color:var(--line)}
+html[data-theme="light"][data-lxskin="on"] .lx-fld{color:var(--muted)}
+html[data-theme="light"][data-lxskin="on"] .lx-fld input{background:var(--panel2);border-color:var(--line);color:var(--txt)}
+html[data-theme="light"][data-lxskin="on"] .lx-modal-a .btn{background:var(--panel2);border-color:var(--line);color:var(--txt)}
+html[data-theme="light"][data-lxskin="on"] .lx-ltbar{background:rgba(255,255,255,.9)}
+html[data-theme="light"][data-lxskin="on"] .lx-ltbtn{color:var(--muted)}
+html[data-theme="light"][data-lxskin="on"] .lx-ltbtn:hover{background:var(--panel2);color:var(--txt)}
+html[data-theme="light"][data-lxskin="on"] .lx-wintab{background:rgba(255,255,255,.85);color:var(--txt);border-color:var(--line)}
+html[data-theme="light"][data-lxskin="on"] .lx-vertag{background:rgba(255,255,255,.85);color:var(--muted);border-color:var(--line)}
+html[data-theme="light"][data-lxskin="on"] .lx-status .lx-x .lx-axis{color:#c0392b}
+html[data-theme="light"][data-lxskin="on"] .lx-status .lx-z .lx-axis{color:#2861d7}
