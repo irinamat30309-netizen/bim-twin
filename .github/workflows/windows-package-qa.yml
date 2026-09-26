@@ -72,7 +72,7 @@ jobs:
           }
           $entrySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
           foreach ($entry in $entries) {
-            $normalized = ([string]$entry).Trim().Trim('/').Replace('\\', '/').TrimEnd('/')
+            $normalized = ([string]$entry).Trim().Trim('/').Replace([string][char]92, '/').TrimEnd('/')
             if ($normalized) { [void]$entrySet.Add($normalized) }
           }
           $requiredEntries = @('main.js', 'preload.js', 'pointcloud-ply-io.js', 'renderer/app.js', 'renderer/pointcloud-edit.js')
