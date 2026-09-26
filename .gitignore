@@ -21,7 +21,12 @@ Thumbs.db
 # Runtime/test caches and local fixture/evidence bundles
 **/__pycache__/
 *.py[cod]
-test/fixtures/
+test/fixtures/*
+!test/fixtures/
+!test/fixtures/README.md
+!test/fixtures/laz12-sample.laz.b64
+!test/fixtures/laz14-sample.laz.b64
+!test/fixtures/laz-decimation-200005.laz.b64
 scan2bim-ai-server/test_local.py
 QA-run-stage*-latest.log
 bim-twin-handoff-*.docx

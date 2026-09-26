@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parse every tracked Python source file without creating bytecode files."""
+"""Parse tracked and new Python sources without creating bytecode files."""
 
 from __future__ import annotations
 
@@ -13,12 +13,15 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo_root), "ls-files", "-z", "--", "*.py"],
+            [
+                "git", "-C", str(repo_root), "ls-files",
+                "--cached", "--others", "--exclude-standard", "-z", "--", "*.py",
+            ],
             check=True,
             capture_output=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"Could not enumerate tracked Python sources: {exc}", file=sys.stderr)
+        print(f"Could not enumerate Python sources: {exc}", file=sys.stderr)
         return 2
 
     sources = {

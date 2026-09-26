@@ -2,7 +2,7 @@
 
 ## База и объём
 
-- Рабочая копия создана из review-ветки `agent/windows-package-qa`, исходный HEAD `2cea8798fcd140c80569891103df08f8a40041d3`; зависимости установлены заново по lock-файлу.
+- Рабочая копия синхронизирована с review-веткой `agent/windows-package-qa`; последняя проверенная remote-база до новых LAZ fixtures — commit `b2ea03582320cdb692f8fe02bc0150cb90f809bb`. Текущий набор QA-правок проверяется отдельным новым Windows Actions run после push.
 - Локальная среда: Linux, Node `v24.14.1`, npm `11.11.0`. Это чистая Git worktree, не Windows installer и не целевой GPU стенд.
 - Этот прогон обновляет автоматическую регрессию и её QA-покрытие. Он не является независимой геодезической, CAD/GIS или пользовательской приёмкой.
 
@@ -11,33 +11,35 @@
 | Этап/проверка | Результат |
 |---|---|
 | Stage 0 — `MARKET-FEATURE-MATRIX.md` и критерии готовности | Документы существуют и задают проверяемые статусы; новый программный тест для этого документального этапа не требуется |
-| Stage 1 — новые автономные synthetic fixtures | **16 всего / 14 passed / 0 failed / 2 user-fixture skips**: временные LAS и PLY комнаты проходят round-trip и проверку 4 стен, проёма, площади, высоты и колонны; 600 000-точечный binary PLY проверяет streaming и детерминированную budget sampling |
+| Stage 1 — автономные synthetic fixtures | Room LAS/PLY — **4/4**; 600 000-точечный binary PLY streaming/sampling — **1/1**; временные файлы удаляются после теста |
+| Ранее предоставленные OBJ/STL и большой PLY | **12/12 passed** локально с fixture mount; исходные файлы не добавлены в Git |
+| LAZ 1.2/1.4 decoder + decimation + compactness | **5/5 passed** на новых synthetic fixtures |
 | Stage 2 focused | **31/31 passed** |
 | Stage 3 focused | **41/41 passed** |
 | Stage 4 focused | **81/81 passed** |
 | Stage 5–7 focused | **103/103 passed** |
-| Полный `node --test --test-reporter=tap` | **883 total / 876 passed / 0 failed / 7 skipped** |
+| Полный `node --test --test-reporter=tap`, без пользовательских fixtures | **883 total / 880 passed / 0 failed / 3 skipped**: две проверки требуют private OBJ/STL/PLY fixtures и одна — self-hosted GPU |
+| Полный набор с ранее предоставленным локальным OBJ/STL/PLY mount | **883 total / 882 passed / 0 failed / 1 skipped**: только self-hosted Windows GPU test |
 | `npm run check` | passed |
 | `node scripts/check-syntax.mjs` | passed, **241 JS/MJS/CJS files** |
 | `node --check pointcloud-ply-io.js` | passed |
-| `python scripts/check-python-syntax.py` | passed, **27 Python source files** |
+| `python scripts/check-python-syntax.py` | passed, **28 Python source files** (tracked + new non-ignored files) |
 | `npm run test:store` | passed: `ALL PHASE D TESTS PASSED`, `ALL PERSISTENCE TESTS PASSED` |
-| Windows Actions на родительском commit `2cea879` до QA-правки | **4/4 passed**: `test`, `windows-test`, два `windows-package`; повторный hosted run после этой QA-правки ожидает push |
+| GitHub Actions на предшествующем commit `b2ea035` | **4/4 passed**: `test`, `windows-test`, два `windows-package`; Actions для нового LAZ/fixture commit должны быть перепроверены после push |
 | Приватный Windows hardware-QA run #7 | По скриншоту пользователя workflow завершился успешно за 5:09; шаги regression, сборки NSIS/ASAR и проверки ASAR зелёные. Точный адаптер/renderer и VRAM stress по сводному скриншоту не подтверждаются |
 
 ## Что исправлено в проверках
 
-1. Windows workflow компилировал `scan2bim-ai-server/app` и отсутствующий каталог `scan2bim-ai-server/tests`, пропуская Python-файлы в `ai/`, `tools/`, `server.py` и `test_*.py`. Вместо этого он запускает `scripts/check-python-syntax.py`, который разбирает все tracked Python sources без создания `.pyc`.
-2. Scan-to-BIM room regression больше не зависит от отсутствующих файлов в `QA-artifacts`: LAS и PLY создаются во временной папке из аналитической комнаты с известной геометрией и удаляются после теста.
-3. Добавлен автономный large-PLY parser regression на 600 000 синтетических точек: повторный parse даёт одинаковую выборку, количество и атрибуты.
+1. Windows workflow компилировал `scan2bim-ai-server/app` и отсутствующий каталог `scan2bim-ai-server/tests`, пропуская Python-файлы в `ai/`, `tools/`, `server.py` и `test_*.py`. Теперь `scripts/check-python-syntax.py` разбирает tracked и новые non-ignored Python files без `.pyc`.
+2. Scan-to-BIM room regression создаёт временные synthetic LAS/PLY из аналитической комнаты с известной геометрией.
+3. Добавлен large-PLY parser regression на 600 000 synthetic points с детерминированной budget sampling.
+4. Добавлены компактные synthetic LAZ 1.2/1.4/decimation fixtures с manifest/hash и генератором; LAZ regression test теперь 5/5. Ранее предоставленные OBJ/STL/large PLY прошли локально и остались вне Git.
 
 ## Пропуски полного набора
 
-Семь пропусков не являются падениями:
-
-- 4 LAZ проверки требуют отсутствующие компактные LAZ fixtures;
-- 2 проверки требуют пользовательские OBJ/STL и большой PLY из каталога `BIM_TWIN_USER_FIXTURES`;
-- 1 physical-GPU smoke намеренно пропускается вне приватного self-hosted Windows GPU runner. В run #7 этот workflow был запущен на нём, но сводный скриншот не содержит device/renderer log.
+- В portable full suite без `BIM_TWIN_USER_FIXTURES` пропускаются только две проверки user-supplied OBJ/STL/large-PLY файлов и один physical-GPU smoke.
+- При локальном подключении ранее предоставленных user fixtures обе dataset-проверки проходят; остаётся только GPU smoke вне приватного Windows runner. Исходные пользовательские файлы не копировались и не коммитились.
+- Четыре прежних LAZ skips сняты compact synthetic fixtures; `test/laz-node.test.js` проходит 5/5. Room и large binary PLY regressions тоже запускаются без внешних файлов.
 
 ## Статус этапов и незакрытые gates
 
@@ -50,4 +52,4 @@
 - **Stage 6:** остаются EPSG/vertical-datum/geoid engine, проверенные RTK/PPK/trajectory adapters и независимые control/check координаты с заданными горизонтальными и вертикальными допусками.
 - **Stage 7:** остаются versioned annotated corpus, precision/recall/F1, полноценные semantic AI/object removal, stream-aware editing и поддержка произвольных LAS extra bytes.
 
-**Вывод:** повторные программные проверки зелёные, а два автономных fixture-пробела закрыты. Этапы 0 и 2 подтверждены в оговорённой области; этапы 1 и 3–7 всё ещё частичные. Переход к следующему этапу нельзя честно объявить завершённым только по synthetic/unit tests: для перечисленных gates нужны соответствующие данные, лицензии, целевой Windows/GPU стенд и внешние контрольные программы.
+**Вывод:** повторные программные проверки зелёные; синтетические room/PLY/LAZ gates закрыты, а ранее предоставленные пользовательские OBJ/STL/PLY прошли локально. Этапы 0 и 2 подтверждены в оговорённой области; этапы 1 и 3–7 всё ещё частичные.
