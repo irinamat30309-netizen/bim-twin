@@ -59,7 +59,11 @@ test('LAS GPU sampler uses BIM Twin production parser and writes bounded WebGL a
     const input = path.join(tempDir, 'fixture.las');
     const pointCount = makeLas12Format3(input);
     const outputDir = path.join(tempDir, 'sample');
-    const sample = createGpuLasSample(input, outputDir, { maxPoints: 3 });
+    const progressEvents = [];
+    const sample = createGpuLasSample(input, outputDir, {
+      maxPoints: 3,
+      onProgress: (progress) => progressEvents.push(progress)
+    });
 
     assert.equal(sample.metadata.format, 'LAS fmt 3');
     assert.equal(sample.metadata.fileBytes, fs.statSync(input).size);
@@ -68,6 +72,12 @@ test('LAS GPU sampler uses BIM Twin production parser and writes bounded WebGL a
     assert.equal(sample.metadata.hasColor, true);
     assert.equal(sample.metadata.hasIntensity, true);
     assert.equal(sample.metadata.hasClassification, true);
+    assert.ok(progressEvents.length > 0);
+    assert.ok(progressEvents.every((event) =>
+      event && typeof event.phase === 'string' &&
+      Number.isFinite(event.fraction) && event.fraction >= 0 && event.fraction <= 1
+    ), JSON.stringify(progressEvents));
+    assert.ok(progressEvents.some((event) => event.phase === 'read'));
 
     const metadata = JSON.parse(fs.readFileSync(sample.metadataPath, 'utf8'));
     const data = fs.readFileSync(sample.samplePath);

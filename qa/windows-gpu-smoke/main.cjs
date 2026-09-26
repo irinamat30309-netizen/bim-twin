@@ -49,7 +49,14 @@ app.whenReady().then(async () => {
   });
 
   const fail = (message) => finish({ ok: false, error: String(message) }, 1);
-  const timeoutMs = process.env.BIMTWIN_GPU_WEBGL_SAMPLE_FILE ? 300000 : 45000;
+  const configuredStressMs = Number(process.env.BIMTWIN_GPU_WEBGL_STRESS_MS || 10000);
+  const stressMs = Number.isSafeInteger(configuredStressMs) && configuredStressMs >= 8000
+    ? Math.min(configuredStressMs, 600000)
+    : 10000;
+  const timeoutMs = Math.max(
+    process.env.BIMTWIN_GPU_WEBGL_SAMPLE_FILE ? 300000 : 45000,
+    stressMs + 180000
+  );
   timeout = setTimeout(() => fail('Timed out waiting for the WebGL smoke test.'), timeoutMs);
 
   ipcMain.once('bimtwin:webgl-smoke-result', async (_event, rendererResult) => {

@@ -139,6 +139,15 @@
           await new Promise((resolve) => setTimeout(resolve, 250));
 
           const gl = viewer.gl;
+          const configuredStressMs = Number(env.BIMTWIN_GPU_WEBGL_STRESS_MS || 10000);
+          const gpuStressMs = Number.isSafeInteger(configuredStressMs) && configuredStressMs >= 8000
+            ? Math.min(configuredStressMs, 600000)
+            : 10000;
+          const configuredMaxFps = Number(env.BIMTWIN_GPU_WEBGL_MAX_FPS || 60);
+          const gpuStressMaxFps = Number.isFinite(configuredMaxFps) && configuredMaxFps >= 10
+            ? Math.min(configuredMaxFps, 120)
+            : 60;
+          const minimumFrameIntervalMs = 1000 / gpuStressMaxFps;
           gl.finish();
           const pixels = new Uint8Array(canvas.width * canvas.height * 4);
           gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
@@ -153,14 +162,26 @@
             ) changedPixels++;
           }
 
-          const gpuStressMs = 10000;
           const gpuStressStarted = performance.now();
           let renderFrames = 0;
+          let lastRenderAt = null;
+          let totalFrameIntervalMs = 0;
+          let maxFrameIntervalMs = 0;
+          let measuredFrameIntervals = 0;
           await new Promise((resolve) => {
             const renderStressFrame = (now) => {
-              viewer.yaw += 0.002;
-              viewer.render();
-              renderFrames++;
+              if (lastRenderAt === null || now - lastRenderAt >= minimumFrameIntervalMs) {
+                if (lastRenderAt !== null) {
+                  const intervalMs = now - lastRenderAt;
+                  totalFrameIntervalMs += intervalMs;
+                  maxFrameIntervalMs = Math.max(maxFrameIntervalMs, intervalMs);
+                  measuredFrameIntervals++;
+                }
+                viewer.yaw += 0.002;
+                viewer.render();
+                renderFrames++;
+                lastRenderAt = now;
+              }
               if (now - gpuStressStarted >= gpuStressMs) resolve();
               else requestAnimationFrame(renderStressFrame);
             };
@@ -204,7 +225,15 @@
             gpuStress: {
               points: uploaded.count,
               durationMs: gpuStressDurationMs,
-              renderFrames
+              renderFrames,
+              targetFps: gpuStressMaxFps,
+              averageFps: Math.round(renderFrames / (gpuStressDurationMs / 1000) * 10) / 10,
+              averageFrameIntervalMs: measuredFrameIntervals
+                ? Math.round(totalFrameIntervalMs / measuredFrameIntervals * 10) / 10
+                : null,
+              maxFrameIntervalMs: measuredFrameIntervals
+                ? Math.round(maxFrameIntervalMs * 10) / 10
+                : null
             },
             changedPixels,
             glError,
