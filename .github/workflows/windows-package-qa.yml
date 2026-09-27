@@ -59,6 +59,9 @@ jobs:
       - name: Full regression suite
         run: npm test
 
+      - name: Stage 9 large-cloud section benchmark
+        run: npm run test:stage9-section
+
       - name: Build Windows NSIS installer and ASAR
         run: npm run dist:win
 
