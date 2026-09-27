@@ -323,7 +323,7 @@ function dsmToTiff(dsm){
   v.setUint32(p,0,true);
   var scale=new DataView(buf,scaleOffset,24);scale.setFloat64(0,dsm.cell||1,true);scale.setFloat64(8,dsm.cell||1,true);scale.setFloat64(16,0,true);
   var tie=new DataView(buf,tieOffset,48),originX=geo.originX!=null?geo.originX:(dsm.minX||0),originY=geo.originY!=null?geo.originY:(dsm.maxZ!=null?dsm.maxZ:-(dsm.minZ||0));
-  [0,0,0,originX,0,originY].forEach(function(x,i){tie.setFloat64(i*8,x,true);});
+  [0,0,0,originX,originY,0].forEach(function(x,i){tie.setFloat64(i*8,x,true);});
   [xresOffset,yresOffset].forEach(function(o){var rv=new DataView(buf,o,8);rv.setUint32(0,1,true);rv.setUint32(4,1,true);});
   var kv=new DataView(buf,keyOffset,keyBytes);keyWords.forEach(function(x,i){kv.setUint16(i*2,x,true);});
   if(asciiBytes.length)new Uint8Array(buf,asciiOffset,asciiBytes.length).set(asciiBytes);

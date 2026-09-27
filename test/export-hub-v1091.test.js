@@ -133,7 +133,9 @@ test('GeoTIFF contains valid scale/tiepoint metadata offsets', () => {
   const dv = new DataView(buf), ifd=dv.getUint32(4,true), n=dv.getUint16(ifd,true); let scale=-1,tie=-1;
   for(let i=0;i<n;i++){const p=ifd+2+i*12,tag=dv.getUint16(p,true);if(tag===33550)scale=dv.getUint32(p+8,true);if(tag===33922)tie=dv.getUint32(p+8,true);}
   assert.ok(scale>0&&tie>0);assert.equal(dv.getFloat64(scale,true),0.5);assert.equal(dv.getFloat64(scale+8,true),0.5);
-  assert.equal(dv.getFloat64(tie+24,true),500000);assert.equal(dv.getFloat64(tie+40,true),6000000);
+  assert.equal(dv.getFloat64(tie+24,true),500000);
+  assert.equal(dv.getFloat64(tie+32,true),6000000, 'GeoTIFF tiepoint Y must contain the northing');
+  assert.equal(dv.getFloat64(tie+40,true),0, 'GeoTIFF tiepoint Z must be zero for a 2D raster');
 });
 
 test('GeoTIFF writes CRS GeoKeys and north-up raster rows', () => {
@@ -150,5 +152,6 @@ test('GeoTIFF writes CRS GeoKeys and north-up raster rows', () => {
   assert.equal(epsg,32610);
   assert.equal(dv.getFloat32(rasterOffset,true),3,'row zero should be the northern/top row');
   assert.equal(dv.getFloat64(tieOffset+24,true),500000);
-  assert.equal(dv.getFloat64(tieOffset+40,true),6000001);
+  assert.equal(dv.getFloat64(tieOffset+32,true),6000001, 'northing belongs in tiepoint Y, not Z');
+  assert.equal(dv.getFloat64(tieOffset+40,true),0);
 });
