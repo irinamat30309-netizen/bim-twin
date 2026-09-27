@@ -3,14 +3,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain } = require('electron');
+const { readGpuSmokeConfig } = require('./config.cjs');
 
 const resultPath = process.env.BIMTWIN_WEBGL_SMOKE_RESULT;
-const requestedStressMs = Number(process.env.BIMTWIN_GPU_WEBGL_STRESS_MS || 10000);
-const configuredStressMs = Number.isSafeInteger(requestedStressMs)
-  && requestedStressMs >= 1000
-  && requestedStressMs <= 600000
-  ? requestedStressMs
-  : 10000;
+const { stressMs: configuredStressMs } = readGpuSmokeConfig(process.env);
 const smokeTimeoutMs = Math.max(45000, configuredStressMs + 120000);
 let finished = false;
 let timeout;

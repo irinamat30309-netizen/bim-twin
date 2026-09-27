@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { readGpuSmokeConfig } = require('../qa/windows-gpu-smoke/config.cjs');
 
 const root = path.resolve(__dirname, '..');
 const fixture = path.join(root, 'qa', 'windows-gpu-smoke');
@@ -21,16 +22,6 @@ function stopProcessTree(pid, child) {
   } catch (_) {
     try { child.kill('SIGKILL'); } catch (_) {}
   }
-}
-
-function readPositiveInteger(name, fallback, maximum) {
-  const raw = process.env[name];
-  if (raw == null || String(raw).trim() === '') return fallback;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 1000 || value > maximum) {
-    throw new Error(`${name} must be an integer from 1000 to ${maximum}; received ${raw}`);
-  }
-  return value;
 }
 
 function captureGpuTelemetry(expectedAdapter) {
@@ -100,10 +91,11 @@ function startGpuMonitor(child, expectedAdapter, intervalMs, maximumTemperatureC
 test('self-hosted Windows GPU: production WebGL viewer uploads and draws a classified cloud', {
   skip: isWindowsGpuRunner ? false : 'requires the private self-hosted Windows GPU runner'
 }, async () => {
-  const gpuStressMs = readPositiveInteger('BIMTWIN_GPU_WEBGL_STRESS_MS', 10000, 600000);
-  const gpuMonitorIntervalMs = readPositiveInteger('BIMTWIN_GPU_MONITOR_INTERVAL_MS', 10000, 60000);
-  const gpuMaximumTemperatureC = readPositiveInteger('BIMTWIN_GPU_MAX_TEMP_C', 82, 120);
-  const expectedAdapter = process.env.BIMTWIN_GPU_EXPECTED_ADAPTER || 'RTX 5070';
+  const gpuConfig = readGpuSmokeConfig(process.env);
+  const gpuStressMs = gpuConfig.stressMs;
+  const gpuMonitorIntervalMs = gpuConfig.monitorIntervalMs;
+  const gpuMaximumTemperatureC = gpuConfig.maximumTemperatureC;
+  const expectedAdapter = gpuConfig.expectedAdapter;
   const timeoutMs = Math.max(60000, gpuStressMs + 120000);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bimtwin-webgl-gpu-'));
   const resultFile = path.join(tempDir, 'result.json');
