@@ -65,6 +65,9 @@ jobs:
       - name: Build Windows NSIS installer and ASAR
         run: npm run dist:win
 
+      - name: Generate dependency SBOM
+        run: npm run sbom:release
+
       - name: Verify installer and packaged ASAR contents
         shell: pwsh
         run: |
@@ -118,6 +121,7 @@ jobs:
           path: |
             dist/*.exe
             dist/*.blockmap
+            dist/*dependency-sbom.cdx.json
             dist/**/*.yml
             dist/**/app.asar
           if-no-files-found: warn

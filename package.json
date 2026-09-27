@@ -11,6 +11,7 @@
     "test": "node --test",
     "test:store": "node db/_test.js",
     "test:stage9-section": "node scripts/benchmark-section-stage9.mjs",
+    "sbom:release": "node scripts/generate-sbom.mjs",
     "check": "node --check main.js && node --check preload.js && node --check db/sqliteStore.js && node --check db/jsonStore.js",
     "build:viewer": "node scripts/build-xls-viewer.mjs",
     "build:dxf": "node scripts/build-dxf-viewer.mjs",
