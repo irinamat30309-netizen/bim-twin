@@ -5,6 +5,7 @@
 **Последняя воспроизводимая проверка:** review-ветка `agent/windows-package-qa`, public commit `0746bf3e6f1a447367ce92c6d6e85ed02a53b621`. GitHub Actions на application-code commit `0746bf3e6f1a447367ce92c6d6e85ed02a53b621`, проверенном в run #9, — **4/4 passed** (`test`, `windows-test`, два `windows-package`). Private Windows hardware-QA run #9 завершился за 5:36: production WebGL renderer показал NVIDIA GeForce RTX 5070/Direct3D11, WebGL2, 1 млн точек за 10 013 ms/1 606 кадров, 533 200 изменённых пикселей; `nvidiaAdapterDetected=true` (поле `activeAdapters` пустое). Smoke passed. Полный suite — 883 total / 880 passed / 0 failed / 3 skipped (две отсутствующие user fixtures и Linux-only DAC test); NSIS/ASAR build и проверка ASAR прошли. Linux focused Stage 2/3/4/5–7 — 31/41/81/103 passed; LAZ — 5/5; syntax/store checks passed. RTX result подтверждает WebGL rendering, не CUDA acceleration; clean install, multi-size VRAM/performance benchmark и внешняя точностная приёмка остаются открыты. Подробный статус — в `QA-RETEST-stage0-7-current.md`.
 
 **Статус 15 этапов:** программа ещё не завершена. Этап 0 закрыт; этап 1 частичный; этап 2 выполнен в заявленном JSON/SQLite и Linux test-boundary (см. ограничения); этапы 3–7 продвинуты, но частичные и не приняты; этапы 8–14 остаются в плане.
+**Текущий фокус по решению пользователя:** этапы 0–7 отложены до отдельного возврата к ним, но не считаются завершёнными; все незакрытые gates и ограничения выше сохраняются. Продолжать работу с этапа 8. Этот план включает 15 этапов с нумерацией 0–14; отдельного этапа 15 в нём пока нет, его содержание нельзя придумывать без согласования.
 
 ## Цель и честное определение «идеала»
 
@@ -196,6 +197,8 @@
 8. **Evidence:** QA record with app version, input/output hashes, settings, environment, metrics and remaining gaps.
 
 ## Ближайший исполнительный порядок
+
+**Обновление приоритета:** нижеприведённая последовательность отражает прежний общий backlog. По текущему решению сначала выполняются этапы 8–14; этапы 0–7 остаются отложенным backlog и не маркируются как принятые. Начальный пакет этапа 8 — закрыть проверяемые E2E-сценарии измерений/inspection и отчёта качества на синтетической геометрии с известными смещениями, сохраняя provenance и явно показывая CRS/единицы/допуски только когда они заданы.
 
 1. **Этап 1: закрыть acceptance corpus** — MEP/terrain/road/stockpile и multi-scan fixtures с лицензиями/ground truth; зафиксировать права на пользовательские файлы, известные extents/units/CRS; единый click-smoke для молчаливых действий.
 2. **Scan-to-BIM external acceptance** — прогнать IFC4 `IfcOpeningElement`/void и IFC2X3-выход через независимый schema+geometry validator и выбранный BIM reader; проверить исходные координаты/единицы и вручную подтвердить, что IFC4 wall/opening geometry открывается корректно. Текущий UI/STEP entity test не заменяет эту приёмку.
