@@ -8,6 +8,7 @@ on:
       - master
       - agent/stage3-4-ci-sync
       - agent/windows-package-qa
+      - agent/roadmap-stage8-focus
   pull_request:
     branches:
       - main
