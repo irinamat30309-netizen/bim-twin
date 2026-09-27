@@ -213,14 +213,15 @@ app.whenReady().then(async () => {
     try {
       const { cloud, report } = await prepareLasInput();
       const payload = { cloud, lasInput: report };
-      const transferList = cloud
-        ? [...new Set([cloud.pos, cloud.col, cloud.intensity, cloud.classification]
-          .filter(ArrayBuffer.isView)
-          .map((array) => array.buffer))]
-        : [];
-      event.sender.postMessage('bimtwin:webgl-smoke-cloud', payload, transferList);
+      console.log(`[BIMTWIN_GPU_LAS] sending ${cloud ? cloud.count : 0} sampled points to the WebGL renderer.`);
+      event.sender.send('bimtwin:webgl-smoke-cloud', payload);
     } catch (error) {
       fail(error && error.stack || error);
+    }
+  });
+  ipcMain.on('bimtwin:webgl-smoke-progress', (event, message) => {
+    if (event.sender === window.webContents) {
+      console.log(`[BIMTWIN_GPU_WEBGL_PROGRESS] ${String(message || '').slice(0, 160)}`);
     }
   });
 

@@ -90,7 +90,7 @@ function startGpuMonitor(child, expectedAdapter, intervalMs, maximumTemperatureC
 
 test('self-hosted Windows GPU: production WebGL viewer uploads and draws a classified cloud', {
   skip: isWindowsGpuRunner ? false : 'requires the private self-hosted Windows GPU runner'
-}, async () => {
+}, async (t) => {
   const gpuConfig = readGpuSmokeConfig(process.env);
   const gpuStressMs = gpuConfig.stressMs;
   const gpuMonitorIntervalMs = gpuConfig.monitorIntervalMs;
@@ -237,7 +237,7 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
       );
     }
 
-    console.log(`[BIMTWIN_GPU_WEBGL] ${JSON.stringify({
+    t.diagnostic(`[BIMTWIN_GPU_WEBGL] ${JSON.stringify({
       renderer: result.renderer,
       vendor: result.vendor,
       activeAdapters: result.gpu && result.gpu.activeAdapters || [],

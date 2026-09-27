@@ -34,6 +34,12 @@
             ipcRenderer.once('bimtwin:webgl-smoke-cloud', (_event, payload) => resolve(payload));
             ipcRenderer.send('bimtwin:webgl-smoke-ready');
           });
+          if (ipcRenderer) {
+            ipcRenderer.send(
+              'bimtwin:webgl-smoke-progress',
+              sourceData && sourceData.cloud ? `received ${sourceData.cloud.count} LAS sample points` : 'using synthetic smoke cloud'
+            );
+          }
 
           // One million points keep the real production renderer busy long
           // enough for the hardware adapter to be observable in the GPU monitor.
@@ -111,11 +117,13 @@
             if (!lasCloud.pos || !Number.isSafeInteger(lasCloud.count) || lasCloud.count < 1) {
               throw new Error('The local LAS import did not contain a valid point sample.');
             }
+            if (ipcRenderer) ipcRenderer.send('bimtwin:webgl-smoke-progress', 'uploading real LAS sample to production viewer');
             viewer.loadCloud(lasCloud);
             stressUploaded = viewer.base && viewer.base[0];
             if (!stressUploaded || stressUploaded.count !== lasCloud.count || !stressUploaded._pb) {
               throw new Error('The production WebGL viewer did not upload the real LAS sample.');
             }
+            if (ipcRenderer) ipcRenderer.send('bimtwin:webgl-smoke-progress', 'real LAS sample uploaded; starting WebGL stress');
             const realModes = viewer.getAvailableColorModes();
             stressColorMode = realModes.includes('classification')
               ? 'classification'
