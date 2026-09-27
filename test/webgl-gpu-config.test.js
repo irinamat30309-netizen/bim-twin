@@ -14,7 +14,10 @@ test('GPU smoke config accepts the requested 10-minute RTX telemetry settings', 
     stressMs: 600000,
     monitorIntervalMs: 10000,
     maximumTemperatureC: 82,
-    expectedAdapter: 'RTX 5070'
+    expectedAdapter: 'RTX 5070',
+    lasPath: '',
+    expectedLasPoints: null,
+    lasMaxPoints: 1000000
   });
 });
 
@@ -23,7 +26,26 @@ test('GPU smoke config has a short safe default outside the private runner', () 
     stressMs: 10000,
     monitorIntervalMs: 10000,
     maximumTemperatureC: 82,
-    expectedAdapter: 'RTX 5070'
+    expectedAdapter: 'RTX 5070',
+    lasPath: '',
+    expectedLasPoints: null,
+    lasMaxPoints: 1000000
+  });
+});
+
+test('GPU smoke config preserves the local LAS path privately and validates the sample budget', () => {
+  assert.deepEqual(readGpuSmokeConfig({
+    BIMTWIN_GPU_LAS_PATH: 'D:\\BIM-TWIN-TEST\\map.las',
+    BIMTWIN_GPU_LAS_EXPECTED_POINTS: '175578686',
+    BIMTWIN_GPU_LAS_MAX_POINTS: '1000000'
+  }), {
+    stressMs: 10000,
+    monitorIntervalMs: 10000,
+    maximumTemperatureC: 82,
+    expectedAdapter: 'RTX 5070',
+    lasPath: 'D:\\BIM-TWIN-TEST\\map.las',
+    expectedLasPoints: 175578686,
+    lasMaxPoints: 1000000
   });
 });
 
@@ -35,5 +57,9 @@ test('GPU smoke config rejects out-of-range stress and temperature settings', ()
   assert.throws(
     () => readGpuSmokeConfig({ BIMTWIN_GPU_MAX_TEMP_C: '0' }),
     /BIMTWIN_GPU_MAX_TEMP_C must be an integer from 1 to 120/
+  );
+  assert.throws(
+    () => readGpuSmokeConfig({ BIMTWIN_GPU_LAS_MAX_POINTS: '1000001' }),
+    /BIMTWIN_GPU_LAS_MAX_POINTS must be an integer from 200000 to 1000000/
   );
 });

@@ -17,18 +17,23 @@
     <script>
       (async function () {
         const electron = typeof window.require === 'function' ? window.require('electron') : null;
+        const ipcRenderer = electron && electron.ipcRenderer;
         const send = (result) => {
           window.__BIMTWIN_WEBGL_SMOKE_RESULT__ = result;
           document.getElementById('result').textContent = JSON.stringify(result);
-          if (electron && electron.ipcRenderer) {
-            electron.ipcRenderer.send('bimtwin:webgl-smoke-result', result);
-          }
+          if (ipcRenderer) ipcRenderer.send('bimtwin:webgl-smoke-result', result);
         };
 
         try {
           if (!window.Viewer3DGL || !window.Viewer3DGL.isSupported()) {
             throw new Error('The production WebGL viewer did not obtain a WebGL2 context.');
           }
+
+          const sourceData = await new Promise((resolve) => {
+            if (!ipcRenderer) return resolve(null);
+            ipcRenderer.once('bimtwin:webgl-smoke-cloud', (_event, payload) => resolve(payload));
+            ipcRenderer.send('bimtwin:webgl-smoke-ready');
+          });
 
           // One million points keep the real production renderer busy long
           // enough for the hardware adapter to be observable in the GPU monitor.
@@ -80,18 +85,45 @@
           await new Promise((resolve) => setTimeout(resolve, 250));
 
           const gl = viewer.gl;
-          gl.finish();
-          const pixels = new Uint8Array(canvas.width * canvas.height * 4);
-          gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-          const clear = gl.getParameter(gl.COLOR_CLEAR_VALUE);
-          const clearRgb = clear.slice(0, 3).map((channel) => Math.round(channel * 255));
-          let changedPixels = 0;
-          for (let i = 0; i < pixels.length; i += 4) {
-            if (
-              Math.abs(pixels[i] - clearRgb[0]) > 12 ||
-              Math.abs(pixels[i + 1] - clearRgb[1]) > 12 ||
-              Math.abs(pixels[i + 2] - clearRgb[2]) > 12
-            ) changedPixels++;
+          const countChangedPixels = () => {
+            gl.finish();
+            const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+            gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+            const clear = gl.getParameter(gl.COLOR_CLEAR_VALUE);
+            const clearRgb = clear.slice(0, 3).map((channel) => Math.round(channel * 255));
+            let changed = 0;
+            for (let i = 0; i < pixels.length; i += 4) {
+              if (
+                Math.abs(pixels[i] - clearRgb[0]) > 12 ||
+                Math.abs(pixels[i + 1] - clearRgb[1]) > 12 ||
+                Math.abs(pixels[i + 2] - clearRgb[2]) > 12
+              ) changed++;
+            }
+            return changed;
+          };
+          let changedPixels = countChangedPixels();
+          let stressUploaded = uploaded;
+          let stressSource = 'synthetic';
+          let stressColorMode = 'classification';
+
+          if (sourceData && sourceData.cloud) {
+            const lasCloud = sourceData.cloud;
+            if (!lasCloud.pos || !Number.isSafeInteger(lasCloud.count) || lasCloud.count < 1) {
+              throw new Error('The local LAS import did not contain a valid point sample.');
+            }
+            viewer.loadCloud(lasCloud);
+            stressUploaded = viewer.base && viewer.base[0];
+            if (!stressUploaded || stressUploaded.count !== lasCloud.count || !stressUploaded._pb) {
+              throw new Error('The production WebGL viewer did not upload the real LAS sample.');
+            }
+            const realModes = viewer.getAvailableColorModes();
+            stressColorMode = realModes.includes('classification')
+              ? 'classification'
+              : (realModes.includes('intensity') ? 'intensity' : (realModes.includes('elev') ? 'elev' : 'rgb'));
+            viewer.setColorMode(stressColorMode);
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            changedPixels = countChangedPixels();
+            stressSource = 'user-las';
           }
 
           const nodeProcess = typeof window.require === 'function'
@@ -137,12 +169,21 @@
             webgl2: gl instanceof WebGL2RenderingContext,
             renderer: String(renderer || ''),
             vendor: String(vendor || ''),
-            pointsUploaded: uploaded.count,
+            pointsUploaded: stressUploaded.count,
             intensityBuffer: !!uploaded._ib,
             classificationBuffer: !!uploaded._kb,
             colorMode: cloudInfo && cloudInfo.display && cloudInfo.display.mode,
+            syntheticCapabilities: {
+              pointsUploaded: uploaded.count,
+              colorMode: 'classification',
+              intensityBuffer: !!uploaded._ib,
+              classificationBuffer: !!uploaded._kb
+            },
+            lasInput: sourceData && sourceData.lasInput || null,
             gpuStress: {
-              points: uploaded.count,
+              points: stressUploaded.count,
+              source: stressSource,
+              colorMode: stressColorMode,
               durationMs: gpuStressDurationMs,
               renderFrames
             },

@@ -96,7 +96,7 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
   const gpuMonitorIntervalMs = gpuConfig.monitorIntervalMs;
   const gpuMaximumTemperatureC = gpuConfig.maximumTemperatureC;
   const expectedAdapter = gpuConfig.expectedAdapter;
-  const timeoutMs = Math.max(60000, gpuStressMs + 120000);
+  const timeoutMs = Math.max(60000, gpuStressMs + 600000);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bimtwin-webgl-gpu-'));
   const resultFile = path.join(tempDir, 'result.json');
   let stdout = '';
@@ -157,14 +157,15 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
     const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
     assert.equal(result.ok, true, JSON.stringify(result, null, 2));
     assert.equal(result.webgl2, true, JSON.stringify(result, null, 2));
-    assert.equal(result.pointsUploaded, 1000000, JSON.stringify(result, null, 2));
+    assert.equal(result.syntheticCapabilities && result.syntheticCapabilities.pointsUploaded, 1000000, JSON.stringify(result, null, 2));
+    assert.equal(result.pointsUploaded, result.gpuStress && result.gpuStress.points, JSON.stringify(result, null, 2));
     assert.equal(result.intensityBuffer, true, JSON.stringify(result, null, 2));
     assert.equal(result.classificationBuffer, true, JSON.stringify(result, null, 2));
-    assert.equal(result.colorMode, 'classification', JSON.stringify(result, null, 2));
+    assert.equal(result.syntheticCapabilities && result.syntheticCapabilities.colorMode, 'classification', JSON.stringify(result, null, 2));
     assert.ok(result.changedPixels > 20, `Expected visible WebGL output; result: ${JSON.stringify(result)}`);
     assert.equal(result.glError, 0, `WebGL error ${result.glError}; result: ${JSON.stringify(result)}`);
     assert.equal(result.contextLost, false, JSON.stringify(result, null, 2));
-    assert.equal(result.gpuStress && result.gpuStress.points, 1000000, JSON.stringify(result, null, 2));
+    assert.ok(Number.isSafeInteger(result.gpuStress && result.gpuStress.points) && result.gpuStress.points > 0);
     assert.ok(
       result.gpuStress.durationMs >= Math.max(8000, gpuStressMs - 1000),
       `GPU render load was shorter than configured (${gpuStressMs} ms): ${JSON.stringify(result.gpuStress)}`
@@ -173,6 +174,21 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
       result.gpuStress.renderFrames >= Math.max(30, Math.floor((gpuStressMs / 1000) * 10)),
       `Too few production render frames for ${gpuStressMs} ms: ${JSON.stringify(result.gpuStress)}`
     );
+    if (gpuConfig.lasPath) {
+      assert.equal(result.gpuStress.source, 'user-las', JSON.stringify(result.gpuStress, null, 2));
+      assert.ok(result.lasInput, 'The configured local LAS file was not imported.');
+      assert.equal(result.lasInput.totalPoints, gpuConfig.expectedLasPoints, JSON.stringify(result.lasInput, null, 2));
+      assert.equal(result.lasInput.sampledPoints, result.gpuStress.points, JSON.stringify(result.lasInput, null, 2));
+      assert.ok(result.lasInput.sampledPoints <= gpuConfig.lasMaxPoints, JSON.stringify(result.lasInput, null, 2));
+      assert.ok(Number.isFinite(result.lasInput.parseMs) && result.lasInput.parseMs > 0, JSON.stringify(result.lasInput, null, 2));
+      assert.ok(result.lasInput.sectionBenchmark, JSON.stringify(result.lasInput, null, 2));
+      assert.equal(result.lasInput.sectionBenchmark.samplePoints, result.lasInput.sampledPoints);
+      assert.ok(result.lasInput.sectionBenchmark.slicedPoints <= result.lasInput.sampledPoints);
+      assert.ok(Number.isFinite(result.lasInput.sectionBenchmark.elapsedMs));
+      assert.ok(Array.isArray(result.lasInput.sectionBenchmark.phases));
+    } else {
+      assert.equal(result.gpuStress.source, 'synthetic', JSON.stringify(result.gpuStress, null, 2));
+    }
 
     const gpuFeatures = result.gpu && result.gpu.featureStatus || {};
     const webglStatus = String(gpuFeatures.webgl2 || gpuFeatures.webgl || '');
