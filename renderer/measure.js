@@ -441,8 +441,14 @@
     const project = meta.project || {};
     const source = meta.source || {};
     const cr = meta.coordinateReference || {};
+    const toleranceInput = meta.tolerances || {};
     const textOrNull = v => (typeof v === 'string' && v.trim()) ? v.trim() : null;
     const countOrNull = v => (Number.isSafeInteger(v) && v >= 0) ? v : null;
+    const optionalLimit = v => {
+      if (v == null || (typeof v === 'string' && !v.trim())) return null;
+      const n = typeof v === 'number' ? v : Number(v);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    };
     const cloneOrNull = v => {
       if (v == null) return null;
       try { return JSON.parse(JSON.stringify(v)); } catch (_) { return null; }
@@ -450,6 +456,9 @@
     const stamp = Date.parse(meta.generatedAt);
     const measurementCopy = Array.isArray(list) ? cloneOrNull(list) : [];
     const measurements = Array.isArray(measurementCopy) ? measurementCopy : [];
+    const linearTolerance = optionalLimit(toleranceInput.linear);
+    const angularTolerance = optionalLimit(toleranceInput.angular);
+    const hasTolerance = linearTolerance != null || angularTolerance != null;
     return {
       schema: 'bim-twin.measurement-report.v1',
       generatedAt: Number.isFinite(stamp) ? new Date(stamp).toISOString() : new Date().toISOString(),
@@ -476,9 +485,12 @@
         status: textOrNull(cr.crsWkt) && textOrNull(cr.units) ? 'provided' : 'incomplete_or_not_provided'
       },
       tolerances: {
-        status: 'not_provided',
-        linear: null,
-        angular: null
+        status: hasTolerance ? 'declared_by_operator' : 'not_provided',
+        linear: linearTolerance,
+        linearUnits: linearTolerance == null ? null : (textOrNull(toleranceInput.units) || textOrNull(cr.units)),
+        angular: angularTolerance,
+        angularUnits: angularTolerance == null ? null : 'deg',
+        evaluationStatus: 'not_evaluated'
       },
       author: textOrNull(meta.author),
       measurementCount: measurements.length,

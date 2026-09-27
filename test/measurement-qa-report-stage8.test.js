@@ -22,7 +22,14 @@ test('Stage 8 measurement report keeps known provenance and never invents CRS, u
   assert.equal(report.coordinateReference.crsWkt, null);
   assert.equal(report.coordinateReference.units, null);
   assert.equal(report.coordinateReference.status, 'incomplete_or_not_provided');
-  assert.deepEqual(report.tolerances, { status: 'not_provided', linear: null, angular: null });
+  assert.deepEqual(report.tolerances, {
+    status: 'not_provided',
+    linear: null,
+    linearUnits: null,
+    angular: null,
+    angularUnits: null,
+    evaluationStatus: 'not_evaluated'
+  });
   assert.equal(report.author, null);
 
   measures[0].d3 = 999;
@@ -40,6 +47,26 @@ test('Stage 8 report preserves declared CRS and unit without assigning a toleran
   assert.deepEqual(report.coordinateReference.sourceTransform, { axis: 'yup', t: [0, 0, 0] });
 });
 
+test('Stage 8 report records only nonnegative operator tolerances and never claims evaluation', () => {
+  const report = Measure.createMeasurementReport([], {
+    author: 'QA operator',
+    coordinateReference: { units: 'm' },
+    tolerances: { linear: 0.01, angular: 2, units: 'm' }
+  });
+  assert.equal(report.author, 'QA operator');
+  assert.equal(report.tolerances.status, 'declared_by_operator');
+  assert.equal(report.tolerances.linear, 0.01);
+  assert.equal(report.tolerances.linearUnits, 'm');
+  assert.equal(report.tolerances.angular, 2);
+  assert.equal(report.tolerances.angularUnits, 'deg');
+  assert.equal(report.tolerances.evaluationStatus, 'not_evaluated');
+
+  const invalid = Measure.createMeasurementReport([], { tolerances: { linear: -1, angular: 'NaN' } });
+  assert.equal(invalid.tolerances.status, 'not_provided');
+  assert.equal(invalid.tolerances.linear, null);
+  assert.equal(invalid.tolerances.angular, null);
+});
+
 test('Stage 8 UI exposes QA JSON export and uses a basename rather than an absolute source path', () => {
   const root = path.join(__dirname, '..', 'renderer');
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -49,4 +76,7 @@ test('Stage 8 UI exposes QA JSON export and uses a basename rather than an absol
   assert.match(app, /bind\('mmQaReport',\s*\(\)\s*=>\s*exportMeasQaReport\(\)\)/);
   assert.match(app, /String\(sourcePath\)\.split\(\/\[\\\\\/\]\//);
   assert.match(app, /coordinateReference:[\s\S]{0,200}crsWkt:[\s\S]{0,100}units:/);
+  assert.match(app, /Параметры QA-отчёта/);
+  assert.match(app, /linearTolerance/);
+  assert.match(app, /evaluationStatus|автоматическая оценка не выполнялась/);
 });

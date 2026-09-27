@@ -3434,16 +3434,34 @@
     document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast('CSV экспортирован (' + __measurements.length + ' строк)');
   }
-  function exportMeasQaReport() {
+  async function exportMeasQaReport() {
     if (!__measurements.length) { toast('Список измерений пуст'); return; }
     if (!window.Measure || typeof window.Measure.createMeasurementReport !== 'function') {
       toast('Не удалось сформировать QA-отчёт'); return;
+    }
+    const values = await openForm('Параметры QA-отчёта', [
+      { k: 'author', label: 'Автор отчёта (необязательно)', value: '' },
+      { k: 'linearTolerance', label: 'Линейный допуск в единицах источника (необязательно)', type: 'number', value: '' },
+      { k: 'angularTolerance', label: 'Угловой допуск в градусах (необязательно)', type: 'number', value: '' }
+    ]);
+    if (!values) return;
+    const optionalTolerance = value => {
+      if (value == null || String(value).trim() === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : undefined;
+    };
+    const linearTolerance = optionalTolerance(values.linearTolerance);
+    const angularTolerance = optionalTolerance(values.angularTolerance);
+    if (linearTolerance === undefined || angularTolerance === undefined) {
+      toast('Допуски должны быть неотрицательными числами; исправьте значения');
+      return;
     }
     const cloud = viewer && viewer._cloudRecord || {};
     const sourcePath = cloud.sourceName || lastCloudPath || '';
     const sourceName = String(sourcePath).split(/[\\/]/).pop() || null;
     const project = DB && DB.project || {};
     const report = window.Measure.createMeasurementReport(__measurements, {
+      author: values.author,
       project: { id: project.id, name: project.name, room: current && current.name },
       source: {
         name: sourceName,
@@ -3456,11 +3474,16 @@
         crsWkt: viewer && viewer._srcCrs || null,
         units: viewer && viewer._srcUnits || null,
         sourceTransform: viewer && viewer._srcXform || null
+      },
+      tolerances: {
+        linear: linearTolerance,
+        angular: angularTolerance,
+        units: viewer && viewer._srcUnits || null
       }
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadBlob(JSON.stringify(report, null, 2), 'measurement-qa-report-' + stamp + '.json', 'application/json');
-    toast('QA JSON сформирован · допуски и CRS отмечены только если заданы');
+    toast('QA JSON сформирован · допуски записаны, автоматическая оценка не выполнялась');
   }
   // Экспорт измерений в Notion: формируем готовую Markdown-таблицу и копируем в буфер обмена
   // (вставляется в Notion как настоящая таблица). Дополнительно сохраняем .md-файл.

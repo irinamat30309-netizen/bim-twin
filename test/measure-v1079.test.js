@@ -37,7 +37,7 @@ test('viewer: двухпроходный снап (реальный размер
 });
 
 test('html/app: версия 1079', () => {
-  assert.ok(HTML.includes('measure.js?v=1155'), 'measure.js not current');
+  assert.ok(HTML.includes('measure.js?v=1156'), 'measure.js not current');
   assert.ok(HTML.includes('webgl-viewer.js?v=1230'), 'webgl-viewer.js not current');
   assert.ok(APP.includes('готова · v1160'), 'banner not 1082');
 });
