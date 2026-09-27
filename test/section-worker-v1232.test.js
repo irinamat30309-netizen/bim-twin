@@ -131,5 +131,5 @@ test('section Worker and accessible cancel/progress controls are wired into the 
   assert.match(workspace, /Расчёт отменён · чертёж не изменён/);
   assert.match(html, /section\.js\?v=1233/);
   assert.match(html, /lixel-draw\.js\?v=1232/);
-  assert.match(html, /lixel-workspace\.js\?v=1232/);
+  assert.match(html, /lixel-workspace\.js\?v=1233/);
 });

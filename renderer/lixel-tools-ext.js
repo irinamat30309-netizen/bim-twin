@@ -279,7 +279,7 @@
   var built = false;
   function build() {
     if (built) return; var host = document.querySelector('.toolbar .tbtns'); if (!host) return; built = true;
-    var inst = ensureGroup('lxToolExtInstrument', 'tool', 'Инструмент');
+    var inst = ensureGroup('lxToolExtInstrument', 'process', 'Обработка облака');
     if (inst) {
       inst.append(mkBtn('Ресэмпл.', 'Ресэмплирование (понижение плотности, воксель)', opResample));
       inst.append(mkBtn('Сглаживание', 'Сглаживание MLS (проекция на локальную плоскость)', opSmooth));
@@ -292,7 +292,7 @@
       inst.append(mkBtn('LAS→RCP', 'Экспорт в Autodesk RCP (нужен ReCap)', opExportRCP));
       inst.append(mkBtn('Запись', 'Запись данных: экспорт облака (PLY)', opWriteData));
     }
-    var app = ensureGroup('lxToolExtApp', 'app', 'Приложение+');
+    var app = ensureGroup('lxToolExtApp', 'analysis', 'Расчёты и анализ');
     if (app) {
       app.append(mkBtn('Объём', 'Расчёт объёма над базовой плоскостью', opVolume));
       app.append(mkBtn('Сравн. объёмов', 'Сравнение объёмов (выемка/насыпь)', opCompareVolumes));
@@ -300,7 +300,7 @@
       app.append(mkBtn('Mesh', 'Построение и экспорт поверхности (OBJ)', opMesh));
       app.append(mkBtn('Удал. передача', 'Удалённая передача (экспорт для отправки)', opRemote));
     }
-    try { console.log('[LixelStudio tools-ext] риббоны Инструмент/Приложение готовы · v1151'); } catch (e) {}
+    try { console.log('[LixelStudio tools-ext] риббоны Облако/Контроль готовы · v1152'); } catch (e) {}
   }
 
   function boot() {

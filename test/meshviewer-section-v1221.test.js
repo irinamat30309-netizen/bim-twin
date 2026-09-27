@@ -99,7 +99,7 @@ test('mesh viewer exposes a precise plane-section workflow and documents coordin
   assert.ok(html.includes('section.js?v=1233'));
   assert.ok(html.includes('app.js?v=1251'));
   assert.ok(app.includes("_meshInput.accept = '.glb,.gltf,.obj,.stl,.ply'"));
-  assert.ok(workspace.includes("if($('tsMesh')) {app.append($('tsMesh'));"), 'mesh import must be available without opening tour mode');
+  assert.ok(workspace.includes("const tour=group('lxTourModels','tour','Меши и 3D-тур')") && workspace.includes("if($('tsMesh')) {tour.append($('tsMesh'));"), 'mesh inspection stays in the dedicated 3D models tab, separate from the floating tour panel');
   for (const text of ['Точное сечение меша', 'meshSectionAxis', 'meshSectionLevel', 'meshSectionPreview', 'meshSectionExport', 'meshSectionCancel', 'meshSectionProgress', 'meshSectionOverlay', 'sectionPositions', 'sourceUpAxis', 'projectSectionPoint', 'исходный меш не обрезан']) {
     assert.ok(viewer.includes(text), `missing mesh section UX: ${text}`);
   }

@@ -164,5 +164,5 @@ test('section preset main-process endpoints are explicitly exposed through IPC p
   assert.match(workspace, /lxSectionPresetSelect/);
   assert.match(workspace, /контрольная выборка точек/);
   assert.match(html, /app\.js\?v=1251/);
-  assert.match(html, /lixel-workspace\.js\?v=1232/);
+  assert.match(html, /lixel-workspace\.js\?v=1233/);
 });

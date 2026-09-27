@@ -11,7 +11,8 @@ const JS = fs.readFileSync(path.join(R, 'lixel-ui.js'), 'utf8');
 
 test('index.html подключает lixel-ui скин и контроллер', () => {
   assert.ok(HTML.includes('lixel-ui.css?v=1217'), 'css not linked');
-  assert.ok(HTML.includes('lixel-ui.js?v=1083'), 'js not linked');
+  assert.ok(HTML.includes('lixel-ui.js?v=1084'), 'js not linked');
+  assert.ok(HTML.includes('lixel-ui-refresh.css?v=2'), 'refreshed ribbon styles not linked');
 });
 
 test('CSS: палитра LixelStudio и лента вкладок', () => {
@@ -20,8 +21,8 @@ test('CSS: палитра LixelStudio и лента вкладок', () => {
   assert.ok(CSS.includes('.lx-status'), 'status bar missing');
 });
 
-test('JS: шесть вкладок включая Объект', () => {
-  ['Главная страница', 'Обработка проекта', 'Инструмент', 'Рисование плоскости', 'Объект', 'Приложение'].forEach(function (l) {
+test('JS: функциональные вкладки ленты', () => {
+  ['Импорт', 'Облако', 'Измерения', 'Вид', 'Чертёж', 'Объект', '3D-модели', 'Контроль', 'Сервис'].forEach(function (l) {
     assert.ok(JS.includes(l), 'tab missing: ' + l);
   });
   assert.ok(JS.includes('Этажи') && JS.includes('Документация'), 'object groups missing');

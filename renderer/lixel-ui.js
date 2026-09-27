@@ -8,19 +8,26 @@
 (function () {
   'use strict';
   var TABS = [
-    { id: 'home',    label: 'Главная страница' },
-    { id: 'process', label: 'Обработка проекта' },
-    { id: 'tool',    label: 'Инструмент' },
-    { id: 'draw',    label: 'Рисование плоскости' },
+    { id: 'home',    label: 'Импорт' },
+    { id: 'process', label: 'Облако' },
+    { id: 'measure', label: 'Измерения' },
+    { id: 'tool',    label: 'Вид' },
+    { id: 'draw',    label: 'Чертёж' },
     { id: 'object',  label: 'Объект', star: true },
-    { id: 'app',     label: 'Приложение' }
+    { id: 'tour',    label: '3D-модели' },
+    { id: 'analysis',label: 'Контроль' },
+    { id: 'app',     label: 'Сервис' }
   ];
-  // Соответствие: id кнопки внутри группы -> вкладка
+  // Соответствие: id кнопки внутри группы -> функциональная вкладка.
   var GROUP_MAP = [
-    { tab: 'home',    ids: ['btnOpenCloud', 'ifcInput', 'modelInput', 'docInput'] },
-    { tab: 'process', ids: ['btnEdit', 'btnBackup', 'btnBackRoom', 'tsSplatTop'] },
-    { tab: 'tool',    ids: ['btnReset', 'btnCompare', 'btnSection', 'btnMeasure', 'btnIsolate', 'btnLOD'] },
-    { tab: 'app',     ids: ['btnAI', 'btnVerify', 'btnSettings'] }
+    { tab: 'process', ids: ['btnOpenCloud', 'vtStream', 'vtTools', 'vtConvert', 'vtGeom', 'vtMem', 'btnEdit', 'btnBackup'] },
+    { tab: 'home',    ids: ['ifcInput', 'modelInput', 'docInput'] },
+    { tab: 'measure', ids: ['btnMeasure'] },
+    { tab: 'tool',    ids: ['btnReset', 'btnCompare', 'btnSection', 'btnIsolate', 'btnLOD', 'vtQuality', 'vtWalk', 'vtZoomIn', 'vtZoomOut'] },
+    { tab: 'object',  ids: ['btnBackRoom'] },
+    { tab: 'tour',    ids: ['tsSplatTop', 'tsSplatLcc2', 'tsMesh'] },
+    { tab: 'analysis',ids: ['btnAI', 'btnVerify'] },
+    { tab: 'app',     ids: ['btnSettings', 'vtLog', 'btnUsers', 'btnExport', 'btnSync'] }
   ];
 
   function toast(msg) {
@@ -64,6 +71,52 @@
     return g;
   }
 
+  function ensureGroup(tbtns, id, tab, title) {
+    var g = document.getElementById(id);
+    if (!g) {
+      g = makeGroup(tab, title, 'lx-ribbon-group');
+      g.id = id;
+      tbtns.appendChild(g);
+    } else {
+      g.dataset.lxtab = tab;
+      g._row = g._row || g.querySelector('.tgrow');
+    }
+    return g;
+  }
+
+  function moveToGroup(tbtns, ids, id, tab, title) {
+    var g = ensureGroup(tbtns, id, tab, title);
+    ids.forEach(function (controlId) {
+      var el = document.getElementById(controlId) ||
+        document.querySelector('label[for="' + controlId + '"]');
+      if (el && g._row) g._row.appendChild(el);
+    });
+    return g;
+  }
+
+  function organizeToolbar(tbtns) {
+    if (tbtns.dataset.lxOrganized === '1') return;
+    tbtns.dataset.lxOrganized = '1';
+
+    // Отделяем замер от общих команд вида, а навигацию по модели — от правки.
+    moveToGroup(tbtns, ['btnMeasure'], 'lxMeasureRibbon', 'measure', 'Геометрические замеры');
+    moveToGroup(tbtns, ['btnBackRoom'], 'lxObjectNavRibbon', 'object', 'Навигация по объекту');
+    moveToGroup(tbtns, ['tsSplatTop', 'tsSplatLcc2', 'lcc2FolderInput'], 'lxTourRibbon', 'tour', 'Фотореалистичный просмотр');
+
+    // Команда, экспорт и синхронизация находятся рядом с настройками сервиса,
+    // а не отдельно в скрывающейся панели проекта.
+    var system = moveToGroup(tbtns, ['btnUsers', 'btnExport', 'btnSync'], 'lxSystemRibbon', 'app', 'Команда и обмен');
+    var sideActions = document.querySelector('.side-actions');
+    if (sideActions) sideActions.style.display = 'none';
+
+    // Убираем пустые оболочки после переноса кнопок; hidden file inputs
+    // переносятся вместе с их видимыми label-кнопками.
+    Array.prototype.forEach.call(tbtns.querySelectorAll('.tgroup'), function (g) {
+      if (g !== system && !g.querySelector('.btn, label.btn')) g.remove();
+    });
+    if (window.__lxRibbon) window.__lxRibbon.build();
+  }
+
   function build() {
     var html = document.documentElement;
     html.setAttribute('data-lxskin', 'on');
@@ -72,6 +125,8 @@
     var toolbar = document.querySelector('.toolbar');
     var tbtns = document.querySelector('.toolbar .tbtns');
     if (!center || !toolbar || !tbtns) return;
+
+    organizeToolbar(tbtns);
 
     // 1) Распределяем существующие группы по вкладкам
     var groups = tbtns.querySelectorAll('.tgroup');
@@ -112,6 +167,9 @@
       var el = document.createElement('div');
       el.className = 'lx-tab';
       el.dataset.tab = t.id;
+      el.setAttribute('role', 'tab');
+      el.setAttribute('aria-selected', 'false');
+      el.tabIndex = 0;
       el.textContent = t.label;
       if (t.star) { var s = document.createElement('span'); s.className = 'lx-star'; s.textContent = '★'; el.appendChild(s); }
       el.addEventListener('click', function () { activate(t.id); });
@@ -137,7 +195,11 @@
 
   function activate(tabId) {
     var tabs = document.querySelectorAll('.lx-tab');
-    for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].dataset.tab === tabId);
+    for (var i = 0; i < tabs.length; i++) {
+      var active = tabs[i].dataset.tab === tabId;
+      tabs[i].classList.toggle('active', active);
+      tabs[i].setAttribute('aria-selected', String(active));
+    }
     var groups = document.querySelectorAll('.toolbar .tbtns .tgroup');
     for (var j = 0; j < groups.length; j++) {
       groups[j].dataset.lxhidden = (groups[j].dataset.lxtab === tabId) ? '0' : '1';
