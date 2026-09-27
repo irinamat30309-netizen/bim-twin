@@ -23,14 +23,94 @@ function stopProcessTree(pid, child) {
   }
 }
 
+function readPositiveInteger(name, fallback, maximum) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1000 || value > maximum) {
+    throw new Error(`${name} must be an integer from 1000 to ${maximum}; received ${raw}`);
+  }
+  return value;
+}
+
+function captureGpuTelemetry(expectedAdapter) {
+  const output = execFileSync('nvidia-smi', [
+    '--query-gpu=name,temperature.gpu,utilization.gpu,memory.used',
+    '--format=csv,noheader,nounits'
+  ], {
+    encoding: 'utf8',
+    timeout: 10000,
+    windowsHide: true
+  });
+  const row = output.split(/\r?\n/).map((line) => line.trim())
+    .find((line) => line.toLowerCase().includes(expectedAdapter.toLowerCase()));
+  if (!row) throw new Error(`nvidia-smi did not report ${expectedAdapter}: ${output.trim()}`);
+
+  const [name, temperatureText, utilizationText, memoryText] = row.split(',').map((part) => part.trim());
+  const temperatureC = Number(temperatureText);
+  const utilizationPercent = Number(utilizationText.replace(/%/g, ''));
+  const memoryMiB = Number(memoryText.replace(/[^\d.-]/g, ''));
+  if (!Number.isFinite(temperatureC) || !Number.isFinite(utilizationPercent)) {
+    throw new Error(`Invalid ${expectedAdapter} telemetry row: ${row}`);
+  }
+  return {
+    name,
+    temperatureC,
+    utilizationPercent,
+    memoryMiB: Number.isFinite(memoryMiB) ? memoryMiB : null
+  };
+}
+
+function startGpuMonitor(child, expectedAdapter, intervalMs, maximumTemperatureC) {
+  const samples = [];
+  let failure = null;
+  let busy = false;
+  let timer;
+
+  const sample = () => {
+    if (busy || failure || child.exitCode != null) return;
+    busy = true;
+    try {
+      const reading = captureGpuTelemetry(expectedAdapter);
+      samples.push({ at: new Date().toISOString(), ...reading });
+      if (reading.temperatureC >= maximumTemperatureC) {
+        failure = new Error(
+          `${expectedAdapter} reached ${reading.temperatureC} C (safety limit ${maximumTemperatureC} C); stopping the WebGL stress test.`
+        );
+        stopProcessTree(child.pid, child);
+      }
+    } catch (error) {
+      failure = error;
+      stopProcessTree(child.pid, child);
+    } finally {
+      busy = false;
+    }
+  };
+
+  sample();
+  timer = setInterval(sample, intervalMs);
+  timer.unref();
+  return {
+    samples,
+    get failure() { return failure; },
+    stop() { if (timer) clearInterval(timer); }
+  };
+}
+
 test('self-hosted Windows GPU: production WebGL viewer uploads and draws a classified cloud', {
   skip: isWindowsGpuRunner ? false : 'requires the private self-hosted Windows GPU runner'
 }, async () => {
+  const gpuStressMs = readPositiveInteger('BIMTWIN_GPU_WEBGL_STRESS_MS', 10000, 600000);
+  const gpuMonitorIntervalMs = readPositiveInteger('BIMTWIN_GPU_MONITOR_INTERVAL_MS', 10000, 60000);
+  const gpuMaximumTemperatureC = readPositiveInteger('BIMTWIN_GPU_MAX_TEMP_C', 82, 120);
+  const expectedAdapter = process.env.BIMTWIN_GPU_EXPECTED_ADAPTER || 'RTX 5070';
+  const timeoutMs = Math.max(60000, gpuStressMs + 120000);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bimtwin-webgl-gpu-'));
   const resultFile = path.join(tempDir, 'result.json');
   let stdout = '';
   let stderr = '';
   let child;
+  let gpuMonitor;
 
   try {
     const electronPath = require('electron');
@@ -47,6 +127,12 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
+    gpuMonitor = startGpuMonitor(
+      child,
+      expectedAdapter,
+      gpuMonitorIntervalMs,
+      gpuMaximumTemperatureC
+    );
     child.stdout.on('data', (chunk) => {
       if (stdout.length < 50000) stdout += chunk.toString();
     });
@@ -56,19 +142,23 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
 
     const exit = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        gpuMonitor.stop();
         stopProcessTree(child.pid, child);
-        reject(new Error(`Electron WebGL smoke timed out.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-      }, 60000);
+        reject(new Error(`Electron WebGL smoke timed out after ${timeoutMs} ms.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+      }, timeoutMs);
       child.once('error', (error) => {
         clearTimeout(timer);
+        gpuMonitor.stop();
         reject(error);
       });
       child.once('close', (code, signal) => {
         clearTimeout(timer);
+        gpuMonitor.stop();
         resolve({ code, signal });
       });
     });
 
+    if (gpuMonitor.failure) throw gpuMonitor.failure;
     assert.equal(exit.code, 0, `Electron smoke process failed (${exit.signal}).\nstdout:\n${stdout}\nstderr:\n${stderr}`);
     assert.ok(fs.existsSync(resultFile), `GPU smoke result was not written.\nstdout:\n${stdout}\nstderr:\n${stderr}`);
 
@@ -83,8 +173,14 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
     assert.equal(result.glError, 0, `WebGL error ${result.glError}; result: ${JSON.stringify(result)}`);
     assert.equal(result.contextLost, false, JSON.stringify(result, null, 2));
     assert.equal(result.gpuStress && result.gpuStress.points, 1000000, JSON.stringify(result, null, 2));
-    assert.ok(result.gpuStress.durationMs >= 8000, `GPU render load was too short: ${JSON.stringify(result.gpuStress)}`);
-    assert.ok(result.gpuStress.renderFrames >= 30, `Too few production render frames: ${JSON.stringify(result.gpuStress)}`);
+    assert.ok(
+      result.gpuStress.durationMs >= Math.max(8000, gpuStressMs - 1000),
+      `GPU render load was shorter than configured (${gpuStressMs} ms): ${JSON.stringify(result.gpuStress)}`
+    );
+    assert.ok(
+      result.gpuStress.renderFrames >= Math.max(30, Math.floor((gpuStressMs / 1000) * 10)),
+      `Too few production render frames for ${gpuStressMs} ms: ${JSON.stringify(result.gpuStress)}`
+    );
 
     const gpuFeatures = result.gpu && result.gpu.featureStatus || {};
     const webglStatus = String(gpuFeatures.webgl2 || gpuFeatures.webgl || '');
@@ -113,18 +209,47 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
     assert.ok(nvidiaAdapter || /nvidia/i.test(rendererEvidence),
       `The NVIDIA adapter is not active: ${JSON.stringify(result.gpu && result.gpu.activeAdapters || [])}; renderer=${rendererEvidence}`);
 
+    const maximumUtilizationPercent = Math.max(
+      0,
+      ...gpuMonitor.samples.map((sample) => sample.utilizationPercent)
+    );
+    const maximumTemperatureC = Math.max(
+      0,
+      ...gpuMonitor.samples.map((sample) => sample.temperatureC)
+    );
+    const maximumMemoryMiB = Math.max(
+      0,
+      ...gpuMonitor.samples.map((sample) => sample.memoryMiB || 0)
+    );
+    if (gpuStressMs >= 60000) {
+      assert.ok(gpuMonitor.samples.length >= 2, `Insufficient RTX telemetry samples: ${JSON.stringify(gpuMonitor.samples)}`);
+      assert.ok(
+        maximumUtilizationPercent > 0,
+        `RTX telemetry showed no GPU utilization during the ${gpuStressMs} ms render stress. Samples: ${JSON.stringify(gpuMonitor.samples)}`
+      );
+    }
+
     console.log(`[BIMTWIN_GPU_WEBGL] ${JSON.stringify({
       renderer: result.renderer,
       vendor: result.vendor,
       activeAdapters: result.gpu && result.gpu.activeAdapters || [],
       pointsUploaded: result.pointsUploaded,
       gpuStress: result.gpuStress,
+      gpuTelemetry: {
+        sampleCount: gpuMonitor.samples.length,
+        maximumTemperatureC,
+        maximumUtilizationPercent,
+        maximumMemoryMiB,
+        maximumAllowedTemperatureC: gpuMaximumTemperatureC,
+        sampleIntervalMs: gpuMonitorIntervalMs
+      },
       nvidiaAdapterDetected: !!nvidiaAdapter || /nvidia/i.test(rendererEvidence),
       changedPixels: result.changedPixels,
       webgl2: webglStatus
     })}`);
   } finally {
     if (child && child.exitCode == null) stopProcessTree(child.pid, child);
+    if (gpuMonitor) gpuMonitor.stop();
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

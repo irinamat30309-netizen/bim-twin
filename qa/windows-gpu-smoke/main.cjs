@@ -5,6 +5,13 @@ const path = require('node:path');
 const { app, BrowserWindow, ipcMain } = require('electron');
 
 const resultPath = process.env.BIMTWIN_WEBGL_SMOKE_RESULT;
+const requestedStressMs = Number(process.env.BIMTWIN_GPU_WEBGL_STRESS_MS || 10000);
+const configuredStressMs = Number.isSafeInteger(requestedStressMs)
+  && requestedStressMs >= 1000
+  && requestedStressMs <= 600000
+  ? requestedStressMs
+  : 10000;
+const smokeTimeoutMs = Math.max(45000, configuredStressMs + 120000);
 let finished = false;
 let timeout;
 
@@ -49,7 +56,10 @@ app.whenReady().then(async () => {
   });
 
   const fail = (message) => finish({ ok: false, error: String(message) }, 1);
-  timeout = setTimeout(() => fail('Timed out waiting for the WebGL smoke test.'), 45000);
+  timeout = setTimeout(
+    () => fail(`Timed out waiting for the ${configuredStressMs} ms WebGL smoke test.`),
+    smokeTimeoutMs
+  );
 
   ipcMain.once('bimtwin:webgl-smoke-result', async (_event, rendererResult) => {
     try {

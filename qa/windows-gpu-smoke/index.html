@@ -94,7 +94,18 @@
             ) changedPixels++;
           }
 
-          const gpuStressMs = 10000;
+          const nodeProcess = typeof window.require === 'function'
+            ? window.require('process')
+            : null;
+          const stressSetting = nodeProcess && nodeProcess.env
+            ? nodeProcess.env.BIMTWIN_GPU_WEBGL_STRESS_MS
+            : '';
+          const gpuStressMs = stressSetting == null || stressSetting === ''
+            ? 10000
+            : Number(stressSetting);
+          if (!Number.isSafeInteger(gpuStressMs) || gpuStressMs < 1000 || gpuStressMs > 600000) {
+            throw new Error(`Invalid BIMTWIN_GPU_WEBGL_STRESS_MS: ${stressSetting}`);
+          }
           const gpuStressStarted = performance.now();
           let renderFrames = 0;
           await new Promise((resolve) => {
