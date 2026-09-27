@@ -16,7 +16,7 @@ test('index.html: версии v1083 и подключён левый тулба
   assert.ok(HTML.includes('lixel-scene.js?v=1090'), 'scene not bumped');
   assert.ok(HTML.includes('lixel-toolbar.js?v=1092'), 'toolbar not linked');
   // measure.js остаётся 1082 (в этом релизе не менялся)
-  assert.ok(HTML.includes('measure.js?v=1154'), 'measure.js unexpectedly changed');
+  assert.ok(HTML.includes('measure.js?v=1155'), 'measure.js not current');
 });
 
 test('app.js: баннер v1083', () => {

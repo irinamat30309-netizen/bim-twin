@@ -4,8 +4,8 @@
 **Рыночная матрица:** `MARKET-FEATURE-MATRIX.md`.  
 **Последняя воспроизводимая проверка:** review-ветка `agent/windows-package-qa`, public commit `0746bf3e6f1a447367ce92c6d6e85ed02a53b621`. GitHub Actions на application-code commit `0746bf3e6f1a447367ce92c6d6e85ed02a53b621`, проверенном в run #9, — **4/4 passed** (`test`, `windows-test`, два `windows-package`). Private Windows hardware-QA run #9 завершился за 5:36: production WebGL renderer показал NVIDIA GeForce RTX 5070/Direct3D11, WebGL2, 1 млн точек за 10 013 ms/1 606 кадров, 533 200 изменённых пикселей; `nvidiaAdapterDetected=true` (поле `activeAdapters` пустое). Smoke passed. Полный suite — 883 total / 880 passed / 0 failed / 3 skipped (две отсутствующие user fixtures и Linux-only DAC test); NSIS/ASAR build и проверка ASAR прошли. Linux focused Stage 2/3/4/5–7 — 31/41/81/103 passed; LAZ — 5/5; syntax/store checks passed. RTX result подтверждает WebGL rendering, не CUDA acceleration; clean install, multi-size VRAM/performance benchmark и внешняя точностная приёмка остаются открыты. Подробный статус — в `QA-RETEST-stage0-7-current.md`.
 
-**Статус 15 этапов:** программа ещё не завершена. Этап 0 закрыт; этап 1 частичный; этап 2 выполнен в заявленном JSON/SQLite и Linux test-boundary (см. ограничения); этапы 3–7 продвинуты, но частичные и не приняты; этапы 8–14 остаются в плане.
-**Текущий фокус по решению пользователя:** этапы 0–7 отложены до отдельного возврата к ним, но не считаются завершёнными; все незакрытые gates и ограничения выше сохраняются. Продолжать работу с этапа 8. Этот план включает 15 этапов с нумерацией 0–14; отдельного этапа 15 в нём пока нет, его содержание нельзя придумывать без согласования.
+**Статус 15 этапов:** программа ещё не завершена. Этап 0 закрыт; этап 1 частичный; этап 2 выполнен в заявленном JSON/SQLite и Linux test-boundary (см. ограничения); этапы 3–7 продвинуты, но частичные и не приняты; этап 8 начат с первого инкремента QA JSON отчёта измерений, его приёмка открыта; этапы 9–14 остаются в плане.
+**Текущий фокус по решению пользователя:** этапы 0–7 отложены до отдельного возврата к ним, но не считаются завершёнными; все незакрытые gates и ограничения выше сохраняются. Продолжать работу с этапа 8. Первый инкремент QA JSON отчёта реализован и локально протестирован; E2E- и packaged-приёмка остаются открыты. Этот план включает 15 этапов с нумерацией 0–14; отдельного этапа 15 в нём пока нет, его содержание нельзя придумывать без согласования.
 
 ## Цель и честное определение «идеала»
 
@@ -125,11 +125,12 @@
 - Добавлена ручная ASPRS LAS-разметка выделенных точек (0–255) с memory-aware Ctrl+Z (sparse delta/dense snapshot), сохранением/очисткой project asset metadata и проверкой point-count/LOD ограничений; повторная загрузка с несовпадающим количеством точек предупреждает, а не применяет метки молча. Это human annotation tool, не модель классификации; UI/native prompt и packaged Windows сценарий ещё не прошли runtime acceptance.
 - **Приёмка:** versioned annotated reference sets, precision/recall/F1 по классам, перед/после просмотр, корректный class export и обратимость.
 
-### Этап 8 — просмотр, измерения, inspection и QA reports
+### Этап 8 — просмотр, измерения, inspection и QA reports (**начат; приёмка не пройдена**)
 
 - Единая проверенная навигация для cloud/mesh/IFC/panorama, переключатели RGB/intensity/elevation/class/depth, clip volumes, selection, section windows и readouts.
 - Measurement/inspection: длины/углы/площади/объёмы, cloud-to-cloud/cloud-to-mesh deviation, floor flatness/levelness, clearance, tolerance bands, issue markers.
 - v9.5: LOD теперь доступен только при реальной поддержке triangle mesh; для point cloud кнопка отключена и объясняет ограничение. Изоляция без выбранного элемента больше не скрывает всё облако; E2E подтверждает BIM-object isolate/unisolate. Полноценные measurement pick/accuracy и QA-report acceptance всё ещё не закрыты.
+- **Первый инкремент этапа 8:** добавлена кнопка экспорта JSON-отчёта сохранённых измерений. Отчёт включает проект/помещение, basename источника, число точек, CRS/единицы/source transform только при наличии метаданных и явно оставляет допуски/автора незаданными; абсолютный путь к файлу не публикуется. Новый отчёт и UI-проводка покрыты тестами; весь Stage 8 набор прошёл локально **143/143**, общая регрессия — **886 total / 880 passed / 0 failed / 6 skipped**. Это не заменяет click-through в packaged Windows, PDF/скриншоты и приёмку на геометрии с независимым oracle.
 - Annotation, screenshots, CSV/PDF quality report с исходной CRS, методом, параметрами, допусками, автором/временем.
 - **Приёмка:** геометрический oracle + known offsets, standards-based checks only where spec is licensed/implemented; экспортный report повторно открывается и не теряет provenance.
 
@@ -198,7 +199,7 @@
 
 ## Ближайший исполнительный порядок
 
-**Обновление приоритета:** нижеприведённая последовательность отражает прежний общий backlog. По текущему решению сначала выполняются этапы 8–14; этапы 0–7 остаются отложенным backlog и не маркируются как принятые. Начальный пакет этапа 8 — закрыть проверяемые E2E-сценарии измерений/inspection и отчёта качества на синтетической геометрии с известными смещениями, сохраняя provenance и явно показывая CRS/единицы/допуски только когда они заданы.
+**Обновление приоритета:** нижеприведённая последовательность отражает прежний общий backlog. По текущему решению сначала выполняются этапы 8–14; этапы 0–7 остаются отложенным backlog и не маркируются как принятые. Начатый первый пакет этапа 8 — QA JSON отчёт с provenance; следующий gate — click-through/measurement E2E на synthetic geometry с известными смещениями, затем PDF/скриншоты и packaged Windows.
 
 1. **Этап 1: закрыть acceptance corpus** — MEP/terrain/road/stockpile и multi-scan fixtures с лицензиями/ground truth; зафиксировать права на пользовательские файлы, известные extents/units/CRS; единый click-smoke для молчаливых действий.
 2. **Scan-to-BIM external acceptance** — прогнать IFC4 `IfcOpeningElement`/void и IFC2X3-выход через независимый schema+geometry validator и выбранный BIM reader; проверить исходные координаты/единицы и вручную подтвердить, что IFC4 wall/opening geometry открывается корректно. Текущий UI/STEP entity test не заменяет эту приёмку.

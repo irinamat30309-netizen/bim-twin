@@ -97,7 +97,7 @@ test('mesh viewer exposes a precise plane-section workflow and documents coordin
   const workspace = fs.readFileSync(path.join(root, 'renderer/lixel-workspace.js'), 'utf8');
   assert.ok(html.includes('meshviewer.js?v=1227'));
   assert.ok(html.includes('section.js?v=1233'));
-  assert.ok(html.includes('app.js?v=1249'));
+  assert.ok(html.includes('app.js?v=1250'));
   assert.ok(app.includes("_meshInput.accept = '.glb,.gltf,.obj,.stl,.ply'"));
   assert.ok(workspace.includes("if($('tsMesh')) {app.append($('tsMesh'));"), 'mesh import must be available without opening tour mode');
   for (const text of ['Точное сечение меша', 'meshSectionAxis', 'meshSectionLevel', 'meshSectionPreview', 'meshSectionExport', 'meshSectionCancel', 'meshSectionProgress', 'meshSectionOverlay', 'sectionPositions', 'sourceUpAxis', 'projectSectionPoint', 'исходный меш не обрезан']) {

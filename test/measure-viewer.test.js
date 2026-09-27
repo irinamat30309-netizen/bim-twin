@@ -55,5 +55,5 @@ test('html: measure toolbar with all six modes + finish/clear', () => {
   for (const id of ['measureBar', 'mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmPlane', 'mmFinish', 'mmClear']) {
     assert.ok(HTML.includes('id="' + id + '"'), 'missing toolbar element ' + id);
   }
-  assert.ok(HTML.includes('measure.js?v=1154'), 'measure.js not included');
+  assert.ok(HTML.includes('measure.js?v=1155'), 'measure.js not included');
 });

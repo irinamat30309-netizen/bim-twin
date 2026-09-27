@@ -434,6 +434,58 @@
     return [head].concat(rows).join('\n');
   }
 
+  // Машиночитаемый отчёт Stage 8. Не выводит абсолютные пути и явно оставляет
+  // CRS/единицы/допуски пустыми, если источник их не предоставил.
+  function createMeasurementReport(list, meta) {
+    meta = meta || {};
+    const project = meta.project || {};
+    const source = meta.source || {};
+    const cr = meta.coordinateReference || {};
+    const textOrNull = v => (typeof v === 'string' && v.trim()) ? v.trim() : null;
+    const countOrNull = v => (Number.isSafeInteger(v) && v >= 0) ? v : null;
+    const cloneOrNull = v => {
+      if (v == null) return null;
+      try { return JSON.parse(JSON.stringify(v)); } catch (_) { return null; }
+    };
+    const stamp = Date.parse(meta.generatedAt);
+    const measurementCopy = Array.isArray(list) ? cloneOrNull(list) : [];
+    const measurements = Array.isArray(measurementCopy) ? measurementCopy : [];
+    return {
+      schema: 'bim-twin.measurement-report.v1',
+      generatedAt: Number.isFinite(stamp) ? new Date(stamp).toISOString() : new Date().toISOString(),
+      project: {
+        id: textOrNull(project.id),
+        name: textOrNull(project.name),
+        room: textOrNull(project.room)
+      },
+      source: {
+        name: textOrNull(source.name),
+        format: textOrNull(source.format),
+        pointCount: countOrNull(source.pointCount),
+        loadedPointCount: countOrNull(source.loadedPointCount)
+      },
+      method: {
+        id: 'interactive-viewer-measurements',
+        description: 'Сохранённые результаты инструментов измерения BIM Twin; подробности метода и исходные точки приведены в каждой записи.'
+      },
+      coordinateReference: {
+        frame: textOrNull(cr.frame) || 'viewer',
+        crsWkt: textOrNull(cr.crsWkt),
+        units: textOrNull(cr.units),
+        sourceTransform: cloneOrNull(cr.sourceTransform),
+        status: textOrNull(cr.crsWkt) && textOrNull(cr.units) ? 'provided' : 'incomplete_or_not_provided'
+      },
+      tolerances: {
+        status: 'not_provided',
+        linear: null,
+        angular: null
+      },
+      author: textOrNull(meta.author),
+      measurementCount: measurements.length,
+      measurements: measurements
+    };
+  }
+
   // Русское название режима измерения.
   // Плоскостность (ровность) участка стены/пола: RMS + размах «пик-впадина».
   function flatness(points, plane) {
@@ -562,7 +614,7 @@
     eigen2, planeExtents, polygonArea3D, orientation, flatness,
     classifyLocal, snapToFeature, signedPointPlane,
     angleBetweenPlanes, intersectPlanes, intersectThreePlanes,
-    measureToCsvRow, measurementsToCsv, measureValueText, measurementsToMarkdown,
+    measureToCsvRow, measurementsToCsv, createMeasurementReport, measureValueText, measurementsToMarkdown,
     calibrate, scaleMeasurement, coordLabel,
     fmtLen, fmtArea
   };

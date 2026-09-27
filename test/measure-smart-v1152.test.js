@@ -44,6 +44,6 @@ test('smart-measure: разложение на гориз./верт. катет�
 
 test('smart-measure: версии v1152 и математика measure.js не тронута', () => {
   assert.ok(HTML.includes('webgl-viewer.js?v=1230'), 'webgl-viewer не current');
-  assert.ok(HTML.includes('measure.js?v=1154'), 'measure.js версия неожиданно изменена');
+  assert.ok(HTML.includes('measure.js?v=1155'), 'measure.js version is not current');
   assert.ok(APP.includes('готова · v1160'), 'баннер не v1152');
 });

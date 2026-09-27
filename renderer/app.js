@@ -3434,6 +3434,34 @@
     document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast('CSV экспортирован (' + __measurements.length + ' строк)');
   }
+  function exportMeasQaReport() {
+    if (!__measurements.length) { toast('Список измерений пуст'); return; }
+    if (!window.Measure || typeof window.Measure.createMeasurementReport !== 'function') {
+      toast('Не удалось сформировать QA-отчёт'); return;
+    }
+    const cloud = viewer && viewer._cloudRecord || {};
+    const sourcePath = cloud.sourceName || lastCloudPath || '';
+    const sourceName = String(sourcePath).split(/[\\/]/).pop() || null;
+    const project = DB && DB.project || {};
+    const report = window.Measure.createMeasurementReport(__measurements, {
+      project: { id: project.id, name: project.name, room: current && current.name },
+      source: {
+        name: sourceName,
+        format: cloud.format || null,
+        pointCount: Number.isSafeInteger(cloud.sourceCount) ? cloud.sourceCount : null,
+        loadedPointCount: Number.isSafeInteger(cloud.loadedCount) ? cloud.loadedCount : null
+      },
+      coordinateReference: {
+        frame: 'viewer',
+        crsWkt: viewer && viewer._srcCrs || null,
+        units: viewer && viewer._srcUnits || null,
+        sourceTransform: viewer && viewer._srcXform || null
+      }
+    });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadBlob(JSON.stringify(report, null, 2), 'measurement-qa-report-' + stamp + '.json', 'application/json');
+    toast('QA JSON сформирован · допуски и CRS отмечены только если заданы');
+  }
   // Экспорт измерений в Notion: формируем готовую Markdown-таблицу и копируем в буфер обмена
   // (вставляется в Notion как настоящая таблица). Дополнительно сохраняем .md-файл.
   function exportMeasNotion() {
@@ -3480,6 +3508,7 @@
     // список / сохранение / CSV
     bind('mmSave', () => saveMeasurement());
     bind('mmCsv', () => exportMeasCsv());
+    bind('mmQaReport', () => exportMeasQaReport());
     bind('mmNotion', () => exportMeasNotion());
     bind('mlCsv', () => exportMeasCsv());
     bind('mlNotion', () => exportMeasNotion());

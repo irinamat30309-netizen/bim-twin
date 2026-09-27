@@ -23,8 +23,8 @@ test('index.html: 4 группы с подписями mglabel', () => {
   }
 });
 
-test('index.html: все 15 кнопок измерения на месте внутри панели', () => {
-  for (const id of ['mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmPlane', 'mmDeviation', 'mmCorner', 'mmSnap', 'mmSave', 'mmList', 'mmCsv', 'mmNotion', 'mmFinish', 'mmClear']) {
+test('index.html: все 16 кнопок измерения на месте внутри панели', () => {
+  for (const id of ['mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmPlane', 'mmDeviation', 'mmCorner', 'mmSnap', 'mmSave', 'mmList', 'mmCsv', 'mmQaReport', 'mmNotion', 'mmFinish', 'mmClear']) {
     assert.ok(HTML.includes('id="' + id + '"'), 'нет кнопки ' + id);
   }
 });
