@@ -23,6 +23,27 @@
   function setServer(u) { try { localStorage.setItem('s2bAiServerUrl', u); } catch (e) {} }
   // localhost может резолвиться в IPv6 (::1), а сервер слушает IPv4 127.0.0.1 → принудительно IPv4.
   function resolveHost(u) { return String(u || '').replace('://localhost', '://127.0.0.1'); }
+  var __s2bTokenPromise = null;
+  function authToken() {
+    if (!__s2bTokenPromise) {
+      __s2bTokenPromise = (window.bimAPI && typeof window.bimAPI.s2bAuth === 'function')
+        ? Promise.resolve(window.bimAPI.s2bAuth()).then(function (token) {
+          if (!/^[a-f0-9]{64}$/i.test(String(token || ''))) throw new Error('invalid sidecar token');
+          return String(token);
+        })
+        : Promise.reject(new Error('sidecar authentication unavailable'));
+    }
+    return __s2bTokenPromise;
+  }
+  function authFetch(url, options) {
+    return authToken().then(function (token) {
+      var opts = Object.assign({}, options || {});
+      var headers = new Headers(opts.headers || {});
+      headers.set('X-BIMTwin-Token', token);
+      opts.headers = headers;
+      return fetch(url, opts);
+    });
+  }
 
   function mainV() { try { if (window.__pcTools && window.__pcTools.viewer) return window.__pcTools.viewer(); } catch (e) {} return window.__viewer || null; }
   function toast(msg, err) { try { if (window.__toast) return window.__toast(msg, err ? 'error' : 'info'); } catch (e) {} console[err ? 'error' : 'log']('[scan2bim-ai] ' + msg); }
@@ -307,7 +328,7 @@
     var url = resolveHost(getServer().replace(/\/$/, '')) + '/health';
     var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     var to = setTimeout(function () { try { if (ctrl) ctrl.abort(); } catch (e) {} }, 4000);
-    return fetch(url, { method: 'GET', signal: ctrl ? ctrl.signal : undefined })
+    return authFetch(url, { method: 'GET', signal: ctrl ? ctrl.signal : undefined })
       .then(function (r) { clearTimeout(to); return r.json(); })
       .catch(function (e) { clearTimeout(to); throw e; });
   }
@@ -344,7 +365,7 @@
     var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     function fallback(msg) { if (fell) return; fell = true; try { clearTimeout(tmo); } catch (e1) {} try { if (_stop) _stop(); } catch (e2) {} __s2bServerReady = false; toast('AI-сервер недоступен (' + msg + ') — строю встроенным движком', true); buildLocal(pts, v, 'ИИ не сработал: ' + msg); }
     var tmo = setTimeout(function () { try { if (ctrl) ctrl.abort(); } catch (e0) {} fallback('тайм-аут 15 мин'); }, 900000);
-    fetch(url, { method: 'POST', body: fd, signal: ctrl ? ctrl.signal : undefined }).then(function (r) {
+    authFetch(url, { method: 'POST', body: fd, signal: ctrl ? ctrl.signal : undefined }).then(function (r) {
       clearTimeout(tmo);
       if (!r.ok) { return r.json().catch(function () { return {}; }).then(function (j) { throw new Error((j && j.error) || ('HTTP ' + r.status)); }); }
       return r.json();
@@ -478,7 +499,7 @@
     bDiag.onclick = function () {
       setStatus('Диагностика ИИ…');
       var url = resolveHost(getServer().replace(/\/$/, '')) + '/diag';
-      fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+      authFetch(url).then(function (r) { return r.json(); }).then(function (d) {
         var mb = Math.round(((d.checkpoint_size || 0) / 1048576) * 10) / 10;
         var msg = 'torch=' + (d.torch || '-') + ' · cuda=' + (d.cuda ? 'да' : 'НЕТ') + ' · gpu=' + (d.device_name || '-')
           + ' · spconv=' + (d.spconv ? 'да' : 'НЕТ') + ' · ptv3=' + (d.ptv3_import ? 'да' : 'НЕТ')

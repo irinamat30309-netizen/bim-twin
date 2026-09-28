@@ -145,6 +145,7 @@
           <button id="mmSave" class="btn-sm" title="Сохранить текущее измерение в список">➕ В список</button>
           <button id="mmList" class="btn-sm" title="Показать/скрыть список измерений">📋 Список (0)</button>
           <button id="mmCsv" class="btn-sm" title="Экспорт всех измерений в CSV">⬇ CSV</button>
+          <button id="mmQaReport" class="btn-sm" title="Экспорт JSON-отчёта измерений с метаданными источника и параметрами контроля">🧾 QA JSON</button>
           <button id="mmNotion" class="btn-sm" title="В Notion: готовая Markdown-таблица копируется в буфер обмена (вставить Ctrl+V) + сохраняется .md">📝 В Notion</button>
           </div>
           <div class="mgroup">
@@ -156,7 +157,7 @@
         <div id="measureListPanel" style="display:none;position:absolute;right:12px;top:96px;z-index:33;width:340px;max-height:60%;overflow:auto;background:rgba(16,20,28,.94);border:1px solid #2a3442;border-radius:10px;padding:10px 12px;box-shadow:0 6px 20px rgba(0,0,0,.4)">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
             <b style="font-size:13px">📋 Сохранённые измерения</b>
-            <span><button id="mlCsv" class="btn-sm" title="Экспорт CSV">⬇ CSV</button> <button id="mlNotion" class="btn-sm" title="В Notion (Markdown в буфер + .md)">📝 Notion</button> <button id="mlClearAll" class="btn-sm danger" title="Очистить всё">🗑</button></span>
+            <span><button id="mlAutoCompare" class="btn-sm" title="Автоматически разобрать документы помещений и сопоставить все измерения">⚡ Сверить всё</button> <button id="mlCsv" class="btn-sm" title="Экспорт CSV">⬇ CSV</button> <button id="mlNotion" class="btn-sm" title="В Notion (Markdown в буфер + .md)">📝 Notion</button> <button id="mlClearAll" class="btn-sm danger" title="Очистить всё">🗑</button></span>
           </div>
           <div id="measureListBody" style="font-size:12px;line-height:1.5"></div>
         </div>
@@ -309,8 +310,8 @@
   <script src="viewer3d.js?v=1078"></script>
   <script src="pointcloud-octree.js?v=1078"></script>
   <script src="octree-store.js?v=1081"></script>
-  <script src="measure.js?v=1154"></script>
-  <script src="measurement-doc-compare.js?v=1"></script>
+  <script src="measure.js?v=1156"></script>
+  <script src="measurement-doc-compare.js?v=2"></script>
   <script src="cloud-display.js?v=1090"></script>
   <script src="webgl-viewer.js?v=1230"></script>
   <script src="lixel-object-extract.js?v=1218"></script>
@@ -346,6 +347,7 @@
   <script src="vendor/dwg.bundle.js?v=1078"></script>
   <script src="app-utils.js?v=1079"></script>
   <script src="project-state.js?v=stage2-1"></script>
+  <script src="tool-manager.js?v=1"></script>
   <script src="app.js?v=1251"></script>
   <script src="lixel-ui.js?v=1084"></script>
   <script src="lixel-scene.js?v=1090"></script>

@@ -9,7 +9,7 @@
 (function () {
   'use strict';
 
-  var SW_VERSION = '1.1.17 · review v10.1';
+  var SW_VERSION = '1.2.0-rc.2 · smart measurement QA';
 
   // SVG line icons (22×22, stroke=currentColor) matching LixelStudio glyphs
   var IC = {

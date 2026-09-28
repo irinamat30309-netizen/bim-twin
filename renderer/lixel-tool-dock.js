@@ -19,7 +19,7 @@
   pop('lxMeasureGeometry','Плоскости и зазоры',['mmPlane','mmDeviation','mmCorner'],'<path d="m3 15 9-11 9 5-9 11zM12 4v16M3 15l18-6"/>');
   const sep=document.createElement('span');sep.className='lx-dock-separator';row.append(sep);
   ['mmSnap','mmSave','mmFinish'].forEach(id=>move(id,row));
-  pop('lxMeasureMore','Список и экспорт',['mmList','mmCsv','mmNotion','mmClear'],'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>');move('mmExit',row);
+  pop('lxMeasureMore','Список и экспорт',['mmList','mmCsv','mmQaReport','mmNotion','mmClear'],'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>');move('mmExit',row);
   // All existing controls have been moved before removing obsolete headers/group wrappers.
   p.replaceChildren(hint,row,...popovers);sync();
  }

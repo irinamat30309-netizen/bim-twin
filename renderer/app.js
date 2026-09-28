@@ -212,7 +212,11 @@
   const STATUS_COLOR = { err: '#e5484d', ok: '#16a34a', warn: '#d99a00', none: '#9aa4b2' };
   const STATUS_LABEL = { err: 'Ошибка', ok: 'ОК', warn: 'На проверке', none: 'Нет данных' };
   const RANK = { none: 0, ok: 1, warn: 2, err: 3 };
-  const EL_TYPES = ['оборудование', 'вентшахта', 'труба', 'дверь', 'кабель-канал'];
+  const EL_TYPES = [
+    'стена', 'перегородка', 'пол', 'потолок', 'плита', 'колонна', 'балка',
+    'дверь', 'окно', 'проём', 'труба', 'воздуховод', 'вентшахта',
+    'кабель-канал', 'оборудование'
+  ];
 
   let DB = null, viewer = null, current = null, selEl = null;
   let filter = 'all', searchTerm = '', activeTab = 'docs', editing = false;
@@ -703,7 +707,9 @@
       '<div class="kv"><span class="k">ОК</span><span>' + c.ok + '</span></div>' +
       (rep.demo ? '<div class="muted" style="margin:8px 0">Демо-режим: проверка по проектному замыслу без разбора файлов. В десктоп-версии разбираются PDF/XLSX/CSV/TXT и сканы (OCR).</div>' :
         '<div class="kv"><span class="k">OCR (Tesseract)</span><span>' + (rep.ocrAvailable ? 'доступен' : 'не установлен') + '</span></div>' +
-        '<div class="kv"><span class="k">LLM-верификатор</span><span>' + (rep.llmConfigured ? ('вкл · вызовов: ' + (rep.llmUsed || 0)) : 'выкл') + '</span></div>' +
+        '<div class="kv"><span class="k">LLM-верификатор</span><span>' + (rep.llmConfigured
+          ? ('вкл · вызовов: ' + (rep.llmUsed || 0))
+          : ((rep.llmStatus && rep.llmStatus.reason === 'consent_required') ? 'выкл · требуется согласие на удалённую передачу' : 'выкл')) + '</span></div>' +
         '<h4>Разобранные документы (' + (rep.documents || []).length + ')</h4>' + (docs ? '<ul>' + docs + '</ul>' : '<div class="muted">Файлы не приложены — проверка по проектному замыслу.</div>')) +
       '</div>';
     showInfo('Отчёт проверки', html);
@@ -776,10 +782,28 @@
       }
     } catch (e) { }
   }
-  function persistSettings(patch) {
-    SETTINGS = Object.assign({}, SETTINGS, patch);
-    if (CAN_VERIFY && API && API.setSettings) { try { API.setSettings(patch); } catch (e) {} }
-    try { localStorage.setItem('bim.settings', JSON.stringify(SETTINGS)); } catch (e) {}
+  function settingsForLocalStorage(value) {
+    const safe = Object.assign({}, value || {});
+    delete safe.llmApiKey;
+    delete safe.llmApiKeyEnc;
+    return safe;
+  }
+  async function persistSettings(patch) {
+    const next = Object.assign({}, patch || {});
+    try {
+      let saved = null;
+      if (CAN_VERIFY && API && API.setSettings) saved = await API.setSettings(next);
+      SETTINGS = Object.assign({}, SETTINGS, next, saved || {});
+      if (next.llmApiKey) {
+        SETTINGS.llmApiKeyConfigured = true;
+        SETTINGS.llmApiKey = '';
+      }
+      try { localStorage.setItem('bim.settings', JSON.stringify(settingsForLocalStorage(SETTINGS))); } catch (e) {}
+      return { ok: true, settings: saved || null };
+    } catch (error) {
+      try { console.warn('settings save failed', error); } catch (_) {}
+      return { ok: false, error: String(error && error.message || error) };
+    }
   }
 
   async function openSettings() {
@@ -789,9 +813,13 @@
       theme: s.theme || 'light',
       lang: (window.I18N && window.I18N.lang) || s.lang || 'ru',
       llmProvider: s.llmProvider || 'none',
-      llmApiKey: s.llmApiKey || '',
+      llmApiKey: '',
+      llmApiKeyConfigured: !!s.llmApiKeyConfigured,
+      clearLlmApiKey: false,
       llmHost: s.llmHost || 'http://localhost:11434',
       llmModel: s.llmModel || 'gpt-4o-mini',
+      llmRemoteConsent: s.llmRemoteConsent === true,
+      llmDocumentCharLimit: Number.isSafeInteger(Number(s.llmDocumentCharLimit)) ? Number(s.llmDocumentCharLimit) : 6000,
       ocrLang: s.ocrLang || 'rus+ukr+eng',
       autoVerify: s.autoVerify !== false
     };
@@ -829,9 +857,14 @@
     // AI & verification
     const secAI = section(T('settings.ai'));
     rowSelect(secAI, T('settings.provider'), [['none', 'none'], ['openai', 'openai'], ['ollama', 'ollama']], st.llmProvider, v => st.llmProvider = v);
-    rowInput(secAI, T('settings.apikey'), st.llmApiKey, v => st.llmApiKey = v, 'password');
+    const keyInput = rowInput(secAI, T('settings.apikey'), st.llmApiKey, v => st.llmApiKey = v, 'password');
+    if (st.llmApiKeyConfigured) keyInput.placeholder = 'Ключ уже сохранён в защищённом хранилище';
+    rowCheckbox(secAI, 'Удалить сохранённый API-ключ', st.clearLlmApiKey, v => st.clearLlmApiKey = v);
     rowInput(secAI, T('settings.host'), st.llmHost, v => st.llmHost = v);
     rowInput(secAI, T('settings.model'), st.llmModel, v => st.llmModel = v);
+    rowInput(secAI, 'Максимум символов документа для AI', st.llmDocumentCharLimit, v => st.llmDocumentCharLimit = Math.max(0, Math.min(12000, parseInt(v, 10) || 0)), 'number');
+    rowCheckbox(secAI, 'Разрешаю передачу фрагментов документов удалённому AI', st.llmRemoteConsent, v => st.llmRemoteConsent = v);
+    secAI.appendChild(mk('div', 'set-hint', 'OpenAI и удалённый Ollama не получают данные без этого явного разрешения. Локальный Ollama на localhost работает без передачи наружу.'));
     rowInput(secAI, T('settings.ocr'), st.ocrLang, v => st.ocrLang = v);
     rowCheckbox(secAI, T('settings.autoVerify'), st.autoVerify, v => st.autoVerify = v);
 
@@ -872,7 +905,7 @@
 
     // About
     const secAbout = section(T('settings.about'));
-    let ver = '1.1.17';
+    let ver = '1.2.0-rc.2';
     if (CAN_PERSIST && API && API.getVersion) { try { ver = await API.getVersion(); } catch (e) {} }
     rowStatic(secAbout, 'BIM Twin', 'v' + ver + (CAN_PERSIST ? '' : ' · демо'));
     const updRow = mk('div', 'set-row');
@@ -893,13 +926,26 @@
     // Save bar
     const bar = mk('div', 'set-actions');
     const save = mk('button', 'btn primary', T('settings.save'));
-    save.onclick = () => {
+    save.onclick = async () => {
       const patch = {
         theme: st.theme, lang: st.lang,
-        llmProvider: st.llmProvider, llmApiKey: st.llmApiKey, llmHost: st.llmHost,
-        llmModel: st.llmModel, ocrLang: st.ocrLang, autoVerify: st.autoVerify
+        llmProvider: st.llmProvider, llmHost: st.llmHost,
+        llmModel: st.llmModel, llmRemoteConsent: st.llmRemoteConsent,
+        llmDocumentCharLimit: st.llmDocumentCharLimit,
+        ocrLang: st.ocrLang, autoVerify: st.autoVerify
       };
-      applyTheme(st.theme); applyLang(st.lang); persistSettings(patch);
+      if (st.clearLlmApiKey) patch.llmApiKey = '';
+      else if (st.llmApiKey) patch.llmApiKey = st.llmApiKey;
+      save.disabled = true;
+      const result = await persistSettings(patch);
+      save.disabled = false;
+      if (!result.ok) {
+        toast(result.error === 'secure_storage_unavailable'
+          ? 'API-ключ не сохранён: защищённое хранилище системы недоступно'
+          : 'Не удалось сохранить настройки: ' + result.error);
+        return;
+      }
+      applyTheme(st.theme); applyLang(st.lang);
       p.close(); toast(T('settings.save') + ' ✓');
     };
     bar.appendChild(save); p.body.appendChild(bar);
@@ -993,6 +1039,7 @@
     renderTab(); toast('Документ добавлен');
     // Авто-считывание данных нового документа и автоматическая проверка (по умолчанию включено)
     if (current && (!SETTINGS || SETTINGS.autoVerify !== false)) { toast('Считываю документ и проверяю…'); runVerify(true); }
+    if (current) refreshAutomaticComparisonsForRoom(current.id);
   }
   // fmtSize → window.AppUtils (renderer/app-utils.js)
   function normalizeGrid(rows, maxCols) {
@@ -1325,7 +1372,11 @@
                   const buf = new Uint8Array(await blob.arrayBuffer());
                   let bin = ''; const CH = 8192; for (let o = 0; o < buf.length; o += CH) bin += String.fromCharCode.apply(null, buf.subarray(o, o + CH));
                   const r = await API.saveDocument(d.id, btoa(bin));
-                  if (r && r.ok) toast('Документ сохранён'); else toast('Не удалось сохранить');
+                  if (r && r.ok) {
+                    toast('Документ сохранён');
+                    invalidateComparisonDocument(d);
+                    if (current) refreshAutomaticComparisonsForRoom(current.id);
+                  } else toast('Не удалось сохранить');
                 } else { toast('Экспорт недоступен в этой сборке'); }
               } catch (e) { toast('Не удалось сохранить'); }
               saveDocxBtn.disabled = false;
@@ -1598,7 +1649,15 @@
   async function deleteElementUI(e) { if (!await confirmBox('Удалить элемент «' + e.name + '»?')) return; const rid = current.id; if (CAN_PERSIST) await API.deleteElement(e.id); else current.elements = current.elements.filter(x => x.id !== e.id); selEl = null; await refresh(rid); toast('Элемент удалён'); }
 
   async function createDocumentUI() { const v = await openForm('Новый документ', [{ k: 'name', label: 'Название', value: '' }, { k: 'type', label: 'Тип', value: 'документ' }, { k: 'version', label: 'Версия', value: 'v1' }, { k: 'author', label: 'Автор', value: '' }]); if (!v) return; const patch = { room_id: current.id, element_id: selEl && selEl.id, name: v.name, type: v.type, version: v.version, author: v.author, date: new Date().toISOString().slice(0, 10) }; if (CAN_PERSIST) { const d = await API.createDocument(patch); current.documents.push(d); } else current.documents.push(Object.assign({ id: 'doc_' + Date.now(), is_upload: 0, versions: [] }, patch)); renderTab(); toast('Документ добавлен'); }
-  async function deleteDocUI(d) { if (!await confirmBox('Удалить документ «' + d.name + '»?')) return; if (CAN_PERSIST) await API.deleteDocument(d.id); current.documents = current.documents.filter(x => x.id !== d.id); renderTab(); toast('Документ удалён'); }
+  async function deleteDocUI(d) {
+    if (!await confirmBox('Удалить документ «' + d.name + '»?')) return;
+    const roomId = current && current.id;
+    if (CAN_PERSIST) await API.deleteDocument(d.id);
+    invalidateComparisonDocument(d);
+    current.documents = current.documents.filter(x => x.id !== d.id);
+    renderTab(); toast('Документ удалён');
+    if (roomId) refreshAutomaticComparisonsForRoom(roomId);
+  }
 
   // ---------- generic form modal ----------
   function openForm(title, fields) {
@@ -2419,13 +2478,13 @@
       toast('Выберите PDAL-пайплайн (.json)…');
       const f = await pickGeomFile('.json');
       if (!f) { toast('Пайплайн не выбран'); return; }
-      let pipeline = null;
-      try { pipeline = JSON.parse(await f.text()); } catch (e) { toast('Не удалось прочитать JSON пайплайна'); return; }
+      if (!f.path) { toast('Не удалось подтвердить путь к PDAL-пайплайну'); return; }
       toast('Запуск PDAL-пайплайна…');
       try {
-        const r = await API.pdalRun({ pipeline });
+        const r = await API.pdalRun({ pipelinePath: f.path });
         if (r && r.ok) { toast('PDAL готово (' + r.engine + ')' + (r.count != null ? ' · точек: ' + Number(r.count).toLocaleString('ru-RU') : '')); }
         else if (r && r.needPdal) { toast('Нужен PDAL: conda install -c conda-forge pdal python-pdal'); }
+        else if (r && r.canceled) { toast('PDAL отменён'); }
         else { toast('Не удалось: ' + ((r && r.error) || 'ошибка')); }
       } catch (e) { toast('Ошибка PDAL'); }
     }
@@ -3393,7 +3452,11 @@
   function measIcon(mode) { return ({ point: '📍', distance: '📏', polyline: '〰', angle: '📐', area: '▱', plane: '🧱', deviation: '📐', corner: '📦' })[mode] || '•'; }
   function latestDocComparison(measurement) {
     const history = measurement && Array.isArray(measurement.docComparisons) ? measurement.docComparisons : [];
-    return history.length ? history[history.length - 1] : (measurement && measurement.docComparison) || null;
+    const saved = history.length ? history[history.length - 1] : (measurement && measurement.docComparison) || null;
+    const proposal = measurement && measurement.autoComparisonProposal || null;
+    if (!saved) return proposal;
+    if (!proposal) return saved;
+    return Date.parse(proposal.createdAt || 0) > Date.parse(saved.createdAt || 0) ? proposal : saved;
   }
   function docComparisonStatusLabel(status) {
     return ({
@@ -3402,7 +3465,9 @@
       'tolerance-not-specified': 'Допуск не задан',
       'units-unconfirmed': 'Подтвердите единицы',
       'unit-mismatch': 'Несовместимые типы',
-      'needs-review': 'Нужна проверка'
+      'needs-review': 'Нужна проверка',
+      'analyzing': 'Анализ документов…',
+      'no-match': 'Требование не найдено'
     })[status] || 'Не сверено';
   }
   function renderMeasList() {
@@ -3413,7 +3478,7 @@
     body.innerHTML = __measurements.map((m, i) => {
       const lbl = m.label ? '<span style="opacity:.85;color:var(--lx-blue)">✎ ' + esc(m.label) + '</span> ' : '';
       const comparison = latestDocComparison(m);
-      const status = comparison ? docComparisonStatusLabel(comparison.status) : 'Не сверено';
+      const status = comparison ? (comparison.statusLabel || docComparisonStatusLabel(comparison.status)) : 'Не сверено';
       const statusClass = comparison ? String(comparison.status || 'needs-review').replace(/[^a-z-]/g, '') : 'not-checked';
       const roomName = m.measurementContext && m.measurementContext.roomName ? ' · ' + esc(m.measurementContext.roomName) : '';
       return '<div class="meas-saved-row"><div class="meas-saved-main"><span class="meas-saved-index">' + (i + 1) + '</span><span class="measure-row-label">' + lbl + measIcon(m.mode) + ' ' + fmtMeasure(m).replace(/^..\s/, '') + '</span><button class="btn-sm" data-mren="' + i + '" title="Переименовать" aria-label="Переименовать измерение ' + (i + 1) + '" style="padding:0 6px">✏</button><button class="btn-sm" data-mdel="' + i + '" title="Удалить" aria-label="Удалить измерение ' + (i + 1) + '" style="padding:0 6px">×</button></div><div class="meas-saved-footer"><span class="meas-room-context">' + roomName + '</span><span class="meas-doc-status ' + statusClass + '">' + esc(status) + '</span><button class="btn-sm meas-doc-compare" data-mcmp="' + i + '" title="Сопоставить с документацией помещения">⇄ Сверить</button></div></div>';
@@ -3432,8 +3497,20 @@
     span.innerHTML = '<input type="text" value="' + esc(cur).replace(/"/g, '&quot;') + '" placeholder="Подпись измерения…" style="width:100%;background:var(--panel2);border:1px solid var(--lx-blue);border-radius:5px;color:var(--txt);padding:2px 6px;font:inherit" />';
     const inp = span.querySelector('input'); if (!inp) return;
     inp.focus(); inp.select();
-    const commit = () => { m.label = inp.value.trim(); renderMeasList(); persistMeasurements(); };
-    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } else if (e.key === 'Escape') { renderMeasList(); } });
+    let finished = false;
+    const commit = () => {
+      if (finished) return;
+      finished = true;
+      const next = inp.value.trim();
+      const changed = next !== (m.label || '');
+      m.label = next;
+      renderMeasList(); persistMeasurements();
+      if (changed) autoCompareMeasurementInBackground(idx);
+    };
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); finished = true; renderMeasList(); }
+    });
     inp.addEventListener('blur', commit);
   }
   function saveMeasurement() {
@@ -3442,11 +3519,17 @@
     const saved = JSON.parse(JSON.stringify(res));
     const cloud = viewer && viewer._cloudRecord || {};
     const sourcePath = String(cloud.sourceName || lastCloudPath || '');
+    const inferredObjectType = !selEl && res.mode === 'plane'
+      ? (/стен/iu.test(res.kind || '') ? 'стена' : /пол|потол/iu.test(res.kind || '') ? 'пол/потолок' : /наклон/iu.test(res.kind || '') ? 'наклонная поверхность' : null)
+      : null;
     saved.measurementContext = {
       roomId: current && current.id || null,
       roomName: current && current.name || null,
       elementId: selEl && selEl.id || null,
-      elementName: selEl && selEl.name || null,
+      elementName: selEl && selEl.name || inferredObjectType,
+      elementType: selEl && selEl.type || inferredObjectType,
+      elementGuid: selEl && selEl.ifc_guid || null,
+      inferredFromGeometry: !!inferredObjectType,
       cloudName: sourcePath.split(/[\\/]/).pop() || null,
       sourceUnits: viewer && viewer._srcUnits || null,
       hasCrs: !!(viewer && viewer._srcCrs)
@@ -3456,6 +3539,7 @@
     renderMeasList();
     persistMeasurements();
     toast('Сохранено измерений: ' + __measurements.length);
+    autoCompareMeasurementInBackground(__measurements.length - 1);
   }
   var __measurementDocCompareCache = new Map();
   function comparisonDocCacheKey(d) {
@@ -3521,6 +3605,128 @@
       return { ok: false, reason: String(error && error.message || error), requirements: [], diagnostics: {} };
     }
   }
+  var __measurementOcrCompareCache = new Map();
+  var __measurementRoomRequirementCache = new Map();
+  function invalidateComparisonDocument(doc) {
+    if (!doc) return;
+    const key = comparisonDocCacheKey(doc);
+    __measurementDocCompareCache.delete(key);
+    __measurementOcrCompareCache.delete(key + '|ocr');
+  }
+  async function parseComparisonOcrDocument(doc, force) {
+    const C = window.MeasurementDocCompare;
+    if (!C || !API || !API.ocrDocument) return { ok: false, reason: 'OCR недоступен.', requirements: [], diagnostics: {} };
+    const key = comparisonDocCacheKey(doc) + '|ocr';
+    if (force) __measurementOcrCompareCache.delete(key);
+    if (__measurementOcrCompareCache.has(key)) return __measurementOcrCompareCache.get(key);
+    const pending = (async () => {
+      const response = await API.ocrDocument(doc.id);
+      if (!response || !response.ok || !response.text) {
+        return { ok: false, reason: response && (response.reason || response.error) || 'OCR не вернул текст.', requirements: [], diagnostics: {} };
+      }
+      const parsed = C.extractRequirements({
+        documentId: doc.id || null,
+        documentName: comparisonDocName(doc),
+        text: response.text,
+        textTruncated: !!response.truncated,
+        ocr: true
+      });
+      return {
+        ok: true,
+        requirements: parsed.requirements,
+        diagnostics: parsed.diagnostics,
+        textTruncated: !!response.truncated,
+        hasText: true,
+        kind: 'ocr'
+      };
+    })();
+    __measurementOcrCompareCache.set(key, pending);
+    try { return await pending; }
+    catch (error) {
+      __measurementOcrCompareCache.delete(key);
+      return { ok: false, reason: String(error && error.message || error), requirements: [], diagnostics: {} };
+    }
+  }
+  function comparisonRoomCacheKey(room, autoOcr) {
+    const docs = roomDocs(room).filter(d => d && d.file);
+    return [room && room.id || '', autoOcr ? 'ocr' : 'native'].concat(docs.map(comparisonDocCacheKey).sort()).join('||');
+  }
+  function invalidateRoomRequirementCache(room) {
+    const prefix = String(room && room.id || '') + '||';
+    for (const key of __measurementRoomRequirementCache.keys()) {
+      if (String(key).startsWith(prefix)) __measurementRoomRequirementCache.delete(key);
+    }
+  }
+  async function scanRoomRequirements(room, options) {
+    options = options || {};
+    const autoOcr = options.autoOcr !== false;
+    const docs = roomDocs(room).filter(d => d && d.file);
+    const cacheKey = comparisonRoomCacheKey(room, autoOcr);
+    if (options.force) __measurementRoomRequirementCache.delete(cacheKey);
+    if (__measurementRoomRequirementCache.has(cacheKey)) {
+      if (options.onProgress) options.onProgress({ stage: 'cache', current: docs.length, total: docs.length, name: '' });
+      return __measurementRoomRequirementCache.get(cacheKey);
+    }
+    const pending = (async () => {
+      const entries = [];
+      const errors = [];
+      const ocrFailures = [];
+      let readCount = 0, ocrCount = 0, skippedCount = 0, nativeCadSkipped = false;
+      if (!API || !API.readDocument) {
+        return { entries, docs, readCount, ocrCount, skippedCount: docs.length, nativeCadSkipped, errors: ['Чтение документов недоступно.'], ocrFailures };
+      }
+      const addParsed = (doc, parsed) => {
+        for (const requirement of parsed && parsed.requirements || []) {
+          if (requirement.source) {
+            requirement.source.documentId = requirement.source.documentId || doc.id || null;
+            requirement.source.documentName = requirement.source.documentName || comparisonDocName(doc);
+          }
+          entries.push({
+            id: String(doc.id || 'doc') + ':' + String(requirement.id || entries.length),
+            requirement,
+            doc
+          });
+        }
+      };
+      for (let i = 0; i < docs.length; i++) {
+        const doc = docs[i];
+        const ext = comparisonFileExt(doc);
+        if (options.onProgress) options.onProgress({ stage: 'read', current: i + 1, total: docs.length, name: comparisonDocName(doc) });
+        let found = 0;
+        if (comparisonSupportedExt(ext)) {
+          const parsed = await parseComparisonDocument(doc);
+          readCount++;
+          if (parsed.ok) {
+            addParsed(doc, parsed);
+            found = parsed.requirements.length;
+            if (parsed.error) errors.push(comparisonDocName(doc) + ': ' + parsed.error);
+          } else errors.push(comparisonDocName(doc) + ': ' + parsed.reason);
+        }
+        if (!found && autoOcr && comparisonOcrExt(ext) && API.ocrDocument) {
+          if (options.onProgress) options.onProgress({ stage: 'ocr', current: i + 1, total: docs.length, name: comparisonDocName(doc) });
+          const parsedOcr = await parseComparisonOcrDocument(doc, false);
+          ocrCount++;
+          if (parsedOcr.ok) {
+            addParsed(doc, parsedOcr);
+            found = parsedOcr.requirements.length;
+          } else {
+            ocrFailures.push({ doc, reason: parsedOcr.reason });
+          }
+        }
+        if (!comparisonSupportedExt(ext) && !(autoOcr && comparisonOcrExt(ext))) {
+          skippedCount++;
+          if (['dwg', 'rvt', 'rfa', 'rte', 'ifc', 'ifczip'].includes(ext)) nativeCadSkipped = true;
+        }
+      }
+      return { entries, docs, readCount, ocrCount, skippedCount, nativeCadSkipped, errors, ocrFailures };
+    })();
+    __measurementRoomRequirementCache.set(cacheKey, pending);
+    try { return await pending; }
+    catch (error) {
+      __measurementRoomRequirementCache.delete(cacheKey);
+      return { entries: [], docs, readCount: 0, ocrCount: 0, skippedCount: 0, nativeCadSkipped: false, errors: [String(error && error.message || error)], ocrFailures: [] };
+    }
+  }
   function comparisonUnitOptions(kind) {
     if (kind === 'linear') return [{ value: 'м', label: 'м — метры' }, { value: 'мм', label: 'мм — миллиметры' }, { value: 'см', label: 'см — сантиметры' }, { value: 'ft', label: 'ft — футы' }, { value: 'in', label: 'in — дюймы' }];
     if (kind === 'area') return [{ value: 'м²', label: 'м² — квадратные метры' }, { value: 'см²', label: 'см² — квадратные сантиметры' }, { value: 'мм²', label: 'мм² — квадратные миллиметры' }, { value: 'ft²', label: 'ft² — квадратные футы' }, { value: 'in²', label: 'in² — квадратные дюймы' }];
@@ -3545,6 +3751,281 @@
     }
     const tolerance = Number.isFinite(r.toleranceValue) ? ' ± ' + r.toleranceValue + ' ' + (r.toleranceUnit || r.unit) : '';
     return comparisonDimensionLabel(r.dimension) + ': ' + r.value + ' ' + (r.unit || '') + tolerance;
+  }
+  function measurementRoom(measurement) {
+    const context = measurement && measurement.measurementContext || {};
+    return context.roomId && Array.isArray(DB && DB.rooms) ? DB.rooms.find(r => r.id === context.roomId) || null : null;
+  }
+  function automaticMatchFingerprint(measurement, match) {
+    const req = match && match.selectedRequirement || {};
+    const source = req.source || match && match.requirement && match.requirement.source || {};
+    return [
+      source.documentId || '', match && match.requirement && match.requirement.id || '',
+      match && match.field && match.field.key || '', match && match.pairIndex != null ? match.pairIndex : '',
+      match && match.field && match.field.value != null ? match.field.value : '', match && match.unit || ''
+    ].join('|');
+  }
+  function appendMeasurementComparison(measurement, comparison) {
+    if (!Array.isArray(measurement.docComparisons)) measurement.docComparisons = [];
+    const last = measurement.docComparisons[measurement.docComparisons.length - 1];
+    if (last && last.automation && comparison.automation &&
+        last.automation.fingerprint && last.automation.fingerprint === comparison.automation.fingerprint) {
+      measurement.docComparisons[measurement.docComparisons.length - 1] = comparison;
+    } else measurement.docComparisons.push(comparison);
+    if (measurement.docComparisons.length > 20) measurement.docComparisons.splice(0, measurement.docComparisons.length - 20);
+    measurement.docComparison = comparison;
+    measurement.autoComparisonProposal = null;
+  }
+  function buildAutomaticComparisonRecord(measurement, room, ranked, ranking) {
+    if (!ranked || !ranked.preview || !ranked.field || !ranked.unit) return null;
+    const result = ranked.preview;
+    if (!['within-tolerance', 'outside-tolerance', 'tolerance-not-specified'].includes(result.status) || !Number.isFinite(result.actual)) return null;
+    const req = ranked.requirement || {};
+    const selected = ranked.selectedRequirement || req;
+    const source = req.source || {};
+    const context = measurement.measurementContext || {};
+    return {
+      schema: 'bim-twin.document-measurement-comparison.v2',
+      id: 'doccmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+      createdAt: new Date().toISOString(),
+      status: result.status,
+      statusLabel: docComparisonStatusLabel(result.status),
+      field: {
+        key: ranked.field.key,
+        label: ranked.field.label,
+        rawValue: ranked.field.value,
+        kind: ranked.field.kind,
+        unit: ranked.unit
+      },
+      expected: {
+        value: selected.value,
+        unit: selected.unit,
+        baseValue: result.expected,
+        kind: selected.kind,
+        dimension: selected.dimension,
+        toleranceValue: selected.toleranceValue == null ? null : selected.toleranceValue,
+        toleranceUnit: selected.toleranceUnit || selected.unit || null,
+        toleranceMode: result.toleranceMode || null,
+        bound: result.bound == null ? null : result.bound
+      },
+      actual: { rawValue: ranked.field.value, unit: ranked.unit, baseValue: result.actual, kind: ranked.field.kind },
+      delta: result.delta,
+      absoluteDelta: result.absoluteDelta,
+      percentDelta: result.percentDelta,
+      source: {
+        origin: 'document',
+        documentId: source.documentId || null,
+        documentName: source.documentName || 'Документ',
+        sheet: source.sheet || null,
+        row: source.row || null,
+        line: source.line || null,
+        page: source.page || null,
+        excerpt: source.excerpt || '',
+        confidence: req.confidence || 'medium',
+        ocr: !!source.ocr,
+        truncated: !!source.truncated
+      },
+      confirmations: {
+        room: true,
+        sourceRequirement: true,
+        unitsOrScale: true,
+        autoConfirmed: true,
+        method: 'deterministic-smart-match-v1'
+      },
+      automation: {
+        mode: 'automatic',
+        algorithmVersion: '1.0.0',
+        score: ranked.score,
+        confidence: ranked.confidence,
+        margin: ranking && ranking.margin || 0,
+        reasons: ranked.reasons || [],
+        warnings: ranked.warnings || [],
+        reasonCodes: ranked.reasonCodes || [],
+        warningCodes: ranked.warningCodes || [],
+        fingerprint: automaticMatchFingerprint(measurement, ranked)
+      },
+      context: {
+        roomId: room && room.id || context.roomId || null,
+        roomName: room && room.name || context.roomName || null,
+        elementId: context.elementId || null,
+        elementName: context.elementName || null,
+        elementType: context.elementType || null,
+        elementGuid: context.elementGuid || null,
+        cloudName: context.cloudName || null
+      }
+    };
+  }
+  function setAutomaticProposal(measurement, room, ranking, state, label) {
+    const best = ranking && ranking.best;
+    const req = best && best.requirement || {};
+    const source = req.source || {};
+    const context = measurement.measurementContext || {};
+    measurement.autoComparisonProposal = {
+      schema: 'bim-twin.document-measurement-proposal.v1',
+      createdAt: new Date().toISOString(),
+      status: state === 'analyzing' ? 'analyzing' : state === 'no-match' ? 'no-match' : 'needs-review',
+      statusLabel: label || (state === 'analyzing' ? 'Анализ документов…' : state === 'no-match' ? 'Требование не найдено' : state === 'ambiguous' ? 'Неоднозначное совпадение' : 'Нужна проверка'),
+      source: best ? {
+        documentId: source.documentId || null,
+        documentName: source.documentName || null,
+        excerpt: source.excerpt || '',
+        ocr: !!source.ocr,
+        truncated: !!source.truncated
+      } : null,
+      candidate: best ? {
+        requirementId: req.id || null,
+        fieldKey: best.field && best.field.key || null,
+        pairIndex: best.pairIndex,
+        unit: best.unit,
+        score: best.score
+      } : null,
+      automation: {
+        state: state,
+        algorithmVersion: '1.0.0',
+        score: best && best.score || 0,
+        confidence: best && best.confidence || 'low',
+        margin: ranking && ranking.margin || 0,
+        reasons: best && best.reasons || [],
+        warnings: best && best.warnings || []
+      },
+      context: {
+        roomId: room && room.id || context.roomId || null,
+        roomName: room && room.name || context.roomName || null,
+        elementId: context.elementId || null,
+        elementName: context.elementName || null
+      }
+    };
+  }
+  function rankMeasurementAgainstEntries(measurement, entries) {
+    const C = window.MeasurementDocCompare;
+    if (!C || !C.rankRequirementMatches) return { matches: [], best: null, margin: 0, decision: { state: 'no-match', canAutoConfirm: false } };
+    const context = measurement.measurementContext || {};
+    return C.rankRequirementMatches({
+      measurement,
+      context,
+      sourceUnits: context.sourceUnits,
+      candidates: entries || []
+    });
+  }
+  function applyAutomaticComparison(measurement, room, scan) {
+    const ranking = rankMeasurementAgainstEntries(measurement, scan && scan.entries || []);
+    if (ranking.decision && ranking.decision.canAutoConfirm) {
+      const comparison = buildAutomaticComparisonRecord(measurement, room, ranking.best, ranking);
+      if (comparison) {
+        appendMeasurementComparison(measurement, comparison);
+        return { state: 'auto-confirmed', comparison, ranking };
+      }
+    }
+    const state = !ranking.best ? 'no-match' : ranking.decision && ranking.decision.state || 'needs-review';
+    setAutomaticProposal(measurement, room, ranking, state);
+    return { state, comparison: null, ranking };
+  }
+  async function autoCompareMeasurementInBackground(index) {
+    const measurement = __measurements[index];
+    if (!measurement || !window.MeasurementDocCompare) return;
+    const room = measurementRoom(measurement);
+    if (!room) {
+      setAutomaticProposal(measurement, null, null, 'needs-review', 'Укажите помещение');
+      renderMeasList(); persistMeasurements();
+      return;
+    }
+    const historyCount = Array.isArray(measurement.docComparisons) ? measurement.docComparisons.length : 0;
+    setAutomaticProposal(measurement, room, null, 'analyzing');
+    renderMeasList();
+    try {
+      const scan = await scanRoomRequirements(room, { autoOcr: true });
+      // A manual result saved while background analysis was running wins.
+      if ((measurement.docComparisons || []).length > historyCount) return;
+      const outcome = applyAutomaticComparison(measurement, room, scan);
+      renderMeasList(); persistMeasurements();
+      if (outcome.comparison) {
+        toast(outcome.comparison.status === 'outside-tolerance'
+          ? 'Автосверка: найдено отклонение от документа'
+          : 'Автосверка завершена: ' + outcome.comparison.statusLabel);
+      }
+    } catch (error) {
+      setAutomaticProposal(measurement, room, null, 'needs-review', 'Ошибка анализа документов');
+      renderMeasList(); persistMeasurements();
+    }
+  }
+  async function refreshAutomaticComparisonsForRoom(roomId) {
+    const room = Array.isArray(DB && DB.rooms) ? DB.rooms.find(item => item.id === roomId) : null;
+    if (!room) return;
+    const indexes = [];
+    __measurements.forEach((measurement, index) => {
+      if (measurement && measurement.measurementContext && measurement.measurementContext.roomId === roomId) indexes.push(index);
+    });
+    if (!indexes.length) return;
+    invalidateRoomRequirementCache(room);
+    try {
+      const scan = await scanRoomRequirements(room, { autoOcr: true, force: true });
+      let confirmed = 0, outside = 0;
+      for (const index of indexes) {
+        const measurement = __measurements[index];
+        if (!measurement) continue;
+        const outcome = applyAutomaticComparison(measurement, room, scan);
+        if (outcome.comparison) {
+          confirmed++;
+          if (outcome.comparison.status === 'outside-tolerance') outside++;
+        }
+      }
+      renderMeasList(); persistMeasurements();
+      if (outside) toast('Документация обновлена: найдено отклонений — ' + outside);
+      else if (confirmed) toast('Документация обновлена: пересверено измерений — ' + confirmed);
+    } catch (error) {
+      try { console.warn('[measurements] automatic document refresh failed', error); } catch (_) {}
+    }
+  }
+  function showAutomaticComparisonSummary(counts) {
+    const modal = modalPanel('Автосверка всех измерений');
+    const summary = mk('div', 'cmp-batch-summary');
+    summary.appendChild(mk('strong', '', 'Обработано: ' + counts.total));
+    const list = document.createElement('ul');
+    [
+      ['Автоматически сопоставлено', counts.confirmed],
+      ['Соответствует допуску', counts.within],
+      ['Найдены отклонения', counts.outside],
+      ['Допуск в источнике не задан', counts.noTolerance],
+      ['Нужна проверка', counts.review],
+      ['Требование не найдено', counts.noMatch]
+    ].forEach(row => {
+      const li = document.createElement('li'); li.textContent = row[0] + ': ' + row[1]; list.appendChild(li);
+    });
+    summary.appendChild(list);
+    summary.appendChild(mk('div', 'cmp-small-hint', 'Автоматический статус присвоен только при однозначном совпадении объекта, размера, источника и подтверждённых метаданных единиц. OCR и неоднозначные совпадения оставлены на проверку.'));
+    const close = mk('button', 'btn sm primary', 'Готово'); close.type = 'button'; close.onclick = () => modal.close();
+    summary.appendChild(close); modal.body.appendChild(summary);
+  }
+  async function autoCompareAllMeasurements() {
+    if (!__measurements.length) { toast('Список измерений пуст'); return; }
+    const button = $('mlAutoCompare');
+    if (button) { button.disabled = true; button.textContent = 'Анализ…'; }
+    const counts = { total: __measurements.length, confirmed: 0, within: 0, outside: 0, noTolerance: 0, review: 0, noMatch: 0 };
+    const scans = new Map();
+    try {
+      for (let i = 0; i < __measurements.length; i++) {
+        const measurement = __measurements[i];
+        const room = measurementRoom(measurement);
+        if (!room) {
+          setAutomaticProposal(measurement, null, null, 'needs-review', 'Укажите помещение');
+          counts.review++;
+          continue;
+        }
+        if (!scans.has(room.id)) scans.set(room.id, await scanRoomRequirements(room, { autoOcr: true }));
+        const outcome = applyAutomaticComparison(measurement, room, scans.get(room.id));
+        if (outcome.comparison) {
+          counts.confirmed++;
+          if (outcome.comparison.status === 'within-tolerance') counts.within++;
+          else if (outcome.comparison.status === 'outside-tolerance') counts.outside++;
+          else counts.noTolerance++;
+        } else if (outcome.state === 'no-match') counts.noMatch++;
+        else counts.review++;
+      }
+      renderMeasList(); persistMeasurements();
+      showAutomaticComparisonSummary(counts);
+    } finally {
+      if (button) { button.disabled = false; button.textContent = '⚡ Сверить всё'; }
+    }
   }
   function compareSavedMeasurement(index) {
     const measurement = __measurements[index];
@@ -3578,6 +4059,12 @@
     provenance.textContent = 'Помещение: ' + (room.name || 'без названия') + ' · объект: ' + scopeName + (context.cloudName ? ' · источник: ' + context.cloudName : '') + '. ' + cloudMeta + crsMeta;
     modal.body.appendChild(provenance);
 
+    const autoSummary = mk('div', 'cmp-auto-summary');
+    autoSummary.setAttribute('role', 'status');
+    autoSummary.setAttribute('aria-live', 'polite');
+    autoSummary.textContent = 'Умный подбор запустится после чтения документов.';
+    modal.body.appendChild(autoSummary);
+
     const scopeLabel = document.createElement('label'); scopeLabel.className = 'cmp-check';
     const scopeCheck = document.createElement('input'); scopeCheck.type = 'checkbox'; scopeCheck.checked = !needsRoomConfirmation; scopeCheck.disabled = !needsRoomConfirmation;
     const scopeText = document.createElement('span');
@@ -3593,6 +4080,7 @@
     const candidateCaption = document.createElement('span'); candidateCaption.textContent = 'Найденное требование'; candidateLabel.appendChild(candidateCaption);
     const candidateSelect = document.createElement('select'); candidateSelect.className = 'cmp-select'; candidateSelect.setAttribute('aria-label', 'Выберите требование из документа'); candidateLabel.appendChild(candidateSelect); modal.body.appendChild(candidateLabel);
     const candidateInfo = mk('div', 'cmp-candidate-info'); modal.body.appendChild(candidateInfo);
+    const alternatives = mk('div', 'cmp-alternatives'); modal.body.appendChild(alternatives);
     const sourceExcerpt = document.createElement('pre'); sourceExcerpt.className = 'cmp-source-excerpt'; sourceExcerpt.textContent = 'Выберите требование, найденное в документах.'; modal.body.appendChild(sourceExcerpt);
     const sourceActions = mk('div', 'cmp-source-actions'); modal.body.appendChild(sourceActions);
 
@@ -3651,13 +4139,12 @@
     actions.append(saveCompare, closeButton); modal.body.appendChild(actions);
 
     const entries = [];
-    const ocrDocs = [];
     let scanInProgress = false;
     let currentResult = null;
     let currentField = null;
     let currentEntry = null;
     let currentPairIndex = 0;
-    let lastReadCount = 0;
+    let latestRanking = null;
     function addRequirements(doc, requirements, origin) {
       for (const req of requirements || []) {
         if (req.source) {
@@ -3872,6 +4359,70 @@
       if (validSave) saveCompare.disabled = false;
     }
 
+    function applyRankedMatch(match, autoConfirm) {
+      if (!match || !match.entry || !entries.includes(match.entry)) return;
+      candidateSelect.value = match.entry.id;
+      renderSelectedCandidate();
+      if (match.requirement && match.requirement.kind === 'pair') {
+        pairSelect.value = String(match.pairIndex == null ? 0 : match.pairIndex);
+        currentPairIndex = Number(pairSelect.value || 0);
+        renderComparisonControls();
+      }
+      if (match.field && Array.prototype.some.call(actualFieldSelect.options, option => option.value === match.field.key)) {
+        actualFieldSelect.value = match.field.key;
+        currentField = fields.find(field => field.key === match.field.key) || null;
+      }
+      updateUnits(match.unit || '');
+      if (match.unit && Array.prototype.some.call(unitSelect.options, option => option.value === match.unit)) unitSelect.value = match.unit;
+      const canConfirm = !!(autoConfirm && latestRanking && latestRanking.best === match && latestRanking.decision.canAutoConfirm);
+      if (!unitConfirm.disabled) unitConfirm.checked = canConfirm;
+      requirementConfirm.checked = canConfirm;
+      evaluate();
+    }
+    function renderAutomaticRanking() {
+      latestRanking = rankMeasurementAgainstEntries(measurement, entries);
+      alternatives.replaceChildren();
+      autoSummary.replaceChildren();
+      if (!latestRanking.best) {
+        autoSummary.className = 'cmp-auto-summary cmp-auto-review';
+        autoSummary.appendChild(mk('strong', '', 'Требование не найдено автоматически'));
+        autoSummary.appendChild(mk('div', 'cmp-small-hint', 'Попробуйте подписать измерение (например, «ширина стены А-1»), привязать его к элементу или ввести требование вручную.'));
+        return;
+      }
+      const best = latestRanking.best;
+      const state = latestRanking.decision.canAutoConfirm ? 'confirmed' : latestRanking.decision.state === 'ambiguous' ? 'ambiguous' : 'review';
+      autoSummary.className = 'cmp-auto-summary cmp-auto-' + state;
+      const title = latestRanking.decision.canAutoConfirm
+        ? 'Найдено автоматически · ' + best.score + '/100'
+        : latestRanking.decision.state === 'ambiguous'
+          ? 'Найдено несколько вариантов · нужна проверка'
+          : 'Предложено совпадение · ' + best.score + '/100';
+      autoSummary.appendChild(mk('strong', '', title));
+      autoSummary.appendChild(mk('div', 'cmp-auto-best', comparisonRequirementLabel(best.entry) + ' → ' + best.field.label));
+      if (best.reasons.length) autoSummary.appendChild(mk('div', 'cmp-small-hint', best.reasons.slice(0, 3).join(' ')));
+      if (best.warnings.length) autoSummary.appendChild(mk('div', 'cmp-auto-warning', best.warnings.slice(0, 3).join(' ')));
+
+      const seen = new Set();
+      const top = [];
+      for (const match of latestRanking.matches) {
+        const key = [match.entry.id, match.field.key, match.pairIndex == null ? '' : match.pairIndex].join('|');
+        if (seen.has(key)) continue;
+        seen.add(key); top.push(match);
+        if (top.length >= 3) break;
+      }
+      if (top.length > 1) {
+        alternatives.appendChild(mk('div', 'cmp-alternatives-title', 'Лучшие варианты'));
+        top.forEach((match, rank) => {
+          const button = mk('button', 'cmp-alternative' + (match === best ? ' selected' : ''));
+          button.type = 'button';
+          button.textContent = (rank + 1) + '. ' + match.score + '/100 · ' + comparisonRequirementLabel(match.entry) + ' → ' + match.field.label;
+          button.onclick = () => applyRankedMatch(match, false);
+          alternatives.appendChild(button);
+        });
+      }
+      applyRankedMatch(best, latestRanking.decision.canAutoConfirm);
+    }
+
     function updateManualOptions() {
       const kind = manualDimension.value === 'area' ? 'area' : manualDimension.value === 'angle' ? 'angle' : manualDimension.value === 'slope' ? 'slope' : 'linear';
       const options = comparisonUnitOptions(kind);
@@ -3915,8 +4466,13 @@
       const result = currentResult;
       if (!entry || !req || !field || !result || saveCompare.disabled) return;
       const pairValue = req.kind === 'pair' && req.values ? req.values[Number(pairSelect.value || 0)] : null;
+      const rankedMatch = latestRanking && latestRanking.matches.find(match =>
+        match.entry === entry && match.field && match.field.key === field.key &&
+        Number(match.pairIndex == null ? 0 : match.pairIndex) === Number(pairSelect.value || 0)
+      );
+      const assisted = !!(rankedMatch && latestRanking.best === rankedMatch && latestRanking.decision.canAutoConfirm);
       const comparison = {
-        schema: 'bim-twin.document-measurement-comparison.v1',
+        schema: 'bim-twin.document-measurement-comparison.v2',
         id: 'doccmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
         createdAt: new Date().toISOString(),
         status: result.status,
@@ -3946,40 +4502,61 @@
           line: req.source && req.source.line || null,
           page: req.source && req.source.page || null,
           excerpt: req.source && req.source.excerpt || '',
-          confidence: req.confidence || 'manual'
+          confidence: req.confidence || 'manual',
+          ocr: !!(req.source && req.source.ocr),
+          truncated: !!(req.source && req.source.truncated)
         },
         confirmations: {
           room: scopeCheck.checked,
           sourceRequirement: requirementConfirm.checked,
-          unitsOrScale: unitConfirm.checked || !(field.kind === 'linear' || field.kind === 'area')
+          unitsOrScale: unitConfirm.checked || !(field.kind === 'linear' || field.kind === 'area'),
+          autoConfirmed: assisted,
+          method: assisted ? 'deterministic-smart-match-v1-with-operator-save' : 'operator'
         },
-        context: { roomId: room.id || null, roomName: room.name || null, elementId: context.elementId || null, elementName: context.elementName || null, cloudName: context.cloudName || null }
+        automation: {
+          mode: assisted ? 'assisted' : 'operator',
+          algorithmVersion: '1.0.0',
+          score: rankedMatch && rankedMatch.score || null,
+          confidence: rankedMatch && rankedMatch.confidence || null,
+          margin: latestRanking && latestRanking.margin || null,
+          reasons: rankedMatch && rankedMatch.reasons || [],
+          warnings: rankedMatch && rankedMatch.warnings || [],
+          reasonCodes: rankedMatch && rankedMatch.reasonCodes || [],
+          warningCodes: rankedMatch && rankedMatch.warningCodes || []
+        },
+        context: {
+          roomId: room.id || null,
+          roomName: room.name || null,
+          elementId: context.elementId || null,
+          elementName: context.elementName || null,
+          elementType: context.elementType || null,
+          elementGuid: context.elementGuid || null,
+          cloudName: context.cloudName || null
+        }
       };
-      if (!Array.isArray(measurement.docComparisons)) measurement.docComparisons = [];
-      measurement.docComparisons.push(comparison);
-      if (measurement.docComparisons.length > 20) measurement.docComparisons.splice(0, measurement.docComparisons.length - 20);
-      measurement.docComparison = comparison;
+      appendMeasurementComparison(measurement, comparison);
       persistMeasurements(); renderMeasList(); modal.close();
       toast('Сверка сохранена: ' + comparison.statusLabel);
     };
 
     async function runOcr(doc, button) {
       if (!API || !API.ocrDocument) { toast('OCR недоступен'); return; }
-      button.disabled = true; const oldText = button.textContent; button.textContent = 'Распознаётся…';
+      button.disabled = true; button.textContent = 'Распознаётся…';
       try {
-        const response = await API.ocrDocument(doc.id);
-        if (!response || !response.ok || !response.text) {
+        const parsed = await parseComparisonOcrDocument(doc, true);
+        if (!parsed.ok) {
           const reasons = { tesseract_not_installed: 'Tesseract не установлен.', no_pdf_rasterizer: 'Для PDF-OCR нужен Poppler или Ghostscript.', empty: 'Распознанный текст не найден.', unsupported: 'Тип файла не поддерживает OCR.' };
-          button.textContent = reasons[response && response.reason] || 'OCR не удался — повторить';
+          button.textContent = reasons[parsed.reason] || 'OCR не удался — повторить';
           button.disabled = false; return;
         }
-        const parsed = C.extractRequirements({ documentId: doc.id, documentName: comparisonDocName(doc), text: response.text, textTruncated: !!response.truncated });
         if (!parsed.requirements.length) {
           button.textContent = 'В OCR-тексте требования не найдены'; button.disabled = true; return;
         }
         addRequirements(doc, parsed.requirements, 'document');
+        invalidateRoomRequirementCache(room);
         button.textContent = 'Добавлено требований: ' + parsed.requirements.length; button.disabled = true;
-        scanStatus.textContent = 'OCR: найдено требований — ' + parsed.requirements.length + '. Проверьте фрагмент и единицы.';
+        scanStatus.textContent = 'OCR: найдено требований — ' + parsed.requirements.length + '. OCR-источник всегда требует проверки по оригиналу.';
+        renderAutomaticRanking();
       } catch (error) {
         button.textContent = 'Ошибка OCR — повторить'; button.disabled = false;
       }
@@ -3989,45 +4566,46 @@
       setScanBusy(true);
       if (!docs.length) {
         scanStatus.textContent = 'В этом помещении нет документов с прикреплёнными файлами. Можно ввести требование вручную.';
-        scanInProgress = false; setScanBusy(false); updateCandidateOptions(); return;
+        scanInProgress = false; setScanBusy(false); updateCandidateOptions(); renderAutomaticRanking(); return;
       }
-      const usable = docs.filter(d => comparisonSupportedExt(comparisonFileExt(d)));
-      docs.filter(d => comparisonOcrExt(comparisonFileExt(d)) && !comparisonSupportedExt(comparisonFileExt(d))).forEach(d => ocrDocs.push(d));
-      const skippedCount = docs.length - usable.length - ocrDocs.length;
-      const nativeCadSkipped = docs.some(d => ['dwg', 'rvt', 'rfa', 'rte', 'ifc', 'ifczip'].includes(comparisonFileExt(d)));
       if (!API || !API.readDocument) {
         scanStatus.textContent = 'Чтение локальных документов доступно только в десктопной версии BIM Twin.';
       } else {
-        for (let i = 0; i < usable.length; i++) {
-          if (!modal.overlay.isConnected) return;
-          const doc = usable[i];
-          scanStatus.textContent = 'Анализ документа ' + (i + 1) + ' из ' + usable.length + ': ' + comparisonDocName(doc) + '…';
-          const parsed = await parseComparisonDocument(doc);
-          lastReadCount++;
-          if (parsed.ok) {
-            addRequirements(doc, parsed.requirements, 'document');
-            if (!parsed.requirements.length && comparisonOcrExt(comparisonFileExt(doc))) ocrDocs.push(doc);
-            if (parsed.textTruncated) scanStatus.textContent = 'Текст документа сокращён при извлечении; проверьте вручную полный файл.';
-            if (parsed.error) scanStatus.textContent = 'Предупреждение чтения: ' + parsed.error;
-          } else scanStatus.textContent = 'Не удалось разобрать «' + comparisonDocName(doc) + '»: ' + parsed.reason;
+        const scan = await scanRoomRequirements(room, {
+          autoOcr: true,
+          onProgress: progress => {
+            if (!modal.overlay.isConnected) return;
+            const action = progress.stage === 'ocr' ? 'OCR документа' : progress.stage === 'cache' ? 'Чтение кэша' : 'Анализ документа';
+            scanStatus.textContent = action + ' ' + progress.current + ' из ' + progress.total + (progress.name ? ': ' + progress.name : '') + '…';
+          }
+        });
+        if (!modal.overlay.isConnected) return;
+        for (const entry of scan.entries) addRequirements(entry.doc, [entry.requirement], 'document');
+        scanStatus.textContent = 'Просмотрено документов: ' + scan.docs.length +
+          ' · найдено требований: ' + entries.length +
+          (scan.ocrCount ? ' · OCR запущен: ' + scan.ocrCount : '') +
+          (scan.skippedCount ? ' · неподдерживаемых форматов: ' + scan.skippedCount : '') + '.';
+        if (scan.errors.length) scanStatus.textContent += ' Ошибок/предупреждений чтения: ' + scan.errors.length + '.';
+        if (scan.ocrFailures.length && API.ocrDocument) {
+          const ocrSection = mk('div', 'cmp-ocr-section');
+          ocrSection.appendChild(mk('strong', '', 'OCR не завершён'));
+          ocrSection.appendChild(mk('div', 'cmp-small-hint', 'Автораспознавание уже запускалось. Можно повторить после установки Tesseract/Poppler или проверки файла.'));
+          for (const failure of scan.ocrFailures) {
+            const btn = mk('button', 'btn xs');
+            btn.textContent = 'Повторить OCR: ' + comparisonDocName(failure.doc);
+            btn.type = 'button';
+            btn.onclick = () => runOcr(failure.doc, btn);
+            ocrSection.appendChild(btn);
+          }
+          modal.body.insertBefore(ocrSection, manualToggle);
         }
-        const total = entries.length;
-        scanStatus.textContent = 'Просмотрено документов: ' + lastReadCount + ' · найдено требований: ' + total + (skippedCount ? ' · неподдерживаемых форматов пропущено: ' + skippedCount : '') + '. Проверьте исходный фрагмент перед сохранением.';
+        if (!entries.length) scanStatus.textContent += ' Размеры с явными единицами не найдены; подпишите измерение точнее или введите требование вручную.';
+        if (scan.nativeCadSkipped) scanStatus.textContent += ' DWG/RVT/RFA/IFC напрямую не разбираются: приложите размерный лист/спецификацию PDF, XLSX, CSV или DXF.';
       }
-      if (ocrDocs.length && API && API.ocrDocument) {
-        const ocrSection = mk('div', 'cmp-ocr-section');
-        ocrSection.appendChild(mk('strong', '', 'Сканированные файлы без читаемого текста'));
-        ocrSection.appendChild(mk('div', 'cmp-small-hint', 'OCR запускается только по запросу. Распознанный текст может ошибаться — сверяйте его с оригиналом.'));
-        for (const doc of ocrDocs) {
-          const btn = mk('button', 'btn xs'); btn.textContent = 'Распознать: ' + comparisonDocName(doc); btn.type = 'button'; btn.onclick = () => runOcr(doc, btn); ocrSection.appendChild(btn);
-        }
-        modal.body.insertBefore(ocrSection, manualToggle);
-      }
-      if (!entries.length && usable.length) scanStatus.textContent += ' Автоматически извлечь размер с явными единицами не удалось; проверьте документ, попробуйте OCR или введите значение вручную.';
-      if (nativeCadSkipped) scanStatus.textContent += ' DWG/RVT/RFA/IFC-модели напрямую не разбираются: экспортируйте размерный лист или спецификацию в PDF/XLSX/CSV. Для сканированного PDF доступен OCR с обязательной проверкой.';
       scanInProgress = false;
       setScanBusy(false);
       updateCandidateOptions();
+      renderAutomaticRanking();
       if (!entries.length) { renderComparisonControls(); evaluate(); }
     }
 
@@ -4044,6 +4622,57 @@
     a.href = url; a.download = 'measurements-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.csv';
     document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast('CSV экспортирован (' + __measurements.length + ' строк)');
+  }
+  async function exportMeasQaReport() {
+    if (!__measurements.length) { toast('Список измерений пуст'); return; }
+    if (!window.Measure || typeof window.Measure.createMeasurementReport !== 'function') {
+      toast('Не удалось сформировать QA-отчёт'); return;
+    }
+    const values = await openForm('Параметры QA-отчёта', [
+      { k: 'author', label: 'Автор отчёта (необязательно)', value: '' },
+      { k: 'linearTolerance', label: 'Линейный допуск в единицах источника (необязательно)', type: 'number', value: '' },
+      { k: 'angularTolerance', label: 'Угловой допуск в градусах (необязательно)', type: 'number', value: '' }
+    ]);
+    if (!values) return;
+    const optionalTolerance = value => {
+      if (value == null || String(value).trim() === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : undefined;
+    };
+    const linearTolerance = optionalTolerance(values.linearTolerance);
+    const angularTolerance = optionalTolerance(values.angularTolerance);
+    if (linearTolerance === undefined || angularTolerance === undefined) {
+      toast('Допуски должны быть неотрицательными числами; исправьте значения');
+      return;
+    }
+    const cloud = viewer && viewer._cloudRecord || {};
+    const sourcePath = cloud.sourceName || lastCloudPath || '';
+    const sourceName = String(sourcePath).split(/[\\/]/).pop() || null;
+    const project = DB && DB.project || {};
+    const report = window.Measure.createMeasurementReport(__measurements, {
+      author: values.author,
+      project: { id: project.id, name: project.name, room: current && current.name },
+      source: {
+        name: sourceName,
+        format: cloud.format || null,
+        pointCount: Number.isSafeInteger(cloud.sourceCount) ? cloud.sourceCount : null,
+        loadedPointCount: Number.isSafeInteger(cloud.loadedCount) ? cloud.loadedCount : null
+      },
+      coordinateReference: {
+        frame: 'viewer',
+        crsWkt: viewer && viewer._srcCrs || null,
+        units: viewer && viewer._srcUnits || null,
+        sourceTransform: viewer && viewer._srcXform || null
+      },
+      tolerances: {
+        linear: linearTolerance,
+        angular: angularTolerance,
+        units: viewer && viewer._srcUnits || null
+      }
+    });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadBlob(JSON.stringify(report, null, 2), 'measurement-qa-report-' + stamp + '.json', 'application/json');
+    toast('QA JSON сформирован · допуски записаны, автоматическая оценка не выполнялась');
   }
   // Экспорт измерений в Notion: формируем готовую Markdown-таблицу и копируем в буфер обмена
   // (вставляется в Notion как настоящая таблица). Дополнительно сохраняем .md-файл.
@@ -4091,7 +4720,9 @@
     // список / сохранение / CSV
     bind('mmSave', () => saveMeasurement());
     bind('mmCsv', () => exportMeasCsv());
+    bind('mmQaReport', () => exportMeasQaReport());
     bind('mmNotion', () => exportMeasNotion());
+    bind('mlAutoCompare', () => autoCompareAllMeasurements());
     bind('mlCsv', () => exportMeasCsv());
     bind('mlNotion', () => exportMeasNotion());
     bind('mlClearAll', () => { __measurements = []; renderMeasList(); persistMeasurements(); });
@@ -4324,7 +4955,15 @@
     await loadData();
     if (CAN_VERIFY) { try { SETTINGS = (await API.getSettings()) || {}; } catch (e) { SETTINGS = {}; } }
     // Phase E: merge locally-persisted prefs (theme/lang/onboarded) for demo mode & fallback
-    try { const ls = JSON.parse(localStorage.getItem('bim.settings') || 'null'); if (ls) SETTINGS = Object.assign({}, ls, SETTINGS); } catch (e) {}
+    try {
+      const ls = JSON.parse(localStorage.getItem('bim.settings') || 'null');
+      if (ls) {
+        delete ls.llmApiKey;
+        delete ls.llmApiKeyEnc;
+        SETTINGS = Object.assign({}, ls, SETTINGS);
+        localStorage.setItem('bim.settings', JSON.stringify(settingsForLocalStorage(SETTINGS)));
+      }
+    } catch (e) {}
     // Keep first-open import bounded on machines where a full-resolution
     // multi-million-point VBO can exhaust renderer/GPU memory. Users may raise
     // the preview budget explicitly up to the 300M control limit.

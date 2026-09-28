@@ -45,6 +45,90 @@
     ['slope', /\bslope\b|\bgrade\b|уклон/iu]
   ];
 
+  const SEMANTIC_STOP_WORDS = new Set([
+    'the', 'and', 'for', 'from', 'with', 'this', 'that', 'into', 'over', 'under',
+    'или', 'для', 'при', 'это', 'этот', 'эта', 'эти', 'как', 'что', 'над', 'под',
+    'в', 'во', 'на', 'по', 'из', 'к', 'ко', 'у', 'о', 'об', 'от', 'до', 'и',
+    'та', 'такий', 'така', 'таке', 'для', 'при', 'це', 'цей', 'ця', 'ці', 'як',
+    'з', 'із', 'зі', 'у', 'в', 'на', 'по', 'до', 'від'
+  ]);
+
+  const OBJECT_CATEGORY_DEFS = [
+    ['wall', /(?:\bwall(?:s)?\b|стен|сті[нн]|перегород|partition)/iu],
+    ['opening', /(?:\bopening(?:s)?\b|про[её]м|проріз)/iu],
+    ['door', /(?:\bdoor(?:s)?\b|двер|дверн)/iu],
+    ['window', /(?:\bwindow(?:s)?\b|окон|окн|вікон|вікн)/iu],
+    ['column', /(?:\bcolumn(?:s)?\b|колонн|колон)/iu],
+    ['beam', /(?:\bbeam(?:s)?\b|балк)/iu],
+    ['slab', /(?:\bslab(?:s)?\b|плит[аы]|перекрыт)/iu],
+    ['floor', /(?:\bfloor(?:s)?\b|пол(?:а|у|ом|ы)?\b|підлог)/iu],
+    ['ceiling', /(?:\bceiling(?:s)?\b|потол|стел)/iu],
+    ['pipe', /(?:\bpipe(?:s)?\b|pipeline|труб|трубопровод)/iu],
+    ['duct', /(?:\bduct(?:s)?\b|air[\s-]?duct|воздуховод|повітровод|венткороб)/iu],
+    ['shaft', /(?:\bshaft(?:s)?\b|шахт|вентшахт)/iu],
+    ['equipment', /(?:\bequipment\b|\bunit\b|оборудован|обладнан|установк)/iu],
+    ['cable-tray', /(?:cable[\s-]?(?:tray|channel)|кабель[\s-]?(?:канал|лоток)|лоток)/iu],
+    ['stair', /(?:\bstair(?:s|case)?\b|лестниц|сход)/iu],
+    ['foundation', /(?:\bfoundation(?:s)?\b|фундамент)/iu],
+    ['facade', /(?:\bfacade(?:s)?\b|фасад)/iu],
+    ['roof', /(?:\broof(?:s)?\b|кровл|дах)/iu],
+    ['room', /(?:\broom(?:s)?\b|помещен|приміщен|комнат)/iu]
+  ];
+
+  const CATEGORY_COMPATIBILITY = {
+    door: ['opening'],
+    window: ['opening'],
+    opening: ['door', 'window'],
+    duct: ['shaft'],
+    shaft: ['duct'],
+    slab: ['floor', 'ceiling'],
+    floor: ['slab'],
+    ceiling: ['slab']
+  };
+
+  function normalizeSemanticText(value) {
+    return String(value == null ? '' : value)
+      .normalize('NFKD')
+      .toLowerCase()
+      .replace(/ё/g, 'е')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zа-яіїєґ0-9]+/giu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function semanticStem(token) {
+    let value = String(token || '');
+    if (value.length <= 4 || /\d/u.test(value)) return value;
+    if (/^[a-z]+$/u.test(value)) {
+      value = value.replace(/(?:ments?|ations?|ingly|edly|ing|ed|es|s)$/u, '');
+      return value.length >= 3 ? value : token;
+    }
+    value = value.replace(/(?:иями|ями|ами|ого|ему|ому|ими|ыми|ий|ый|ая|яя|ое|ее|ые|ие|ов|ев|ам|ям|ах|ях|ою|ею|ом|ем|ів|а|я|и|ы|е|у|ю|о)$/u, '');
+    return value.length >= 3 ? value : token;
+  }
+
+  function tokenizeSemanticText(value) {
+    const normalized = normalizeSemanticText(value);
+    if (!normalized) return [];
+    const seen = new Set();
+    const out = [];
+    for (const raw of normalized.split(' ')) {
+      if (!raw || raw.length < 2 || SEMANTIC_STOP_WORDS.has(raw)) continue;
+      const token = semanticStem(raw);
+      if (!token || SEMANTIC_STOP_WORDS.has(token) || seen.has(token)) continue;
+      seen.add(token);
+      out.push(token);
+    }
+    return out;
+  }
+
+  function detectObjectCategories(value) {
+    const text = normalizeSemanticText(value);
+    if (!text) return [];
+    return OBJECT_CATEGORY_DEFS.filter(pair => pair[1].test(text)).map(pair => pair[0]);
+  }
+
   function normalizeUnitText(value) {
     let s = String(value == null ? '' : value).trim().toLowerCase()
       .replace(/\u00a0/g, ' ')
@@ -117,7 +201,9 @@
       row: Number.isSafeInteger(source.row) ? source.row : null,
       line: Number.isSafeInteger(source.line) ? source.line : null,
       page: Number.isSafeInteger(source.page) ? source.page : null,
-      excerpt: String(excerpt == null ? '' : excerpt).slice(0, 500)
+      excerpt: String(excerpt == null ? '' : excerpt).slice(0, 500),
+      ocr: !!source.ocr,
+      truncated: !!source.truncated
     };
   }
 
@@ -472,7 +558,9 @@
     const requirements = [];
     const source = {
       documentId: input.documentId || input.source && input.source.documentId || null,
-      documentName: input.documentName || input.source && input.source.documentName || null
+      documentName: input.documentName || input.source && input.source.documentName || null,
+      ocr: !!input.ocr || !!(input.source && input.source.ocr),
+      truncated: !!input.textTruncated || !!(input.source && input.source.truncated)
     };
     const sheets = Array.isArray(input.sheets) ? input.sheets : [];
     for (const sheet of sheets) {
@@ -636,6 +724,316 @@
     return fields.find(f => f.kind === (requirement && requirement.kind)) || fields[0] || null;
   }
 
+  function measurementFieldDimensions(field, measurement) {
+    const key = field && field.key;
+    const mode = measurement && measurement.mode;
+    const map = {
+      distance3d: { primary: 'length', compatible: ['width', 'height', 'thickness', 'diameter', 'gap'] },
+      horizontal: { primary: 'width', compatible: ['length', 'diameter', 'gap'] },
+      vertical: { primary: 'height', compatible: ['length', 'gap'] },
+      deltaX: { primary: 'width', compatible: ['length', 'thickness', 'diameter', 'gap'] },
+      deltaY: { primary: 'length', compatible: ['width', 'thickness', 'diameter', 'gap'] },
+      deltaZ: { primary: 'height', compatible: ['length', 'gap'] },
+      length: { primary: 'length', compatible: mode === 'plane' ? ['height'] : ['width', 'height'] },
+      width: { primary: 'width', compatible: ['thickness', 'diameter', 'gap'] },
+      area: { primary: 'area', compatible: [] },
+      perimeter: { primary: 'length', compatible: [] },
+      angle: { primary: 'angle', compatible: [] },
+      slope: { primary: 'slope', compatible: [] },
+      gap: { primary: 'gap', compatible: ['thickness', 'diameter'] }
+    };
+    return map[key] || {
+      primary: field && field.kind === 'area' ? 'area' : field && field.kind === 'angle' ? 'angle' : field && field.kind === 'slope' ? 'slope' : 'unspecified',
+      compatible: []
+    };
+  }
+
+  function suggestMeasurementUnit(sourceUnits, kind) {
+    if (kind === 'angle') return { unit: '°', source: 'intrinsic', autoConfirm: true };
+    if (kind === 'slope') return { unit: '%', source: 'intrinsic', autoConfirm: true };
+    const source = unitInfo(sourceUnits);
+    if (!source) return { unit: null, source: 'unknown', autoConfirm: false };
+    if (kind === 'linear' && source.kind === 'linear') {
+      return { unit: source.symbol, source: 'metadata', autoConfirm: true };
+    }
+    if (kind === 'area') {
+      if (source.kind === 'area') return { unit: source.symbol, source: 'metadata', autoConfirm: true };
+      if (source.kind === 'linear') {
+        const squared = { 'мм': 'мм²', 'см': 'см²', 'м': 'м²', ft: 'ft²', in: 'in²' }[source.symbol] || null;
+        if (squared) return { unit: squared, source: 'metadata-derived-area', autoConfirm: true };
+      }
+    }
+    return { unit: null, source: 'incompatible', autoConfirm: false };
+  }
+
+  function categoryRelationship(left, right) {
+    const a = Array.isArray(left) ? left : [];
+    const b = Array.isArray(right) ? right : [];
+    if (!a.length || !b.length) return 'unknown';
+    if (a.some(value => b.includes(value))) return 'match';
+    for (const value of a) {
+      const compatible = CATEGORY_COMPATIBILITY[value] || [];
+      if (compatible.some(item => b.includes(item))) return 'compatible';
+    }
+    // "equipment" is generic and must not turn a specific MEP category into a
+    // false contradiction.
+    if (a.includes('equipment') || b.includes('equipment')) return 'unknown';
+    return 'conflict';
+  }
+
+  function semanticOverlap(leftTokens, rightTokens) {
+    const left = new Set(leftTokens || []);
+    const right = new Set(rightTokens || []);
+    if (!left.size || !right.size) return { count: 0, ratio: 0, tokens: [] };
+    const tokens = [];
+    left.forEach(value => { if (right.has(value)) tokens.push(value); });
+    return {
+      count: tokens.length,
+      ratio: tokens.length / Math.max(1, Math.min(left.size, right.size)),
+      tokens: tokens.slice(0, 8)
+    };
+  }
+
+  function requirementParts(requirement) {
+    if (!requirement) return [];
+    if (requirement.kind !== 'pair') return [{ requirement: requirement, pairIndex: null }];
+    return (Array.isArray(requirement.values) ? requirement.values : []).map((value, pairIndex) => ({
+      pairIndex: pairIndex,
+      requirement: Object.assign({}, requirement, {
+        kind: 'linear',
+        dimension: value.dimension || 'unspecified',
+        baseValue: value.baseValue,
+        value: value.value,
+        unit: value.unit,
+        tolerance: null,
+        toleranceValue: null,
+        toleranceUnit: null,
+        toleranceMode: null,
+        bound: null
+      })
+    }));
+  }
+
+  function dimensionCompatibility(dimension, field, measurement) {
+    const profile = measurementFieldDimensions(field, measurement);
+    if (!dimension || dimension === 'unspecified' || dimension === 'first' || dimension === 'second') {
+      return { tier: 'ambiguous', points: 3, exact: false, profile: profile };
+    }
+    if (dimension === profile.primary) return { tier: 'exact', points: 24, exact: true, profile: profile };
+    if (profile.compatible.includes(dimension)) return { tier: 'compatible', points: 13, exact: false, profile: profile };
+    return { tier: 'conflict', points: -22, exact: false, profile: profile };
+  }
+
+  function finiteTolerance(requirement) {
+    return (requirement.toleranceMode === 'symmetric' && Number.isFinite(requirement.tolerance)) ||
+      ((requirement.toleranceMode === 'max' || requirement.toleranceMode === 'min') && Number.isFinite(requirement.bound));
+  }
+
+  function valuePlausibility(field, requirement, unit) {
+    const info = unitInfo(unit);
+    if (!field || !info || !Number.isFinite(field.value) || !Number.isFinite(requirement && requirement.baseValue)) return 0;
+    const actual = Math.abs(field.value * info.factor);
+    const expected = Math.abs(requirement.baseValue);
+    if (actual === 0 && expected === 0) return 4;
+    if (!(actual > 0) || !(expected > 0)) return 0;
+    const logRatio = Math.abs(Math.log(actual / expected));
+    if (logRatio <= Math.log(1.05)) return 4;
+    if (logRatio <= Math.log(1.25)) return 3;
+    if (logRatio <= Math.log(2)) return 1;
+    if (logRatio >= Math.log(100)) return -4;
+    return 0;
+  }
+
+  function rankRequirementMatches(args) {
+    args = args || {};
+    const measurement = args.measurement || {};
+    const context = Object.assign({}, measurement.measurementContext || {}, args.context || {});
+    const candidates = Array.isArray(args.candidates) ? args.candidates : [];
+    const fields = Array.isArray(args.fields) ? args.fields : measurementFields(measurement);
+    const measurementText = [
+      measurement.label, context.elementName, context.elementType, context.elementGuid
+    ].filter(Boolean).join(' ');
+    const measurementTokens = tokenizeSemanticText(measurementText);
+    const roomTokens = tokenizeSemanticText(context.roomName || '');
+    const measurementCategories = detectObjectCategories(measurementText);
+    const matches = [];
+
+    candidates.forEach((candidate, candidateIndex) => {
+      const entry = candidate && candidate.requirement ? candidate : { requirement: candidate, doc: null };
+      const requirement = entry.requirement;
+      if (!requirement) return;
+      const doc = entry.doc || {};
+      const source = requirement.source || {};
+      const requirementText = [source.excerpt, source.documentName, doc.name, doc.type].filter(Boolean).join(' ');
+      const requirementTokens = tokenizeSemanticText(requirementText);
+      const requirementCategories = detectObjectCategories(requirementText);
+      const category = categoryRelationship(measurementCategories, requirementCategories);
+      const overlap = semanticOverlap(measurementTokens, requirementTokens);
+      const roomOverlap = semanticOverlap(roomTokens, requirementTokens);
+      const exactElementLink = !!(context.elementId && doc.element_id && String(context.elementId) === String(doc.element_id));
+      const conflictingElementLink = !!(context.elementId && doc.element_id && String(context.elementId) !== String(doc.element_id));
+
+      for (const part of requirementParts(requirement)) {
+        const selectedRequirement = part.requirement;
+        for (const field of fields) {
+          if (!field || field.kind !== selectedRequirement.kind) continue;
+          const unitSuggestion = suggestMeasurementUnit(args.sourceUnits != null ? args.sourceUnits : context.sourceUnits, field.kind);
+          const dimension = dimensionCompatibility(selectedRequirement.dimension, field, measurement);
+          let score = 8 + dimension.points;
+          const reasonCodes = [];
+          const warningCodes = [];
+          const reasons = [];
+          const warnings = [];
+
+          if (dimension.tier === 'exact') {
+            reasonCodes.push('dimension_exact'); reasons.push('Размер документа совпадает с измеряемым полем.');
+          } else if (dimension.tier === 'compatible') {
+            reasonCodes.push('dimension_compatible'); reasons.push('Геометрия измерения совместима с типом размера.');
+          } else if (dimension.tier === 'ambiguous') {
+            warningCodes.push('dimension_ambiguous'); warnings.push('В документе не обозначена ось размера.');
+          } else {
+            warningCodes.push('dimension_conflict'); warnings.push('Обозначение размера не соответствует выбранному полю.');
+          }
+
+          if (exactElementLink) {
+            score += 28; reasonCodes.push('element_link'); reasons.push('Документ прямо привязан к выбранному элементу.');
+          } else if (conflictingElementLink) {
+            score -= 30; warningCodes.push('linked_to_other_element'); warnings.push('Документ привязан к другому элементу.');
+          }
+
+          if (category === 'match') {
+            score += 18; reasonCodes.push('category_match'); reasons.push('Тип объекта совпадает с контекстом требования.');
+          } else if (category === 'compatible') {
+            score += 10; reasonCodes.push('category_compatible'); reasons.push('Типы объекта и требования совместимы.');
+          } else if (category === 'conflict') {
+            score -= 24; warningCodes.push('object_conflict'); warnings.push('Требование похоже на другой тип объекта.');
+          }
+
+          if (overlap.count) {
+            const semanticPoints = Math.min(14, 4 + overlap.count * 3 + Math.round(overlap.ratio * 3));
+            score += semanticPoints;
+            reasonCodes.push('semantic_overlap');
+            reasons.push('Совпали ключевые слова: ' + overlap.tokens.join(', ') + '.');
+          }
+          if (roomOverlap.count) {
+            score += Math.min(5, 2 + roomOverlap.count);
+            reasonCodes.push('room_context');
+            reasons.push('Источник содержит контекст помещения.');
+          }
+
+          if (requirement.confidence === 'high') {
+            score += 9; reasonCodes.push('explicit_requirement'); reasons.push('Размер и единица явно извлечены из источника.');
+          } else if (requirement.confidence === 'medium') {
+            score += 4;
+          } else if (requirement.confidence === 'low') {
+            score -= 8; warningCodes.push('low_extraction_confidence'); warnings.push('Извлечение требования имеет низкую уверенность.');
+          } else if (requirement.confidence === 'manual') {
+            score -= 3; warningCodes.push('manual_requirement'); warnings.push('Требование введено вручную.');
+          }
+
+          if (finiteTolerance(selectedRequirement)) {
+            score += 4; reasonCodes.push('explicit_tolerance'); reasons.push('В источнике указан явный допуск или предел.');
+          }
+          if (unitSuggestion.unit) {
+            score += 4;
+            reasonCodes.push(unitSuggestion.source === 'intrinsic' ? 'intrinsic_unit' : 'units_from_metadata');
+            reasons.push(unitSuggestion.source === 'intrinsic' ? 'Единица задана самим типом измерения.' : 'Единица подтверждается метаданными облака.');
+          } else {
+            score -= 7; warningCodes.push('units_unknown'); warnings.push('Метаданные не подтверждают единицу фактического измерения.');
+          }
+          if (source.ocr) {
+            score -= 12; warningCodes.push('ocr_source'); warnings.push('Текст получен OCR и требует проверки по оригиналу.');
+          }
+          if (source.truncated) {
+            score -= 14; warningCodes.push('truncated_source'); warnings.push('Извлечённый текст документа был сокращён.');
+          }
+          if (Array.isArray(requirement.assumptions) && requirement.assumptions.length) {
+            score -= Math.min(6, requirement.assumptions.length * 2);
+            warningCodes.push('parser_assumptions');
+          }
+
+          const plausibility = valuePlausibility(field, selectedRequirement, unitSuggestion.unit);
+          score += plausibility;
+          if (plausibility > 0) {
+            reasonCodes.push('value_plausible');
+            reasons.push('Значения находятся в правдоподобном масштабе.');
+          }
+
+          score = Math.max(0, Math.min(100, Math.round(score)));
+          const scopeSafe = exactElementLink || (category === 'match' && overlap.count > 0);
+          const dimensionSafe = dimension.tier === 'exact' ||
+            (dimension.tier === 'compatible' && exactElementLink && overlap.count > 0);
+          const sourceSafe = !source.ocr && !source.truncated &&
+            requirement.confidence !== 'low' && requirement.confidence !== 'manual' &&
+            !(requirement.kind === 'pair' && (
+              ['first', 'second', 'unspecified'].includes(selectedRequirement.dimension) ||
+              (Array.isArray(requirement.assumptions) && requirement.assumptions.length > 0)
+            ));
+          const autoConfirmEligible = score >= 78 && scopeSafe && dimensionSafe &&
+            unitSuggestion.autoConfirm && sourceSafe && !conflictingElementLink && category !== 'conflict';
+          const preview = unitSuggestion.unit ? compareMeasurement({
+            measurement: measurement,
+            requirement: requirement,
+            fields: fields,
+            fieldKey: field.key,
+            pairIndex: part.pairIndex == null ? 0 : part.pairIndex,
+            unit: unitSuggestion.unit,
+            requirementConfirmed: true,
+            unitConfirmed: true
+          }) : null;
+
+          matches.push({
+            candidateIndex: candidateIndex,
+            candidate: candidate,
+            entry: entry,
+            requirement: requirement,
+            selectedRequirement: selectedRequirement,
+            field: field,
+            pairIndex: part.pairIndex,
+            unit: unitSuggestion.unit,
+            unitSource: unitSuggestion.source,
+            score: score,
+            confidence: score >= 78 ? 'high' : score >= 55 ? 'medium' : 'low',
+            autoConfirmEligible: autoConfirmEligible,
+            reasons: reasons.slice(0, 8),
+            warnings: warnings.slice(0, 8),
+            reasonCodes: reasonCodes,
+            warningCodes: warningCodes,
+            signals: {
+              dimension: dimension.tier,
+              category: category,
+              exactElementLink: exactElementLink,
+              conflictingElementLink: conflictingElementLink,
+              semanticTokens: overlap.tokens
+            },
+            preview: preview
+          });
+        }
+      }
+    });
+
+    matches.sort((a, b) => b.score - a.score || a.candidateIndex - b.candidateIndex || String(a.field.key).localeCompare(String(b.field.key)));
+    const best = matches[0] || null;
+    const second = matches[1] || null;
+    const margin = best ? (second ? best.score - second.score : 100) : 0;
+    if (best && margin < 10) {
+      best.warningCodes = best.warningCodes.concat('ambiguous_candidates');
+      best.warnings = best.warnings.concat('Есть близкий по рейтингу альтернативный вариант.');
+    }
+    const canAutoConfirm = !!(best && best.autoConfirmEligible && margin >= 10);
+    if (best) best.canAutoConfirm = canAutoConfirm;
+    const decision = {
+      state: !best ? 'no-match' : canAutoConfirm ? 'auto-confirmed' : margin < 10 ? 'ambiguous' : 'needs-review',
+      canAutoConfirm: canAutoConfirm,
+      score: best ? best.score : 0,
+      confidence: best ? best.confidence : 'low',
+      margin: margin,
+      reasons: best ? best.reasons.slice() : [],
+      warnings: best ? best.warnings.slice() : ['Совместимое требование в документах не найдено.']
+    };
+    return { matches: matches, best: best, margin: margin, decision: decision };
+  }
+
   function compareMeasurement(args) {
     args = args || {};
     const requirement = args.requirement;
@@ -733,6 +1131,8 @@
 
   return {
     unitInfo, findUnit, parseNumber, parseDelimitedText, dimensionHint,
-    extractRequirements, measurementFields, suggestField, compareMeasurement, formatBaseValue
+    normalizeSemanticText, tokenizeSemanticText, detectObjectCategories,
+    extractRequirements, measurementFields, measurementFieldDimensions, suggestField,
+    suggestMeasurementUnit, rankRequirementMatches, compareMeasurement, formatBaseValue
   };
 });
