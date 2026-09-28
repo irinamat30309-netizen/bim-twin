@@ -2,7 +2,7 @@
 
 ## Что содержит этот архив
 
-Это архив исходного кода и проверок для версии `1.1.17`, а не готовый установщик. GitHub Actions подтвердил прохождение Linux- и Windows-тестов исходников, но сборка NSIS-инсталлятора, запуск упакованной Electron/ASAR-версии и приёмка на пользовательском ПК в CI не выполнялись.
+Это исходники release candidate `1.2.0-rc.2`. В текущей Linux-среде проверяются AppImage/ASAR и production dependency audit. Исторический Windows package workflow собирал и проверял NSIS/ASAR, но Windows installer именно для текущего RC ещё должен пройти GitHub-hosted Windows build и clean-machine приёмку. Подробности, локальные хеши и ограничения: `RELEASE-1.2.0-rc.2.md`.
 
 ## Требования
 
@@ -17,10 +17,10 @@
 
 ```powershell
 npm ci
+npm run audit:production
 npm run check
 node scripts/check-syntax.mjs
-node --test
-npm run test:store
+npm run qa:final
 npm run dist:win
 ```
 
@@ -35,7 +35,7 @@ npm run dist:win
 
 ## Границы проверки
 
-- Ветка CI запускает тесты на `windows-latest` с `npm ci --ignore-scripts --omit=optional`; эта проверка подтверждает переносимость unit/regression tests, но не собирает installer и не тестирует `better-sqlite3`, ASAR или установку/обновление.
+- Обычный CI запускает тесты на `windows-latest` с `npm ci --ignore-scripts --omit=optional`; отдельный `windows-package-qa` workflow устанавливает optional dependencies, запускает QA, собирает NSIS и проверяет обязательные ASAR entries.
 - Перед выпуском проверьте installer на чистой Windows VM: установить, открыть проект, импортировать небольшой синтетический LAS/PLY, сохранить/повторно открыть проект, экспортировать результат и удалить приложение.
 - Не используйте пользовательские модели для smoke-теста без их явного выбора; не включайте личные облака/документы в дистрибутив.
 - Пределы точек и требования GPU определяются конкретной машиной; этот архив не заявляет гарантированную производительность на RTX или на 100 млн/100 GB данных.

@@ -1,12 +1,16 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const inv = (ch, payload) => ipcRenderer.invoke(ch, payload);
-const snd = (ch, payload) => ipcRenderer.send(ch, payload);
+const inv = (ch, ...payload) => ipcRenderer.invoke(ch, ...payload);
+const snd = (ch, ...payload) => ipcRenderer.send(ch, ...payload);
 
 contextBridge.exposeInMainWorld('bimAPI', {
   platform: process.platform,
   getPathForFile: (file) => {
-    try { return webUtils && file ? webUtils.getPathForFile(file) : ''; } catch (_) { return ''; }
+    try {
+      const p = webUtils && file ? webUtils.getPathForFile(file) : '';
+      if (!p) return '';
+      return ipcRenderer.sendSync('bim:authorizePickedPath', p) === true ? p : '';
+    } catch (_) { return ''; }
   },
   winMin: () => snd('bim:win:min'),
   winMax: () => snd('bim:win:max'),
@@ -52,6 +56,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   ccFolder: () => inv('bim:ccFolder'),
   geomStatus: () => inv('bim:geomStatus'),
   s2bStatus: () => inv('bim:s2bStatus'),
+  s2bAuth: () => inv('bim:s2bAuth'),
   s2bRestart: () => inv('bim:s2bRestart'),
   deviation: (a) => inv('bim:deviation', a),
   registerClouds: (a) => inv('bim:registerClouds', a),

@@ -8,15 +8,17 @@
  */
 const https = require('https');
 const http = require('http');
+const { llmPrivacyStatus, buildLlmPayload, parseHttpUrl } = require('./privacy');
 
 const SYSTEM = 'Ты — инженер-нормоконтролёр. Сравни элемент BIM-модели с документами. '
   + 'Верни СТРОГО JSON: {"severity":"ok|warn|err","kind":"...","text":"...","confidence":0..1}.';
 
 function llmAvailable(settings) {
-  const s = settings || {};
-  if (s.llmProvider === 'openai' && s.llmApiKey) return true;
-  if (s.llmProvider === 'ollama' && s.llmHost) return true;
-  return false;
+  return llmPrivacyStatus(settings).allowed;
+}
+
+function privacyStatus(settings) {
+  return llmPrivacyStatus(settings);
 }
 
 function postJson(urlStr, headers, body, timeoutMs) {
@@ -29,7 +31,23 @@ function postJson(urlStr, headers, body, timeoutMs) {
       path: u.pathname + u.search,
       headers: Object.assign({ 'Content-Type': 'application/json', 'Content-Length': data.length }, headers || {})
     }, res => {
-      let buf = ''; res.on('data', d => buf += d); res.on('end', () => resolve({ status: res.statusCode, body: buf }));
+      let buf = '';
+      let bytes = 0;
+      res.on('data', d => {
+        bytes += d.length;
+        if (bytes > 1024 * 1024) {
+          req.destroy(new Error('response_too_large'));
+          return;
+        }
+        buf += d;
+      });
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error('http_status_' + res.statusCode));
+          return;
+        }
+        resolve({ status: res.statusCode, body: buf });
+      });
     });
     req.on('error', reject);
     req.setTimeout(timeoutMs || 60000, () => { req.destroy(new Error('timeout')); });
@@ -39,7 +57,9 @@ function postJson(urlStr, headers, body, timeoutMs) {
 
 async function verifyLLM(element, docText, settings) {
   const s = settings || {};
-  const payload = { element, documents: String(docText || '').slice(0, 6000) };
+  const privacy = llmPrivacyStatus(s);
+  if (!privacy.allowed) return null;
+  const payload = buildLlmPayload(element, docText, s);
   try {
     if (s.llmProvider === 'openai' && s.llmApiKey) {
       const r = await postJson('https://api.openai.com/v1/chat/completions',
@@ -51,7 +71,9 @@ async function verifyLLM(element, docText, settings) {
       return content ? JSON.parse(content) : null;
     }
     if (s.llmProvider === 'ollama' && s.llmHost) {
-      const r = await postJson(s.llmHost.replace(/\/$/, '') + '/api/generate', {},
+      const host = parseHttpUrl(s.llmHost);
+      if (!host) return null;
+      const r = await postJson(host.href.replace(/\/$/, '') + '/api/generate', {},
         { model: s.llmModel || 'llama3.1', format: 'json', stream: false,
           prompt: SYSTEM + '\n' + JSON.stringify(payload) });
       const j = JSON.parse(r.body);
@@ -61,4 +83,4 @@ async function verifyLLM(element, docText, settings) {
   return null;
 }
 
-module.exports = { llmAvailable, verifyLLM, SYSTEM };
+module.exports = { llmAvailable, privacyStatus, verifyLLM, SYSTEM };
