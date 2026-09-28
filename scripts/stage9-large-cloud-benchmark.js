@@ -369,7 +369,12 @@ async function runWorkerBenchmark(config) {
         hasIntensity: sourceInfo.hasIntensity,
         hasClassification: sourceInfo.hasClassification,
         expectedPointCount: config.expectedPointCount,
-        crsWktPresent: !!(built.meta && built.meta.crsWkt)
+        crsWktPresent: typeof built.meta?.crsWkt === 'string' && built.meta.crsWkt.length > 0,
+        crsWktLength: typeof built.meta?.crsWkt === 'string' ? built.meta.crsWkt.length : 0,
+        crsWktTruncated: typeof built.meta?.crsWkt === 'string' && built.meta.crsWkt.length > 4096,
+        crsWkt: typeof built.meta?.crsWkt === 'string'
+          ? built.meta.crsWkt.slice(0, 4096)
+          : null
       },
       ingest: {
         mode: built.index.ingest,

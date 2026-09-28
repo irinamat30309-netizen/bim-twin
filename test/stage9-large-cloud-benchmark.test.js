@@ -11,13 +11,22 @@ const {
   runStage9Benchmark
 } = require('../scripts/stage9-large-cloud-benchmark');
 
-function writeLas(filePath, count = 20_000) {
+function writeLas(filePath, count = 20_000, crsWkt = null) {
   const header = Buffer.alloc(227);
   header.write('LASF', 0, 'ascii');
   header.writeUInt8(1, 24);
   header.writeUInt8(2, 25);
   header.writeUInt16LE(227, 94);
-  header.writeUInt32LE(227, 96);
+  const wkt = typeof crsWkt === 'string' ? Buffer.from(crsWkt, 'utf8') : null;
+  const vlr = wkt ? Buffer.alloc(54) : null;
+  if (vlr) {
+    vlr.write('LASF_Projection', 2, 'ascii');
+    vlr.writeUInt16LE(2112, 18);
+    vlr.writeUInt16LE(wkt.length, 20);
+    vlr.write('Stage 9 test CRS', 22, 'ascii');
+    header.writeUInt32LE(1, 100);
+  }
+  header.writeUInt32LE(227 + (wkt ? vlr.length + wkt.length : 0), 96);
   header.writeUInt8(3, 104);
   header.writeUInt16LE(34, 105);
   header.writeUInt32LE(count, 107);
@@ -31,6 +40,10 @@ function writeLas(filePath, count = 20_000) {
   const fd = fs.openSync(filePath, 'w');
   try {
     fs.writeSync(fd, header);
+    if (vlr) {
+      fs.writeSync(fd, vlr);
+      fs.writeSync(fd, wkt);
+    }
     for (let i = 0; i < count; i++) {
       const record = Buffer.alloc(34);
       record.writeInt32LE(i % 1000, 0);
@@ -77,7 +90,8 @@ test('Stage 9 benchmark scans LAS, builds a capped disk octree, runs sections an
   const sourcePath = path.join(root, 'survey.las');
   const reportPath = path.join(root, 'stage9-report.json');
   const sourcePointCount = 20_000;
-  writeLas(sourcePath, sourcePointCount);
+  const crsWkt = 'PROJCRS["Stage 9 fixture",AUTHORITY["EPSG","32610"]]';
+  writeLas(sourcePath, sourcePointCount, crsWkt);
 
   try {
     const result = await runStage9Benchmark({
@@ -94,6 +108,10 @@ test('Stage 9 benchmark scans LAS, builds a capped disk octree, runs sections an
 
     assert.equal(report.status, 'passed');
     assert.equal(report.source.pointCountFromHeader, sourcePointCount);
+    assert.equal(report.source.crsWktPresent, true);
+    assert.equal(report.source.crsWkt, crsWkt);
+    assert.equal(report.source.crsWktLength, crsWkt.length);
+    assert.equal(report.source.crsWktTruncated, false);
     assert.equal(report.ingest.fullSourceScannedInTwoPasses, true);
     assert.equal(report.ingest.sourcePointCount, sourcePointCount);
     assert.ok(report.ingest.indexedSamplePointCount <= 4_000);
