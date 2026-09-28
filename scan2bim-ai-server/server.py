@@ -15,18 +15,86 @@ import tempfile
 import traceback
 import json
 import zipfile
+import hmac
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 
 from app.ply_io import read_ply
 from app import pipeline, dl
 
 app = FastAPI(title='Scan2BIM AI', version='1.0')
 app.add_middleware(
-    CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'],
+    CORSMiddleware,
+    allow_origins=['null'],
+    allow_methods=['GET', 'POST', 'OPTIONS'],
+    allow_headers=['Content-Type', 'X-BIMTwin-Token'],
 )
+
+AUTH_TOKEN = os.environ.get('BIMTWIN_S2B_TOKEN', '')
+MAX_UPLOAD_BYTES = int(os.environ.get('BIMTWIN_S2B_MAX_UPLOAD_BYTES', str(512 * 1024 * 1024)))
+
+
+@app.middleware('http')
+async def require_local_token(request: Request, call_next):
+    if request.method == 'OPTIONS':
+        return await call_next(request)
+    supplied = request.headers.get('x-bimtwin-token', '')
+    if not AUTH_TOKEN:
+        return JSONResponse(status_code=503, content={'ok': False, 'error': 'server_token_missing'})
+    if not hmac.compare_digest(supplied, AUTH_TOKEN):
+        return JSONResponse(status_code=401, content={'ok': False, 'error': 'unauthorized'})
+    return await call_next(request)
+
+
+async def _save_upload(upload: UploadFile):
+    suffix = os.path.splitext(upload.filename or 'cloud.ply')[1] or '.ply'
+    tmp_path = None
+    total = 0
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+            tmp_path = tf.name
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail='upload_too_large')
+                tf.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail='empty_upload')
+        return tmp_path
+    except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _cleanup(paths):
+    for item in paths:
+        try:
+            if item and os.path.isfile(item):
+                os.unlink(item)
+        except OSError:
+            pass
+
+
+def _generated_paths(tmp_path):
+    """List the whole temporary artifact family before export starts."""
+    return [
+        tmp_path,
+        tmp_path + '-revit-ifc2x3.ifc',
+        tmp_path + '-modern-ifc4.ifc',
+        tmp_path + '.obj',
+        tmp_path + '-revit-pack.zip',
+    ]
+
 
 # Checkpoint path is resolved dynamically (cwd-independent; accepts any *.pth
 # dropped into the models folder). See dl.default_ckpt_path().
@@ -97,16 +165,19 @@ def diag():
 @app.post('/reconstruct')
 async def reconstruct(file: UploadFile = File(...), mode: str = Form('auto'),
                       name: str = Form('Scan2BIM AI')):
+    generated = []
     try:
-        suffix = os.path.splitext(file.filename or 'cloud.ply')[1] or '.ply'
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
-            tf.write(await file.read())
-            tmp_path = tf.name
+        tmp_path = await _save_upload(file)
+        generated = _generated_paths(tmp_path)
         model, ifc_path, ifc4_path, obj_path, pack_path = _run(tmp_path, mode, name)
-        ifc_b64 = base64.b64encode(open(ifc_path, 'rb').read()).decode()
-        obj_b64 = base64.b64encode(open(obj_path, 'rb').read()).decode()
-        ifc4_b64 = base64.b64encode(open(ifc4_path, 'rb').read()).decode()
-        pack_b64 = base64.b64encode(open(pack_path, 'rb').read()).decode()
+        with open(ifc_path, 'rb') as source:
+            ifc_b64 = base64.b64encode(source.read()).decode()
+        with open(obj_path, 'rb') as source:
+            obj_b64 = base64.b64encode(source.read()).decode()
+        with open(ifc4_path, 'rb') as source:
+            ifc4_b64 = base64.b64encode(source.read()).decode()
+        with open(pack_path, 'rb') as source:
+            pack_b64 = base64.b64encode(source.read()).decode()
         return {
             'ok': True,
             'engine': model.get('engine'),
@@ -122,35 +193,48 @@ async def reconstruct(file: UploadFile = File(...), mode: str = Form('auto'),
             'obj_base64': obj_b64,
             'revit_zip_base64': pack_b64,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={'ok': False, 'error': str(e),
                                                      'trace': traceback.format_exc()})
+    finally:
+        _cleanup(generated)
 
 
 @app.post('/reconstruct/ifc')
 async def reconstruct_ifc(file: UploadFile = File(...), mode: str = Form('auto'),
                          name: str = Form('Scan2BIM AI')):
-    suffix = os.path.splitext(file.filename or 'cloud.ply')[1] or '.ply'
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
-        tf.write(await file.read())
-        tmp_path = tf.name
-    _, ifc_path, _, _, _ = _run(tmp_path, mode, name)
-    return FileResponse(ifc_path, media_type='application/octet-stream',
-                        filename=(name or 'model') + '.ifc')
+    generated = []
+    try:
+        tmp_path = await _save_upload(file)
+        generated = _generated_paths(tmp_path)
+        _, ifc_path, _, _, _ = _run(tmp_path, mode, name)
+        return FileResponse(ifc_path, media_type='application/octet-stream',
+                            filename=(name or 'model') + '.ifc',
+                            background=BackgroundTask(_cleanup, generated))
+    except Exception:
+        _cleanup(generated)
+        raise
 
 
 @app.post('/reconstruct/revit-pack')
 async def reconstruct_revit_pack(file: UploadFile = File(...), mode: str = Form('auto'),
                                  name: str = Form('BIM Twin')):
-    suffix = os.path.splitext(file.filename or 'cloud.ply')[1] or '.ply'
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
-        tf.write(await file.read())
-        tmp_path = tf.name
-    _, _, _, _, pack_path = _run(tmp_path, mode, name)
-    return FileResponse(pack_path, media_type='application/zip',
-                        filename=(name or 'bim-twin') + '-revit-pack.zip')
+    generated = []
+    try:
+        tmp_path = await _save_upload(file)
+        generated = _generated_paths(tmp_path)
+        _, _, _, _, pack_path = _run(tmp_path, mode, name)
+        return FileResponse(pack_path, media_type='application/zip',
+                            filename=(name or 'bim-twin') + '-revit-pack.zip',
+                            background=BackgroundTask(_cleanup, generated))
+    except Exception:
+        _cleanup(generated)
+        raise
 
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', '8765')))
+    uvicorn.run(app, host=os.environ.get('HOST', '127.0.0.1'),
+                port=int(os.environ.get('PORT', '8765')))

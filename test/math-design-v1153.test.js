@@ -80,7 +80,7 @@ test('ransacPlane: второй рефит и medianError (старый тест
 
 test('index.html: подключены polish CSS + новые версии', () => {
   assert.ok(HTML.includes('lixel-polish.css?v=1217'), 'polish css не подключен');
-  assert.ok(HTML.includes('measure.js?v=1154'), 'measure.js не 1153');
+  assert.ok(HTML.includes('measure.js?v=1156'), 'measure.js not current');
   assert.ok(HTML.includes('lixel-ribbon.js?v=1154'), 'ribbon js не 1153');
 });
 

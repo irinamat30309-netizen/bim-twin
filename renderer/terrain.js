@@ -4,6 +4,40 @@
  */
 (function(){
 'use strict';
+function terrainGridBudget(opts,minCells){
+  minCells=minCells==null?4096:minCells;
+  var requested=Number(opts&&opts.maxGridCells);
+  if(!isFinite(requested)||requested===0)requested=4000000;
+  return Math.floor(Math.max(minCells,Math.min(16000000,requested)));
+}
+function terrainGridDimensions(minX,maxX,minZ,maxZ,cell,maxCells){
+  var width=maxX-minX,depth=maxZ-minZ;
+  if(!isFinite(width)||!isFinite(depth)||width<0||depth<0)throw new RangeError('Terrain extent must be finite');
+  function size(extent){
+    var intervals=Math.ceil(extent/cell);
+    if(!isFinite(intervals))return Infinity;
+    return Math.max(2,intervals+1);
+  }
+  var nx=size(width),nz=size(depth),guard=0;
+  while(!isFinite(nx*nz)||nx*nz>maxCells){
+    if(guard++>=64)throw new RangeError('Terrain grid exceeds safe cell limit');
+    var cells=nx*nz,nextCell;
+    if(!isFinite(cells)||!isFinite(nx)||!isFinite(nz)){
+      var safeSegments=Math.max(1,Math.floor(Math.sqrt(maxCells))-2);
+      nextCell=Math.max(width,depth)/safeSegments;
+    }else{
+      nextCell=cell*Math.max(1.01,Math.sqrt(cells/maxCells)*1.001);
+    }
+    if(!isFinite(nextCell)||nextCell<=cell){
+      var fallbackSegments=Math.max(1,Math.floor(Math.sqrt(maxCells))-2);
+      nextCell=Math.max(width,depth)/fallbackSegments;
+    }
+    if(!isFinite(nextCell)||nextCell<=0||nextCell<=cell)throw new RangeError('Terrain grid cell size cannot be safely coarsened');
+    cell=nextCell;
+    nx=size(width);nz=size(depth);
+  }
+  return{nx:nx,nz:nz,cell:cell};
+}
 // --- Progressive-morphological ground filter (CSF-style lower envelope) ---
 // The former relaxation diffused elevated cells over the whole grid; on room
 // scans that caused ceilings/walls to be reported as 100% ground. This uses a
@@ -41,10 +75,10 @@ function csfClassify(pos,count,opts){
   if(!usable||!isFinite(minX)){
     return{labels:labels,groundCount:0,excludedCount:count,nx:0,nz:0,cell:cell,minX:0,minZ:0,cloth:new Float32Array(0),method:'progressive-morphological'};
   }
-  var nx=Math.max(2,Math.ceil((maxX-minX)/cell)+1),nz=Math.max(2,Math.ceil((maxZ-minZ)/cell)+1);
   // Bound working memory for very large extents; report the effective cell size.
-  var maxCells=Math.max(4096,Number(opts.maxGridCells)||4000000);
-  if(nx*nz>maxCells){cell*=Math.sqrt(nx*nz/maxCells);nx=Math.max(2,Math.ceil((maxX-minX)/cell)+1);nz=Math.max(2,Math.ceil((maxZ-minZ)/cell)+1);}
+  var maxCells=terrainGridBudget(opts),dims=terrainGridDimensions(minX,maxX,minZ,maxZ,cell,maxCells);
+  cell=dims.cell;
+  var nx=dims.nx,nz=dims.nz;
   var ncell=nx*nz,minY=new Float32Array(ncell);minY.fill(Infinity);
   for(var i=0;i<count;i++){
     var x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2];
@@ -122,18 +156,9 @@ function buildDSM(pos,count,opts){
     validPointCount++;if(x<minX)minX=x;if(x>maxX)maxX=x;if(z<minZ)minZ=z;if(z>maxZ)maxZ=z;
   }
   if(!validPointCount||!isFinite(minX))return{grid:new Float32Array(0),nx:0,nz:0,minX:0,maxX:0,minZ:0,maxZ:0,cell:cell,sourcePointCount:count,validPointCount:0,validCells:0,interpolatedCells:0};
-  var maxCells=Number(opts.maxGridCells);
-  if(!isFinite(maxCells)||maxCells<4)maxCells=4000000;
-  maxCells=Math.floor(Math.max(4,Math.min(16000000,maxCells)));
-  function size(extent){return Math.max(2,Math.ceil(extent/cell)+1);}
-  var nx=size(maxX-minX),nz=size(maxZ-minZ),guard=0;
-  // Prevent sparse returns or a stray coordinate from allocating an unbounded grid.
-  // Coarsen evenly, then adjust for ceil/rounding until the configured cell cap holds.
-  while(nx*nz>maxCells&&guard++<64){
-    cell*=Math.max(1.01,Math.sqrt(nx*nz/maxCells)*1.001);
-    nx=size(maxX-minX);nz=size(maxZ-minZ);
-  }
-  if(nx*nz>maxCells)throw new RangeError('DSM grid exceeds safe cell limit');
+  var maxCells=terrainGridBudget(opts,4),dims=terrainGridDimensions(minX,maxX,minZ,maxZ,cell,maxCells);
+  cell=dims.cell;
+  var nx=dims.nx,nz=dims.nz;
   var ncell=nx*nz,grid=new Float32Array(ncell);grid.fill(-Infinity);
   for(var i=0;i<count;i++){
     var x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2];
@@ -168,9 +193,9 @@ function buildDTM(pos,count,opts){
     used++;if(x<minX)minX=x;if(x>maxX)maxX=x;if(z<minZ)minZ=z;if(z>maxZ)maxZ=z;
   }
   if(!used||!isFinite(minX))return{grid:new Float32Array(0),nx:0,nz:0,minX:0,maxX:0,minZ:0,maxZ:0,cell:cell,validCount:0,interpolatedCells:0};
-  var nx=Math.max(2,Math.ceil((maxX-minX)/cell)+1),nz=Math.max(2,Math.ceil((maxZ-minZ)/cell)+1);
-  var maxCells=Math.max(4096,Number(opts.maxGridCells)||4000000);
-  if(nx*nz>maxCells){cell*=Math.sqrt(nx*nz/maxCells);nx=Math.max(2,Math.ceil((maxX-minX)/cell)+1);nz=Math.max(2,Math.ceil((maxZ-minZ)/cell)+1);}
+  var maxCells=terrainGridBudget(opts),dims=terrainGridDimensions(minX,maxX,minZ,maxZ,cell,maxCells);
+  cell=dims.cell;
+  var nx=dims.nx,nz=dims.nz;
   var ncell=nx*nz,sum=new Float64Array(ncell),hits=new Uint32Array(ncell);
   for(var i=0;i<count;i++){
     if(labels&&labels[i]!==1)continue;
@@ -298,7 +323,7 @@ function dsmToTiff(dsm){
   v.setUint32(p,0,true);
   var scale=new DataView(buf,scaleOffset,24);scale.setFloat64(0,dsm.cell||1,true);scale.setFloat64(8,dsm.cell||1,true);scale.setFloat64(16,0,true);
   var tie=new DataView(buf,tieOffset,48),originX=geo.originX!=null?geo.originX:(dsm.minX||0),originY=geo.originY!=null?geo.originY:(dsm.maxZ!=null?dsm.maxZ:-(dsm.minZ||0));
-  [0,0,0,originX,0,originY].forEach(function(x,i){tie.setFloat64(i*8,x,true);});
+  [0,0,0,originX,originY,0].forEach(function(x,i){tie.setFloat64(i*8,x,true);});
   [xresOffset,yresOffset].forEach(function(o){var rv=new DataView(buf,o,8);rv.setUint32(0,1,true);rv.setUint32(4,1,true);});
   var kv=new DataView(buf,keyOffset,keyBytes);keyWords.forEach(function(x,i){kv.setUint16(i*2,x,true);});
   if(asciiBytes.length)new Uint8Array(buf,asciiOffset,asciiBytes.length).set(asciiBytes);

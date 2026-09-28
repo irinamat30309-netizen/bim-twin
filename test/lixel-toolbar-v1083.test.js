@@ -16,7 +16,7 @@ test('index.html: версии v1084 и подключён левый тулба
   assert.ok(HTML.includes('lixel-scene.js?v=1090'), 'scene not bumped');
   assert.ok(HTML.includes('lixel-toolbar.js?v=1092'), 'toolbar not linked');
   // measure.js остаётся 1082 (в этом релизе не менялся)
-  assert.ok(HTML.includes('measure.js?v=1154'), 'measure.js unexpectedly changed');
+  assert.ok(HTML.includes('measure.js?v=1156'), 'measure.js not current');
 });
 
 test('app.js: баннер v1083', () => {
@@ -51,7 +51,7 @@ test('toolbar.js: 7 инструментов и привязки', () => {
 test('toolbar.js: окно и версия ПО 4.0.1.6', () => {
   assert.ok(TB.includes('Окно 0'), 'window tab label missing');
   assert.ok(TB.includes('Версия ПО:'), 'version tag label missing');
-  assert.ok(TB.includes("'1.1.17 · review v10.1'"), 'sw version missing');
+  assert.ok(TB.includes("'1.2.0-rc.2 · smart measurement QA'"), 'sw version missing');
   assert.ok(TB.includes('bimAPI.getVersion'), 'toolbar must use the package version at runtime');
   assert.ok(TB.includes('data-lxskin'), 'skin guard missing');
 });

@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import traceback
+import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Make sure "app" package (next to this file) is importable no matter the CWD.
@@ -35,6 +36,9 @@ import numpy as _np
 CKPT = os.environ.get('S2B_CKPT', 'models/ptv3_s3dis.pth')
 HOST = os.environ.get('HOST', '127.0.0.1')
 PORT = int(os.environ.get('PORT', '8765'))
+AUTH_TOKEN = os.environ.get('BIMTWIN_S2B_TOKEN', '')
+MAX_UPLOAD_BYTES = int(os.environ.get('BIMTWIN_S2B_MAX_UPLOAD_BYTES',
+                                      str(512 * 1024 * 1024)))
 
 
 def _json_default(o):
@@ -107,13 +111,17 @@ def _parse_multipart(body, ctype):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
+    def _authorized(self):
+        supplied = self.headers.get('X-BIMTwin-Token', '')
+        return bool(AUTH_TOKEN) and hmac.compare_digest(supplied, AUTH_TOKEN)
+
     def _send(self, code, obj):
         data = json.dumps(obj, default=_json_default).encode('utf-8')
         self.send_response(code)
         self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', '*')
-        self.send_header('Access-Control-Allow-Headers', '*')
+        self.send_header('Access-Control-Allow-Origin', 'null')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-BIMTwin-Token')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         try:
@@ -123,13 +131,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', '*')
-        self.send_header('Access-Control-Allow-Headers', '*')
+        self.send_header('Access-Control-Allow-Origin', 'null')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-BIMTwin-Token')
         self.send_header('Content-Length', '0')
         self.end_headers()
 
     def do_GET(self):
+        if not self._authorized():
+            self._send(401 if AUTH_TOKEN else 503,
+                       {'ok': False, 'error': 'unauthorized' if AUTH_TOKEN else 'server_token_missing'})
+            return
         path = (self.path or '/').split('?', 1)[0].rstrip('/') or '/'
         if path == '/health':
             self._send(200, _health())
@@ -137,13 +149,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {'ok': False, 'error': 'not found'})
 
     def do_POST(self):
+        if not self._authorized():
+            self._send(401 if AUTH_TOKEN else 503,
+                       {'ok': False, 'error': 'unauthorized' if AUTH_TOKEN else 'server_token_missing'})
+            return
         path = (self.path or '/').split('?', 1)[0].rstrip('/') or '/'
         want_ifc = (path == '/reconstruct/ifc')
         if path not in ('/reconstruct', '/reconstruct/ifc'):
             self._send(404, {'ok': False, 'error': 'not found'})
             return
+        tmp_path = None
+        ifc_path = None
+        obj_path = None
         try:
             length = int(self.headers.get('Content-Length', '0') or '0')
+            if length <= 0:
+                self._send(400, {'ok': False, 'error': 'empty request'})
+                return
+            if length > MAX_UPLOAD_BYTES:
+                self._send(413, {'ok': False, 'error': 'upload_too_large'})
+                return
             body = self.rfile.read(length) if length > 0 else b''
             ctype = self.headers.get('Content-Type', '') or ''
             mode = 'auto'
@@ -177,8 +202,10 @@ class Handler(BaseHTTPRequestHandler):
                 blob = open(ifc_path, 'rb').read()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/octet-stream')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Content-Disposition', 'attachment; filename="' + (name or 'model') + '.ifc"')
+                self.send_header('Access-Control-Allow-Origin', 'null')
+                safe_name = ''.join(c for c in (name or 'model')
+                                    if c.isalnum() or c in (' ', '-', '_'))[:80] or 'model'
+                self.send_header('Content-Disposition', 'attachment; filename="' + safe_name + '.ifc"')
                 self.send_header('Content-Length', str(len(blob)))
                 self.end_headers()
                 try:
@@ -200,6 +227,13 @@ class Handler(BaseHTTPRequestHandler):
             })
         except Exception as e:
             self._send(500, {'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
+        finally:
+            for generated in (tmp_path, ifc_path, obj_path):
+                try:
+                    if generated and os.path.isfile(generated):
+                        os.unlink(generated)
+                except OSError:
+                    pass
 
     def log_message(self, fmt, *args):
         try:

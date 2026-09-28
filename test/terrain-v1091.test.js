@@ -7,7 +7,7 @@ function makeFlatCloud(n, y) {
   const pos = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     pos[i*3]   = (i % 10) * 0.5;
-    pos[i*3+1] = y + (Math.random()-0.5)*0.02;
+    pos[i*3+1] = y + (((i * 37) % 101) / 100 - 0.5) * 0.02;
     pos[i*3+2] = Math.floor(i / 10) * 0.5;
   }
   return pos;
@@ -101,6 +101,42 @@ test('buildDSM: reports nearest-cell interpolation instead of a global mean', ()
   assert.equal(dsm.validCells, 2);
   assert.equal(dsm.interpolatedCells, 2);
   assert.deepEqual([...dsm.grid], [10,10,10,20]);
+});
+
+test('terrain grids respect the cell budget after coarsening wide extents', () => {
+  const extent = 100000;
+  const pos = new Float64Array([
+    0, 0, 0,
+    extent, 0, 0,
+    extent, 0, extent,
+    0, 0, extent
+  ]);
+  const maxGridCells = 4096;
+  const dsm = T.buildDSM(pos, 4, { cell: 1, maxGridCells });
+  const dtm = T.buildDTM(pos, 4, { cell: 1, labels: new Uint8Array([1,1,1,1]), maxGridCells });
+  const ground = T.csfClassify(pos, 4, {
+    cellSize: 1, maxGridCells, outlierQuantile: 0, radii: [1]
+  });
+  for (const grid of [dsm, dtm, ground]) {
+    assert.ok(grid.nx * grid.nz <= maxGridCells, `${grid.nx}×${grid.nz} exceeds ${maxGridCells}`);
+    assert.ok(grid.cell > 1, 'effective cell size should disclose coarsening');
+  }
+});
+
+test('terrain grids reject coordinate extents whose span overflows', () => {
+  const pos = new Float64Array([
+    -1e308, 0, -1e308,
+    1e308, 0, -1e308,
+    1e308, 0, 1e308,
+    -1e308, 0, 1e308
+  ]);
+  assert.throws(() => T.buildDSM(pos, 4, { cell: 1 }), RangeError);
+  assert.throws(() => T.buildDTM(pos, 4, {
+    cell: 1, labels: new Uint8Array([1,1,1,1])
+  }), RangeError);
+  assert.throws(() => T.csfClassify(pos, 4, {
+    cellSize: 1, outlierQuantile: 0, radii: [1]
+  }), RangeError);
 });
 
 test('buildContours: stroit izholinii na prostom DSM', () => {

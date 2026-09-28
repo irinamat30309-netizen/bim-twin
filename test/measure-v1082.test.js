@@ -66,6 +66,6 @@ test('coordLabel: инженерные и геодезические коорд�
 });
 
 test('html/app: версия 1082', () => {
-  assert.ok(HTML.includes('measure.js?v=1154'), 'measure.js not 1082');
+  assert.ok(HTML.includes('measure.js?v=1156'), 'measure.js not current');
   assert.ok(APP.includes('готова · v1160'), 'banner not 1082');
 });
