@@ -94,7 +94,13 @@
             ) changedPixels++;
           }
 
-          const gpuStressMs = 10000;
+          const requestedStressMs = Number.parseInt(
+            new URLSearchParams(window.location.search).get('gpuStressMs') || '',
+            10
+          );
+          const gpuStressMs = Number.isFinite(requestedStressMs)
+            ? Math.max(8000, Math.min(600000, requestedStressMs))
+            : 10000;
           const gpuStressStarted = performance.now();
           let renderFrames = 0;
           await new Promise((resolve) => {
@@ -132,6 +138,7 @@
             colorMode: cloudInfo && cloudInfo.display && cloudInfo.display.mode,
             gpuStress: {
               points: uploaded.count,
+              configuredMs: gpuStressMs,
               durationMs: gpuStressDurationMs,
               renderFrames
             },

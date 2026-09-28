@@ -3,8 +3,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain } = require('electron');
+const { getGpuStressMs } = require('./config.cjs');
 
 const resultPath = process.env.BIMTWIN_WEBGL_SMOKE_RESULT;
+const gpuStressMs = getGpuStressMs();
 let finished = false;
 let timeout;
 
@@ -49,7 +51,10 @@ app.whenReady().then(async () => {
   });
 
   const fail = (message) => finish({ ok: false, error: String(message) }, 1);
-  timeout = setTimeout(() => fail('Timed out waiting for the WebGL smoke test.'), 45000);
+  timeout = setTimeout(
+    () => fail('Timed out waiting for the WebGL smoke test.'),
+    Math.max(45000, gpuStressMs + 60000)
+  );
 
   ipcMain.once('bimtwin:webgl-smoke-result', async (_event, rendererResult) => {
     try {
@@ -91,7 +96,9 @@ app.whenReady().then(async () => {
   window.webContents.on('did-fail-load', (_event, code, description, url) => {
     fail(`Could not load WebGL fixture (${code}): ${description} (${url})`);
   });
-  window.loadFile(path.join(__dirname, 'index.html')).catch(fail);
+  window.loadFile(path.join(__dirname, 'index.html'), {
+    query: { gpuStressMs: String(gpuStressMs) }
+  }).catch(fail);
 }).catch((error) => {
   finish({ ok: false, error: error && error.stack || String(error) }, 1);
 });

@@ -6,9 +6,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { getGpuStressMs } = require('../qa/windows-gpu-smoke/config.cjs');
 
 const root = path.resolve(__dirname, '..');
 const fixture = path.join(root, 'qa', 'windows-gpu-smoke');
+const gpuStressMs = getGpuStressMs();
+const gpuSmokeProcessTimeoutMs = Math.max(60000, gpuStressMs + 60000);
+const gpuSmokeTestTimeoutMs = gpuSmokeProcessTimeoutMs + 10000;
 const isWindowsGpuRunner = process.platform === 'win32' && (
   process.env.BIMTWIN_GPU_SMOKE === '1' ||
   (process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'self-hosted')
@@ -24,7 +28,8 @@ function stopProcessTree(pid, child) {
 }
 
 test('self-hosted Windows GPU: production WebGL viewer uploads and draws a classified cloud', {
-  skip: isWindowsGpuRunner ? false : 'requires the private self-hosted Windows GPU runner'
+  skip: isWindowsGpuRunner ? false : 'requires the private self-hosted Windows GPU runner',
+  timeout: gpuSmokeTestTimeoutMs
 }, async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bimtwin-webgl-gpu-'));
   const resultFile = path.join(tempDir, 'result.json');
@@ -58,7 +63,7 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
       const timer = setTimeout(() => {
         stopProcessTree(child.pid, child);
         reject(new Error(`Electron WebGL smoke timed out.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-      }, 60000);
+      }, gpuSmokeProcessTimeoutMs);
       child.once('error', (error) => {
         clearTimeout(timer);
         reject(error);
@@ -83,7 +88,11 @@ test('self-hosted Windows GPU: production WebGL viewer uploads and draws a class
     assert.equal(result.glError, 0, `WebGL error ${result.glError}; result: ${JSON.stringify(result)}`);
     assert.equal(result.contextLost, false, JSON.stringify(result, null, 2));
     assert.equal(result.gpuStress && result.gpuStress.points, 1000000, JSON.stringify(result, null, 2));
-    assert.ok(result.gpuStress.durationMs >= 8000, `GPU render load was too short: ${JSON.stringify(result.gpuStress)}`);
+    assert.equal(result.gpuStress.configuredMs, gpuStressMs, JSON.stringify(result.gpuStress, null, 2));
+    assert.ok(
+      result.gpuStress.durationMs >= gpuStressMs,
+      `GPU render load was too short: ${JSON.stringify(result.gpuStress)}`
+    );
     assert.ok(result.gpuStress.renderFrames >= 30, `Too few production render frames: ${JSON.stringify(result.gpuStress)}`);
 
     const gpuFeatures = result.gpu && result.gpu.featureStatus || {};
