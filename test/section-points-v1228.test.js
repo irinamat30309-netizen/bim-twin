@@ -37,5 +37,5 @@ test('point-slice export is exposed and labels its coordinate-frame/metadata con
   assert.ok(workspace.includes('aria-label="Сохранить точки полосы сечения в CSV и метаданные JSON"'));
   assert.ok(workspace.includes("result.frame==='source'"));
   assert.ok(html.includes('lixel-draw.js?v=1232'));
-  assert.ok(html.includes('lixel-workspace.js?v=1232'));
+  assert.ok(html.includes('lixel-workspace.js?v=1233'));
 });

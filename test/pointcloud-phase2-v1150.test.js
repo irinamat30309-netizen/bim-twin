@@ -129,9 +129,9 @@ test('ransacLines находит две прямые стены', () => {
 test('index.html регистрирует новые скрипты v1150', () => {
   const html = fs.readFileSync(path.join(R, 'index.html'), 'utf8');
   assert.ok(/lixel-geom2d\.js\?v=1150/.test(html), 'lixel-geom2d подключён');
-  assert.ok(/lixel-tools-ext\.js\?v=1152/.test(html), 'lixel-tools-ext подключён');
+  assert.ok(/lixel-tools-ext\.js\?v=1153/.test(html), 'lixel-tools-ext подключён');
   assert.ok(/lixel-draw-ext\.js\?v=1150/.test(html), 'lixel-draw-ext подключён');
-  assert.ok(/app\.js\?v=1249/.test(html), 'app.js cache-bust bumped after cloud-import/UI changes');
+  assert.ok(/app\.js\?v=1251/.test(html), 'app.js cache-bust bumped after UI changes');
   assert.ok(/pointcloud-edit\.js\?v=1150/.test(html), 'pointcloud-edit.js обновлён до 1150');
 });
 

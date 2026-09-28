@@ -10,6 +10,7 @@
     "start": "electron .",
     "test": "node --test",
     "test:store": "node db/_test.js",
+    "test:stage9-section": "node scripts/stage9-large-cloud-benchmark.js",
     "check": "node --check main.js && node --check preload.js && node --check db/sqliteStore.js && node --check db/jsonStore.js",
     "build:viewer": "node scripts/build-xls-viewer.mjs",
     "build:dxf": "node scripts/build-dxf-viewer.mjs",

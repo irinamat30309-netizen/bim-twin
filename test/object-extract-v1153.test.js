@@ -113,7 +113,7 @@ test('module: 3 оси среза (горизонталь/вертикаль)', 
 test('регистрация object-extract v1218 и контурных модулей v1219', () => {
   assert.ok(HTML.includes('lixel-object-extract.js?v=1218'), 'модуль не подключён в index.html');
   assert.ok(HTML.includes('webgl-viewer.js?v=1230'), 'webgl-viewer не current');
-  assert.ok(HTML.includes('lixel-draw.js?v=1232') && HTML.includes('lixel-workspace.js?v=1232'), 'модули контурного сечения не обновлены');
+  assert.ok(HTML.includes('lixel-draw.js?v=1232') && HTML.includes('lixel-workspace.js?v=1233'), 'модули контурного сечения не обновлены');
   assert.ok(HTML.includes('measure.js?v=1154'), 'measure.js неожиданно изменён');
   assert.ok(APP.includes('готова · v1160'), 'баннер не v1153');
 });

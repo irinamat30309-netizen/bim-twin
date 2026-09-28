@@ -145,7 +145,7 @@ test('profile UI exposes orientation, controls, export and cache-busted scripts'
   assert.ok(draw.includes('exportProfileDxf'));
   assert.ok(draw.includes('PROFILE_CONTOUR'));
   assert.ok(draw.includes('source_crs_wkt'));
-  for (const [file, version] of [['section.js', '1233'], ['lixel-draw.js', '1232'], ['lixel-workspace.js', '1232']]) {
+  for (const [file, version] of [['section.js', '1233'], ['lixel-draw.js', '1232'], ['lixel-workspace.js', '1233']]) {
     assert.ok(html.includes(`${file}?v=${version}`), `${file} cache version`);
   }
 });

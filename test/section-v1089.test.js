@@ -60,6 +60,6 @@ test('вертикальные X/Z-сечения строят контуры в
 });
 test('new scripts wired and translation preserves SVG labels',()=>{
  const fs=require('node:fs'),path=require('node:path'),rd=n=>fs.readFileSync(path.join(__dirname,'../renderer',n),'utf8');
- assert.ok(rd('index.html').includes('lixel-workspace.js?v=1232'));assert.ok(rd('index.html').includes('section.js?v=1233'));
+ assert.ok(rd('index.html').includes('lixel-workspace.js?v=1233'));assert.ok(rd('index.html').includes('section.js?v=1233'));
  assert.ok(rd('i18n.js').includes(':scope > .lx-blabel'));assert.ok(rd('app.js').includes("_be.querySelector('.lx-blabel, .lbl')"));
 });

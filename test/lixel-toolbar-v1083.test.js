@@ -10,9 +10,9 @@ const CSS = fs.readFileSync(path.join(R, 'lixel-ui.css'), 'utf8');
 const TB = fs.readFileSync(path.join(R, 'lixel-toolbar.js'), 'utf8');
 const APP = fs.readFileSync(path.join(R, 'app.js'), 'utf8');
 
-test('index.html: версии v1083 и подключён левый тулбар', () => {
+test('index.html: версии v1084 и подключён левый тулбар', () => {
   assert.ok(HTML.includes('lixel-ui.css?v=1217'), 'css not bumped');
-  assert.ok(HTML.includes('lixel-ui.js?v=1083'), 'ui js not bumped');
+  assert.ok(HTML.includes('lixel-ui.js?v=1084'), 'ui js not bumped');
   assert.ok(HTML.includes('lixel-scene.js?v=1090'), 'scene not bumped');
   assert.ok(HTML.includes('lixel-toolbar.js?v=1092'), 'toolbar not linked');
   // measure.js остаётся 1082 (в этом релизе не менялся)

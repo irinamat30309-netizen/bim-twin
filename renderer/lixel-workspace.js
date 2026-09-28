@@ -72,6 +72,8 @@
     const on = force == null ? !p.classList.contains('open') : !!force;
     root.classList.toggle('lx-docs-view',on);p.classList.toggle('open', on); $('lxPropertiesToggle').setAttribute('aria-expanded', String(on));
     $('lxPropertiesToggle').lastChild.textContent = on ? '▾' : '▸';
+    if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches) root.classList.toggle('lx-mobile-inspector-open', on);
+    else root.classList.remove('lx-mobile-inspector-open');
   }
   function closeButton(panel, fn) {
     if (!panel || panel.querySelector('.lx-panel-close')) return;
@@ -122,10 +124,11 @@
     [['vtTools','Чистка','edit'],['vtConvert','Конвертация','cloudOpen'],['vtGeom','Геометрия','section'],['vtMem','Память','lod']].forEach(([id,label,ic])=>{const b=$(id);if(b){process.append(b);decorate(b,label,ic);}});
     const tools=group('lxViewTools','tool','Отображение');
     [['vtQuality','Качество','compare'],['vtWalk','Прогулка','tour'],['vtZoomIn','Приблизить','isolate'],['vtZoomOut','Отдалить','isolate']].forEach(([id,label,ic])=>{const b=$(id);if(b){tools.append(b);decorate(b,label,ic);}});
-    const app=group('lxAppTools','app','Приложение');
+    const app=group('lxAppTools','app','Системные инструменты');
     if($('btnSettings')) app.append($('btnSettings'));
     if($('vtLog')) {app.append($('vtLog'));decorate($('vtLog'),'Консоль','report');}
-    if($('tsMesh')) {app.append($('tsMesh'));decorate($('tsMesh'),'Меш','model');}
+    const tour=group('lxTourModels','tour','Меши и 3D-тур');
+    if($('tsMesh')) {tour.append($('tsMesh'));decorate($('tsMesh'),'Меш','model');}
     const vc=$('viewCube'),st=document.querySelector('.stage'); if(vc && st) {st.append(vc);vc.hidden=true;}
     const vcg=$('vcGroup'); if(vcg) vcg.dataset.lxhidden='1';
     document.querySelectorAll('.toolbar .tgroup').forEach(g=>{

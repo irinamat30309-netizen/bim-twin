@@ -3391,6 +3391,20 @@
     });
   }
   function measIcon(mode) { return ({ point: '📍', distance: '📏', polyline: '〰', angle: '📐', area: '▱', plane: '🧱', deviation: '📐', corner: '📦' })[mode] || '•'; }
+  function latestDocComparison(measurement) {
+    const history = measurement && Array.isArray(measurement.docComparisons) ? measurement.docComparisons : [];
+    return history.length ? history[history.length - 1] : (measurement && measurement.docComparison) || null;
+  }
+  function docComparisonStatusLabel(status) {
+    return ({
+      'within-tolerance': 'Соответствует требованию',
+      'outside-tolerance': 'Отклонение',
+      'tolerance-not-specified': 'Допуск не задан',
+      'units-unconfirmed': 'Подтвердите единицы',
+      'unit-mismatch': 'Несовместимые типы',
+      'needs-review': 'Нужна проверка'
+    })[status] || 'Не сверено';
+  }
   function renderMeasList() {
     const body = $('measureListBody'); const btn = $('mmList');
     if (btn) btn.textContent = '📋 Список (' + __measurements.length + ')';
@@ -3398,17 +3412,22 @@
     if (!__measurements.length) { body.innerHTML = '<div style="opacity:.6">Пока пусто. Сделайте измерение и нажмите «➕ В список».</div>'; return; }
     body.innerHTML = __measurements.map((m, i) => {
       const lbl = m.label ? '<span style="opacity:.85;color:var(--lx-blue)">✎ ' + esc(m.label) + '</span> ' : '';
-      return '<div style="display:flex;gap:6px;align-items:flex-start;padding:4px 0;border-bottom:1px solid var(--line)"><span style="opacity:.6;min-width:16px">' + (i + 1) + '</span><span style="flex:1">' + lbl + measIcon(m.mode) + ' ' + fmtMeasure(m).replace(/^..\s/, '') + '</span><button class="btn-sm" data-mren="' + i + '" title="Переименовать" style="padding:0 6px">✏</button><button class="btn-sm" data-mdel="' + i + '" title="Удалить" style="padding:0 6px">×</button></div>';
+      const comparison = latestDocComparison(m);
+      const status = comparison ? docComparisonStatusLabel(comparison.status) : 'Не сверено';
+      const statusClass = comparison ? String(comparison.status || 'needs-review').replace(/[^a-z-]/g, '') : 'not-checked';
+      const roomName = m.measurementContext && m.measurementContext.roomName ? ' · ' + esc(m.measurementContext.roomName) : '';
+      return '<div class="meas-saved-row"><div class="meas-saved-main"><span class="meas-saved-index">' + (i + 1) + '</span><span class="measure-row-label">' + lbl + measIcon(m.mode) + ' ' + fmtMeasure(m).replace(/^..\s/, '') + '</span><button class="btn-sm" data-mren="' + i + '" title="Переименовать" aria-label="Переименовать измерение ' + (i + 1) + '" style="padding:0 6px">✏</button><button class="btn-sm" data-mdel="' + i + '" title="Удалить" aria-label="Удалить измерение ' + (i + 1) + '" style="padding:0 6px">×</button></div><div class="meas-saved-footer"><span class="meas-room-context">' + roomName + '</span><span class="meas-doc-status ' + statusClass + '">' + esc(status) + '</span><button class="btn-sm meas-doc-compare" data-mcmp="' + i + '" title="Сопоставить с документацией помещения">⇄ Сверить</button></div></div>';
     }).join('');
     Array.prototype.forEach.call(body.querySelectorAll('[data-mdel]'), b => b.addEventListener('click', () => { __measurements.splice(Number(b.getAttribute('data-mdel')), 1); renderMeasList(); persistMeasurements(); }));
     Array.prototype.forEach.call(body.querySelectorAll('[data-mren]'), b => b.addEventListener('click', () => renameMeasurement(Number(b.getAttribute('data-mren')))));
+    Array.prototype.forEach.call(body.querySelectorAll('[data-mcmp]'), b => b.addEventListener('click', () => compareSavedMeasurement(Number(b.getAttribute('data-mcmp')))));
   }
   // Переименование/подпись сохранённого измерения через инлайн-поле (prompt может быть недоступен в Electron).
   function renameMeasurement(idx) {
     const m = __measurements[idx]; if (!m) return;
     const body = $('measureListBody'); if (!body) return;
     const rows = body.children; const row = rows[idx]; if (!row) return;
-    const span = row.querySelector('span[style*="flex:1"]'); if (!span) return;
+    const span = row.querySelector('.measure-row-label'); if (!span) return;
     const cur = m.label || '';
     span.innerHTML = '<input type="text" value="' + esc(cur).replace(/"/g, '&quot;') + '" placeholder="Подпись измерения…" style="width:100%;background:var(--panel2);border:1px solid var(--lx-blue);border-radius:5px;color:var(--txt);padding:2px 6px;font:inherit" />';
     const inp = span.querySelector('input'); if (!inp) return;
@@ -3420,10 +3439,602 @@
   function saveMeasurement() {
     const res = viewer && viewer._measResult;
     if (!res || res.error || (res.mode === 'deviation' && res.signed === undefined)) { toast('Нет готового измерения для сохранения'); return; }
-    __measurements.push(JSON.parse(JSON.stringify(res)));
+    const saved = JSON.parse(JSON.stringify(res));
+    const cloud = viewer && viewer._cloudRecord || {};
+    const sourcePath = String(cloud.sourceName || lastCloudPath || '');
+    saved.measurementContext = {
+      roomId: current && current.id || null,
+      roomName: current && current.name || null,
+      elementId: selEl && selEl.id || null,
+      elementName: selEl && selEl.name || null,
+      cloudName: sourcePath.split(/[\\/]/).pop() || null,
+      sourceUnits: viewer && viewer._srcUnits || null,
+      hasCrs: !!(viewer && viewer._srcCrs)
+    };
+    if (!Array.isArray(saved.docComparisons)) saved.docComparisons = [];
+    __measurements.push(saved);
     renderMeasList();
     persistMeasurements();
     toast('Сохранено измерений: ' + __measurements.length);
+  }
+  var __measurementDocCompareCache = new Map();
+  function comparisonDocCacheKey(d) {
+    return [d && d.id || '', d && d.file || '', d && d.version || '', d && d.date || ''].join('|');
+  }
+  function comparisonFileExt(d) {
+    const names = [d && d.name, d && d.file];
+    let fallback = '';
+    for (const name of names) {
+      const match = /\.([a-z0-9]{1,8})$/i.exec(String(name || '').split(/[?#]/)[0]);
+      if (!match) continue;
+      const ext = match[1].toLowerCase();
+      if (!fallback) fallback = ext;
+      if (comparisonSupportedExt(ext) || comparisonOcrExt(ext)) return ext;
+    }
+    return fallback;
+  }
+  function comparisonDocName(d) {
+    const name = String(d && d.name || '').trim();
+    if (name) return name;
+    return String(d && d.file || '').split(/[\\/]/).pop() || 'Документ';
+  }
+  function comparisonSupportedExt(ext) {
+    return ['pdf', 'docx', 'xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'csv', 'tsv', 'txt', 'md', 'dxf'].includes(ext);
+  }
+  function comparisonOcrExt(ext) {
+    return ['pdf', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'tif', 'tiff'].includes(ext);
+  }
+  async function parseComparisonDocument(doc) {
+    const C = window.MeasurementDocCompare;
+    if (!C || !API || !API.readDocument) return { ok: false, reason: 'Чтение документов недоступно в этом режиме.', requirements: [], diagnostics: {} };
+    const key = comparisonDocCacheKey(doc);
+    if (__measurementDocCompareCache.has(key)) return __measurementDocCompareCache.get(key);
+    const pending = (async () => {
+      const info = await API.readDocument(doc.id);
+      if (!info || !info.ok) return { ok: false, reason: info && info.error || 'Не удалось прочитать файл.', requirements: [], diagnostics: {}, textTruncated: false };
+      const ext = String(info.ext || comparisonFileExt(doc));
+      let sheets = Array.isArray(info.sheets) ? info.sheets : [];
+      if (!sheets.length && (ext === 'csv' || ext === 'tsv') && info.text) {
+        sheets = [{ name: ext.toUpperCase(), rows: C.parseDelimitedText(info.text) }];
+      }
+      const parsed = C.extractRequirements({
+        documentId: doc.id || null,
+        documentName: comparisonDocName(doc),
+        text: info.text || '',
+        sheets: sheets,
+        textTruncated: !!info.textTruncated
+      });
+      return {
+        ok: true,
+        requirements: parsed.requirements,
+        diagnostics: parsed.diagnostics,
+        textTruncated: !!info.textTruncated,
+        hasText: !!(info.text && info.text.trim()) || sheets.length > 0,
+        kind: info.kind || ext,
+        error: info.parseError || null
+      };
+    })();
+    __measurementDocCompareCache.set(key, pending);
+    try { return await pending; }
+    catch (error) {
+      __measurementDocCompareCache.delete(key);
+      return { ok: false, reason: String(error && error.message || error), requirements: [], diagnostics: {} };
+    }
+  }
+  function comparisonUnitOptions(kind) {
+    if (kind === 'linear') return [{ value: 'м', label: 'м — метры' }, { value: 'мм', label: 'мм — миллиметры' }, { value: 'см', label: 'см — сантиметры' }, { value: 'ft', label: 'ft — футы' }, { value: 'in', label: 'in — дюймы' }];
+    if (kind === 'area') return [{ value: 'м²', label: 'м² — квадратные метры' }, { value: 'см²', label: 'см² — квадратные сантиметры' }, { value: 'мм²', label: 'мм² — квадратные миллиметры' }, { value: 'ft²', label: 'ft² — квадратные футы' }, { value: 'in²', label: 'in² — квадратные дюймы' }];
+    if (kind === 'angle') return [{ value: '°', label: '° — градусы' }, { value: 'rad', label: 'rad — радианы' }];
+    if (kind === 'slope') return [{ value: '%', label: '% — проценты' }];
+    return [];
+  }
+  function comparisonDimensionLabel(dimension) {
+    return ({
+      width: 'ширина', height: 'высота', length: 'длина', thickness: 'толщина',
+      diameter: 'диаметр', gap: 'зазор', area: 'площадь', angle: 'угол',
+      slope: 'уклон', unspecified: 'размер', pair: 'пара размеров',
+      first: 'первый размер', second: 'второй размер'
+    })[dimension] || 'размер';
+  }
+  function comparisonRequirementLabel(entry) {
+    const r = entry && entry.requirement || {};
+    if (r.kind === 'pair') {
+      const a = r.values && r.values[0], b = r.values && r.values[1];
+      if (!a || !b) return 'Пара размеров';
+      return 'Размеры ' + a.value + ' ' + a.unit + ' × ' + b.value + ' ' + b.unit;
+    }
+    const tolerance = Number.isFinite(r.toleranceValue) ? ' ± ' + r.toleranceValue + ' ' + (r.toleranceUnit || r.unit) : '';
+    return comparisonDimensionLabel(r.dimension) + ': ' + r.value + ' ' + (r.unit || '') + tolerance;
+  }
+  function compareSavedMeasurement(index) {
+    const measurement = __measurements[index];
+    const C = window.MeasurementDocCompare;
+    if (!measurement || !C) { toast('Сверка измерения недоступна'); return; }
+    const context = measurement.measurementContext || {};
+    const knownRoom = context.roomId && Array.isArray(DB && DB.rooms) ? DB.rooms.find(r => r.id === context.roomId) : null;
+    const room = knownRoom || current;
+    if (!room) { toast('Не удалось определить помещение измерения — откройте помещение и повторите'); return; }
+    const needsRoomConfirmation = !knownRoom;
+    let docs = roomDocs(room).filter(d => d && d.file);
+    if (context.elementId) docs.sort((a, b) => Number(b.element_id === context.elementId) - Number(a.element_id === context.elementId));
+
+    const modal = modalPanel('Сверить измерение с документацией');
+    const card = modal.overlay.querySelector('.modal-card');
+    if (card) { card.classList.add('measurement-compare-card'); card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-label', 'Сверка измерения с документацией'); }
+    modal.overlay.addEventListener('click', event => { if (event.target === modal.overlay) modal.close(); });
+    modal.body.classList.add('measurement-compare');
+    const intro = mk('div', 'cmp-intro');
+    const fields = C.measurementFields(measurement);
+    const measuredText = fields.length
+      ? fields.map(f => f.label + ': ' + Number(f.value).toPrecision(6) + (f.kind === 'area' ? ' ед.²' : f.kind === 'angle' ? '°' : f.kind === 'slope' ? '%' : ' ед.')).join(' · ')
+      : 'В этом сохранённом измерении нет числового размера, который можно сопоставить.';
+    intro.textContent = measuredText;
+    modal.body.appendChild(intro);
+
+    const provenance = mk('div', 'cmp-provenance');
+    const scopeName = context.elementName || (selEl && selEl.name) || 'объект без привязки к элементу';
+    const cloudMeta = context.sourceUnits ? 'Единицы в метаданных облака: ' + String(context.sourceUnits) + '.' : 'Метаданные единиц облака отсутствуют.';
+    const crsMeta = context.hasCrs ? ' CRS указан, но геопривязка в этой проверке не оценивается.' : ' CRS не указан; геопривязка этой проверкой не подтверждается.';
+    provenance.textContent = 'Помещение: ' + (room.name || 'без названия') + ' · объект: ' + scopeName + (context.cloudName ? ' · источник: ' + context.cloudName : '') + '. ' + cloudMeta + crsMeta;
+    modal.body.appendChild(provenance);
+
+    const scopeLabel = document.createElement('label'); scopeLabel.className = 'cmp-check';
+    const scopeCheck = document.createElement('input'); scopeCheck.type = 'checkbox'; scopeCheck.checked = !needsRoomConfirmation; scopeCheck.disabled = !needsRoomConfirmation;
+    const scopeText = document.createElement('span');
+    scopeText.textContent = needsRoomConfirmation
+      ? 'Подтверждаю: документы текущего помещения относятся к этому старому измерению.'
+      : 'Для этого измерения выбраны документы его сохранённого помещения.';
+    scopeLabel.append(scopeCheck, scopeText); modal.body.appendChild(scopeLabel);
+
+    const scanStatus = mk('div', 'cmp-scan-status'); scanStatus.setAttribute('role', 'status'); scanStatus.setAttribute('aria-live', 'polite');
+    scanStatus.textContent = 'Подготовка списка документов…'; modal.body.appendChild(scanStatus);
+
+    const candidateLabel = document.createElement('label'); candidateLabel.className = 'formrow';
+    const candidateCaption = document.createElement('span'); candidateCaption.textContent = 'Найденное требование'; candidateLabel.appendChild(candidateCaption);
+    const candidateSelect = document.createElement('select'); candidateSelect.className = 'cmp-select'; candidateSelect.setAttribute('aria-label', 'Выберите требование из документа'); candidateLabel.appendChild(candidateSelect); modal.body.appendChild(candidateLabel);
+    const candidateInfo = mk('div', 'cmp-candidate-info'); modal.body.appendChild(candidateInfo);
+    const sourceExcerpt = document.createElement('pre'); sourceExcerpt.className = 'cmp-source-excerpt'; sourceExcerpt.textContent = 'Выберите требование, найденное в документах.'; modal.body.appendChild(sourceExcerpt);
+    const sourceActions = mk('div', 'cmp-source-actions'); modal.body.appendChild(sourceActions);
+
+    const pairRow = mk('label', 'formrow'); const pairCaption = document.createElement('span'); pairCaption.textContent = 'Размер пары'; pairRow.appendChild(pairCaption);
+    const pairSelect = document.createElement('select'); pairSelect.className = 'cmp-select'; pairRow.appendChild(pairSelect); pairRow.style.display = 'none'; modal.body.appendChild(pairRow);
+
+    const actualFieldLabel = document.createElement('label'); actualFieldLabel.className = 'formrow';
+    const actualFieldCaption = document.createElement('span'); actualFieldCaption.textContent = 'Какое значение измерения сравнить'; actualFieldLabel.appendChild(actualFieldCaption);
+    const actualFieldSelect = document.createElement('select'); actualFieldSelect.className = 'cmp-select'; actualFieldLabel.appendChild(actualFieldSelect); modal.body.appendChild(actualFieldLabel);
+
+    const unitLabel = document.createElement('label'); unitLabel.className = 'formrow';
+    const unitCaption = document.createElement('span'); unitCaption.textContent = 'Единицы фактического измерения'; unitLabel.appendChild(unitCaption);
+    const unitSelect = document.createElement('select'); unitSelect.className = 'cmp-select'; unitLabel.appendChild(unitSelect); modal.body.appendChild(unitLabel);
+    const unitHint = mk('div', 'cmp-small-hint'); modal.body.appendChild(unitHint);
+
+    const unitConfirmLabel = document.createElement('label'); unitConfirmLabel.className = 'cmp-check';
+    const unitConfirm = document.createElement('input'); unitConfirm.type = 'checkbox';
+    const unitConfirmText = document.createElement('span'); unitConfirmText.textContent = 'Подтверждаю единицы/масштаб фактического измерения.'; unitConfirmLabel.append(unitConfirm, unitConfirmText); modal.body.appendChild(unitConfirmLabel);
+    const requirementConfirmLabel = document.createElement('label'); requirementConfirmLabel.className = 'cmp-check';
+    const requirementConfirm = document.createElement('input'); requirementConfirm.type = 'checkbox';
+    const requirementConfirmText = document.createElement('span'); requirementConfirmText.textContent = 'Подтверждаю, что этот пункт документа относится к измеряемой стене/элементу.'; requirementConfirmLabel.append(requirementConfirm, requirementConfirmText); modal.body.appendChild(requirementConfirmLabel);
+
+    const manualToggle = mk('button', 'btn sm', '+ Ввести требование вручную');
+    manualToggle.type = 'button'; modal.body.appendChild(manualToggle);
+    const manualPanel = mk('div', 'cmp-manual'); manualPanel.style.display = 'none'; modal.body.appendChild(manualPanel);
+    const manualLabelInput = document.createElement('input'); manualLabelInput.type = 'text'; manualLabelInput.maxLength = 120; manualLabelInput.placeholder = 'Например: ширина стены по листу АР-02';
+    const manualDimension = document.createElement('select'); manualDimension.className = 'cmp-select';
+    [['width','Ширина'],['height','Высота'],['length','Длина'],['thickness','Толщина'],['diameter','Диаметр'],['gap','Зазор'],['area','Площадь'],['angle','Угол'],['slope','Уклон'],['unspecified','Размер без обозначения оси']].forEach(([value,label]) => { const o=document.createElement('option'); o.value=value; o.textContent=label; manualDimension.appendChild(o); });
+    const manualValue = document.createElement('input'); manualValue.type = 'number'; manualValue.step = 'any'; manualValue.placeholder = 'Номинал';
+    const manualUnit = document.createElement('select'); manualUnit.className = 'cmp-select';
+    const manualTolerance = document.createElement('input'); manualTolerance.type = 'number'; manualTolerance.step = 'any'; manualTolerance.min = '0'; manualTolerance.placeholder = 'Допуск ± (необязательно)';
+    const manualError = mk('div', 'cmp-small-hint');
+    function addManualRow(labelText, control) {
+      const row = document.createElement('label'); row.className = 'formrow'; const title = document.createElement('span'); title.textContent = labelText; row.append(title, control); manualPanel.appendChild(row);
+    }
+    addManualRow('Описание требования', manualLabelInput);
+    addManualRow('Размер', manualDimension);
+    addManualRow('Номинал', manualValue);
+    addManualRow('Единица', manualUnit);
+    addManualRow('Допуск (симметричный, ±)', manualTolerance);
+    const manualAdd = mk('button', 'btn sm primary', 'Добавить требование'); manualAdd.type = 'button'; manualPanel.append(manualError, manualAdd);
+    function updateManualUnits() {
+      const dimension = manualDimension.value;
+      const kind = dimension === 'area' ? 'area' : dimension === 'angle' ? 'angle' : dimension === 'slope' ? 'slope' : 'linear';
+      manualUnit.innerHTML = '';
+      comparisonUnitOptions(kind).forEach(u => { const o=document.createElement('option'); o.value=u.value; o.textContent=u.label; manualUnit.appendChild(o); });
+    }
+    updateManualUnits();
+    manualDimension.addEventListener('change', updateManualUnits);
+
+    const resultBox = mk('div', 'cmp-evaluation'); resultBox.setAttribute('role', 'status'); resultBox.setAttribute('aria-live', 'polite');
+    resultBox.textContent = 'Подтвердите источник и единицы, чтобы получить результат.'; modal.body.appendChild(resultBox);
+    const actions = mk('div', 'cmp-actions');
+    const saveCompare = mk('button', 'btn sm primary', 'Сохранить сверку'); saveCompare.type = 'button'; saveCompare.disabled = true;
+    const closeButton = mk('button', 'btn sm', 'Закрыть'); closeButton.type = 'button'; closeButton.onclick = () => modal.close();
+    actions.append(saveCompare, closeButton); modal.body.appendChild(actions);
+
+    const entries = [];
+    const ocrDocs = [];
+    let scanInProgress = false;
+    let currentResult = null;
+    let currentField = null;
+    let currentEntry = null;
+    let currentPairIndex = 0;
+    let lastReadCount = 0;
+    function addRequirements(doc, requirements, origin) {
+      for (const req of requirements || []) {
+        if (req.source) {
+          req.source.documentId = req.source.documentId || doc && doc.id || null;
+          req.source.documentName = req.source.documentName || (doc ? comparisonDocName(doc) : (origin === 'manual' ? 'Ручной ввод' : 'Документ'));
+        }
+        entries.push({ id: String(req.id || 'req_' + Date.now() + '_' + entries.length), requirement: req, doc: doc || null, manual: origin === 'manual' });
+      }
+      if (!scanInProgress) updateCandidateOptions();
+    }
+    function addOption(select, value, label) {
+      const option = document.createElement('option'); option.value = String(value); option.textContent = String(label); select.appendChild(option);
+    }
+    function selectedEntry() { return entries.find(entry => entry.id === candidateSelect.value) || null; }
+    function addCandidateEntry(entry) {
+      entries.push(entry);
+      updateCandidateOptions(entry.id);
+    }
+    function setScanBusy(busy) {
+      candidateSelect.disabled = busy;
+      pairSelect.disabled = busy;
+      actualFieldSelect.disabled = busy;
+      unitSelect.disabled = busy;
+      unitConfirm.disabled = busy;
+      requirementConfirm.disabled = busy;
+      manualToggle.disabled = busy;
+      manualAdd.disabled = busy;
+    }
+    function updateCandidateOptions(selectId) {
+      const before = selectId || candidateSelect.value;
+      candidateSelect.innerHTML = '';
+      addOption(candidateSelect, '', 'Выберите требование…');
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i], req = entry.requirement, docName = req.source && req.source.documentName || comparisonDocName(entry.doc);
+        const groupKey = String(docName || 'Документ').slice(0, 80);
+        let group = Array.prototype.slice.call(candidateSelect.querySelectorAll('optgroup')).find(g => g.label === groupKey);
+        if (!group) { group = document.createElement('optgroup'); group.label = groupKey; candidateSelect.appendChild(group); }
+        const option = document.createElement('option'); option.value = entry.id; option.textContent = comparisonRequirementLabel(entry); group.appendChild(option);
+      }
+      if (before && entries.some(e => e.id === before)) candidateSelect.value = before;
+      else if (entries.length) candidateSelect.value = entries[0].id;
+      renderSelectedCandidate();
+    }
+    function sourceLocation(req) {
+      const s = req && req.source || {};
+      const loc = [];
+      if (s.sheet) loc.push('лист ' + s.sheet);
+      if (s.row) loc.push('строка ' + s.row);
+      if (s.page) loc.push('страница ' + s.page);
+      else if (s.line) loc.push('строка текста ' + s.line + ' (номер страницы не извлечён)');
+      return (s.documentName || 'Документ') + (loc.length ? ' · ' + loc.join(', ') : '');
+    }
+    function formatCandidateTolerance(req) {
+      if (req.toleranceMode === 'symmetric' && Number.isFinite(req.toleranceValue)) return 'Допуск из источника: ± ' + req.toleranceValue + ' ' + (req.toleranceUnit || req.unit) + '.';
+      if ((req.toleranceMode === 'max' || req.toleranceMode === 'min') && Number.isFinite(req.bound)) {
+        const bound = C.formatBaseValue(req.bound, req.kind, req.unit);
+        return (req.toleranceMode === 'max' ? 'Максимум: ' : 'Минимум: ') + (bound || req.value + ' ' + req.unit) + '.';
+      }
+      return 'Допуск в источнике не найден.';
+    }
+    function renderSelectedCandidate() {
+      currentEntry = selectedEntry();
+      const req = currentEntry && currentEntry.requirement;
+      candidateInfo.innerHTML = ''; sourceExcerpt.textContent = 'Выберите требование, найденное в документах.'; sourceActions.innerHTML = '';
+      pairSelect.innerHTML = ''; pairRow.style.display = req && req.kind === 'pair' ? '' : 'none';
+      if (!req) { renderComparisonControls(); evaluate(); return; }
+      if (req.kind === 'pair') {
+        const values = Array.isArray(req.values) ? req.values : [];
+        values.forEach((v, i) => addOption(pairSelect, i, comparisonDimensionLabel(v.dimension) + ': ' + v.value + ' ' + v.unit));
+        currentPairIndex = Number(pairSelect.value || 0);
+      } else currentPairIndex = 0;
+      const details = mk('div', 'cmp-candidate-meta');
+      const location = document.createElement('div'); location.textContent = sourceLocation(req); details.appendChild(location);
+      const tolerance = mk('div', '', formatCandidateTolerance(req)); details.appendChild(tolerance);
+      const confidenceLabel = req.confidence === 'high' ? 'Высокая — размер и единица явно указаны' : req.confidence === 'medium' ? 'Средняя — единица может быть взята из заголовка' : req.confidence === 'low' ? 'Низкая — оси пары не обозначены' : 'Введено вручную';
+      details.appendChild(mk('div', 'cmp-small-hint', 'Извлечение: ' + confidenceLabel));
+      if (Array.isArray(req.assumptions) && req.assumptions.length) {
+        const notes = mk('div', 'cmp-small-hint'); notes.textContent = req.assumptions.join(' '); details.appendChild(notes);
+      }
+      candidateInfo.appendChild(details);
+      sourceExcerpt.textContent = req.source && req.source.excerpt || 'Исходный фрагмент не сохранён.';
+      if (currentEntry.doc) {
+        const open = mk('button', 'btn xs', 'Открыть источник'); open.type = 'button'; open.onclick = () => openDoc(currentEntry.doc); sourceActions.appendChild(open);
+      }
+      renderComparisonControls();
+      evaluate();
+    }
+    function updateFieldOptions(preferredKey) {
+      const req = currentEntry && currentEntry.requirement;
+      const kind = req && req.kind === 'pair' ? 'linear' : req && req.kind;
+      const compatible = fields.filter(f => f.kind === kind);
+      actualFieldSelect.innerHTML = '';
+      compatible.forEach(f => addOption(actualFieldSelect, f.key, f.label));
+      if (!compatible.length) {
+        actualFieldSelect.disabled = true;
+        addOption(actualFieldSelect, '', 'Нет совместимого значения в измерении');
+        currentField = null;
+        return;
+      }
+      actualFieldSelect.disabled = false;
+      let suggested = null;
+      if (req && req.kind === 'pair') {
+        const values = req.values || [];
+        const part = values[currentPairIndex] || values[0];
+        const suggestReq = { kind: 'linear', dimension: part && part.dimension };
+        suggested = C.suggestField(suggestReq, compatible);
+        if ((!suggested || (part && (part.dimension === 'first' || part.dimension === 'second'))) && compatible.length > 1) suggested = compatible[currentPairIndex] || compatible[0];
+      } else if (req) suggested = C.suggestField(req, compatible);
+      const selectedKey = compatible.some(f => f.key === preferredKey) ? preferredKey : (suggested && suggested.key || compatible[0].key);
+      actualFieldSelect.value = selectedKey;
+      currentField = compatible.find(f => f.key === selectedKey) || compatible[0];
+    }
+    function updateUnits(preferred) {
+      const req = currentEntry && currentEntry.requirement;
+      const kind = req && req.kind === 'pair' ? 'linear' : currentField && currentField.kind;
+      const options = comparisonUnitOptions(kind);
+      unitSelect.innerHTML = '';
+      addOption(unitSelect, '', 'Выберите единицу…');
+      options.forEach(u => addOption(unitSelect, u.value, u.label));
+      const detected = C.unitInfo(context.sourceUnits);
+      let chosen = preferred && options.some(o => o.value === preferred) ? preferred : '';
+      if (!chosen && detected) {
+        const match = options.find(o => C.unitInfo(o.value) && C.unitInfo(o.value).kind === detected.kind && C.unitInfo(o.value).factor === detected.factor);
+        if (match) chosen = match.value;
+        else if (kind === 'area' && detected.kind === 'linear' && detected.factor === 1) chosen = 'м²';
+      }
+      if (!chosen && kind === 'angle') chosen = '°';
+      if (!chosen && kind === 'slope') chosen = '%';
+      unitSelect.value = chosen;
+      const needsScaleConfirm = kind === 'linear' || kind === 'area';
+      unitConfirm.disabled = !needsScaleConfirm;
+      unitConfirm.checked = !needsScaleConfirm;
+      unitConfirmText.textContent = needsScaleConfirm
+        ? (detected ? 'Подтверждаю выбранную единицу и масштаб облака: ' + detected.symbol + ' в метаданных — подсказка, не доказательство масштаба.' : 'Подтверждаю единицу/масштаб фактического измерения: исходные метаданные этого не подтверждают.')
+        : 'Для угла/уклона CRS и масштаб не требуются; единицы определяются самим измерением.';
+      unitHint.textContent = needsScaleConfirm
+        ? 'Без подтверждённой единицы результат останется «нужна проверка» и не будет помечен как прошедший/не прошедший.'
+        : 'Угловое значение не зависит от масштаба облака.';
+    }
+    function renderComparisonControls() {
+      const req = currentEntry && currentEntry.requirement;
+      const oldField = actualFieldSelect.value;
+      updateFieldOptions(oldField);
+      updateUnits(unitSelect.value);
+      if (!req) {
+        actualFieldSelect.disabled = true; unitSelect.disabled = true;
+        requirementConfirm.disabled = true; requirementConfirm.checked = false;
+        requirementConfirmText.textContent = 'Сначала выберите требование.';
+        return;
+      }
+      unitSelect.disabled = !currentField;
+      requirementConfirm.disabled = false;
+      requirementConfirm.checked = false;
+      const dim = req.kind === 'pair' ? (req.values && req.values[currentPairIndex] || {}).dimension : req.dimension;
+      requirementConfirmText.textContent = 'Подтверждаю, что «' + comparisonDimensionLabel(dim) + '» в этом источнике относится к измеряемой стене/элементу.';
+    }
+    function statusMessageText(status) {
+      return ({
+        'within-tolerance': 'Соответствует требованию',
+        'outside-tolerance': 'За пределами допуска',
+        'tolerance-not-specified': 'Допуск не задан',
+        'units-unconfirmed': 'Нужно подтвердить единицы',
+        'unit-mismatch': 'Несовместимые типы данных',
+        'needs-review': 'Требуется проверка'
+      })[status] || 'Не выполнено';
+    }
+    function evaluate() {
+      const entry = selectedEntry();
+      currentEntry = entry;
+      const req = entry && entry.requirement;
+      const field = fields.find(f => f.key === actualFieldSelect.value);
+      currentField = field || null;
+      saveCompare.disabled = true;
+      currentResult = null;
+      resultBox.className = 'cmp-evaluation';
+      resultBox.replaceChildren();
+      if (!req) { resultBox.textContent = 'Сначала выберите найденное требование.'; return; }
+      if (!scopeCheck.checked) {
+        resultBox.classList.add('cmp-eval-review'); resultBox.textContent = 'Подтвердите помещение, из которого нужно брать документацию.'; return;
+      }
+      if (!field) {
+        resultBox.classList.add('cmp-eval-review');
+        resultBox.textContent = 'Сохранённое измерение не содержит значения типа «' + req.kind + '». Сделайте подходящее измерение (например, ширину/высоту плоскости, длину, площадь или угол).';
+        return;
+      }
+      const selectedUnit = unitSelect.value;
+      const unitNeedsConfirmation = field.kind === 'linear' || field.kind === 'area';
+      const unitConfirmed = !unitNeedsConfirmation || unitConfirm.checked;
+      const result = C.compareMeasurement({
+        measurement: measurement, requirement: req, fields: fields,
+        fieldKey: field.key, unit: selectedUnit,
+        pairIndex: Number(pairSelect.value || 0),
+        unitConfirmed: unitConfirmed,
+        requirementConfirmed: requirementConfirm.checked
+      });
+      currentResult = result;
+      const validSave = ['within-tolerance', 'outside-tolerance', 'tolerance-not-specified'].includes(result.status) && Number.isFinite(result.actual);
+      resultBox.classList.add(validSave ? (result.status === 'within-tolerance' ? 'cmp-eval-ok' : result.status === 'outside-tolerance' ? 'cmp-eval-out' : 'cmp-eval-unknown') : 'cmp-eval-review');
+      const title = mk('strong', '', statusMessageText(result.status)); resultBox.appendChild(title);
+      const description = mk('div', 'cmp-eval-message', result.message || '');
+      if (Number.isFinite(result.actual) && Number.isFinite(result.expected)) {
+        const unitInfo = C.unitInfo(selectedUnit);
+        const actualText = C.formatBaseValue(result.actual, field.kind, selectedUnit) || result.actual;
+        const expectedUnit = result.expectedUnit || req.unit;
+        const expectedText = C.formatBaseValue(result.expected, field.kind, expectedUnit) || result.expected + ' ' + expectedUnit;
+        const deltaText = C.formatBaseValue(result.delta, field.kind, expectedUnit) || result.delta;
+        const values = mk('div', 'cmp-eval-values');
+        values.textContent = 'Факт: ' + actualText + ' · По требованию: ' + expectedText + ' · Δ: ' + deltaText + (result.percentDelta == null ? '' : ' (' + result.percentDelta.toFixed(2) + '%)');
+        resultBox.append(description, values);
+        if (unitInfo && req.toleranceValue != null) resultBox.appendChild(mk('div', 'cmp-small-hint', 'Учтён явный допуск: ± ' + req.toleranceValue + ' ' + (req.toleranceUnit || req.unit) + '.'));
+      } else resultBox.appendChild(description);
+      if (validSave) saveCompare.disabled = false;
+    }
+
+    function updateManualOptions() {
+      const kind = manualDimension.value === 'area' ? 'area' : manualDimension.value === 'angle' ? 'angle' : manualDimension.value === 'slope' ? 'slope' : 'linear';
+      const options = comparisonUnitOptions(kind);
+      manualUnit.innerHTML = '';
+      options.forEach(o => { const option = document.createElement('option'); option.value=o.value; option.textContent=o.label; manualUnit.appendChild(option); });
+    }
+    manualToggle.onclick = () => { manualPanel.style.display = manualPanel.style.display === 'none' ? 'block' : 'none'; if (manualPanel.style.display !== 'none') manualLabelInput.focus(); };
+    manualDimension.addEventListener('change', updateManualOptions);
+    manualAdd.onclick = () => {
+      manualError.textContent = '';
+      const unit = C.unitInfo(manualUnit.value);
+      const value = C.parseNumber(manualValue.value);
+      const tolerance = manualTolerance.value.trim() ? C.parseNumber(manualTolerance.value) : null;
+      if (!unit || value == null || (tolerance != null && tolerance < 0)) { manualError.textContent = 'Введите корректный номинал, единицу и неотрицательный допуск.'; return; }
+      const dimension = manualDimension.value;
+      const label = manualLabelInput.value.trim() || comparisonDimensionLabel(dimension);
+      const req = {
+        id: 'manual_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        kind: unit.kind, dimension: dimension, value: value, unit: unit.symbol, baseValue: value * unit.factor,
+        tolerance: tolerance == null ? null : tolerance * unit.factor,
+        toleranceValue: tolerance, toleranceUnit: tolerance == null ? null : unit.symbol,
+        toleranceMode: tolerance == null ? null : 'symmetric', confidence: 'manual',
+        needsConfirmation: true, assumptions: ['Требование введено пользователем; оно не было извлечено из документа.'],
+        source: { documentId: null, documentName: 'Введено вручную', sheet: null, row: null, line: null, page: null, excerpt: label.slice(0, 500) },
+        unitKindMismatch: false
+      };
+      addCandidateEntry({ id: req.id, requirement: req, doc: null, manual: true });
+      manualPanel.style.display = 'none'; manualValue.value = ''; manualTolerance.value = '';
+      toast('Требование добавлено — проверьте и подтвердите перед сверкой');
+    };
+
+    candidateSelect.addEventListener('change', renderSelectedCandidate);
+    pairSelect.addEventListener('change', () => { currentPairIndex = Number(pairSelect.value || 0); renderComparisonControls(); evaluate(); });
+    actualFieldSelect.addEventListener('change', () => { currentField = fields.find(f => f.key === actualFieldSelect.value) || null; updateUnits(unitSelect.value); evaluate(); });
+    unitSelect.addEventListener('change', evaluate);
+    scopeCheck.addEventListener('change', evaluate);
+    unitConfirm.addEventListener('change', evaluate);
+    requirementConfirm.addEventListener('change', evaluate);
+    saveCompare.onclick = () => {
+      const entry = selectedEntry(), req = entry && entry.requirement, field = fields.find(f => f.key === actualFieldSelect.value);
+      const result = currentResult;
+      if (!entry || !req || !field || !result || saveCompare.disabled) return;
+      const pairValue = req.kind === 'pair' && req.values ? req.values[Number(pairSelect.value || 0)] : null;
+      const comparison = {
+        schema: 'bim-twin.document-measurement-comparison.v1',
+        id: 'doccmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        createdAt: new Date().toISOString(),
+        status: result.status,
+        statusLabel: docComparisonStatusLabel(result.status),
+        field: { key: field.key, label: field.label, rawValue: field.value, kind: field.kind, unit: unitSelect.value },
+        expected: {
+          value: result.expectedRaw,
+          unit: result.expectedUnit || pairValue && pairValue.unit || req.unit,
+          baseValue: result.expected,
+          kind: result.kind || (pairValue ? 'linear' : req.kind),
+          dimension: result.dimension || req.dimension,
+          toleranceValue: req.toleranceValue == null ? null : req.toleranceValue,
+          toleranceUnit: req.toleranceUnit || req.unit || null,
+          toleranceMode: result.toleranceMode || null,
+          bound: result.bound == null ? null : result.bound
+        },
+        actual: { rawValue: field.value, unit: unitSelect.value, baseValue: result.actual, kind: field.kind },
+        delta: result.delta,
+        absoluteDelta: result.absoluteDelta,
+        percentDelta: result.percentDelta,
+        source: {
+          origin: entry.manual ? 'operator' : 'document',
+          documentId: req.source && req.source.documentId || null,
+          documentName: req.source && req.source.documentName || 'Введено вручную',
+          sheet: req.source && req.source.sheet || null,
+          row: req.source && req.source.row || null,
+          line: req.source && req.source.line || null,
+          page: req.source && req.source.page || null,
+          excerpt: req.source && req.source.excerpt || '',
+          confidence: req.confidence || 'manual'
+        },
+        confirmations: {
+          room: scopeCheck.checked,
+          sourceRequirement: requirementConfirm.checked,
+          unitsOrScale: unitConfirm.checked || !(field.kind === 'linear' || field.kind === 'area')
+        },
+        context: { roomId: room.id || null, roomName: room.name || null, elementId: context.elementId || null, elementName: context.elementName || null, cloudName: context.cloudName || null }
+      };
+      if (!Array.isArray(measurement.docComparisons)) measurement.docComparisons = [];
+      measurement.docComparisons.push(comparison);
+      if (measurement.docComparisons.length > 20) measurement.docComparisons.splice(0, measurement.docComparisons.length - 20);
+      measurement.docComparison = comparison;
+      persistMeasurements(); renderMeasList(); modal.close();
+      toast('Сверка сохранена: ' + comparison.statusLabel);
+    };
+
+    async function runOcr(doc, button) {
+      if (!API || !API.ocrDocument) { toast('OCR недоступен'); return; }
+      button.disabled = true; const oldText = button.textContent; button.textContent = 'Распознаётся…';
+      try {
+        const response = await API.ocrDocument(doc.id);
+        if (!response || !response.ok || !response.text) {
+          const reasons = { tesseract_not_installed: 'Tesseract не установлен.', no_pdf_rasterizer: 'Для PDF-OCR нужен Poppler или Ghostscript.', empty: 'Распознанный текст не найден.', unsupported: 'Тип файла не поддерживает OCR.' };
+          button.textContent = reasons[response && response.reason] || 'OCR не удался — повторить';
+          button.disabled = false; return;
+        }
+        const parsed = C.extractRequirements({ documentId: doc.id, documentName: comparisonDocName(doc), text: response.text, textTruncated: !!response.truncated });
+        if (!parsed.requirements.length) {
+          button.textContent = 'В OCR-тексте требования не найдены'; button.disabled = true; return;
+        }
+        addRequirements(doc, parsed.requirements, 'document');
+        button.textContent = 'Добавлено требований: ' + parsed.requirements.length; button.disabled = true;
+        scanStatus.textContent = 'OCR: найдено требований — ' + parsed.requirements.length + '. Проверьте фрагмент и единицы.';
+      } catch (error) {
+        button.textContent = 'Ошибка OCR — повторить'; button.disabled = false;
+      }
+    }
+    async function scanDocuments() {
+      scanInProgress = true;
+      setScanBusy(true);
+      if (!docs.length) {
+        scanStatus.textContent = 'В этом помещении нет документов с прикреплёнными файлами. Можно ввести требование вручную.';
+        scanInProgress = false; setScanBusy(false); updateCandidateOptions(); return;
+      }
+      const usable = docs.filter(d => comparisonSupportedExt(comparisonFileExt(d)));
+      docs.filter(d => comparisonOcrExt(comparisonFileExt(d)) && !comparisonSupportedExt(comparisonFileExt(d))).forEach(d => ocrDocs.push(d));
+      const skippedCount = docs.length - usable.length - ocrDocs.length;
+      const nativeCadSkipped = docs.some(d => ['dwg', 'rvt', 'rfa', 'rte', 'ifc', 'ifczip'].includes(comparisonFileExt(d)));
+      if (!API || !API.readDocument) {
+        scanStatus.textContent = 'Чтение локальных документов доступно только в десктопной версии BIM Twin.';
+      } else {
+        for (let i = 0; i < usable.length; i++) {
+          if (!modal.overlay.isConnected) return;
+          const doc = usable[i];
+          scanStatus.textContent = 'Анализ документа ' + (i + 1) + ' из ' + usable.length + ': ' + comparisonDocName(doc) + '…';
+          const parsed = await parseComparisonDocument(doc);
+          lastReadCount++;
+          if (parsed.ok) {
+            addRequirements(doc, parsed.requirements, 'document');
+            if (!parsed.requirements.length && comparisonOcrExt(comparisonFileExt(doc))) ocrDocs.push(doc);
+            if (parsed.textTruncated) scanStatus.textContent = 'Текст документа сокращён при извлечении; проверьте вручную полный файл.';
+            if (parsed.error) scanStatus.textContent = 'Предупреждение чтения: ' + parsed.error;
+          } else scanStatus.textContent = 'Не удалось разобрать «' + comparisonDocName(doc) + '»: ' + parsed.reason;
+        }
+        const total = entries.length;
+        scanStatus.textContent = 'Просмотрено документов: ' + lastReadCount + ' · найдено требований: ' + total + (skippedCount ? ' · неподдерживаемых форматов пропущено: ' + skippedCount : '') + '. Проверьте исходный фрагмент перед сохранением.';
+      }
+      if (ocrDocs.length && API && API.ocrDocument) {
+        const ocrSection = mk('div', 'cmp-ocr-section');
+        ocrSection.appendChild(mk('strong', '', 'Сканированные файлы без читаемого текста'));
+        ocrSection.appendChild(mk('div', 'cmp-small-hint', 'OCR запускается только по запросу. Распознанный текст может ошибаться — сверяйте его с оригиналом.'));
+        for (const doc of ocrDocs) {
+          const btn = mk('button', 'btn xs'); btn.textContent = 'Распознать: ' + comparisonDocName(doc); btn.type = 'button'; btn.onclick = () => runOcr(doc, btn); ocrSection.appendChild(btn);
+        }
+        modal.body.insertBefore(ocrSection, manualToggle);
+      }
+      if (!entries.length && usable.length) scanStatus.textContent += ' Автоматически извлечь размер с явными единицами не удалось; проверьте документ, попробуйте OCR или введите значение вручную.';
+      if (nativeCadSkipped) scanStatus.textContent += ' DWG/RVT/RFA/IFC-модели напрямую не разбираются: экспортируйте размерный лист или спецификацию в PDF/XLSX/CSV. Для сканированного PDF доступен OCR с обязательной проверкой.';
+      scanInProgress = false;
+      setScanBusy(false);
+      updateCandidateOptions();
+      if (!entries.length) { renderComparisonControls(); evaluate(); }
+    }
+
+    updateCandidateOptions();
+    renderComparisonControls();
+    evaluate();
+    scanDocuments();
   }
   function exportMeasCsv() {
     if (!__measurements.length) { toast('Список измерений пуст'); return; }
