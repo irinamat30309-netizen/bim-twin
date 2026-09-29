@@ -10,7 +10,7 @@
   var busy = false;
 
   function T() { return window.__pcTools || null; }
-  function toast(m) { var t = T(); if (t && t.toast) t.toast(m); else try { console.log('[tools-ext]', m); } catch (e) {} }
+  function toast(m) { var k = window.__lxKit, t = T(); if (k && k.toast) k.toast(m); else if (t && t.toast) t.toast(m); else try { console.log('[tools-ext]', m); } catch (e) {} }
   function pcedit() { return window.PCEdit || null; }
 
   function getCloud() {
@@ -254,54 +254,10 @@
     return opWriteData();
   }
 
-  // ---------- построение риббонов ----------
-  function mkBtn(label, title, onClick) {
-    var b = document.createElement('button');
-    b.className = 'tbtn lx-bigbtn'; b.type = 'button'; b.dataset.lxbig = '1';
-    b.title = title || label; b.setAttribute('aria-label', title || label);
-    var i = document.createElement('span'); i.className = 'lx-bic'; i.textContent = '▧';
-    var l = document.createElement('span'); l.className = 'lx-blabel'; l.textContent = label;
-    b.append(i, l); b.addEventListener('click', function () { onClick(); });
-    return b;
-  }
-
-  function ensureGroup(id, tab, label) {
-    var host = document.querySelector('.toolbar .tbtns');
-    if (!host) return null;
-    var g = document.getElementById(id);
-    if (g) return g.querySelector('.tgrow');
-    g = document.createElement('div'); g.id = id; g.className = 'tgroup'; g.dataset.lxtab = tab;
-    var row = document.createElement('div'); row.className = 'tgrow';
-    var cap = document.createElement('div'); cap.className = 'tglabel'; cap.textContent = label;
-    g.append(row, cap); host.append(g); return row;
-  }
-
+  // ---------- лента ----------
+  // Кнопки этих операций описаны в ui/commands.js и создаются лентой; здесь остаются только сами операции.
   var built = false;
-  function build() {
-    if (built) return; var host = document.querySelector('.toolbar .tbtns'); if (!host) return; built = true;
-    var inst = ensureGroup('lxToolExtInstrument', 'process', 'Обработка облака');
-    if (inst) {
-      inst.append(mkBtn('Ресэмпл.', 'Ресэмплирование (понижение плотности, воксель)', opResample));
-      inst.append(mkBtn('Сглаживание', 'Сглаживание MLS (проекция на локальную плоскость)', opSmooth));
-      inst.append(mkBtn('Выравнивание', 'Выравнивание по доминантной плоскости пола', function () { opLevel('floor', [0, 1, 0], 'Выравнивание'); }));
-      inst.append(mkBtn('Горизонт.', 'Сделать пол горизонтальным', function () { opLevel('floor', [0, 1, 0], 'Горизонтальный'); }));
-      inst.append(mkBtn('Вертикаль', 'Сделать стену вертикальной', function () { opVertical(); }));
-      inst.append(mkBtn('Объединить', 'Объединить с другим облаком', opMerge));
-      inst.append(mkBtn('Наложение', 'Наложить (суперпозиция) второе облако', opOverlay));
-      inst.append(mkBtn('Экспорт E57', 'Экспорт текущего облака в E57 (ASTM)', opExportE57));
-      inst.append(mkBtn('LAS→RCP', 'Экспорт в Autodesk RCP (нужен ReCap)', opExportRCP));
-      inst.append(mkBtn('Запись', 'Запись данных: экспорт облака (PLY)', opWriteData));
-    }
-    var app = ensureGroup('lxToolExtApp', 'analysis', 'Расчёты и анализ');
-    if (app) {
-      app.append(mkBtn('Объём', 'Расчёт объёма над базовой плоскостью', opVolume));
-      app.append(mkBtn('Сравн. объёмов', 'Сравнение объёмов (выемка/насыпь)', opCompareVolumes));
-      app.append(mkBtn('Закрытый объём', 'Закрытый (замкнутый) объём', opClosedVolume));
-      app.append(mkBtn('Mesh', 'Построение и экспорт поверхности (OBJ)', opMesh));
-      app.append(mkBtn('Удал. передача', 'Удалённая передача (экспорт для отправки)', opRemote));
-    }
-    try { console.log('[LixelStudio tools-ext] риббоны Облако/Контроль готовы · v1152'); } catch (e) {}
-  }
+  function build() { built = true; }
 
   function boot() {
     build();
@@ -309,7 +265,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opSmooth: opSmooth, opLevel: opLevel, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opSmooth: opSmooth, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });

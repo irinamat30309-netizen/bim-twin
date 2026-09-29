@@ -1,7 +1,7 @@
 /*
- * lixel-draw.js — Спринт 2 (v1087): браузерная связка черчения по облаку.
- * Вкладка «Рисование плоскости», SVG-оверлей, хук __lxDraw, экспорт/импорт DXF.
- * 4 новых возможности: привязки, орто/вид сверху, импорт DXF + слои, размеры.
+ * lixel-draw.js — браузерная связка черчения по облаку.
+ * Вкладка «Чертёж» (кнопки размещает лента через __lxRibbon.mount), SVG-оверлей, хук __lxDraw,
+ * экспорт/импорт DXF, привязки, орто/вид сверху, слои и размеры.
  * Логика — в draw2d.js / dxf.js / snap.js / dxfparse.js. Гард data-lxskin=on.
  */
 (function () {
@@ -9,33 +9,13 @@
   var SVGNS = 'http://www.w3.org/2000/svg';
 
   function on() { return document.documentElement.getAttribute('data-lxskin') === 'on'; }
-  function svg(inner) {
-    return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>';
-  }
-  var IC = {
-    pline:  svg('<path d="M3 17l6-8 4 5 8-9"/><circle cx="3" cy="17" r="1.4" fill="currentColor"/><circle cx="9" cy="9" r="1.4" fill="currentColor"/><circle cx="13" cy="14" r="1.4" fill="currentColor"/><circle cx="21" cy="5" r="1.4" fill="currentColor"/>'),
-    line:   svg('<path d="M4 20L20 4"/><circle cx="4" cy="20" r="1.6" fill="currentColor"/><circle cx="20" cy="4" r="1.6" fill="currentColor"/>'),
-    rect:   svg('<rect x="4" y="6" width="16" height="12" rx="1"/>'),
-    circle: svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/>'),
-    point:  svg('<circle cx="12" cy="12" r="3" fill="currentColor"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>'),
-    dim:    svg('<path d="M4 8v8M20 8v8M4 12h16"/><path d="M7 9l-3 3 3 3M17 9l3 3-3 3"/>'),
-    snap:   svg('<path d="M6 4v7a6 6 0 0 0 12 0V4"/><path d="M6 8h4M14 8h4"/>'),
-    top:    svg('<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 4v16"/>'),
-    imp:    svg('<path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/><path d="M12 3v11M8 10l4 4 4-4"/>'),
-    sect:   svg('<path d="M4 8l8-4 8 4"/><path d="M3 12h18"/><path d="M7 12v6M12 12v6M17 12v6"/>'),
-    close:  svg('<path d="M4 6l8 4 8-4M12 10v10"/><path d="M4 6v12l8 4 8-4V6"/>'),
-    undo:   svg('<path d="M9 7L4 12l5 5"/><path d="M4 12h11a5 5 0 0 1 0 10h-1"/>'),
-    clear:  svg('<path d="M6 7h12M9 7V5h6v2M8 7l1 13h6l1-13"/>'),
-    dxf:    svg('<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4"/><path d="M9 13l2 3-2 3M15 13l-2 3 2 3"/>')
-  };
-
   var HINTS = {
-    polyline: 'Полилиния: кликай точки по облаку • «Замкнуть» или двойной клик — завершить',
-    line: 'Линия: укажи две точки',
-    rect: 'Прямоугольник: укажи два противоположных угла',
+    polyline: 'Полилиния: кликайте точки по облаку · «Замкнуть» или двойной клик — завершить',
+    line: 'Линия: укажите две точки',
+    rect: 'Прямоугольник: укажите два противоположных угла',
     circle: 'Окружность: центр, затем точка на радиусе',
-    point: 'Точка: кликай по облаку',
-    dim: 'Размер: укажи две точки — подпишется длина'
+    point: 'Точка: кликайте по облаку',
+    dim: 'Размер: укажите две точки — подпишется длина'
   };
 
   var S = null; // Draw2D.Session
@@ -236,11 +216,14 @@
     updateToolButtons(); showHint(''); draw();
   }
 
+  function setOn(b, on) {
+    if (!b) return;
+    b.classList.toggle('on', !!on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
   function updateToolButtons() {
-    var wrap = document.getElementById('lxDrawTools'); if (!wrap) return;
-    var btns = wrap.querySelectorAll('[data-dtool]');
-    Array.prototype.forEach.call(btns, function (b) {
-      b.classList.toggle('lx-dactive', API.active && b.getAttribute('data-dtool') === API.tool);
+    Array.prototype.forEach.call(document.querySelectorAll('[data-dtool]'), function (b) {
+      setOn(b, API.active && b.getAttribute('data-dtool') === API.tool);
     });
   }
 
@@ -276,29 +259,25 @@
       if (!b) return;
       b.disabled = !state.enabled;
       b.setAttribute('aria-disabled', String(!state.enabled));
-      b.title = state.title;
+      b.setAttribute('data-tip', state.title);
     });
   }
 
   function showHint(txt) {
-    if (!txt) { if (hintEl) hintEl.style.display = 'none'; return; }
-    if (!hintEl && stageEl) { hintEl = document.createElement('div'); hintEl.className = 'lx-drawhint'; stageEl.appendChild(hintEl); }
-    if (hintEl) { hintEl.textContent = txt; hintEl.style.display = ''; }
-  }
-
-  // —— построение кнопок вкладки ——
-  function bigBtn(icon, label, primary) {
-    var b = document.createElement('button');
-    b.className = 'btn lx-bigbtn' + (primary ? ' lx-primary' : '');
-    b.innerHTML = '<span class="lx-bic">' + (IC[icon] || '') + '</span><span class="lx-blabel">' + label + '</span>';
-    b.title = label;
-    return b;
+    if (!txt) { if (hintEl) hintEl.hidden = true; return; }
+    if (!hintEl && stageEl) {
+      hintEl = document.createElement('div'); hintEl.className = 'hud-readout lx-drawhint'; hintEl.setAttribute('role', 'status');
+      hintEl.innerHTML = '<span class="ro-ico" data-ico="pencil-ruler"></span><span class="ro-t"></span>';
+      stageEl.appendChild(hintEl);
+      if (window.__lxKit) window.__lxKit.hydrate(hintEl);
+    }
+    if (hintEl) { hintEl.querySelector('.ro-t').textContent = txt; hintEl.hidden = false; }
   }
 
   function ensureFileInput() {
     if (fileInput) return fileInput;
     fileInput = document.createElement('input');
-    fileInput.type = 'file'; fileInput.accept = '.dxf,.txt'; fileInput.style.display = 'none';
+    fileInput.type = 'file'; fileInput.accept = '.dxf,.txt'; fileInput.hidden = true;
     fileInput.addEventListener('change', function () {
       var f = fileInput.files && fileInput.files[0]; if (!f) return;
       var rd = new FileReader();
@@ -309,93 +288,77 @@
     return fileInput;
   }
 
+  // Кнопки вкладки создаёт этот модуль, а размещает и оформляет лента (ui/ribbon.js: mount → значок, подпись, подсказка).
+  var tabBuilt = false;
+  function cmdButton(cmd, id, handler, extra) {
+    var b = document.createElement('button');
+    b.type = 'button'; if (id) b.id = id;
+    if (extra) Object.keys(extra).forEach(function (k) { b.setAttribute(k, extra[k]); });
+    b.addEventListener('click', handler);
+    window.__lxRibbon.mount(cmd, b);
+    return b;
+  }
   function buildTab() {
-    if (!on()) return;
-    var tb = document.querySelector('.toolbar .tbtns'); if (!tb) return;
-    var grp = tb.querySelector('.tgroup[data-lxtab="draw"]'); if (!grp) return;
-    if (grp.querySelector('#lxDrawTools')) return; // уже построено
-    var row = grp.querySelector('.tgrow') || grp;
-    var soon = row.querySelector('.lx-soon'); if (soon) soon.remove();
-
-    var host = document.createElement('div');
-    host.id = 'lxDrawTools';
-    host.style.display = 'flex'; host.style.gap = '2px'; host.style.alignItems = 'stretch'; host.style.flexWrap = 'wrap';
-
-    var tools = [['pline', 'Полилиния', 'polyline', true], ['line', 'Линия', 'line'], ['rect', 'Прямоуг.', 'rect'], ['circle', 'Окруж.', 'circle'], ['point', 'Точка', 'point'], ['dim', 'Размер', 'dim']];
-    tools.forEach(function (t) {
-      var b = bigBtn(t[0], t[1], t[3]);
-      b.setAttribute('data-dtool', t[2]);
-      b.addEventListener('click', function () { setActive(t[2]); });
-      host.appendChild(b);
+    if (tabBuilt || !on()) return;
+    var R = window.__lxRibbon; if (!R || !R.mount) return;
+    tabBuilt = true;
+    [['draw.pline', 'polyline'], ['draw.line', 'line'], ['draw.rect', 'rect'], ['draw.circle', 'circle'], ['draw.point', 'point'], ['draw.dim', 'dim']].forEach(function (t) {
+      cmdButton(t[0], '', function () { setActive(t[1]); }, { 'data-dtool': t[1] });
     });
 
     // проекция
-    var pw = document.createElement('div'); pw.className = 'lx-projsel';
-    pw.innerHTML = '<span>Проекция</span>';
     var sel = document.createElement('select');
+    sel.id = 'lxDrawProj'; sel.setAttribute('aria-label', 'Проекция чертежа');
     sel.innerHTML = '<option value="top">Сверху (XZ)</option><option value="front">Спереди (XY)</option><option value="side">Сбоку (ZY)</option>';
     sel.addEventListener('change', function () { var s = session(); if (s) s.setProjection(sel.value); syncDxfFrameSelect(); draw(); });
-    pw.appendChild(sel); host.appendChild(pw);
+    R.mount('draw.proj', sel);
 
     // переключатели: Привязки / Орто / Вид сверху
-    var bSnap = bigBtn('snap', 'Привязки'); bSnap.id = 'lxSnapBtn'; bSnap.addEventListener('click', function () { setSnap(!snapOn); });
-    var bOrtho = bigBtn('line', 'Орто'); bOrtho.id = 'lxOrthoBtn'; bOrtho.addEventListener('click', function () { setOrthoConstrain(!orthoOn); });
-    var bTop = bigBtn('top', 'Вид сверху'); bTop.id = 'lxTopBtn'; bTop.addEventListener('click', topToggle);
-    host.appendChild(bSnap); host.appendChild(bOrtho); host.appendChild(bTop);
+    cmdButton('draw.snap', 'lxSnapBtn', function () { setSnap(!snapOn); });
+    cmdButton('draw.ortho', 'lxOrthoBtn', function () { setOrthoConstrain(!orthoOn); });
+    cmdButton('draw.top', 'lxTopBtn', topToggle);
 
-    var bClose = bigBtn('close', 'Замкнуть'); bClose.id = 'lxClosePathBtn'; bClose.addEventListener('click', function () { var s = session(); if (s) { s.closePath(); draw(); } });
-    var bUndo = bigBtn('undo', 'Отмена'); bUndo.id = 'lxUndoDrawBtn'; bUndo.addEventListener('click', function () { var s = session(); if (s) { s.undo(); draw(); } });
-    var bClear = bigBtn('clear', 'Очистить'); bClear.id = 'lxClearDrawBtn'; bClear.addEventListener('click', function () { var s = session(); if (s) { s.clear(); hiddenLayers = {}; refreshLayers(); draw(); } });
-    var bImp = bigBtn('imp', 'Импорт DXF'); bImp.id = 'lxImpBtn'; bImp.addEventListener('click', function () { ensureFileInput().click(); });
-    var bSect = bigBtn('sect', 'Сечение'); bSect.id = 'lxSectBtn'; bSect.addEventListener('click', function () { sectionFromCloud(); });
-    var bDxf = bigBtn('dxf', 'Экспорт DXF', true); bDxf.id = 'lxExportDxfBtn'; bDxf.addEventListener('click', exportDxf);
+    cmdButton('draw.close', 'lxClosePathBtn', function () { var s = session(); if (s) { s.closePath(); draw(); } });
+    cmdButton('draw.undo', 'lxUndoDrawBtn', function () { var s = session(); if (s) { s.undo(); draw(); } });
+    cmdButton('draw.clear', 'lxClearDrawBtn', function () { var s = session(); if (s) { s.clear(); hiddenLayers = {}; refreshLayers(); draw(); } });
+    cmdButton('draw.imp', 'lxImpBtn', function () { ensureFileInput().click(); });
+    cmdButton('draw.sect', 'lxSectBtn', function () { sectionFromCloud(); });
+    cmdButton('draw.dxf', 'lxExportDxfBtn', exportDxf);
+
     var frameSelect = document.createElement('select');
-    // Do not use `.btn`: the ribbon enhancer rewrites every `.btn` into an
-    // icon button and would remove the <option> elements from this <select>.
-    frameSelect.id = 'lxDxfFrame'; frameSelect.className = 'lx-dxf-frame';
+    frameSelect.id = 'lxDxfFrame';
     frameSelect.setAttribute('aria-label', 'Система координат DXF');
     frameSelect.innerHTML = '<option value="source">Исходные</option><option value="local">Локальные</option>';
-    frameSelect.style.cssText = 'height:34px;flex:0 0 82px;width:82px;min-width:82px;max-width:82px;padding:0 4px;font-size:10px;background:rgba(32,34,37,.96);color:var(--txt,#e5e7eb);border:1px solid rgba(160,170,185,.35);border-radius:4px;';
     frameSelect.addEventListener('change', function () {
       dxfFrameSelectTouched = true;
       dxfFramePreference = frameSelect.value === 'local' ? 'local' : 'source';
       syncDxfFrameSelect();
     });
-    host.appendChild(bClose); host.appendChild(bUndo); host.appendChild(bClear); host.appendChild(bImp); host.appendChild(bSect); host.appendChild(frameSelect); host.appendChild(bDxf);
-    // Reserve room for the frame selector and DXF export button on common
-    // 1600px workstations; the ribbon itself remains horizontally scrollable.
-    Array.prototype.forEach.call(host.querySelectorAll('.lx-bigbtn'), function (b) {
-      var w = 'clamp(76px,5.375vw,86px)';
-      b.style.setProperty('flex', '0 0 ' + w, 'important');
-      b.style.setProperty('width', w, 'important');
-      b.style.setProperty('min-width', w, 'important');
-      b.style.setProperty('max-width', w, 'important');
-    });
+    R.mount('draw.frame', frameSelect);
 
-    row.appendChild(host);
-    tb.classList.add('lx-bigribbon');
     ensureFileInput();
     syncToggles();
     syncDxfFrameSelect();
     syncActionButtons();
+    updateToolButtons();
   }
 
   // —— переключатели ——
-  function setSnap(v) { snapOn = !!v; syncToggles(); toast(snapOn ? 'Привязки включены' : 'Привязки выключены'); }
-  function setOrthoConstrain(v) { orthoOn = !!v; syncToggles(); toast(orthoOn ? 'Орто-черчение вкл.' : 'Орто-черчение выкл.'); }
+  function setSnap(v) { snapOn = !!v; syncToggles(); toast(snapOn ? 'Привязки включены' : 'Привязки выключены', { tone: 'info' }); }
+  function setOrthoConstrain(v) { orthoOn = !!v; syncToggles(); toast(orthoOn ? 'Орто-черчение включено' : 'Орто-черчение выключено', { tone: 'info' }); }
   function topToggle() {
     var s = session(); if (s) s.setProjection('top');
-    var sel = document.querySelector('#lxDrawTools .lx-projsel select'); if (sel) sel.value = 'top';
+    var sel = document.getElementById('lxDrawProj'); if (sel) sel.value = 'top';
     var v = viewer();
     if (v) { try { if (v.topView) v.topView(); else if (v.setOrtho) v.setOrtho(true); } catch (e) {} }
     syncDxfFrameSelect();
     syncToggles(); draw();
   }
   function syncToggles() {
-    var sb = document.getElementById('lxSnapBtn'); if (sb) sb.classList.toggle('lx-dactive', snapOn);
-    var ob = document.getElementById('lxOrthoBtn'); if (ob) ob.classList.toggle('lx-dactive', orthoOn);
-    var tb2 = document.getElementById('lxTopBtn'); var v = viewer();
-    if (tb2) tb2.classList.toggle('lx-dactive', !!(v && v.isOrtho && v.isOrtho()));
+    setOn(document.getElementById('lxSnapBtn'), snapOn);
+    setOn(document.getElementById('lxOrthoBtn'), orthoOn);
+    var v = viewer();
+    setOn(document.getElementById('lxTopBtn'), !!(v && v.isOrtho && v.isOrtho()));
   }
 
   // —— экспорт DXF ——
@@ -608,17 +571,22 @@
     var names = Object.keys(set).sort();
     var panel = document.getElementById('lxLayers');
     var show = names.length >= 2 || Object.keys(hiddenLayers).length > 0;
-    if (!panel) { panel = document.createElement('div'); panel.id = 'lxLayers'; panel.className = 'lx-lyrpanel'; stageEl.appendChild(panel); }
-    if (!show) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
-    panel.style.display = '';
-    panel.innerHTML = '<div class="lx-lyrhead">Слои чертежа</div>';
+    if (!panel) {
+      panel = document.createElement('section'); panel.id = 'lxLayers'; panel.className = 'fpanel lx-lyrpanel'; panel.setAttribute('aria-label', 'Слои чертежа');
+      (document.getElementById('stageSideR') || stageEl).appendChild(panel);
+    }
+    if (!show) { panel.hidden = true; panel.innerHTML = ''; return; }
+    panel.hidden = false;
+    panel.innerHTML = '<div class="fpanel-inner"><header class="fpanel-head"><span class="fpanel-ico" data-ico="layers"></span><h3>Слои чертежа</h3></header><div class="fpanel-body lx-lyrbody"></div></div>';
+    var body = panel.querySelector('.lx-lyrbody');
     names.forEach(function (nm) {
       var rowEl = document.createElement('label'); rowEl.className = 'lx-lyrrow';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !hiddenLayers[nm];
       cb.addEventListener('change', function () { if (cb.checked) delete hiddenLayers[nm]; else hiddenLayers[nm] = true; draw(); });
       var sp = document.createElement('span'); sp.textContent = nm;
-      rowEl.appendChild(cb); rowEl.appendChild(sp); panel.appendChild(rowEl);
+      rowEl.appendChild(cb); rowEl.appendChild(sp); body.appendChild(rowEl);
     });
+    if (window.__lxKit) window.__lxKit.hydrate(panel);
   }
 
   // —— сечение облака → контурные полилинии в чертёж ——
@@ -682,7 +650,7 @@
       return { type: 'polyline', layer: 'SECTION', closed: true, points: pts3, generatedBy: 'section-v1232' };
     });
     s.setProjection(mode);
-    var sel = document.querySelector('#lxDrawTools .lx-projsel select'); if (sel) sel.value = mode;
+    var sel = document.getElementById('lxDrawProj'); if (sel) sel.value = mode;
     syncDxfFrameSelect();
     s.entities = s.entities.concat(generated);
     var added = generated.length;
@@ -1006,8 +974,11 @@
     });
   }
 
-  function toast(msg) {
-    try { var el = document.getElementById('toast'); if (el) { el.textContent = msg; el.classList.add('show'); setTimeout(function () { el.classList.remove('show'); }, 2600); return; } } catch (e) {}
+  function toast(msg, opts) {
+    try {
+      if (window.__lxKit && window.__lxKit.toast) { window.__lxKit.toast(msg, opts); return; }
+      var el = document.getElementById('toast'); if (el) { el.textContent = msg; el.classList.add('show'); setTimeout(function () { el.classList.remove('show'); }, 2600); return; }
+    } catch (e) {}
     try { console.log('[LX-DRAW]', msg); } catch (e) {}
   }
 
@@ -1118,8 +1089,6 @@
     window.addEventListener('bim-cloud-change', syncDxfFrameSelect);
     var mo = new MutationObserver(function () { if (on()) { buildTab(); wireDblClick(); } });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-lxskin'] });
-    var mo2 = new MutationObserver(function () { if (on()) buildTab(); });
-    if (document.body) mo2.observe(document.body, { childList: true, subtree: true });
   } catch (e) {}
 
   window.__lxDrawUI = {

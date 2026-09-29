@@ -446,7 +446,13 @@
   function api() { try { return window.bimAPI || null; } catch (e) { return null; } }
   function tools() { try { return window.__pcTools || null; } catch (e) { return null; } }
   function viewer() { var t = tools(); if (t && t.viewer) { try { return t.viewer(); } catch (e) {} } return window.__viewer || null; }
-  function toast(m, err) { var t = tools(); if (t && t.toast) { try { return t.toast(m, err); } catch (e) {} } try { if (window.__toast) return window.__toast(m, err ? 'error' : 'info'); } catch (e) {} console[err ? 'error' : 'log']('[smart-save] ' + m); }
+  function toast(m, err) {
+    var k = window.__lxKit;
+    if (k && k.toast) { try { return k.toast(m, err ? { tone: 'err' } : undefined); } catch (e) {} }
+    var t = tools(); if (t && t.toast) { try { return t.toast(m, err); } catch (e) {} }
+    try { if (window.__toast) return window.__toast(m, err ? 'error' : 'info'); } catch (e) {}
+    console[err ? 'error' : 'log']('[smart-save] ' + m);
+  }
   function getCloud() {
     var t = tools();
     if (t && t.getSourceCloud) { try { var s = t.getSourceCloud(); if (s && s.pos && s.pos.length) return s; } catch (e) {} }
@@ -662,125 +668,37 @@
     }
   }
 
-  // ===================== UI =====================
-  var bar = null, chip = null, expPanel = null, bProjectUndo = null, bProjectRedo = null;
-  function elx(tag, css, html) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (html != null) e.innerHTML = html; return e; }
-  var TONE = { blue: 'var(--lx-blue)', neutral: 'var(--lx-neutral)' };
-
-  function buildBar() {
-    if (bar) return bar;
-    bar = elx('div', 'position:fixed;right:16px;bottom:16px;z-index:60;display:none;align-items:center;gap:6px;padding:6px 8px;border-radius:12px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-pop);font:12px system-ui,Segoe UI,Arial;color:var(--txt)');
-    bar.className = 'lx-smart-save';
-    chip = elx('span', 'display:inline-flex;align-items:center;gap:6px;color:var(--muted);padding:0 4px;min-width:96px');
-    var bSave = elx('button', btn(TONE.blue), '\ud83d\udcbe \u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c');
-    bSave.className = 'lx-smart-primary';
-    bSave.title = '\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c (Ctrl+S). \u041f\u043e\u0432\u0442\u043e\u0440\u043d\u043e \u2014 \u0442\u0438\u0445\u043e \u0432 \u0442\u043e\u0442 \u0436\u0435 \u0444\u0430\u0439\u043b';
-    bSave.addEventListener('click', function () { save({}); });
-    var bHistory = elx('button', btn(TONE.neutral), '\u21bb \u0418\u0441\u0442\u043e\u0440\u0438\u044f');
-    bHistory.className = 'lx-smart-secondary';
-    bHistory.title = '\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u0438 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u043e\u0434\u043d\u0443 \u0438\u0437 \u0432\u0435\u0440\u0441\u0438\u0439 \u0447\u0435\u0440\u043d\u043e\u0432\u0438\u043a\u0430';
-    bHistory.addEventListener('click', function () {
-      if (window.__pcAutosave && window.__pcAutosave.offerHistory) window.__pcAutosave.offerHistory();
-      else toast('\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u0447\u0435\u0440\u043d\u043e\u0432\u0438\u043a\u043e\u0432 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430', true);
-    });
-    bProjectUndo = elx('button', btn(TONE.neutral), '\u21b6');
-    bProjectUndo.className = 'lx-smart-secondary lx-project-undo';
-    bProjectUndo.title = '\u041e\u0442\u043c\u0435\u043d\u0438\u0442\u044c \u043f\u043e\u0441\u043b\u0435\u0434\u043d\u044e\u044e \u0432\u0435\u0440\u0441\u0438\u044e \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u044f \u043f\u0440\u043e\u0435\u043a\u0442\u0430';
-    bProjectUndo.setAttribute('aria-label', bProjectUndo.title);
-    bProjectUndo.addEventListener('click', function () { runProjectHistory('undo'); });
-    bProjectRedo = elx('button', btn(TONE.neutral), '\u21b7');
-    bProjectRedo.className = 'lx-smart-secondary lx-project-redo';
-    bProjectRedo.title = '\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c \u043e\u0442\u043c\u0435\u043d\u0451\u043d\u043d\u0443\u044e \u0432\u0435\u0440\u0441\u0438\u044e \u043f\u0440\u043e\u0435\u043a\u0442\u0430';
-    bProjectRedo.setAttribute('aria-label', bProjectRedo.title);
-    bProjectRedo.addEventListener('click', function () { runProjectHistory('redo'); });
-    var bExp = elx('button', btn(TONE.neutral), '\u2b07 \u042d\u043a\u0441\u043f\u043e\u0440\u0442');
-    bExp.className = 'lx-smart-secondary';
-    bExp.title = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u0432\u043e \u0432\u0441\u0435 \u0444\u043e\u0440\u043c\u0430\u0442\u044b';
-    bExp.addEventListener('click', toggleExport);
-    var bGear = elx('button', btn(TONE.neutral), '\u2699');
-    bGear.className = 'lx-smart-secondary';
-    bGear.title = '\u0418\u043d\u0442\u0435\u0440\u0432\u0430\u043b \u0430\u0432\u0442\u043e-\u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u044f';
-    bGear.addEventListener('click', cycleInterval);
-    bar.appendChild(chip); bar.appendChild(bProjectUndo); bar.appendChild(bProjectRedo);
-    bar.appendChild(bHistory); bar.appendChild(bSave); bar.appendChild(bExp); bar.appendChild(bGear);
-    wireProjectHistory();
-    document.body.appendChild(bar);
-    return bar;
-  }
-  function btn(bg) { return 'display:inline-flex;align-items:center;gap:5px;padding:6px 9px;border:none;border-radius:9px;background:' + bg + ';color:#fff;font:600 12px/1 system-ui;cursor:pointer'; }
-
+  // ===================== Состояние сохранения =====================
+  // Кнопки «Сохранить», «Черновики», «Автосохранение» и форматы экспорта описаны в ui/commands.js и живут в ленте;
+  // отмена/повтор состояния проекта подключает app.js. Здесь остаётся только индикатор в строке состояния.
   function renderChip() {
-    if (!chip) return;
-    var txt, col, dot;
-    if (st.saving) { txt = '\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435\u2026'; col = 'var(--lx-blue)'; dot = 'var(--lx-blue)'; }
-    else if (st.dirty) { txt = '\u041d\u0435 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043e'; col = 'var(--warn)'; dot = 'var(--warn)'; }
-    else if (st.lastSavedAt) { txt = '\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043e ' + hhmm(st.lastSavedAt); col = 'var(--ok)'; dot = 'var(--ok)'; }
-    else if (st.lastDraftAt) { txt = '\u0427\u0435\u0440\u043d\u043e\u0432\u0438\u043a ' + hhmm(st.lastDraftAt); col = 'var(--muted)'; dot = 'var(--muted)'; }
-    else { txt = '\u0413\u043e\u0442\u043e\u0432\u043e'; col = 'var(--muted)'; dot = 'var(--line)'; }
-    var ai = st.intervalMin > 0 ? (' \u00b7 \u0430\u0432\u0442\u043e ' + st.intervalMin + '\u043c') : ' \u00b7 \u0430\u0432\u0442\u043e \u0432\u044b\u043a\u043b';
-    chip.innerHTML = '<span style="width:9px;height:9px;border-radius:50%;background:' + dot + ';display:inline-block"></span>' +
-      '<span style="color:' + col + '">' + txt + '</span><span style="color:var(--muted);font-size:11px">' + ai + '</span>';
+    var state, text;
+    if (st.saving) { state = 'saving'; text = '\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435\u2026'; }
+    else if (st.dirty) { state = 'dirty'; text = '\u041d\u0435 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043e'; }
+    else if (st.lastSavedAt) { state = 'saved'; text = '\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043e ' + hhmm(st.lastSavedAt); }
+    else if (st.lastDraftAt) { state = 'idle'; text = '\u0427\u0435\u0440\u043d\u043e\u0432\u0438\u043a ' + hhmm(st.lastDraftAt); }
+    else { state = 'idle'; text = '\u0413\u043e\u0442\u043e\u0432\u043e'; }
+    var auto = st.intervalMin > 0 ? '\u0430\u0432\u0442\u043e ' + st.intervalMin + ' \u043c\u0438\u043d' : '\u0430\u0432\u0442\u043e \u0432\u044b\u043a\u043b';
+    var tip = 'Ctrl+S \u2014 \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c. \u0410\u0432\u0442\u043e\u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435: ' + (st.intervalMin > 0 ? '\u043a\u0430\u0436\u0434\u044b\u0435 ' + st.intervalMin + ' \u043c\u0438\u043d' : '\u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e');
+    var label = text + ' \u00b7 ' + auto;
+    try { if (window.__lxSaveState) window.__lxSaveState(state, label, tip); } catch (e) {}
+    try { window.dispatchEvent(new CustomEvent('lx-save-state', { detail: { state: state, text: text, auto: auto, dirty: st.dirty, saving: st.saving, lastSavedAt: st.lastSavedAt } })); } catch (e) {}
   }
 
-  function syncProjectHistoryButtons() {
-    var ps = window.BimProjectState;
-    if (bProjectUndo) bProjectUndo.disabled = !(ps && ps.canUndo);
-    if (bProjectRedo) bProjectRedo.disabled = !(ps && ps.canRedo);
-  }
-  function wireProjectHistory() {
-    if (window.__lxSmartSaveProjectHistory) { syncProjectHistoryButtons(); return; }
-    window.__lxSmartSaveProjectHistory = true;
-    ['bim-project-state-ready', 'bim-project-state-saved', 'bim-project-state-restored', 'bim-project-state-error']
-      .forEach(function (name) { window.addEventListener(name, syncProjectHistoryButtons); });
-    var ps = window.BimProjectState;
-    if (ps && ps.ready) Promise.resolve(ps.ready).finally(syncProjectHistoryButtons);
-    syncProjectHistoryButtons();
-  }
   async function runProjectHistory(direction) {
     var ps = window.BimProjectState;
     if (!ps || typeof ps[direction] !== 'function') { toast('\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u0440\u043e\u0435\u043a\u0442\u0430 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430', true); return; }
-    syncProjectHistoryButtons();
     if ((direction === 'undo' && !ps.canUndo) || (direction === 'redo' && !ps.canRedo)) {
       toast('\u041d\u0435\u0442 \u0441\u043e\u0445\u0440\u0430\u043d\u0451\u043d\u043d\u043e\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u0434\u043b\u044f ' + (direction === 'undo' ? '\u043e\u0442\u043c\u0435\u043d\u044b' : '\u043f\u043e\u0432\u0442\u043e\u0440\u0430'));
       return;
     }
-    if (bProjectUndo) bProjectUndo.disabled = true;
-    if (bProjectRedo) bProjectRedo.disabled = true;
     try {
       var result = await ps[direction]();
       if (!result || result.ok === false) toast('\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c ' + (direction === 'undo' ? '\u043e\u0442\u043c\u0435\u043d\u0438\u0442\u044c' : '\u043f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c') + ' \u0432\u0435\u0440\u0441\u0438\u044e \u043f\u0440\u043e\u0435\u043a\u0442\u0430: ' + String(result && result.error || '\u043e\u0448\u0438\u0431\u043a\u0430'), true);
       else toast(direction === 'undo' ? '\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435 \u043f\u0440\u043e\u0435\u043a\u0442\u0430 \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u043e' : '\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435 \u043f\u0440\u043e\u0435\u043a\u0442\u0430 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043e');
     } catch (error) {
       toast('\u041e\u0448\u0438\u0431\u043a\u0430 \u0438\u0441\u0442\u043e\u0440\u0438\u0438 \u043f\u0440\u043e\u0435\u043a\u0442\u0430: ' + String(error && error.message || error), true);
-    } finally { syncProjectHistoryButtons(); }
-  }
-
-  function cycleInterval() {
-    var seq = [0, 1, 2, 5, 10];
-    var idx = seq.indexOf(st.intervalMin); idx = (idx + 1) % seq.length;
-    setInterval_(seq[idx]);
-    toast(st.intervalMin > 0 ? ('\u0410\u0432\u0442\u043e-\u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435 \u043a\u0430\u0436\u0434\u044b\u0435 ' + st.intervalMin + ' \u043c\u0438\u043d') : '\u0410\u0432\u0442\u043e-\u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e');
-  }
-
-  function toggleExport() {
-    if (expPanel) { expPanel.remove(); expPanel = null; return; }
-    expPanel = elx('div', ''); expPanel.className = 'lx-tool-panel'; expPanel.style.cssText = 'right:16px;bottom:60px;width:236px;padding:10px;font:12px system-ui';
-    expPanel.appendChild(elx('div', 'color:var(--txt);font-weight:600;margin-bottom:6px', '\u2b07 \u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u043e\u0431\u043b\u0430\u043a\u0430'));
-    var hasBim = !!bimModel();
-    FORMATS.forEach(function (f) {
-      if (f.kind === 'bim' && f.id === 'bim-ifc') expPanel.appendChild(elx('div', 'color:var(--txt);font-weight:600;margin:8px 0 4px', '\ud83c\udfd7 BIM-\u043c\u043e\u0434\u0435\u043b\u044c' + (hasBim ? '' : ' (\u043d\u0435\u0442)')));
-      var b = elx('button', 'display:block;width:100%;text-align:left;margin:3px 0;padding:7px 9px;border:none;border-radius:8px;background:var(--panel2);color:' + (f.kind === 'bim' && !hasBim ? 'var(--muted)' : 'var(--txt)') + ';font:600 12px system-ui;cursor:pointer', f.label);
-      b.addEventListener('click', function () { exportAs(f.id); if (expPanel) { expPanel.remove(); expPanel = null; } });
-      expPanel.appendChild(b);
-    });
-    document.body.appendChild(expPanel);
-  }
-
-  // показываем панель, когда в сцене есть облако
-  function updateVisibility() {
-    if (!bar) return;
-    var show = !!getCloud();
-    bar.style.display = show ? 'flex' : 'none';
+    }
   }
 
   // ---------- перехват правок: оборачиваем __pcAutosave.onEdit ----------
@@ -790,7 +708,7 @@
     var as = window.__pcAutosave;
     if (!as || typeof as.onEdit !== 'function') return;
     var orig = as.onEdit;
-    as.onEdit = function (n) { try { orig(n); } catch (e) {} setDirty(true); updateVisibility(); };
+    as.onEdit = function (n) { try { orig(n); } catch (e) {} setDirty(true); };
     // когда черновик очищается через saved() — наш markSaved уже вызывает его; не зацикливаемся
     _wrapped = true;
   }
@@ -843,10 +761,10 @@
   function boot() {
     if (window.__lxSmartSaveBooted) return; window.__lxSmartSaveBooted = true;
     try { var m = parseInt(localStorage.getItem(LS_MIN), 10); if (!isNaN(m)) st.intervalMin = Math.max(0, m); } catch (e) {}
-    buildBar(); renderChip(); wireKeys(); wireClose(); armTimer();
+    renderChip(); wireKeys(); wireClose(); armTimer();
     wrapAutosave();
-    window.addEventListener('lx-pctools-ready', function () { wrapAutosave(); updateVisibility(); });
-    setInterval(function () { wrapAutosave(); updateVisibility(); }, 1500);
+    window.addEventListener('lx-pctools-ready', wrapAutosave);
+    setInterval(wrapAutosave, 1500);
   }
 
   window.__lxSmartSave = {

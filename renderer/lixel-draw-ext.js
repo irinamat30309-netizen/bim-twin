@@ -9,7 +9,13 @@
   function D2() { return window.Draw2D || null; }
   function G() { return window.LxGeom2D || null; }
   function skin() { return document.documentElement.getAttribute('data-lxskin') === 'on'; }
-  function toast(m) { try { var el = document.getElementById('toast'); if (el) { el.textContent = m; el.classList.add('show'); setTimeout(function () { el.classList.remove('show'); }, 2600); return; } } catch (e) {} try { console.log('[LX-DRAW-EXT]', m); } catch (e) {} }
+  function toast(m) {
+    try {
+      if (window.__lxKit && window.__lxKit.toast) { window.__lxKit.toast(m); return; }
+      var el = document.getElementById('toast'); if (el) { el.textContent = m; el.classList.add('show'); setTimeout(function () { el.classList.remove('show'); }, 2600); return; }
+    } catch (e) {}
+    try { console.log('[LX-DRAW-EXT]', m); } catch (e) {}
+  }
 
   function sess() { var u = ui(); return u && u.session ? u.session() : null; }
   function redraw() { var u = ui(); if (u) { if (u.refreshLayers) u.refreshLayers(); if (u.draw) u.draw(); } }
@@ -148,36 +154,9 @@
     redraw(); toast('AI-извлечение: найдено ' + segs.length + ' прямых (слой AI)');
   }
 
-  var ACTIONS = [
-    ['Дуга', 'Дуга по 3 точкам черновика/полилинии', doArc],
-    ['Текст', 'Текстовая аннотация', doText],
-    ['Дверь', 'Символ двери на последней линии', doDoor],
-    ['Окно', 'Символ окна на последней линии', doWindow],
-    ['Расширить', 'Продлить линию до пересечения', doExtend],
-    ['Разделить', 'Разделить полилинию пополам', doSplit],
-    ['Пересечение', 'Точка пересечения 2 линий', doIntersect],
-    ['Копирование', 'Копия последней сущности со смещением', doCopy],
-    ['AI-извлечение', 'RANSAC-прямые по сечению', doAIExtract]
-  ];
-
+  // Кнопки этих операций описаны в ui/commands.js и создаются лентой; здесь остаются только сами операции.
   var built = false;
-  function build() {
-    if (built || !skin()) return;
-    var tb = document.querySelector('.toolbar .tbtns'); if (!tb) return;
-    var grp = tb.querySelector('.tgroup[data-lxtab="draw"]'); if (!grp) return;
-    var row = grp.querySelector('.tgrow') || grp;
-    if (row.querySelector('#lxDrawExtTools')) return;
-    var host = document.createElement('div'); host.id = 'lxDrawExtTools';
-    host.style.display = 'flex'; host.style.gap = '4px'; host.style.alignItems = 'stretch'; host.style.flexWrap = 'wrap';
-    ACTIONS.forEach(function (a) {
-      var b = document.createElement('button'); b.className = 'btn lx-bigbtn'; b.type = 'button'; b.title = a[1];
-      b.innerHTML = '<span class="lx-bic">▧</span><span class="lx-blabel">' + a[0] + '</span>';
-      b.addEventListener('click', function () { try { a[2](); } catch (e) { toast('Ошибка: ' + (e && e.message || e)); } });
-      host.appendChild(b);
-    });
-    row.appendChild(host); built = true;
-    try { console.log('[LX-DRAW-EXT] инструменты рисования готовы · v1150'); } catch (e) {}
-  }
+  function build() { built = true; }
 
   window.__lxDrawExt = { build: build, ops: { doArc: doArc, doText: doText, doDoor: doDoor, doWindow: doWindow, doExtend: doExtend, doSplit: doSplit, doIntersect: doIntersect, doCopy: doCopy, doAIExtract: doAIExtract } };
   if (typeof window !== 'undefined') {

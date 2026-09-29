@@ -14,9 +14,8 @@
   function toast(msg, err) { try { if (window.__toast) return window.__toast(msg, err ? 'error' : 'info'); } catch (e) {} console[err ? 'error' : 'log']('[scan2bim] ' + msg); }
   function nfmt(x, d) { return (x == null || !isFinite(x)) ? '—' : (+x).toFixed(d == null ? 2 : d); }
 
-  function el(tag, css, html) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (html != null) e.innerHTML = html; return e; }
-  function bcss(bg) { return 'display:inline-flex;align-items:center;gap:6px;justify-content:center;padding:7px 10px;margin:3px 3px 0 0;border:none;border-radius:8px;background:' + bg + ';color:#fff;font:600 12px/1.1 system-ui,Segoe UI,Arial;cursor:pointer'; }
-  var TONE = { blue: 'var(--lx-blue)', green: 'var(--lx-green)', purple: 'var(--lx-purple)', orange: 'var(--lx-orange)', neutral: 'var(--lx-neutral)' };
+  function el(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  function setOn(b, on) { if (!b) return; b.classList.toggle('on', !!on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
 
   // --------- чтение активного облака (все точки базы) ---------
   function collectPoints(v) {
@@ -111,11 +110,12 @@
   // --------- панель ---------
   var panel = null, statusEl = null, statsEl = null;
   function setStatus(t) { if (statusEl) statusEl.textContent = t; }
+  function row(k, v) { return '<div class="lx-stat"><span>' + k + '</span><b>' + v + '</b></div>'; }
   function renderStats(m, dt) {
     if (!statsEl) return;
     var s = m.stats, st = m.storey;
     statsEl.innerHTML =
-      '<div style="font:600 12px system-ui;color:var(--ok);margin-bottom:4px">✅ Модель построена</div>' +
+      '<div class="lx-stats-h"><span data-ico="circle-check"></span>Модель построена</div>' +
       row('Стен', s.wallCount) +
       row('Высота этажа', nfmt(st.height) + ' м') +
       row('Площадь пола', nfmt(s.floorArea) + ' м²') +
@@ -123,66 +123,71 @@
       row('Ср. RMS подгонки', nfmt(s.meanWallRms * 1000, 1) + ' мм') +
       row('Точек (вход/обр.)', s.pointsIn + ' / ' + s.pointsUsed) +
       (dt != null ? row('Время', nfmt(dt, 0) + ' мс') : '');
+    if (window.__lxKit && window.__lxKit.hydrate) window.__lxKit.hydrate(statsEl);
   }
-  function row(k, v) { return '<div style="display:flex;justify-content:space-between;gap:8px;font:12px system-ui;color:var(--muted);padding:1px 0"><span>' + k + '</span><b style="color:var(--txt)">' + v + '</b></div>'; }
 
   function numField(label, key, step) {
-    var wrap = el('label', 'display:flex;align-items:center;justify-content:space-between;gap:8px;font:12px system-ui;color:var(--muted);margin:4px 0');
+    var wrap = el('label', 'lx-param');
     wrap.appendChild(el('span', null, label));
     var inp = document.createElement('input'); inp.type = 'number'; inp.step = step || '0.01'; inp.value = state.opts[key];
-    inp.style.cssText = 'width:78px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:12px system-ui';
     inp.addEventListener('change', function () { var val = parseFloat(inp.value); if (isFinite(val)) state.opts[key] = val; });
     wrap.appendChild(inp); return wrap;
   }
   function chkField(label, key) {
-    var wrap = el('label', 'display:flex;align-items:center;gap:8px;font:12px system-ui;color:var(--muted);margin:4px 0;cursor:pointer');
+    var wrap = el('label', 'lx-cp-check');
     var inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!state.opts[key];
     inp.addEventListener('change', function () { state.opts[key] = inp.checked; });
-    wrap.appendChild(inp); wrap.appendChild(el('span', null, label)); return wrap;
+    wrap.appendChild(inp); wrap.appendChild(document.createTextNode(label)); return wrap;
+  }
+  function actBtn(label, ico, cls, fn) {
+    var b = el('button', 'btn sm' + (cls ? ' ' + cls : '')); b.type = 'button'; b.setAttribute('data-ico', ico); b.textContent = label; b.onclick = fn; return b;
   }
 
   function buildPanel() {
     if (panel) return panel;
-    panel = el('div', ''); panel.className = 'lx-tool-panel'; panel.style.cssText = 'left:14px;bottom:92px;width:280px;max-height:calc(100vh - 130px);overflow-y:auto;padding:12px;display:none';
-    var head = el('div', 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px');
-    head.appendChild(el('div', 'font:700 13px system-ui;color:var(--txt)', '🏗 Скан → BIM'));
-    var x = el('button', 'border:none;background:transparent;color:var(--muted);font-size:18px;cursor:pointer;line-height:1', '×'); x.onclick = close; head.appendChild(x);
-    panel.appendChild(head);
-    panel.appendChild(el('div', 'font:11px system-ui;color:var(--muted);margin-bottom:6px', 'Высокоточная реконструкция стен, пола и потолка из облака точек.'));
-    panel.appendChild(numField('Воксель, м', 'voxel'));
-    panel.appendChild(numField('Порог стены, м', 'wallThreshold'));
-    panel.appendChild(numField('Мин. длина стены, м', 'minWallLen'));
-    panel.appendChild(numField('Толщина по умолч., м', 'defaultThickness'));
-    panel.appendChild(chkField('Выравнивать углы (90°)', 'snapAngles'));
-    panel.appendChild(chkField('Замыкать углы', 'closeCorners'));
+    panel = el('section', 'fpanel fp-left'); panel.id = 'lxScan2BimPanel'; panel.setAttribute('aria-label', 'Скан → BIM'); panel.setAttribute('data-esc', '1');
+    panel.style.display = 'none';
+    panel.innerHTML = '<div class="fpanel-inner"><header class="fpanel-head"><span class="fpanel-ico" data-ico="building"></span><h3>Скан → BIM</h3>' +
+      '<div class="fpanel-actions"><button id="lxScan2BimClose" class="icon-btn" type="button" data-panel-close data-ico="x" data-tip="Закрыть" aria-label="Закрыть"></button></div></header>' +
+      '<div class="fpanel-body lx-sec-body"></div></div>';
+    var body = panel.querySelector('.fpanel-body');
+    body.appendChild(el('p', 'sec-note', 'Реконструкция стен, пола и потолка по облаку точек.'));
+    body.appendChild(numField('Воксель, м', 'voxel'));
+    body.appendChild(numField('Порог стены, м', 'wallThreshold'));
+    body.appendChild(numField('Мин. длина стены, м', 'minWallLen'));
+    body.appendChild(numField('Толщина по умолч., м', 'defaultThickness'));
+    body.appendChild(chkField('Выравнивать углы (90°)', 'snapAngles'));
+    body.appendChild(chkField('Замыкать углы', 'closeCorners'));
 
-    var bBuild = el('button', bcss(TONE.blue) + ';width:100%;margin-top:8px', '🏗 Построить BIM'); bBuild.id = 'lxScan2BimBuildBtn'; bBuild.onclick = build;
-    panel.appendChild(bBuild);
-    statusEl = el('div', 'font:11px system-ui;color:var(--muted);margin-top:6px;min-height:14px', '');
-    panel.appendChild(statusEl);
-    statsEl = el('div', 'margin-top:8px'); panel.appendChild(statsEl);
+    var bBuild = actBtn('Построить BIM', 'building', 'primary', build); bBuild.id = 'lxScan2BimBuildBtn';
+    body.appendChild(bBuild);
+    statusEl = el('div', 'sec-note', ''); statusEl.setAttribute('role', 'status'); statusEl.setAttribute('aria-live', 'polite');
+    body.appendChild(statusEl);
+    statsEl = el('div', 'lx-stats'); body.appendChild(statsEl);
 
-    panel.appendChild(el('div', 'height:1px;background:var(--line);margin:10px 0'));
-    panel.appendChild(el('div', 'font:600 11px system-ui;color:var(--muted);margin-bottom:2px', 'ЭКСПОРТ'));
-    var exp = el('div', 'display:flex;flex-wrap:wrap');
-    var bIfc = el('button', bcss(TONE.green), 'IFC'); bIfc.onclick = function () { exportModel('ifc'); };
-    var bObj = el('button', bcss(TONE.purple), 'OBJ'); bObj.onclick = function () { exportModel('obj'); };
-    var bDxf = el('button', bcss(TONE.orange), 'DXF'); bDxf.onclick = function () { exportModel('dxf'); };
-    var bClr = el('button', bcss(TONE.neutral), 'Очистить'); bClr.onclick = function () { clearPreview(mainV()); };
-    exp.appendChild(bIfc); exp.appendChild(bObj); exp.appendChild(bDxf); exp.appendChild(bClr);
-    panel.appendChild(exp);
-    document.body.appendChild(panel);
+    body.appendChild(el('div', 'lx-obj-h', 'Экспорт'));
+    var exp = el('div', 'lx-btnrow');
+    exp.appendChild(actBtn('IFC', 'download', '', function () { exportModel('ifc'); }));
+    exp.appendChild(actBtn('OBJ', 'download', '', function () { exportModel('obj'); }));
+    exp.appendChild(actBtn('DXF', 'download', '', function () { exportModel('dxf'); }));
+    exp.appendChild(actBtn('Убрать каркас', 'eraser', '', function () { clearPreview(mainV()); }));
+    body.appendChild(exp);
+    panel.querySelector('#lxScan2BimClose').onclick = close;
+    (document.getElementById('stageSideL') || document.querySelector('.stage') || document.body).appendChild(panel);
+    if (window.__lxKit && window.__lxKit.hydrate) window.__lxKit.hydrate(panel);
     return panel;
   }
-  function open() { buildPanel().style.display = 'block'; }
-  function close() { if (panel) panel.style.display = 'none'; clearPreview(mainV()); }
+  var btn = null;
+  function open() { buildPanel().style.display = 'block'; setOn(btn, true); }
+  function close() { if (panel) panel.style.display = 'none'; clearPreview(mainV()); setOn(btn, false); }
 
   function mountButton() {
     if (document.getElementById('lxScan2BimBtn')) return;
-    var b = el('button', 'position:fixed;left:14px;bottom:52px;z-index:99998;' + bcss(TONE.green), '🏗 Скан→BIM');
-    b.id = 'lxScan2BimBtn';
-    b.onclick = function () { if (panel && panel.style.display === 'block') close(); else open(); };
-    document.body.appendChild(b);
+    btn = el('button', '', 'Скан → BIM');
+    btn.type = 'button'; btn.id = 'lxScan2BimBtn';
+    btn.setAttribute('data-tip', 'Распознать стены, проёмы и плиты по облаку');
+    btn.onclick = function () { if (panel && panel.style.display === 'block') close(); else open(); };
+    (document.getElementById('lxLegacy') || document.body).appendChild(btn);
   }
 
   function boot() { try { mountButton(); } catch (e) { console.error('[scan2bim] boot', e); } }

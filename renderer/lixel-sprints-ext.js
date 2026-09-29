@@ -11,7 +11,7 @@
   var busy = false;
 
   function T() { return window.__pcTools || null; }
-  function toast(m) { var t = T(); if (t && t.toast) t.toast(m); else try { console.log('[sprints-ext]', m); } catch (e) {} }
+  function toast(m) { var k = window.__lxKit, t = T(); if (k && k.toast) k.toast(m); else if (t && t.toast) t.toast(m); else try { console.log('[sprints-ext]', m); } catch (e) {} }
   function viewer() { var t = T(); var v = (t && t.viewer) ? t.viewer() : null; return v || (typeof window !== 'undefined' ? window.__viewer : null) || null; }
 
   function getCloud() {
@@ -379,53 +379,10 @@
     }
   }); }
 
-  // ---- построение риббонов -----------------------------------------------
-  function mkBtn(label, title, onClick) {
-    var b = document.createElement('button');
-    b.className = 'tbtn lx-bigbtn'; b.type = 'button'; b.dataset.lxbig = '1';
-    b.title = title || label; b.setAttribute('aria-label', title || label);
-    var i = document.createElement('span'); i.className = 'lx-bic'; i.textContent = '▤';
-    var l = document.createElement('span'); l.className = 'lx-blabel'; l.textContent = label;
-    b.append(i, l); b.addEventListener('click', function () { onClick(); });
-    return b;
-  }
-  function ensureGroup(id, tab, label) {
-    var host = document.querySelector('.toolbar .tbtns'); if (!host) return null;
-    var g = document.getElementById(id); if (g) return g.querySelector('.tgrow');
-    g = document.createElement('div'); g.id = id; g.className = 'tgroup'; g.dataset.lxtab = tab;
-    var row = document.createElement('div'); row.className = 'tgrow';
-    var cap = document.createElement('div'); cap.className = 'tglabel'; cap.textContent = label;
-    g.append(row, cap); host.append(g); return row;
-  }
-
+  // ---- лента ---------------------------------------------------------------
+  // Кнопки этих операций описаны в ui/commands.js и создаются лентой; здесь остаются только сами операции.
   var built = false;
-  function build() {
-    if (built) return; var host = document.querySelector('.toolbar .tbtns'); if (!host) return; built = true;
-    var views = ensureGroup('lxSprintViews', 'tool', 'Виды (X-Ray)');
-    if (views) {
-      views.append(mkBtn('Сверху', 'Вид сверху (орто, план)', function () { opView('top', 'Сверху'); }));
-      views.append(mkBtn('Спереди', 'Вид спереди (орто, фасад)', function () { opView('front', 'Спереди'); }));
-      views.append(mkBtn('Сбоку', 'Вид сбоку (орто)', function () { opView('side', 'Сбоку'); }));
-      views.append(mkBtn('Изометрия', 'Изометрический вид', function () { opView('iso', 'Изометрия'); }));
-      views.append(mkBtn('Орто', 'Ортографическая/перспективная проекция', opOrtho));
-      views.append(mkBtn('Рентген', 'Просвечивание (X-Ray)', opXray));
-    }
-    var geo = ensureGroup('lxSprintGeo', 'app', 'Гео / BIM');
-    if (geo) {
-      geo.append(mkBtn('Стены→DXF', 'Детекция стен и план этажа (DXF)', opWalls));
-      geo.append(mkBtn('DSM→GeoTIFF', 'Цифровая модель поверхности по максимуму высот (GeoTIFF)', opDSM));
-      geo.append(mkBtn('DTM→GeoTIFF', 'Цифровая модель рельефа только по PMF-классу грунта (GeoTIFF)', opDTM));
-      geo.append(mkBtn('Горизонтали', 'Горизонтали рельефа (DXF)', opContours));
-      geo.append(mkBtn('Грунт PMF', 'Прогрессивный морфологический фильтр низкой поверхности; параметры cellSize/threshold/maxSlope доступны через Terrain.csfClassify', opGround));
-      geo.append(mkBtn('Классы→LAS', 'Экспорт LAS 1.4 с ASPRS-классами 2 (грунт) и 1 (прочее)', opGroundLAS));
-      geo.append(mkBtn('IFC-2x3', 'Совместимость IFC2X3: стены и колонны; без проёмов/прочих объектов', opIFC));
-      geo.append(mkBtn('IFC4 BIM', 'Scan→BIM: стены, проёмы, плиты и колонны; автоматические MEP/балки не включаются без ручной проверки', opIFC4));
-      geo.append(mkBtn('Геопривязка', 'Геопривязка по GCP (Гельмерт 3D)', opGeoref));
-      geo.append(mkBtn('Шаблон GCP', 'Скачать шаблон GCP CSV', opGcpTemplate));
-      geo.append(mkBtn('Potree 2.0', 'Открыть набор Potree 2.0', opPotree));
-    }
-    try { console.log('[LixelStudio sprints-ext] риббоны спринтов 1/3/4/5/6/8 готовы · v1151'); } catch (e) {}
-  }
+  function build() { built = true; }
 
   function boot() {
     ensureXrayBridge(); build();
@@ -435,7 +392,7 @@
   if (typeof window !== 'undefined') {
     window.__lxSprintsExt = {
       build: build, ensureXrayBridge: ensureXrayBridge,
-      ops: { opView: opView, opOrtho: opOrtho, opXray: opXray, opWalls: opWalls, opDSM: opDSM, opContours: opContours, opGround: opGround, opGeoref: opGeoref, opGcpTemplate: opGcpTemplate, opIFC: opIFC, opIFC4: opIFC4, opPotree: opPotree }
+      ops: { opView: opView, opOrtho: opOrtho, opXray: opXray, opWalls: opWalls, opDSM: opDSM, opDTM: opDTM, opContours: opContours, opGround: opGround, opGroundLAS: opGroundLAS, opGeoref: opGeoref, opGcpTemplate: opGcpTemplate, opIFC: opIFC, opIFC4: opIFC4, opPotree: opPotree }
     };
     window.addEventListener('lx-pctools-ready', boot);
     window.addEventListener('lx-viewer-ready', ensureXrayBridge);

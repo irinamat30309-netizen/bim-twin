@@ -1,5 +1,7 @@
-/* v1089: actual workspace layout, shared mode cancellation and panel lifecycle.
- * Keeps existing controls/listeners and persisted project data. No mock SDK actions.
+/* Workspace controller: the one place that knows how to leave the current tool, how Esc peels
+ * layers (modal -> menu -> selection -> tool) and the section-outline panel.
+ * Layout lives in ui/ (ribbon.js, chrome.js, modes.js); nothing here builds toolbars or panels
+ * except the section panel below. Project data and persisted state are untouched.
  */
 (function () {
   'use strict';
@@ -7,36 +9,23 @@
   const root = document.documentElement;
   const viewer = () => window.__viewer || window.__lxViewer;
   const visible = el => !!el && getComputedStyle(el).display !== 'none';
-  let busy = false;
-  function notify(text) { const e = $('toast'); if (e) { e.textContent = text; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 3000); } }
-  function button(text, id, title, fn) {
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = text;
-    if (id) b.id = id; b.title = title || text; b.setAttribute('aria-label', b.title);
-    if (fn) b.addEventListener('click', fn); return b;
+  function notify(text, opts) {
+    const k = window.__lxKit;
+    if (k && k.toast) { k.toast(text, opts); return; }
+    const e = $('toast'); if (e) { e.textContent = text; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 3000); }
   }
   function click(id) { const b = $(id); if (b) b.click(); }
   function hide(id) { const e = $(id); if (e) e.style.display = 'none'; }
   function off(ids) { ids.forEach(id => { const e = $(id); if (e) { e.classList.remove('on'); e.setAttribute('aria-pressed', 'false'); } }); }
-  function sync() {
-    const v = viewer();
-    const flags = { measure: !!(v && v.measuring), section: !!(v && v.section && v.section.on), edl: !!(v && v._edl && v._edlReady), grid: !!(v && v.lod) };
-    document.querySelectorAll('#lxLtbar [data-tool]').forEach(b => {
-      const on = !!flags[b.dataset.tool]; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on));
-    });
-    const grid = document.querySelector('#lxLtbar [data-tool="grid"]');
-    if (grid) {
-      const canLOD = !!(v && v.supportsLOD && v.supportsLOD());
-      grid.disabled = !canLOD; grid.setAttribute('aria-disabled', String(!canLOD));
-      grid.title = canLOD ? 'LOD — уменьшить детализацию полигональной модели' : 'LOD доступен только для полигональных моделей; облака точек пока не поддержаны';
-    }
-  }
+  function sync() { const r = window.__lxRibbon; if (r && r.sync) r.sync(); }
   function exitTools(except) {
     const v = viewer();
     if (window.__lxDrawUI && window.__lxDrawUI.cancelSectionJob) window.__lxDrawUI.cancelSectionJob();
-    window.__lxDock?.closePopover();window.__lxCloudUI?.closeMenu();
+    if (window.__lxKit && window.__lxKit.closePopover) window.__lxKit.closePopover();
+    if (window.__lxCloudUI && window.__lxCloudUI.closeMenu) window.__lxCloudUI.closeMenu();
     if (except !== 'measure') {
       if (v && v.measuring && window.__bimSetMeasuring) window.__bimSetMeasuring(false);
-      hide('measureBar'); hide('measureListPanel'); hide('measureReadout'); off(['btnMeasure','vtMeasure']);
+      hide('measureBar'); hide('measureListPanel'); hide('measureReadout'); off(['btnMeasure']);
     }
     if (except !== 'draw' && window.__lxDraw && window.__lxDraw.active && window.__lxDrawUI) window.__lxDrawUI.deactivate(true);
     if (except !== 'edit') { if (v && v.editSelect && v.setEditSelect) v.setEditSelect(false); hide('editBar'); off(['vtEdit']); }
@@ -46,171 +35,69 @@
     if (!except) {
       if (v && v.section && v.section.on && v.setSection) v.setSection(false);
       hide('sectionPanel'); hide('sectionRange'); hide('qualityBar'); hide('lxSectionControls');
-      off(['btnSection','vtSection','vtQuality']);
+      off(['btnSection', 'vtQuality']);
     }
     sync();
-  }
-  function toolbarAction(t, el) {
-    const v = viewer();
-    if (t.id === 'nav') { exitTools(); return; } // navigation is not camera reset
-    if (t.id === 'edl') {
-      if (!v || !v.setEDL) { notify('EDL недоступен в текущем режиме'); return; }
-      const on = v.setEDL(!v._edl); if (!on && v._edl) notify('EDL не поддерживается текущим графическим контекстом');
-    } else if (t.id === 'xray') { notify('Рентген пока не реализован для этого вьюера'); }
-    else if (t.act === 'full') {
-      const p = document.fullscreenElement ? document.exitFullscreen() : document.querySelector('.stage').requestFullscreen();
-      if (p && p.catch) p.catch(() => notify('Полноэкранный режим недоступен'));
-    } else if (t.btn) click(t.btn);
-    sync();
-  }
-  function projectToggle(force) {
-    const on = force == null ? !root.classList.contains('lx-project-open') : !!force;
-    root.classList.toggle('lx-project-open', on); if ($('lxProjectToggle')) $('lxProjectToggle').setAttribute('aria-pressed', String(on));
-  }
-  function propertiesToggle(force) {
-    const p = $('lxPropertiesBody'); if (!p) return;
-    const on = force == null ? !p.classList.contains('open') : !!force;
-    root.classList.toggle('lx-docs-view',on);p.classList.toggle('open', on); $('lxPropertiesToggle').setAttribute('aria-expanded', String(on));
-    $('lxPropertiesToggle').lastChild.textContent = on ? '▾' : '▸';
-    if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches) root.classList.toggle('lx-mobile-inspector-open', on);
-    else root.classList.remove('lx-mobile-inspector-open');
-  }
-  function closeButton(panel, fn) {
-    if (!panel || panel.querySelector('.lx-panel-close')) return;
-    const b = button('×', '', 'Закрыть · Esc', fn); b.className = 'lx-panel-close';
-    const head=panel.querySelector('.mtoolbox-head');
-    if(head) head.append(b); else {b.style.float='right';panel.prepend(b);}
   }
   function closeTopModal() {
     const modals = Array.from(document.querySelectorAll('.modal.open,.lx-modal-back')).filter(visible);
     if (!modals.length) return false;
-    const m = modals.sort((a,b) => (+getComputedStyle(a).zIndex || 0) - (+getComputedStyle(b).zIndex || 0)).pop();
+    const m = modals.sort((a, b) => (+getComputedStyle(a).zIndex || 0) - (+getComputedStyle(b).zIndex || 0)).pop();
     if (m.id === 'formModal') click(visible($('formCancel')) ? 'formCancel' : 'formOk');
     else if (m.id === 'cmpModal') click('cmpClose');
     else { const close = m.querySelector('.modal-head .x,.lx-modal-a .btn:not(.primary)'); if (close) close.click(); else return false; }
     return true;
   }
   function menusClose() {
-    let any = false; ['cleanMenu','geomMenu'].forEach(id => { const m=$(id); if(m){m.remove();any=true;} }); return any;
+    const k = window.__lxKit;
+    return !!(k && k.closePopover && k.closePopover());
   }
+  function drawerOpen() {
+    return window.innerWidth <= 1100 && (!root.classList.contains('lx-side-closed') || !root.classList.contains('lx-insp-closed'));
+  }
+  function toolActive() {
+    const v = viewer();
+    return !!((v && (v.measuring || v.editSelect || v.walk || v.tour || (v.section && v.section.on))) ||
+      (window.__lxDraw && window.__lxDraw.active) ||
+      ['measureBar', 'qualityBar', 'sectionPanel', 'lxSectionControls', 'measureListPanel'].some(id => visible($(id))));
+  }
+  // Esc peels one layer per press: modal -> menu/popover -> drawer -> selection -> active tool.
   function escape() {
+    if ($('lxPalette')) return false;
     if (closeTopModal()) return true;
-    if(window.__lxDock?.closePopover(true) || window.__lxCloudUI?.closeMenu(true))return true;
-    if (menusClose()) return true;
-    if (root.classList.contains('lx-project-open')) { projectToggle(false); return true; }
-    const v=viewer();
+    if (window.__lxKit?.closePopover(true) || window.__lxCloudUI?.closeMenu(true)) return true;
+    if (drawerOpen()) {
+      const c = window.__lxChrome;
+      if (c && c.setSide) { c.setSide(false, false); c.setInspector(false, false); } else root.classList.add('lx-side-closed', 'lx-insp-closed');
+      return true;
+    }
+    // Плавающая панель (Скан → BIM, правка модели): Esc закрывает её, если фокус внутри.
+    const fp = [...document.querySelectorAll('.fpanel[data-esc]')].filter(visible).find(x => x.contains(document.activeElement));
+    if (fp) { const x = fp.querySelector('[data-panel-close]'); if (x) { x.click(); return true; } }
+    const v = viewer();
     if (v && v.editSelect && v.selectionCount && v.selectionCount() && v.clearSelection) { v.clearSelection(); notify('Выделение снято. Ещё Esc — выйти из правки.'); return true; }
-    if ((v && (v.measuring || v.editSelect || v.walk || v.tour || (v.section && v.section.on))) || (window.__lxDraw && window.__lxDraw.active) || ['measureBar','qualityBar','sectionPanel','lxSectionControls','measureListPanel'].some(id => visible($(id)))) { exitTools(); return true; }
+    if (toolActive()) {
+      if (window.__lxModes && window.__lxModes.cancelAll) window.__lxModes.cancelAll('escape'); else exitTools();
+      return true;
+    }
     return false;
   }
-  function group(id, tab, label) {
-    let g=$(id); if(g) return g.querySelector('.tgrow');
-    g=document.createElement('div'); g.id=id; g.className='tgroup'; g.dataset.lxtab=tab;
-    const row=document.createElement('div'); row.className='tgrow';
-    const caption=document.createElement('div'); caption.className='tglabel'; caption.textContent=label;
-    g.append(row,caption); document.querySelector('.toolbar .tbtns').append(g); return row;
-  }
-  function decorate(el, label, icon) {
-    if (!el || el.dataset.workspaceLabel===label && el.querySelector('.lx-bic')) return;
-    const svg = window.__lxRibbon && (window.__lxRibbon.ICON[icon] || window.__lxRibbon.ICON.settings) || '';
-    el.replaceChildren(); const i=document.createElement('span'); i.className='lx-bic'; i.innerHTML=svg;
-    const l=document.createElement('span'); l.className='lx-blabel'; l.textContent=label;
-    el.append(i,l); el.classList.add('lx-bigbtn'); el.dataset.lxbig='1'; el.dataset.workspaceLabel=label;
-    if(!el.title) el.title=label; el.setAttribute('aria-label',label);
-  }
-  function layoutRibbon() {
-    if (window.__lxRibbon) window.__lxRibbon.build();
-    const process = group('lxProcessTools','process','Обработка облака');
-    [['vtTools','Чистка','edit'],['vtConvert','Конвертация','cloudOpen'],['vtGeom','Геометрия','section'],['vtMem','Память','lod']].forEach(([id,label,ic])=>{const b=$(id);if(b){process.append(b);decorate(b,label,ic);}});
-    const tools=group('lxViewTools','tool','Отображение');
-    [['vtQuality','Качество','compare'],['vtWalk','Прогулка','tour'],['vtZoomIn','Приблизить','isolate'],['vtZoomOut','Отдалить','isolate']].forEach(([id,label,ic])=>{const b=$(id);if(b){tools.append(b);decorate(b,label,ic);}});
-    const app=group('lxAppTools','app','Системные инструменты');
-    if($('btnSettings')) app.append($('btnSettings'));
-    if($('vtLog')) {app.append($('vtLog'));decorate($('vtLog'),'Консоль','report');}
-    const tour=group('lxTourModels','tour','Меши и 3D-тур');
-    if($('tsMesh')) {tour.append($('tsMesh'));decorate($('tsMesh'),'Меш','model');}
-    const vc=$('viewCube'),st=document.querySelector('.stage'); if(vc && st) {st.append(vc);vc.hidden=true;}
-    const vcg=$('vcGroup'); if(vcg) vcg.dataset.lxhidden='1';
-    document.querySelectorAll('.toolbar .tgroup').forEach(g=>{
-      if (!g.dataset.lxtab) g.dataset.lxtab=g.id==='vtGroup'?'process':'tool';
-      const tab=document.querySelector('#lxTabs .lx-tab.active');
-      g.dataset.lxhidden=g.dataset.lxtab===(tab && tab.dataset.tab || 'home')?'0':'1';
-      if(g.id==='vcGroup') g.dataset.lxhidden='1';
-    });
-  }
-  function build() {
-    if (busy || !$('lxTabs') || !viewer()) return; busy=true;
-    try {
-      if (window.__lxToolbar) window.__lxToolbar.build();
-      if (window.__lxShell) window.__lxShell.applyAll();
-      if (window.__lxDrawUI) window.__lxDrawUI.buildTab();
-      layoutRibbon();
-      if(!$('lxProjectToggle')) {
-        const quick=document.createElement('div');quick.className='lx-quick';
-        quick.append(button('Проект','lxProjectToggle','Проект и помещения',()=>projectToggle()),button('Документы','lxDocsToggle','Документы и свойства объекта',()=>propertiesToggle()));
-        $('lxTabs').prepend(quick); $('lxProjectToggle').setAttribute('aria-pressed','false');
-      }
-      const insp=document.querySelector('.inspector');
-      if(insp && !$('lxPropertiesBody')) {
-        const head=button('Свойства и документы','lxPropertiesToggle','Развернуть свойства и документы',()=>propertiesToggle()); head.className='lx-properties-head';head.append(document.createElement('span'));head.lastChild.textContent='▸';head.setAttribute('aria-expanded','false');
-        const body=document.createElement('div');body.id='lxPropertiesBody';body.className='lx-properties-body';
-        Array.from(insp.children).filter(e=>!e.matches('.lx-datahdr,#lxScene,#lxCloudProperties')).forEach(e=>body.append(e));
-        const empty=document.createElement('div');empty.className='lx-properties-empty';empty.textContent='Свойства и документы доступны здесь. Для выбора помещения откройте «Проект».';
-        insp.append(head,body,empty);
-      }
-      if(!$('measureBar')?.dataset.docked)closeButton($('measureBar'),()=>exitTools());
-      closeButton($('measureListPanel'),()=>hide('measureListPanel'));
-      closeButton($('qualityBar'),()=>{hide('qualityBar');off(['vtQuality']);});
-      closeButton($('editBar'),()=>exitTools());
-      closeButton($('tourBar'),()=>exitTools());
-      if($('mmFinish')) { $('mmFinish').textContent='Завершить фигуру'; $('mmFinish').title='Завершить текущую фигуру. Esc или × — выйти из измерений.'; }
-      if(!$('mmExit') && $('mmClear')) {const b=button('Выйти · Esc','mmExit','Выключить измерение',()=>exitTools());b.className='btn-sm';$('mmClear').parentNode.append(b);}
-      const nav=document.querySelector('#lxLtbar [data-tool="nav"]'); if(nav){nav.title='Навигация · выйти из инструмента (Esc)';nav.setAttribute('aria-label',nav.title);}
-      const grid=document.querySelector('#lxLtbar [data-tool="grid"]'); if(grid) grid.title='LOD — уменьшить детализацию';
-      const xray=document.querySelector('#lxLtbar [data-tool="xray"]'); if(xray){xray.disabled=!(viewer() && viewer().setXray);xray.title='Рентген: не реализован в текущем вьюере';}
-      const cube=document.querySelector('.lx-cube');
-      if(cube && !cube.dataset.workspace) {
-        cube.dataset.workspace='1';cube.setAttribute('role','button');cube.tabIndex=0;cube.title='Стандартные виды';cube.setAttribute('aria-label','Стандартные виды');
-        // Y-up, exactly as the renderer. A face button opens real standard-view controls.
-        cube.innerHTML='<svg viewBox="0 0 90 90" width="84" height="84"><g fill="none" stroke="#d6d9df" stroke-width="1.4"><path d="M24 32h43v43H24zM24 32l-9-10h43l9 10M15 22v43l9 10M58 22v10"/></g><text x="45" y="56" text-anchor="middle" fill="#729aff" font-size="9">ВИДЫ</text><path d="M15 76H78" stroke="#ec6262" stroke-width="2"/><path d="M15 76V8" stroke="#71d47c" stroke-width="2"/><path d="M15 76L7 83" stroke="#7570ff" stroke-width="2"/><g font-size="11" font-family="Arial"><text x="79" y="80" fill="#ec6262">X</text><text x="10" y="9" fill="#71d47c">Y</text><text x="0" y="88" fill="#8d88ff">Z</text></g></svg>';
-        const toggle=()=>{if($('viewCube')) $('viewCube').hidden=!$('viewCube').hidden;};cube.addEventListener('click',toggle);cube.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();}});
-      }
-      const bar=$('lxStatus'); if(bar && !$('lxLogToggle')) bar.append(button('Консоль','lxLogToggle','Показать / скрыть консоль действий',()=>click('vtLog')));
-      document.querySelectorAll('#lxTabs .lx-tab').forEach(t=>{t.setAttribute('role','tab');t.tabIndex=0;t.setAttribute('aria-selected',String(t.classList.contains('active')));});
-      if($('lxTabs')) $('lxTabs').setAttribute('role','tablist');
-      document.querySelectorAll('#lxScene .lx-node[data-layer]').forEach(n => {
-        const id=n.dataset.layer,b=n.querySelector('.lx-eye');
-        if(b && !['cloud','floors'].includes(id)) {b.disabled=true;b.title='Видимость этого слоя пока не подключена';}
-        const nm=n.querySelector('.lx-nm');if(nm)nm.title=nm.textContent;
-      });
-      const rt=document.querySelector('#lxScene .lx-root .lx-tw');if(rt)rt.textContent='';
-      sync();
-    } finally { busy=false; window.__lxDock?.build(); }
-  }
-  document.addEventListener('keydown',e=>{
-    if(e.key==='Escape') {if(escape()){e.preventDefault();e.stopImmediatePropagation();}return;}
-    if(e.target && (e.target.matches('input,textarea,select') || e.target.isContentEditable)) return;
-    if(e.target && e.target.matches('.lx-tab') && (e.key==='Enter'||e.key===' ')) {e.preventDefault();e.target.click();}
-  },true);
-  document.addEventListener('pointerdown',e=>{
-    ['cleanMenu','geomMenu'].forEach(id=>{const m=$(id);const toggle=$(id==='cleanMenu'?'vtTools':'vtGeom');if(m&&!m.contains(e.target)&&!(toggle&&toggle.contains(e.target)))m.remove();});
-    if(e.target && e.target.matches('.modal.open,.lx-modal-back')) closeTopModal();
-    if(root.classList.contains('lx-project-open') && !e.target.closest('.sidebar,#lxProjectToggle')) projectToggle(false);
-  },true);
-  document.addEventListener('click',e=>{
-    const b=e.target.closest('button,.lx-tab');if(!b)return;
-    if(b.matches('.lx-tab')) {
-      exitTools();menusClose();const obj=b.dataset.tab==='object';root.classList.toggle('lx-object-view',obj);if(obj) propertiesToggle(true);
-      document.querySelectorAll('#lxTabs .lx-tab').forEach(t=>t.setAttribute('aria-selected',String(t===b)));
-    }
-    if(b.id==='vtQuality' && !b.classList.contains('on')) exitTools();
-    if(b.id==='btnSection' && !(viewer() && viewer().section && viewer().section.on)) exitTools();
-    if(b.id==='vtEdit' && !(viewer() && viewer().editSelect)) exitTools('edit');
-    if(b.id==='vtWalk' && !(viewer() && viewer().walk)) exitTools('walk');
-    if(b.id==='lxSectBtn') {e.preventDefault();e.stopImmediatePropagation();openSectionControls();return;}
-    if(b.id==='btnSection') setTimeout(()=>{closeButton($('sectionPanel'),()=>exitTools());sync();},0);
-    if(['btnMeasure','vtMeasure','qEDL','btnSection','btnLOD'].includes(b.id)) setTimeout(sync,0);
-  },true);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { if (escape()) { e.preventDefault(); e.stopImmediatePropagation(); } }
+  }, true);
+  document.addEventListener('pointerdown', e => {
+    if (e.target && e.target.matches('.modal.open,.lx-modal-back')) closeTopModal();
+  }, true);
+  document.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const v = viewer();
+    if (b.id === 'vtQuality' && !b.classList.contains('on')) exitTools();
+    if (b.id === 'btnSection' && !(v && v.section && v.section.on)) exitTools();
+    if (b.id === 'vtEdit' && !(v && v.editSelect)) exitTools('edit');
+    if (b.id === 'vtWalk' && !(v && v.walk)) exitTools('walk');
+    if (b.id === 'lxSectBtn') { e.preventDefault(); e.stopImmediatePropagation(); openSectionControls(); return; }
+    if (['btnMeasure', 'qEDL', 'btnSection', 'btnLOD'].includes(b.id)) setTimeout(sync, 0);
+  }, true);
   // A section is a raster-derived outline, not a certified wall centreline.
   function openSectionControls() {
     let panel=$('lxSectionControls');
@@ -219,23 +106,23 @@
     const v=viewer(),c=v&&v.getEditedCloud&&v.getEditedCloud();
     if(!v || !(v.base && v.base.some(o => o.points)) || !c || !c.pos || !c.pos.length){notify('Сначала загрузите облако точек');return;}
     if(!panel){
-      panel=document.createElement('div');panel.id='lxSectionControls';
-      panel.innerHTML='<div class="mtoolbox-head">Контур сечения</div>' +
+      panel=document.createElement('section');panel.id='lxSectionControls';panel.className='fpanel fp-left';panel.setAttribute('aria-label','Контур сечения');
+      panel.innerHTML='<div class="fpanel-inner"><header class="fpanel-head"><span class="fpanel-ico" data-ico="scan-line"></span><h3>Контур сечения</h3><div class="fpanel-actions"><button class="icon-btn" type="button" data-close="lxSectionControls" data-ico="x" title="Закрыть" aria-label="Закрыть"></button></div></header><div class="fpanel-body lx-sec-body">' +
         '<label class="lx-field">Плоскость среза<select id="lxSectionAxis" aria-label="Ориентация сечения"><option value="y">Горизонтальный · план (Y)</option><option value="z">Вертикальный · фасад (Z)</option><option value="x">Вертикальный · сбоку (X)</option><option value="profile">Вертикальный · наклонный профиль</option></select></label>' +
-        '<button id="lxBuildSection" class="btn-sm">Построить контур</button>' +
-        '<button id="lxExportSectionPoints" class="btn-sm" type="button" aria-label="Сохранить точки полосы сечения в CSV и метаданные JSON" title="Экспортирует фактические точки полосы; source coordinates используются только при валидном преобразовании">Сохранить точки полосы · CSV + JSON</button>' +
-        '<button id="lxBuildProfile" class="btn-sm" style="display:none">Сформировать профиль DXF + CSV</button>' +
+        '<button id="lxBuildSection" class="btn sm">Построить контур</button>' +
+        '<button id="lxExportSectionPoints" class="btn sm" type="button" aria-label="Сохранить точки полосы сечения в CSV и метаданные JSON" title="Экспортирует фактические точки полосы; source coordinates используются только при валидном преобразовании">Сохранить точки полосы · CSV + JSON</button>' +
+        '<button id="lxBuildProfile" class="btn sm">Сформировать профиль DXF + CSV</button>' +
         '<div id="lxSectionStatus" role="status" aria-live="polite"></div>' +
-        '<div id="lxSectionJob" style="display:none;gap:8px;align-items:center;margin:6px 0">' +
-        '<progress id="lxSectionProgress" max="100" value="0" aria-label="Прогресс фонового расчёта сечения" style="width:100%;height:8px"></progress>' +
-        '<button id="lxCancelSection" class="btn-sm" type="button" aria-label="Отменить расчёт сечения">Отменить</button></div>' +
+        '<div id="lxSectionJob">' +
+        '<progress id="lxSectionProgress" class="lx-sec-progress" max="100" value="0" aria-label="Прогресс фонового расчёта сечения"></progress>' +
+        '<button id="lxCancelSection" class="btn sm" type="button" aria-label="Отменить расчёт сечения">Отменить</button></div>' +
         '<label class="lx-field" id="lxSectionLevelField"><span id="lxSectionLevelLabel">Уровень Y, м</span><input id="lxSectionLevel" type="number" step="0.01"><input id="lxSectionRange" aria-label="Положение сечения" type="range" step="0.01"></label>' +
-        '<div id="lxSectionProfileControls" style="display:none">' +
+        '<div id="lxSectionProfileControls">' +
         '<label class="lx-field">Азимут линии, ° (0° = +X; 90° = +Z)<input id="lxSectionAzimuth" type="number" step="0.1" value="0"></label>' +
         '<label class="lx-field">Начало станции X, м<input id="lxSectionOriginX" type="number" step="0.01"></label>' +
         '<label class="lx-field">Начало станции Z, м<input id="lxSectionOriginZ" type="number" step="0.01"></label>' +
         '<label class="lx-field">Смещение плоскости по нормали, м<input id="lxSectionOffset" type="number" step="0.01" value="0"></label>' +
-        '<p style="font-size:12px;color:#afb8c8">Станция 0 задаётся началом X/Z; профиль строится по всему облаку вдоль линии. В DXF: X = станция, Y = высота. Координаты и параметры плоскости сохраняются в CSV.</p>' +
+        '<p class="sec-note">Станция 0 задаётся началом X/Z; профиль строится по всему облаку вдоль линии. В DXF: X = станция, Y = высота. Координаты и параметры плоскости сохраняются в CSV.</p>' +
         '</div>' +
         '<label class="lx-field">Толщина полосы, м<input id="lxSectionThickness" type="number" min="0.01" max="100" step="0.01" value="0.2"></label>' +
         '<label class="lx-field">Размер ячейки, м<input id="lxSectionCell" type="number" min="0.01" max="10" step="0.01" value="0.1"></label>' +
@@ -245,14 +132,16 @@
         '<label class="lx-field">Название набора<input id="lxSectionPresetName" type="text" maxlength="80" autocomplete="off" placeholder="Например: Этаж 2 — фасад"></label>' +
         '<div class="lx-section-preset-row">' +
         '<select id="lxSectionPresetSelect" aria-label="Сохранённые наборы сечений"><option value="">Загрузка…</option></select>' +
-        '<button id="lxApplySectionPreset" class="btn-sm" type="button" disabled>Применить</button>' +
-        '<button id="lxDeleteSectionPreset" class="btn-sm" type="button" disabled aria-label="Удалить сохранённый набор">Удалить</button>' +
+        '<button id="lxApplySectionPreset" class="btn sm" type="button" disabled>Применить</button>' +
+        '<button id="lxDeleteSectionPreset" class="btn sm" type="button" disabled aria-label="Удалить сохранённый набор">Удалить</button>' +
         '</div>' +
-        '<button id="lxSaveSectionPreset" class="btn-sm" type="button" aria-label="Сохранить параметры сечения в проекте">Сохранить набор</button>' +
+        '<button id="lxSaveSectionPreset" class="btn sm" type="button" aria-label="Сохранить параметры сечения в проекте">Сохранить набор</button>' +
         '<div id="lxSectionPresetStatus" role="status" aria-live="polite"></div>' +
         '</div>' +
-        '<p style="font-size:12px;color:#afb8c8">Растровый контур занятой области, не сертифицированная ось стены. Размер ячейки задаёт детализацию. Мелкие фрагменты ниже порога площади отсеиваются; поставьте 0, чтобы сохранить все.</p>';
-      document.querySelector('.stage').append(panel);closeButton(panel,()=>{window.__lxDrawUI?.cancelSectionJob?.();hide('lxSectionControls');});
+        '<p class="sec-note">Растровый контур занятой области, не сертифицированная ось стены. Размер ячейки задаёт детализацию. Мелкие фрагменты ниже порога площади отсеиваются; поставьте 0, чтобы сохранить все.</p></div></div>';
+      (($('stageSideL')||document.querySelector('.stage')).append(panel));
+      if(window.__lxKit&&window.__lxKit.hydrate)window.__lxKit.hydrate(panel);
+      $('lxSectionJob').style.display='none';
       const axis=$('lxSectionAxis'),level=$('lxSectionLevel'),range=$('lxSectionRange'),label=$('lxSectionLevelLabel'),status=$('lxSectionStatus');
       const axisIndex={x:0,y:1,z:2}, axisLabel={y:'Уровень Y, м',z:'Координата Z, м',x:'Координата X, м'};
       const levels={x:null,y:null,z:null};
@@ -588,9 +477,7 @@
     if(panel._syncSectionAxis)panel._syncSectionAxis();
     panel.style.display='block';
   }
-  window.__lxWorkspace={build,exitTools,escape,toolbarAction,sync,projectToggle,propertiesToggle,openSectionControls};
-  window.addEventListener('bim-cloud-change',()=>window.__lxDrawUI?.cancelSectionJob?.());
-  window.addEventListener('bim-project-changed',()=>window.__lxDrawUI?.cancelSectionJob?.());
-  window.addEventListener('bim-app-ready',build);
-  window.addEventListener('DOMContentLoaded',()=>setTimeout(build,160));
+  window.__lxWorkspace = { exitTools, escape, menusClose, sync, openSectionControls };
+  window.addEventListener('bim-cloud-change', () => window.__lxDrawUI?.cancelSectionJob?.());
+  window.addEventListener('bim-project-changed', () => window.__lxDrawUI?.cancelSectionJob?.());
 })();

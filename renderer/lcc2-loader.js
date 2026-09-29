@@ -519,22 +519,24 @@
 /* ─── LCC2 UI ─────────────────────────────────────────── */
 (function () {
 
-  // ——— Toast: напрямую через #toast ———
+  // ——— Сообщения: общий тост интерфейса (запасной вариант — #toast) ———
   var _tt = null;
   function showMsg(msg) {
     console.log('[LCC2]', msg);
     try {
+      if (window.__lxKit && window.__lxKit.toast) { window.__lxKit.toast(msg); return; }
       var el = document.getElementById('toast');
       if (!el) return;
       el.textContent = msg;
-      el.classList.add('show','active','visible');
-      el.style.cssText = 'display:block;opacity:1';
+      el.classList.add('show');
       clearTimeout(_tt);
-      _tt = setTimeout(function() {
-        el.classList.remove('show','active','visible');
-        el.style.opacity = '0';
-      }, 4000);
+      _tt = setTimeout(function() { el.classList.remove('show'); }, 4000);
     } catch(e) {}
+  }
+  function setBusy(el, on) {
+    if (!el) return;
+    if (window.__lxKit && window.__lxKit.busy) window.__lxKit.busy(el, on);
+    else el.classList.toggle('busy', !!on);
   }
 
   // ——— Загрузка файлов LCC2 и открытие 3DGS ———
@@ -545,7 +547,7 @@
     }
     showMsg('LCC2: читаю данные (' + files.length + ' файлов)…');
     var lbl = document.getElementById('tsSplatLcc2');
-    if (lbl) { lbl.style.opacity = '0.5'; lbl.textContent = 'LCC2…'; }
+    setBusy(lbl, true);
     try {
       if (!window.lcc2Loader) throw new Error('window.lcc2Loader не определён');
       var result = await window.lcc2Loader.load(Array.from(files), function(msg) {
@@ -561,7 +563,7 @@
       showMsg('LCC2 ошибка: ' + ((e && e.message) ? e.message : String(e)));
       console.error('[LCC2]', e);
     } finally {
-      if (lbl) { lbl.style.opacity = '1'; lbl.textContent = 'LCC2'; }
+      setBusy(lbl, false);
     }
   }
 

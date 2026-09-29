@@ -67,10 +67,10 @@
           try { bimLog('call', '→ ' + prop + '(' + (argstr.length > 160 ? argstr.slice(0, 160) + '…' : argstr) + ')'); } catch (e) {}
           let res;
           try { res = v.apply(_rawAPI, args); }
-          catch (e) { try { bimLog('error', '✗ ' + prop + ': ' + ((e && e.message) || e)); } catch (e2) {} throw e; }
+          catch (e) { try { bimLog('error', prop + ': ' + ((e && e.message) || e)); } catch (e2) {} throw e; }
           if (res && typeof res.then === 'function') {
-            return res.then(function (r) { try { const dt = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - t0); bimLog('ok', '✓ ' + prop + ' (' + dt + ' мс)' + __resSummary(r)); } catch (e) {} return r; },
-              function (e) { try { const dt = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - t0); bimLog('error', '✗ ' + prop + ' (' + dt + ' мс): ' + ((e && e.message) || e)); } catch (e2) {} throw e; });
+            return res.then(function (r) { try { const dt = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - t0); bimLog('ok', prop + ' (' + dt + ' мс)' + __resSummary(r)); } catch (e) {} return r; },
+              function (e) { try { const dt = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - t0); bimLog('error', prop + ' (' + dt + ' мс): ' + ((e && e.message) || e)); } catch (e2) {} throw e; });
           }
           return res;
         };
@@ -94,35 +94,9 @@
     return 'cloud-' + Date.now().toString(36) + '-' + cloudParseSequence.toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
   function createCloudParseProgress(label, onCancel) {
-    const root = document.createElement('section');
-    root.setAttribute('role', 'status');
-    root.setAttribute('aria-live', 'polite');
-    root.style.cssText = 'position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:100000;display:flex;align-items:center;gap:12px;min-width:320px;max-width:min(680px,calc(100vw - 32px));padding:10px 14px;border:1px solid #40506a;border-radius:10px;background:rgba(25,29,38,.97);box-shadow:0 8px 28px rgba(0,0,0,.42);color:#e8edf5;font:13px/1.35 system-ui,sans-serif';
-    const body = document.createElement('div');
-    body.style.cssText = 'flex:1;min-width:0';
-    const title = document.createElement('div');
-    title.textContent = 'Импорт: ' + String(label || 'облако точек');
-    title.style.cssText = 'font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:5px';
-    const detail = document.createElement('div');
-    detail.textContent = 'Подготовка…';
-    detail.style.cssText = 'font-size:12px;color:#aebbd0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:6px';
-    const bar = document.createElement('progress');
-    bar.max = 100; bar.value = 0;
-    bar.style.cssText = 'width:100%;height:8px;accent-color:#3b82f6;display:block';
-    body.append(title, detail, bar);
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.textContent = 'Отмена';
-    cancel.title = 'Остановить текущий импорт';
-    cancel.style.cssText = 'flex:none;border:1px solid #576274;border-radius:7px;background:#303744;color:#eef2f8;padding:7px 10px;font:inherit;cursor:pointer';
-    cancel.addEventListener('click', () => {
-      cancel.disabled = true;
-      cancel.textContent = 'Отмена…';
-      cancel.style.cursor = 'default';
-      onCancel();
-    });
-    root.append(body, cancel);
-    document.body.appendChild(root);
+    // Карточка прогресса — общая для всех тяжёлых операций (ui/modes.js): появляется, если импорт идёт дольше ~0,2 с
+    const P = window.__lxProgress;
+    const stop = P && P.begin ? P.begin('Импорт: ' + String(label || 'облако точек'), { onCancel }) : null;
     const phaseNames = {
       header: 'Читаю и проверяю заголовок',
       index: 'Проверяю структуру LAS',
@@ -148,13 +122,9 @@
     };
     return {
       update(progress) {
-        if (!progress || typeof progress !== 'object') return;
+        if (!stop || !progress || typeof progress !== 'object') return;
         const phase = String(progress.phase || '');
         const f = Number(progress.fraction);
-        if (phase === 'decode-laz') bar.removeAttribute('value');
-        else {
-          bar.value = Math.max(0, Math.min(100, Number.isFinite(f) ? f * 100 : 0));
-        }
         const description = progress.message ? String(progress.message) : (phaseNames[phase] || phase || 'Импорт');
         let suffix = '';
         if (Number.isFinite(Number(progress.pointsLoaded)) && Number(progress.pointsLoaded) > 0) {
@@ -169,11 +139,10 @@
             (Number(progress.bytesExpected) / (1024 * 1024)).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) +
             ' МиБ';
         }
-        if (phase !== 'decode-laz' && Number.isFinite(f)) {
-          detail.textContent = description + ' · ' + Math.round(Math.max(0, Math.min(1, f)) * 100) + '%' + suffix;
-        } else detail.textContent = description + suffix;
+        if (phase === 'decode-laz') stop.text(description + suffix);
+        else stop.set(Number.isFinite(f) ? f : 0, description + suffix);
       },
-      close() { try { root.remove(); } catch (_) {} }
+      close() { if (stop) { try { stop(); } catch (_) {} } }
     };
   }
   async function parseCloudWithProgress(filePath, label) {
@@ -313,7 +282,7 @@
     viewer.loadRoom(current);
     await maybeLoadModel(current);
     // Фоновую предзагрузку всех облаков больше не запускаем автоматически (тормозила старт).
-    // Предзагрузка теперь только по кнопке ⚡ (профиль «Максимум памяти/качество»).
+    // Предзагрузка теперь только по кнопке «Макс. память» (профиль «Максимум памяти/качество»).
     renderElbar(); renderTree(); updateElProps();
     $('inspTitle').textContent = current.name;
     $('inspSub').textContent = (current.type || 'помещение') + ' · ' + (current.area_m2 || 0) + ' м²';
@@ -499,12 +468,12 @@
   function renderDocs(body) {
     const allDocs = roomDocs(current);
     const head = mk('div', 'docs-head');
-    head.innerHTML = '<div class="docs-title">📁 Документы помещения <span class="docs-count">' + allDocs.length + '</span></div>';
+    head.innerHTML = '<div class="docs-title">Документы помещения <span class="docs-count">' + allDocs.length + '</span></div>';
     body.appendChild(head);
     const an = mk('div', 'docs-analyzing', '<span class="an-spin"></span><span>Идёт анализ документов…</span>'); an.id = 'docsAnalyzing'; an.style.display = VERIFYING ? 'flex' : 'none'; body.appendChild(an);
     // Always-visible upload zone with drag & drop — the room document repository
     const zone = mk('div', 'docs-drop');
-    zone.innerHTML = '<div class="dz-ic">⬆</div><div class="dz-t">Перетащите файл сюда или нажмите, чтобы загрузить</div><div class="dz-s">PDF, Word, Excel/CSV, изображения, чертежи (DWG/DXF/IFC) и другое</div>';
+    zone.innerHTML = '<div class="dz-ic" data-ico="upload" data-ico-size="22"></div><div class="dz-t">Перетащите файл сюда или нажмите, чтобы загрузить</div><div class="dz-s">PDF, Word, Excel/CSV, изображения, чертежи (DWG/DXF/IFC) и другое</div>';
     zone.onclick = () => $('docInput').click();
     zone.ondragover = e => { e.preventDefault(); zone.classList.add('over'); };
     zone.ondragleave = () => zone.classList.remove('over');
@@ -516,7 +485,7 @@
       bar.append(add); body.appendChild(bar);
     }
     if (!allDocs.length) { body.appendChild(mk('div', 'empty', 'Пока нет документов. Загрузите смету, ТЗ, чертёж или фото — они сохранятся в этом помещении.')); return; }
-    const search = document.createElement('input'); search.type = 'search'; search.className = 'docs-search'; search.placeholder = '🔍 Поиск по документам…'; search.value = renderDocs.q || '';
+    const search = document.createElement('input'); search.type = 'search'; search.className = 'docs-search'; search.placeholder = 'Поиск по документам…'; search.value = renderDocs.q || '';
     body.appendChild(search);
     const listWrap = mk('div', 'docs-list'); body.appendChild(listWrap);
     const selId = selEl && selEl.id;
@@ -562,11 +531,11 @@
     if (editing) {
       const bar = mk('div', 'crud-actions');
       if (selEl) {
-        const ed = mk('button', 'btn sm', '✎ Изменить элемент'); ed.onclick = () => editElementUI(selEl);
-        const del = mk('button', 'btn sm danger', '✕ Удалить элемент'); del.onclick = () => deleteElementUI(selEl);
+        const ed = mk('button', 'btn sm', IB('pencil', 'Изменить элемент')); ed.onclick = () => editElementUI(selEl);
+        const del = mk('button', 'btn sm danger', IB('trash-2', 'Удалить элемент')); del.onclick = () => deleteElementUI(selEl);
         bar.append(ed, del);
       } else {
-        const ed = mk('button', 'btn sm', '✎ Изменить помещение'); ed.onclick = () => editRoomUI(current); bar.append(ed);
+        const ed = mk('button', 'btn sm', IB('pencil', 'Изменить помещение')); ed.onclick = () => editRoomUI(current); bar.append(ed);
       }
       body.appendChild(bar);
     }
@@ -590,10 +559,10 @@
       const card = mk('div', 'finding ' + f.severity + (reviewed ? ' reviewed rv-' + f.review : ''));
       const src = f.source === 'llm' ? '<span class="src llm">LLM</span>' : (f.source === 'ocr' ? '<span class="src">OCR</span>' : '<span class="src">правило</span>');
       let cmts = '';
-      if (f.comments && f.comments.length) cmts = '<div class="fcomments">' + f.comments.map(c => '<div class="fc">💬 ' + esc(c.text || c) + '</div>').join('') + '</div>';
-      const rv = reviewed ? '<div class="rvline ' + f.review + '">' + (f.review === 'accepted' ? '✓ Принято' : '✕ Отклонено') + '</div>' : '';
+      if (f.comments && f.comments.length) cmts = '<div class="fcomments">' + f.comments.map(c => '<div class="fc">' + ICON('message-circle', 13) + '<span>' + esc(c.text || c) + '</span></div>').join('') + '</div>';
+      const rv = reviewed ? '<div class="rvline ' + f.review + '">' + (f.review === 'accepted' ? ICON('check', 13) + '<span>Принято</span>' : ICON('x', 13) + '<span>Отклонено</span>') + '</div>' : '';
       const who = USERS.find(u => u.id === f.assignee);
-      const asgLine = (who || f.due) ? '<div class="assignee">👤 ' + esc(who ? who.name : 'не назначен') + (f.due ? ' · до ' + esc(f.due) : '') + '</div>' : '';
+      const asgLine = (who || f.due) ? '<div class="assignee">' + ICON('user', 13) + '<span>' + esc(who ? who.name : 'не назначен') + (f.due ? ' · до ' + esc(f.due) : '') + '</span></div>' : '';
       card.innerHTML = '<div class="fhead"><b>' + esc(f.kind) + '</b><span class="badge ' + f.severity + '">' + STATUS_LABEL[f.severity] + '</span>' + src + '</div>' +
         '<div class="ftext">' + esc(f.text) + '</div>' +
         '<div class="conf">' + (el ? esc(el.name) + ' · ' : '') + 'уверенность ' + Math.round((f.confidence || 0) * 100) + '%</div>' + rv + asgLine + cmts;
@@ -611,7 +580,7 @@
   // ---------- Phase C: проверка нейросетью + ревью находок ----------
   let VERIFYING = false;
   function setAnalyzing(on) { VERIFYING = !!on; const b = document.getElementById('docsAnalyzing'); if (!b) return; if (on) { b.className = 'docs-analyzing'; b.innerHTML = '<span class="an-spin"></span><span>Идёт анализ документов…</span>'; b.onclick = null; b.style.cursor = 'default'; } b.style.display = on ? 'flex' : 'none'; }
-  function showAnalyzeDone(counts) { VERIFYING = false; const b = document.getElementById('docsAnalyzing'); if (!b) return; const c = counts || {}; b.className = 'docs-analyzing done'; b.innerHTML = '<span class="an-check">✓</span><span>Готово: ' + (c.err || 0) + ' ошибок, ' + (c.warn || 0) + ' на проверке</span><span class="an-go">Открыть ›</span>'; b.style.display = 'flex'; b.style.cursor = 'pointer'; b.onclick = () => { activeTab = 'ai'; syncTabs(); }; clearTimeout(showAnalyzeDone._t); showAnalyzeDone._t = setTimeout(() => { const e = document.getElementById('docsAnalyzing'); if (e && e.classList.contains('done')) e.style.display = 'none'; }, 4000); }
+  function showAnalyzeDone(counts) { VERIFYING = false; const b = document.getElementById('docsAnalyzing'); if (!b) return; const c = counts || {}; b.className = 'docs-analyzing done'; b.innerHTML = '<span class="an-check">' + ICON('check', 11) + '</span><span>Готово: ' + (c.err || 0) + ' ошибок, ' + (c.warn || 0) + ' на проверке</span><span class="an-go">Открыть ›</span>'; b.style.display = 'flex'; b.style.cursor = 'pointer'; b.onclick = () => { activeTab = 'ai'; syncTabs(); }; clearTimeout(showAnalyzeDone._t); showAnalyzeDone._t = setTimeout(() => { const e = document.getElementById('docsAnalyzing'); if (e && e.classList.contains('done')) e.style.display = 'none'; }, 4000); }
   async function runVerify(silent) {
     if (!current) { toast('Выберите помещение'); return; }
     setAnalyzing(true);
@@ -674,7 +643,7 @@
       tbl.appendChild(tr);
     });
     p.body.appendChild(tbl);
-    const ex = mk('button', 'btn sm', '⬇ Экспорт всего отчёта'); ex.onclick = () => exportReportUI(); p.body.appendChild(ex);
+    const ex = mk('button', 'btn sm', IB('file-down', 'Экспорт всего отчёта')); ex.onclick = () => exportReportUI(); p.body.appendChild(ex);
   }
   async function reviewFinding(f, review) {
     f.review = f.review === review ? 'open' : review;
@@ -731,56 +700,8 @@
     try { if (current) renderTab(); } catch (e) {}
   }
   function decorateIcons() {
-    if (!window.ICON) return;
-    var iconify = function (el, name) {
-      if (!el || el.querySelector('.ic')) return;
-      var txt = (el.textContent || '').trim();
-      el.innerHTML = window.ICON(name) + '<span class="lbl">' + esc(txt) + '</span>';
-    };
-    var svgOnly = function (el, name, size) {
-      if (!el || el.querySelector('.ic')) return;
-      el.innerHTML = window.ICON(name, size);
-    };
-    var map = {
-      btnAI: 'sparkles', btnVerify: 'shield-check', btnReset: 'crosshair', btnCompare: 'columns',
-      btnSection: 'scissors', btnMeasure: 'ruler', btnIsolate: 'focus', btnLOD: 'layers',
-      btnBackRoom: 'arrow-left', btnEdit: 'pencil', btnSettings: 'settings', btnBackup: 'hard-drive',
-      btnUsers: 'users', btnExport: 'file-down', btnSync: 'refresh-cw',
-      tsSplatTop: 'box'
-    };
-    Object.keys(map).forEach(function (id) { iconify(document.getElementById(id), map[id]); });
-    iconify(document.querySelector('label[for="ifcInput"]'), 'import');
-    iconify(document.querySelector('label[for="modelInput"]'), 'cube');
-    iconify(document.querySelector('label[for="docInput"]'), 'file-plus');
-    var tabIcons = { docs: 'file-text', props: 'sliders', ai: 'sparkles', dash: 'layout-dashboard', disc: 'message-circle' };
-    document.querySelectorAll('.tab[data-tab]').forEach(function (t) { iconify(t, tabIcons[t.getAttribute('data-tab')]); });
-    svgOnly(document.getElementById('btnNewProject'), 'plus', 16);
-    svgOnly(document.getElementById('tbMin'), 'minus', 15);
-    svgOnly(document.getElementById('tbMax'), 'square', 14);
-    svgOnly(document.getElementById('tbClose'), 'x', 15);
-    svgOnly(document.querySelector('.brand .logo'), 'cube', 17);
-    svgOnly(document.querySelector('.onboard-logo'), 'cube', 30);
-    var vtIcons = { vtFit: 'home', vtSection: 'scissors', vtMeasure: 'ruler', vtIsolate: 'focus', vtWalk: 'walk', vtTour: 'eye', vtEdit: 'box', vtZoomIn: 'zoom-in', vtZoomOut: 'zoom-out' };
-    Object.keys(vtIcons).forEach(function (id) { svgOnly(document.getElementById(id), vtIcons[id], 19); });
-    // v1078: перенос плавающей панели 3D-инструментов (1-й скрин) в верхнюю панель (2-й скрин) отдельной группой с подписью
-    try {
-      var _vt = document.getElementById('viewTools');
-      var _tb = document.querySelector('.toolbar .tbtns');
-      if (_vt && _tb && !document.getElementById('vtGroup')) {
-        var _g = document.createElement('div'); _g.className = 'tgroup'; _g.id = 'vtGroup'; _g.title = '3D-инструменты просмотра облака';
-        var _lab = document.createElement('div'); _lab.className = 'tglabel'; _lab.textContent = '3D-инструменты';
-        _vt.classList.add('tgrow');
-        _g.appendChild(_lab); _g.appendChild(_vt); _tb.appendChild(_g);
-      }
-      // v1078: куб видов (Верх/Фас/Изо…) — тоже наверх, в верхнюю панель, чтобы не мешал на 3D
-      var _vc = document.getElementById('viewCube');
-      var _tb2 = document.querySelector('.toolbar .tbtns');
-      if (_vc && _tb2 && !document.getElementById('vcGroup')) {
-        var _g2 = document.createElement('div'); _g2.className = 'tgroup'; _g2.id = 'vcGroup'; _g2.title = 'Стандартные виды камеры';
-        var _lab2 = document.createElement('div'); _lab2.className = 'tglabel'; _lab2.textContent = 'Виды';
-        _g2.appendChild(_lab2); _g2.appendChild(_vc); _tb2.appendChild(_g2);
-      }
-    } catch (e) { }
+    // Иконки описаны в разметке атрибутами data-ico / data-ico-lead; здесь только подстановка SVG.
+    if (window.__lxKit && window.__lxKit.hydrate) window.__lxKit.hydrate(document);
   }
   function settingsForLocalStorage(value) {
     const safe = Object.assign({}, value || {});
@@ -878,8 +799,8 @@
       const refreshStat = async () => {
         try {
           const s = (API.ocrStatus ? await API.ocrStatus() : null) || {};
-          const t = s.tesseract ? 'Tesseract ✓' : 'Tesseract ✗';
-          const r = s.rasterizer ? (s.rasterizer + ' ✓') : 'PDF-растеризатор ✗';
+          const t = s.tesseract ? 'Tesseract: готов' : 'Tesseract: не найден';
+          const r = s.rasterizer ? (s.rasterizer + ': готов') : 'PDF-растеризатор: не найден';
           statCode.textContent = t + ' · ' + r;
         } catch (e) { statCode.textContent = '—'; }
       };
@@ -946,7 +867,7 @@
         return;
       }
       applyTheme(st.theme); applyLang(st.lang);
-      p.close(); toast(T('settings.save') + ' ✓');
+      p.close(); toast(T('settings.save'), { tone: 'ok' });
     };
     bar.appendChild(save); p.body.appendChild(bar);
   }
@@ -1194,7 +1115,7 @@
       for (const s of seg) { if (layerOn[s[4] || '0'] === false) continue; const ends = [[s[0], s[1]], [s[2], s[3]]]; for (const p of ends) { const d = Math.hypot(p[0] - wp[0], p[1] - wp[1]); if (d < bd) { bd = d; best = p; } } }
       snap = best;
       const rx = best ? best[0] : wp[0], ry = best ? best[1] : wp[1];
-      readout.textContent = (best ? '● привязка  ' : '') + 'X: ' + rx.toFixed(2) + '  Y: ' + ry.toFixed(2);
+      readout.textContent = (best ? 'привязка · ' : '') + 'X: ' + rx.toFixed(2) + '  Y: ' + ry.toFixed(2);
       redraw();
     });
     return true;
@@ -1687,8 +1608,23 @@
     });
   }
   let toastT = null;
-  function toast(msg) { try { bimLog('toast', msg); } catch (e) {} const t = $('toast'); if (!t) return; t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200); }
-  window.__toast = function (msg, kind) { toast((kind === 'error' ? 'Ошибка: ' : '') + String(msg || '')); };
+  function toast(msg, opts) {
+    try { bimLog('toast', msg); } catch (e) {}
+    if (window.__lxKit && window.__lxKit.toast) { window.__lxKit.toast(msg, opts); return; }
+    const t = $('toast'); if (!t) return;
+    t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+  window.__toast = function (msg, kind) { toast((kind === 'error' ? 'Ошибка: ' : '') + String(msg || ''), { tone: kind === 'error' ? 'err' : kind === 'warn' ? 'warn' : kind === 'ok' ? 'ok' : undefined }); };
+  // Подпись кнопки с иконкой: меняем только текст (и, при необходимости, значок), не разрушая разметку
+  function setLbl(btn, text, ico) {
+    if (!btn) return;
+    const l = btn.querySelector('.lbl');
+    if (l) l.textContent = text; else btn.textContent = text;
+    if (ico) {
+      const i = btn.querySelector('[data-ico]');
+      if (i && i.getAttribute('data-ico') !== ico) { i.setAttribute('data-ico', ico); if (window.__lxKit) window.__lxKit.hydrate(btn); }
+    }
+  }
 
   // ---------- edit mode + backup ----------
   function setEditing(on) { editing = on; document.body.classList.toggle('editing', on); $('btnEdit').classList.toggle('on', on); $('btnBackup').style.display = on ? '' : 'none'; (function(){var _be=$('btnEdit');var _bl=_be.querySelector('.lx-blabel, .lbl')||_be;_bl.textContent = on ? 'Готово' : 'Правка';})(); renderTree(); if (current) { renderElbar(); renderTab(); } }
@@ -1729,16 +1665,6 @@
       const iso0 = vc.querySelector('[data-view="iso"]'); if (iso0) setActive(iso0);
       vc.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (!b) return; setActive(b); if (viewer && viewer.setStandardView) viewer.setStandardView(b.getAttribute('data-view')); });
     }
-    const isOn = id => { const b = $(id); return !!(b && b.classList.contains('on')); };
-    const sync = (a, b, v) => { [a, b].forEach(i => { const el = $(i); if (el) { el.classList.toggle('on', !!v); el.setAttribute('aria-pressed', String(!!v)); } }); };
-    const mirror = (floatId, topId, apply) => { const fb = $(floatId); if (!fb) return; fb.addEventListener('click', () => { if (!toolsOK()) return; const v = !isOn(topId); const accepted = apply(v); if (accepted === false) { sync(topId, floatId, isOn(topId)); return; } sync(topId, floatId, v); }); };
-    $('vtSection').addEventListener('click', () => $('btnSection').click());
-    $('vtMeasure').addEventListener('click', () => $('btnMeasure').click());
-    mirror('vtIsolate', 'btnIsolate', v => {
-      const ok = viewer.setIsolate(v);
-      if (!ok && v) toast('Сначала выберите объект или элемент, который нужно изолировать');
-      return ok;
-    });
     const ft = $('vtFit'); if (ft) ft.addEventListener('click', () => { if (viewer && viewer.resetView) viewer.resetView(); });
     const zi = $('vtZoomIn'); if (zi) zi.addEventListener('click', () => { if (viewer && viewer.zoomBy) viewer.zoomBy(0.82); });
     const zo = $('vtZoomOut'); if (zo) zo.addEventListener('click', () => { if (viewer && viewer.zoomBy) viewer.zoomBy(1.22); });
@@ -1752,7 +1678,7 @@
       if (!qColor || !viewer) return;
       const mode = viewer.getColorMode ? viewer.getColorMode() : (viewer._ptElev ? 'elev' : 'rgb');
       const modes = viewer.getAvailableColorModes ? viewer.getAvailableColorModes() : ['rgb','elev'];
-      qColor.textContent = 'Цвет: ' + (colorModeLabels[mode] || 'RGB');
+      setLbl(qColor, colorModeLabels[mode] || 'RGB');
       qColor.title = 'Нажмите для переключения доступных режимов: ' +
         modes.map(value => colorModeLabels[value] || value).join(' → ');
       qColor.setAttribute('aria-label', 'Режим окраски облака: ' + (colorModeLabels[mode] || 'RGB'));
@@ -1784,21 +1710,21 @@
     function refreshQualityButtons() {
       if (!viewer) return;
       refreshColorModeButton();const qb=$('qBright');if(qb && document.activeElement!==qb)qb.value=viewer._ptBright;const qg=$('qGrade');if(qg)qg.classList.toggle('on',!!viewer._grade?.on);
-      const qE = $('qEDL'); if (qE) { const e = !!viewer._edl; qE.classList.toggle('on', e); qE.textContent = e ? 'EDL: вкл' : 'EDL: выкл'; }
-      const qA = $('qAtten'); if (qA && viewer.attenuateOn) { const a = viewer.attenuateOn(); qA.classList.toggle('on', a); qA.textContent = a ? 'Размер: растёт' : 'Размер: постоянный'; }
-      const qD = $('qDense'); if (qD && viewer.denseFillOn) { const d = viewer.denseFillOn(); qD.classList.toggle('on', d); qD.textContent = d ? 'Плотно: вкл' : 'Плотно: выкл'; }
-      const qF = $('qFrame'); if (qF && viewer.frameOn) { const f = viewer.frameOn(); qF.classList.toggle('on', f); qF.textContent = f ? '◼ Рамки: вкл' : '◼ Рамки: выкл'; }
-      const qP = $('qPhoto'); if (qP && viewer.photoOn) { const p = viewer.photoOn(); qP.classList.toggle('on', p); qP.textContent = p ? 'Фото: вкл' : 'Фото: выкл'; }
+      const qE = $('qEDL'); if (qE) { const e = !!viewer._edl; qE.classList.toggle('on', e); }
+      const qA = $('qAtten'); if (qA && viewer.attenuateOn) { const a = viewer.attenuateOn(); qA.classList.toggle('on', a); }
+      const qD = $('qDense'); if (qD && viewer.denseFillOn) { const d = viewer.denseFillOn(); qD.classList.toggle('on', d); }
+      const qF = $('qFrame'); if (qF && viewer.frameOn) { const f = viewer.frameOn(); qF.classList.toggle('on', f); }
+      const qP = $('qPhoto'); if (qP && viewer.photoOn) { const p = viewer.photoOn(); qP.classList.toggle('on', p); }
     }
     const qEDL = $('qEDL');
-    if (qEDL) qEDL.addEventListener('click', () => { if (!viewer || !viewer.setEDL) { toast('EDL доступен в 3D-режиме (WebGL)'); return; } const on = !qEDL.classList.contains('on'); const ok = viewer.setEDL(on); if (on && !ok) { toast('EDL недоступен на этом GPU — оставляю обычный рендер'); qEDL.classList.remove('on'); qEDL.textContent = 'EDL: выкл'; return; } qEDL.classList.toggle('on', on); qEDL.textContent = on ? 'EDL: вкл' : 'EDL: выкл'; toast(on ? 'EDL включён — объём и резкость облака' : 'EDL выключен'); });
+    if (qEDL) qEDL.addEventListener('click', () => { if (!viewer || !viewer.setEDL) { toast('EDL доступен в 3D-режиме (WebGL)'); return; } const on = !qEDL.classList.contains('on'); const ok = viewer.setEDL(on); if (on && !ok) { toast('EDL недоступен на этом GPU — оставляю обычный рендер'); qEDL.classList.remove('on'); return; } qEDL.classList.toggle('on', on); toast(on ? 'EDL включён — объём и резкость облака' : 'EDL выключен'); });
     const qPhoto = $('qPhoto');
-    if (qPhoto) qPhoto.addEventListener('click', () => { if (!viewer || !viewer.setPhoto) { toast('Фото-режим доступен в 3D-режиме (WebGL)'); return; } const on = !qPhoto.classList.contains('on'); const r = viewer.setPhoto(on); qPhoto.classList.toggle('on', !!r); qPhoto.textContent = r ? 'Фото: вкл' : 'Фото: выкл'; if (qEDL) { const e = !!viewer._edl; qEDL.classList.toggle('on', e); qEDL.textContent = e ? 'EDL: вкл' : 'EDL: выкл'; } toast(r ? 'Фото-качество включено' : 'Фото-качество выключено'); });
+    if (qPhoto) qPhoto.addEventListener('click', () => { if (!viewer || !viewer.setPhoto) { toast('Фото-режим доступен в 3D-режиме (WebGL)'); return; } const on = !qPhoto.classList.contains('on'); const r = viewer.setPhoto(on); qPhoto.classList.toggle('on', !!r); if (qEDL) { const e = !!viewer._edl; qEDL.classList.toggle('on', e); } toast(r ? 'Фото-качество включено' : 'Фото-качество выключено'); });
     const qGrade = $('qGrade');
     if (qGrade) qGrade.addEventListener('click', () => {
       if (!viewer || !viewer.setGrade) { toast('Доступно в 3D-режиме (WebGL)'); return; }
       const g = viewer.getGrade ? viewer.getGrade() : { on: true, exposure: 1.06, contrast: 1.14, saturation: 1.22, gamma: 1.02, tone: 0.85 };
-      const p = modalPanel('🎞 Фотореализм · цветокоррекция');
+      const p = modalPanel('Фотореализм · цветокоррекция');
       const gRow = (label, min, max, step, val, key, fmt) => {
         const row = mk('div', ''); row.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin:10px 0';
         const top = mk('div', ''); top.style.cssText = 'display:flex;justify-content:space-between;font-size:13px;color:var(--txt)';
@@ -1825,11 +1751,11 @@
       btns.append(bReset, bClose); p.body.appendChild(btns);
     });
     const qAtten = $('qAtten');
-    if (qAtten) qAtten.addEventListener('click', () => { if (!viewer || !viewer.setAttenuate) { toast('Доступно в 3D-режиме (WebGL)'); return; } const toGrow = qAtten.textContent.indexOf('постоянный') >= 0; const on = viewer.setAttenuate(toGrow); qAtten.classList.toggle('on', on); qAtten.textContent = on ? 'Размер: растёт' : 'Размер: постоянный'; toast(on ? 'Размер точки растёт при приближении' : 'Постоянный размер точки — как в CloudCompare'); });
+    if (qAtten) qAtten.addEventListener('click', () => { if (!viewer || !viewer.setAttenuate) { toast('Доступно в 3D-режиме (WebGL)'); return; } const toGrow = !(viewer.attenuateOn && viewer.attenuateOn()); const on = viewer.setAttenuate(toGrow); qAtten.classList.toggle('on', on); toast(on ? 'Размер точки растёт при приближении' : 'Постоянный размер точки — как в CloudCompare'); });
     const qDense = $('qDense');
-    if (qDense) qDense.addEventListener('click', () => { if (!viewer || !viewer.setDenseFill) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setDenseFill(!qDense.classList.contains('on')); qDense.classList.toggle('on', on); qDense.textContent = on ? 'Плотно: вкл' : 'Плотно: выкл'; const qA = $('qAtten'); if (qA && viewer.attenuateOn) { const a = viewer.attenuateOn(); qA.classList.toggle('on', a); qA.textContent = a ? 'Размер: растёт' : 'Размер: постоянный'; } toast(on ? 'Плотная заливка включена — без чёрных промежутков при приближении' : 'Плотная заливка выключена'); });
+    if (qDense) qDense.addEventListener('click', () => { if (!viewer || !viewer.setDenseFill) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setDenseFill(!qDense.classList.contains('on')); qDense.classList.toggle('on', on); const qA = $('qAtten'); if (qA && viewer.attenuateOn) { const a = viewer.attenuateOn(); qA.classList.toggle('on', a); } toast(on ? 'Плотная заливка включена — без чёрных промежутков при приближении' : 'Плотная заливка выключена'); });
     const qFrame = $('qFrame');
-    if (qFrame) qFrame.addEventListener('click', () => { if (!viewer || !viewer.setFrame) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setFrame(!qFrame.classList.contains('on')); qFrame.classList.toggle('on', on); qFrame.textContent = on ? '◼ Рамки: вкл' : '◼ Рамки: выкл'; toast(on ? 'Чёрные рамки точек включены' : 'Чёрные рамки точек выключены'); });
+    if (qFrame) qFrame.addEventListener('click', () => { if (!viewer || !viewer.setFrame) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setFrame(!qFrame.classList.contains('on')); qFrame.classList.toggle('on', on); toast(on ? 'Чёрные рамки точек включены' : 'Чёрные рамки точек выключены'); });
     const qDensity = $('qDensity');
     if (qDensity) qDensity.addEventListener('change', async () => {
       const mln = Math.max(1, parseInt(qDensity.value, 10) || 12); const budget = mln * 1000000;
@@ -1841,7 +1767,7 @@
         try { const pr = await parseCloudWithProgress(lastCloudPath, 'Перезагрузка с бюджетом ' + mln + ' млн точек'); if (pr && pr.ok) { if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else { viewer.loadCloud(pr, {sourceName:lastCloudPath,preserveView:true}); cacheCloud(lastCloudPath, pr); lastCloudOffset=(pr.meta&&pr.meta.offset)||null; lastCloudCount=(pr.meta&&pr.meta.points)||pr.count||0; } toast('Готово: ' + mln + ' млн точек'); } else { toast('Не удалось перечитать облако' + (pr&&pr.message?': '+pr.message:'')); } } catch (e) { toast('Ошибка перечитывания: '+(e&&e.message||e)); }
       } else { toast('Плотность ' + mln + ' млн — применится при следующей загрузке облака'); }
     });
-    const wb = $('vtWalk'); if (wb) wb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setWalk) { toast('Прогулка доступна в 3D‑режиме (WebGL)'); return; } const v = !wb.classList.contains('on'); wb.classList.toggle('on', v); viewer.setWalk(v); { const qP = $('qPhoto'); if (qP && viewer.photoOn) { const on = viewer.photoOn(); qP.classList.toggle('on', on); qP.textContent = on ? 'Фото: вкл' : 'Фото: выкл'; } const qE = $('qEDL'); if (qE) { const e = !!viewer._edl; qE.classList.toggle('on', e); qE.textContent = e ? 'EDL: вкл' : 'EDL: выкл'; } } toast(v ? 'Прогулка: W/A/S/D — движение, мышь — осмотр, Q/E — вниз/вверх, колесо — вперёд/назад, Esc — выход' : 'Обычный режим'); });
+    const wb = $('vtWalk'); if (wb) wb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setWalk) { toast('Прогулка доступна в 3D‑режиме (WebGL)'); return; } const v = !wb.classList.contains('on'); wb.classList.toggle('on', v); viewer.setWalk(v); { const qP = $('qPhoto'); if (qP && viewer.photoOn) { const on = viewer.photoOn(); qP.classList.toggle('on', on); } const qE = $('qEDL'); if (qE) { const e = !!viewer._edl; qE.classList.toggle('on', e); } } toast(v ? 'Прогулка: W/A/S/D — движение, мышь — осмотр, Q/E — вниз/вверх, колесо — вперёд/назад, Esc — выход' : 'Обычный режим'); });
     const tb = $('vtTour'); if (tb) tb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setTour) { toast('Экскурсия доступна в 3D-режиме (WebGL)'); return; } const v = !tb.classList.contains('on'); tb.classList.toggle('on', v); if (v && wb && wb.classList.contains('on')) { wb.classList.remove('on'); viewer.setWalk(false); } viewer.setTour(v); toast(v ? 'Экскурсия: клик по облаку — телепорт к ближайшей станции, N — следующая станция вперёд, мышь — осмотр' : 'Обычный режим'); });
     if (!window.__tourKeys) { window.__tourKeys = true; window.addEventListener('keydown', e => { const k = (e.key || '').toLowerCase(); if ((k === 'n' || k === 'т') && viewer && viewer.tour && viewer.tourNext) viewer.tourNext(); }); }
     // Item 3 (patch 26): панель «Экскурсии» — импорт реальных станций E57/JSON, ручная расстановка, экспорт
@@ -1990,28 +1916,28 @@
       if (!_dlg) {
         _dlg = document.createElement('div');
         _dlg.id = '_plyConvDlg';
-        _dlg.style.cssText = 'position:fixed;inset:0;background:rgba(8,10,14,.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+        _dlg.className = 'modal open';
         _dlg.innerHTML = `
-          <div style="background:var(--panel);color:var(--txt);border:1px solid #7a3cff;border-radius:12px;padding:28px 36px;min-width:340px;max-width:460px;text-align:center">
-            <div style="font-size:18px;font-weight:700;color:var(--txt);margin-bottom:6px">✨ PLY → 3DGS конвертация</div>
-            <div id="_convMsg" style="color:var(--muted);font-size:13px;margin-bottom:14px">Подготовка…</div>
-            <div style="background:var(--panel2);border-radius:8px;height:10px;overflow:hidden;margin-bottom:14px">
-              <div id="_convBar" style="height:100%;width:0%;background:linear-gradient(90deg,#7a3cff,#ff7043);transition:width .3s"></div>
-            </div>
-            <div id="_convSub" style="color:var(--muted);font-size:12px">Обнаруживаю файл…</div>
-            <div style="margin-top:18px;display:flex;gap:10px;justify-content:center">
-              <select id="_convQuality" style="background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px 10px;font-size:13px">
-                <option value="2">Высокое (каждая 2-я точка)</option>
-                <option value="4" selected>Баланс (каждая 4-я)</option>
-                <option value="8">Быстрое (каждая 8-я)</option>
-              </select>
-              <button id="_convStart" style="background:#7a3cff;color:#fff;border:none;border-radius:8px;padding:7px 20px;cursor:pointer;font-size:13px;font-weight:600">Начать</button>
-              <button id="_convClose" style="background:var(--panel2);color:var(--muted);border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px">×</button>
+          <div class="modal-card sm conv-card">
+            <div class="modal-head"><span class="conv-title">${ICON('sparkles', 16)}PLY → 3DGS конвертация</span></div>
+            <div class="panel-body conv-body">
+              <div id="_convMsg" class="conv-msg">Подготовка…</div>
+              <div class="lx-bar"><i id="_convBar"></i></div>
+              <div id="_convSub" class="conv-sub">Обнаруживаю файл…</div>
+              <div class="conv-actions">
+                <select id="_convQuality" aria-label="Качество конвертации">
+                  <option value="2">Высокое (каждая 2-я точка)</option>
+                  <option value="4" selected>Баланс (каждая 4-я)</option>
+                  <option value="8">Быстрое (каждая 8-я)</option>
+                </select>
+                <button id="_convStart" class="btn primary" type="button">Начать</button>
+                <button id="_convClose" class="btn" type="button">Закрыть</button>
+              </div>
             </div>
           </div>`;
         document.body.appendChild(_dlg);
       }
-      _dlg.style.display = 'flex';
+      _dlg.style.display = 'flex'; _dlg.classList.add('open');
       const msgEl = document.getElementById('_convMsg');
       const barEl = document.getElementById('_convBar');
       const subEl = document.getElementById('_convSub');
@@ -2050,7 +1976,7 @@
             if (stageEl) window.SplatViewer.mount(stageEl);
             try {
               window.SplatViewer.load(result.buffer, _lastSplatName);
-              toast('✨ 3DGS готов: ' + result.count.toLocaleString('ru-RU') + ' сплэтов · W/S/A/D — ходьба, Esc — выход');
+              toast('3DGS готов: ' + result.count.toLocaleString('ru-RU') + ' сплэтов · W/S/A/D — ходьба, Esc — выход');
             } catch (e) { toast('Ошибка открытия 3DGS: ' + (e.message || e)); }
           }, 800);
         } catch (err) {
@@ -2141,7 +2067,7 @@
     const nfmt = n => (n || 0).toLocaleString('ru-RU');
     const refreshEdCount = n => { if (edCount) edCount.textContent = n > 0 ? ('Выбрано точек: ' + nfmt(n)) : 'Выделите точки рамкой (ЛКМ). Shift/ПКМ — вращение'; };
     if (viewer) { viewer.onEditSelect = n => refreshEdCount(n); viewer.onBrushRadius = r => toast('Размер кисти: ' + r + ' px'); viewer.onEditChange = n => { toast('Точек в облаке: ' + nfmt(n)); if (!viewer._pendingProjectOperation) viewer._pendingProjectOperation = { operation: 'cloud.point-edit', parameters: { pointCountAfter: Number(n) || 0 } }; try { if (window.__pcAutosave) window.__pcAutosave.onEdit(n); } catch (e) {} }; }
-    if (eb) eb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setEditSelect) { toast('Редактирование доступно в 3D-режиме (WebGL)'); return; } const v = !eb.classList.contains('on'); eb.classList.toggle('on', v); viewer.setEditSelect(v); if (editBar) editBar.style.display = v ? '' : 'none'; if (v) { selMode = 'lasso'; selDepthMode = 1; if (viewer.setSelectMode) viewer.setSelectMode('lasso'); if (viewer.setSmartClean) { try { viewer.setSmartClean(true); } catch (e) {} } else if (viewer.setSelectDepthMode) { viewer.setSelectDepthMode(1); } if (edModeBtn) edModeBtn.textContent = 'Лассо'; if (edThroughBtn) { edThroughBtn.textContent = 'Только объект'; edThroughBtn.classList.remove('on'); } if (edProtectBtn) { edProtectBtn.classList.add('on'); var _pc = (viewer._planes && viewer._planes.length) || 0; edProtectBtn.textContent = '🛡 Защита пол/стены/потолок: вкл (' + _pc + ')'; } refreshEdCount(0); if (wb) wb.classList.remove('on'); if (tb) tb.classList.remove('on'); toast('Умная чистка ВКЛ (v1045): обведите человека/мебель лассо (ЛКМ) → 🗑. Берётся только ближняя поверхность объекта, пол/стены под ним защищаются локально (RANSAC), дыры залатываются. Мелкие островки — кнопка 🧩 в меню «Чистка». Камера — ПКМ/колесо, Alt — снять, Esc — сброс, Ctrl+Z — отмена'); } });
+    if (eb) eb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setEditSelect) { toast('Редактирование доступно в 3D-режиме (WebGL)'); return; } const v = !eb.classList.contains('on'); eb.classList.toggle('on', v); viewer.setEditSelect(v); if (editBar) editBar.style.display = v ? '' : 'none'; if (v) { selMode = 'lasso'; selDepthMode = 1; if (viewer.setSelectMode) viewer.setSelectMode('lasso'); if (viewer.setSmartClean) { try { viewer.setSmartClean(true); } catch (e) {} } else if (viewer.setSelectDepthMode) { viewer.setSelectDepthMode(1); } if (edModeBtn) setEdModeLbl('Лассо'); if (edThroughBtn) { edThroughBtn.classList.remove('on'); } if (edProtectBtn) { edProtectBtn.classList.add('on'); } refreshEdCount(0); if (wb) wb.classList.remove('on'); if (tb) tb.classList.remove('on'); toast('Умная чистка ВКЛ (v1045): обведите человека/мебель лассо (ЛКМ) → «Удалить». Берётся только ближняя поверхность объекта, пол/стены под ним защищаются локально (RANSAC), дыры залатываются. Мелкие островки — пункт меню «Чистка». Камера — ПКМ/колесо, Alt — снять, Esc — сброс, Ctrl+Z — отмена'); } });
     // Пункт 4: disk-octree подгружает видимые узлы по frustum+budget; построение индекса пока in-memory и ограничено защитным пределом.
     const mb = $('vtMem');
     if (mb) mb.addEventListener('click', () => { const on = !mb.classList.contains('on'); mb.classList.toggle('on', on); applyPerfProfile(on); toast(on ? 'Профиль «Максимум памяти/качество»: предзагрузка всех облаков проекта, увеличенный кеш octree, детализация при движении до 12 млн точек' : 'Сбалансированный профиль: экономия памяти'); });
@@ -2216,32 +2142,13 @@
       return pendingCloudPath || null;
     };
     let geomBusy = false;
-    if (!document.getElementById('geomSpinCss')) { const _st = document.createElement('style'); _st.id = 'geomSpinCss'; _st.textContent = '@keyframes gspin{to{transform:rotate(360deg)}} .viewtools .vtool.busy{opacity:.6;cursor:progress}'; document.head.appendChild(_st); }
     function beginProgress(label) {
       if (window.__lxProgress && window.__lxProgress.begin) return window.__lxProgress.begin(label);
-      let el = document.getElementById('geomProgress');
-      if (!el) { el = document.createElement('div'); el.id = 'geomProgress'; el.className = 'lx-pill'; el.style.left = '50%'; el.style.top = '56px'; el.style.transform = 'translateX(-50%)'; document.body.appendChild(el); }
-      el.innerHTML = '<span id="geomSpin" style="width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--lx-blue);border-radius:50%;display:inline-block;animation:gspin .8s linear infinite"></span>'
-        + '<span id="geomProgressText"></span>'
-        + '<span id="geomPctWrap" style="display:none;align-items:center;gap:8px"><span style="width:120px;height:7px;border-radius:4px;background:var(--panel2);overflow:hidden;display:inline-block"><span id="geomBarFill" style="display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--lx-blue),var(--lx-green));transition:width .12s linear"></span></span><span id="geomPct" style="min-width:34px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700"></span></span>';
-      const t = el.querySelector('#geomProgressText'); if (t) t.textContent = label || 'Обработка…';
-      el.style.display = 'flex';
-      const stop = () => { const e2 = document.getElementById('geomProgress'); if (e2) e2.style.display = 'none'; };
-      // .set(frac 0..1, label?) — детерминированный режим со счётчиком процентов выполнения
-      stop.set = (frac, lab) => {
-        const e2 = document.getElementById('geomProgress'); if (!e2) return;
-        const sp = e2.querySelector('#geomSpin'); const wrap = e2.querySelector('#geomPctWrap');
-        const fill = e2.querySelector('#geomBarFill'); const pct = e2.querySelector('#geomPct');
-        const tt = e2.querySelector('#geomProgressText');
-        const p = Math.round(Math.max(0, Math.min(1, frac || 0)) * 100);
-        if (sp) sp.style.display = 'none';
-        if (wrap) wrap.style.display = 'inline-flex';
-        if (fill) fill.style.width = p + '%';
-        if (pct) pct.textContent = p + '%';
-        if (tt && lab != null) tt.textContent = lab;
-      };
-      // .text(label) — обновить подпись, не меняя режим
-      stop.text = (lab) => { const e2 = document.getElementById('geomProgress'); if (!e2) return; const tt = e2.querySelector('#geomProgressText'); if (tt && lab != null) tt.textContent = lab; };
+      // запасной вариант: тонкая полоса активности сверху окна
+      const a = window.__lxKit && window.__lxKit.activity ? window.__lxKit.activity(label || 'Обработка…') : null;
+      const stop = () => { if (a) a.done(); };
+      stop.set = (frac, lab) => { if (a) a.set(frac, lab); };
+      stop.text = (lab) => { if (a && lab != null) a.set(null, lab); };
       return stop;
     }
     async function withBusy(btn, label, fn) {
@@ -2383,7 +2290,7 @@
             toast('Меш построен, но не удалось загрузить его в просмотрщик: ' + r.path);
           }
         }
-        else if (r && r.needOpen3d) { toast('Для меширования нужен Open3D. Откройте 🛠 → «Установить Open3D + SciPy»'); }
+        else if (r && r.needOpen3d) { toast('Для меширования нужен Open3D. Откройте «Облако → Геометрия → Установить Open3D + SciPy»'); }
         else { toast('Не удалось: ' + ((r && r.error) || 'ошибка')); }
       } catch (e) { toast('Ошибка построения поверхности'); }
     }
@@ -2415,8 +2322,8 @@
       p.body.appendChild(hint);
       const optsOf = () => ({ targetSplats: Math.round(parseFloat(sDens.value) * 1e6), scaleMul: parseFloat(sSize.value), opacity: parseFloat(sOpac.value) });
       const btns = mk('div', ''); btns.style.cssText = 'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap';
-      const bGo = mk('button', 'btn sm primary', '✨ Конвертировать и открыть в туре');
-      const bSave = mk('button', 'btn sm', '💾 Конвертировать и сохранить .ply');
+      const bGo = mk('button', 'btn sm primary', IB('sparkles', 'Конвертировать и открыть в туре'));
+      const bSave = mk('button', 'btn sm', IB('save', 'Конвертировать и сохранить .ply'));
       bGo.onclick = async () => { p.close(); await runSplatConvert(optsOf(), false); };
       bSave.onclick = async () => { p.close(); await runSplatConvert(optsOf(), true); };
       btns.append(bGo, bSave); p.body.appendChild(btns);
@@ -2458,7 +2365,7 @@
       try { r = await API.meshCloud({ path: curCloudPath(), method: 'poisson' }); }
       catch (e) { console.warn('meshCloud', e); toast('Ошибка построения поверхности'); return; }
       if (!r || !r.ok) {
-        if (r && (r.needOpen3d || r.needPython)) toast('Для меша нужен Open3D. Откройте 🛠 → «Установить Open3D + SciPy»');
+        if (r && (r.needOpen3d || r.needPython)) toast('Для меша нужен Open3D. Откройте «Облако → Геометрия → Установить Open3D + SciPy»');
         else toast('Не удалось: ' + ((r && r.error) || 'ошибка'));
         return;
       }
@@ -2490,20 +2397,20 @@
     }
     const gb = $('vtGeom');
     if (gb) gb.addEventListener('click', () => {
-      const old = document.getElementById('geomMenu'); if (old) { old.remove(); return; }
-      const menu = document.createElement('div'); menu.id = 'geomMenu';
-      menu.className = 'lx-pop';
-      const items = [['📊 Отклонения (скан ↔ модель)', () => withBusy(gb, 'Расчёт отклонений…', geomDeviation)], ['🧩 Совмещение сканов (ICP)', () => withBusy(gb, 'Совмещение (ICP)…', geomRegister)], ['🔲 Построить поверхность (mesh)', () => withBusy(gb, 'Построение поверхности…', geomMesh)], ['✨ Облако → 3DGS (настройки + тур)', () => openSplatConvertDialog()], ['💾 Сохранить 3DGS (.ply)', () => saveConvertedSplat()], ['🏛 Облако → меш (в туре)', () => withBusy(gb, 'Меш для тура…', cloudToMeshTour)], ['⚙️ PDAL-пайплайн (.json)', () => withBusy(gb, 'PDAL…', geomPdal)], ['⬇️ Установить Open3D + SciPy', geomInstall]];
-      items.forEach(pair => { const b = document.createElement('button'); b.textContent = pair[0]; b.className = 'lx-pop-item'; b.onclick = () => { menu.remove(); pair[1](); }; menu.appendChild(b); });
-      document.body.appendChild(menu);
-      const rect = gb.getBoundingClientRect();
-      const _mw = menu.offsetWidth, _mh = menu.offsetHeight;
-      let _left = Math.max(8, Math.min(rect.left, window.innerWidth - _mw - 8));
-      const _sb = window.innerHeight - rect.bottom;
-      let _top = (_sb >= _mh + 12 || rect.top < _mh + 12) ? (rect.bottom + 6) : (rect.top - _mh - 6);
-      _top = Math.max(8, Math.min(_top, window.innerHeight - _mh - 8));
-      menu.style.left = _left + 'px'; menu.style.top = _top + 'px';
-      // Outside-click and Esc handled by lixel-workspace.js.
+      if (document.getElementById('geomMenu')) { window.__lxKit.closePopover(); return; }
+      const G = (ico, label, fn) => ({ ico, label, onClick: fn });
+      window.__lxKit.menu(gb, [
+        G('chart-column', 'Отклонения (скан ↔ модель)', () => withBusy(gb, 'Расчёт отклонений…', geomDeviation)),
+        G('git-compare', 'Совмещение сканов (ICP)', () => withBusy(gb, 'Совмещение (ICP)…', geomRegister)),
+        G('shapes', 'Построить поверхность (mesh)', () => withBusy(gb, 'Построение поверхности…', geomMesh)),
+        { sep: true },
+        G('sparkles', 'Облако → 3DGS (настройки + тур)', () => openSplatConvertDialog()),
+        G('save', 'Сохранить 3DGS (.ply)', () => saveConvertedSplat()),
+        G('landmark', 'Облако → меш (в туре)', () => withBusy(gb, 'Меш для тура…', cloudToMeshTour)),
+        { sep: true },
+        G('workflow', 'PDAL-пайплайн (.json)', () => withBusy(gb, 'PDAL…', geomPdal)),
+        G('download', 'Установить Open3D + SciPy', geomInstall)
+      ], { id: 'geomMenu', title: 'Геометрия облака', minWidth: 300 });
     });
 
     // Очистка облака от шума/выбросов через Python-сайдкар (Open3D → иначе NumPy). Идёт в main-процессе.
@@ -2563,9 +2470,9 @@
           catch (e) { toast('Ошибка чистки: ' + ((e && e.message) || e)); }
           finally { cln.classList.remove('on'); cln.classList.remove('busy'); cln.disabled = false; if (_cs) { try { _cs(); } catch (e) {} } }
           if (removed > 0) {
-            var _ap = (window.__lastAutoClean && window.__lastAutoClean.passes) ? (' за ' + window.__lastAutoClean.passes + ' прох.') : ''; toast('Очищено с одного раза' + _ap + ': шум ' + nfmt(remN) + ' + отсоединённые кластеры ' + nfmt(remC) + ' точек · людей/мебель на полу — «Правка» → лассо → 🗑 · Ctrl+Z отмена');
+            var _ap = (window.__lastAutoClean && window.__lastAutoClean.passes) ? (' за ' + window.__lastAutoClean.passes + ' прох.') : ''; toast('Очищено с одного раза' + _ap + ': шум ' + nfmt(remN) + ' + отсоединённые кластеры ' + nfmt(remC) + ' точек · людей/мебель на полу — «Правка облака» → лассо → «Удалить» · Ctrl+Z отмена');
           } else {
-            toast('Отсоединённого мусора не найдено. Объекты, связанные с полом (люди, мебель), удаляются вручную: «Правка» → лассо → 🗑');
+            toast('Отсоединённого мусора не найдено. Объекты, связанные с полом (люди, мебель), удаляются вручную: «Правка облака» → лассо → «Удалить»');
           }
           return;
         }
@@ -2581,7 +2488,7 @@
       const _ccDirectB = /\.(ply|las|laz|e57|pcd|pts|xyz|xyzrgb)$/i.test(_cp);
       const _nativeSafe = !!(_engB && ((_engB.cloudCompare && _ccDirectB) || ((_engB.open3d || _engB.numpy) && _isPlyB)));
       if (!_nativeSafe) {
-        toast('Это облако не загружено в буфер правки, а быстрая авто-очистка для него может повесить приложение. Используйте «Правка» (лассо/кисть) или «✏️ Редактировать в CloudCompare» — там есть SOR/сегментация.');
+        toast('Это облако не загружено в буфер правки, а быстрая авто-очистка для него может повесить приложение. Используйте «Правка» (лассо/кисть) или «Редактировать в CloudCompare» — там есть SOR/сегментация.');
         return;
       }
       cln.classList.add('on'); cln.classList.add('busy'); cln.disabled = true; geomBusy = true;
@@ -2596,7 +2503,7 @@
         try { clearTimeout(_wd); } catch (e) {}
         if (r && r._uiTimeout) {
           try { if (API.cleanAbort) await API.cleanAbort(); } catch (e) {}
-          toast('Очистка идёт слишком долго — процесс остановлен. Для очень больших облаков откройте «✏️ Редактировать в CloudCompare» (SOR/сегментация вручную).');
+          toast('Очистка идёт слишком долго — процесс остановлен. Для очень больших облаков откройте «Редактировать в CloudCompare» (SOR/сегментация вручную).');
         } else if (r && r.ok) {
           const remTxt = (r.removed == null) ? '?' : r.removed.toLocaleString('ru-RU');
           const eng = r.engine === 'cloudcompare' ? 'CloudCompare' : (r.engine === 'open3d' ? 'Open3D' : 'NumPy');
@@ -2606,7 +2513,7 @@
           } catch (e) { console.warn('reload after clean', e); }
           toast('Очищено (' + eng + '): удалено ' + remTxt + ' точек · сохранено: ' + r.path);
         } else if (r && r.needPython) {
-          toast('Нужен Python 3. Откройте 🛠 → «Установить Open3D + SciPy»');
+          toast('Нужен Python 3. Откройте «Облако → Геометрия → Установить Open3D + SciPy»');
         } else {
           toast('Не удалось очистить: ' + ((r && r.error) || 'ошибка'));
         }
@@ -2630,9 +2537,9 @@
       bar.style.cssText = 'flex:0 0 40px;display:flex;align-items:center;gap:10px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);color:var(--txt);font-size:12px';
       const info = document.createElement('div'); info.style.cssText = 'flex:1;white-space:normal;line-height:1.3';
       info.innerHTML = '<b style="color:var(--ok)">CloudCompare</b> — встроен в BIM Twin. Отредактируйте облако (вырезание, сегментация, SOR/шум), затем <b>Ctrl+S → PLY</b> (поверх файла) и нажмите «Готово».';
-      const doneBtn = document.createElement('button'); doneBtn.textContent = '✓ Готово и переимпортировать';
+      const doneBtn = document.createElement('button'); doneBtn.innerHTML = IB('check', 'Готово и переимпортировать');
       doneBtn.style.cssText = 'background:var(--ok);border:1px solid var(--ok);border-radius:6px;color:#fff;padding:7px 12px;cursor:pointer;font-weight:600;white-space:nowrap';
-      const cancelBtn = document.createElement('button'); cancelBtn.textContent = '✕ Закрыть';
+      const cancelBtn = document.createElement('button'); cancelBtn.innerHTML = IB('x', 'Закрыть');
       cancelBtn.style.cssText = 'background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--txt);padding:7px 12px;cursor:pointer;white-space:nowrap';
       bar.appendChild(info); bar.appendChild(doneBtn); bar.appendChild(cancelBtn);
       const body = document.createElement('div'); body.id = 'ccEmbedBody';
@@ -2689,21 +2596,18 @@
     }
     const tbTools = $('vtTools');
     if (tbTools) {
-      tbTools.textContent = '🧹 Чистка ▾';
-      tbTools.title = 'Чистка облака — ручное лассо «насквозь» и авто-очистка';
       tbTools.addEventListener('click', () => {
-        const old = document.getElementById('cleanMenu'); if (old) { old.remove(); return; }
+        if (document.getElementById('cleanMenu')) { window.__lxKit.closePopover(); return; }
         const edOn = () => { const e2 = $('vtEdit'); return !!(e2 && e2.classList.contains('on')); };
         const on = edOn();
-        const menu = document.createElement('div'); menu.id = 'cleanMenu';
-        menu.className = 'lx-pop';
-        menu.style.minWidth = '290px';
-        const head = document.createElement('div'); head.textContent = 'Чистка облака точек'; head.className = 'lx-pop-head'; menu.appendChild(head);
+        const menu = document.createElement('div');
+        const MI = (ico, text) => ({ ico, text });
+        const head = document.createElement('div'); head.textContent = 'Чистка облака точек'; head.className = 'lx-pop-title'; menu.appendChild(head);
         // v1029: бейдж активного движка очистки (заполняется асинхронно ниже).
-        const engBadge = document.createElement('div'); engBadge.id = 'cleanEngine'; engBadge.textContent = '⚙ Движок очистки: проверяю…'; engBadge.className = 'lx-pop-head'; menu.appendChild(engBadge);
+        const engBadge = document.createElement('div'); engBadge.id = 'cleanEngine'; engBadge.className = 'lx-pop-eng'; engBadge.innerHTML = '<i></i><span>Движок очистки: проверяю…</span>'; menu.appendChild(engBadge);
         var cleanParams = (window.cleanParams = window.cleanParams || { k:16, stdRatio:1.0, minNeighbors:4, voxelFactor:2, protectWidth:60, protectSens:50, smartProtect:true });
         const items = [
-          ['✏️ Редактировать в CloudCompare (готовый редактор)', 'Открывает облако в CloudCompare (вырезание, сегментация, SOR/шум). Сохраните поверх файла (Ctrl+S → PLY) и закройте — результат переимпортируется', async () => {
+          [MI('pencil-ruler', 'Редактировать в CloudCompare (готовый редактор)'), 'Открывает облако в CloudCompare (вырезание, сегментация, SOR/шум). Сохраните поверх файла (Ctrl+S → PLY) и закройте — результат переимпортируется', async () => {
             try {
               if (!(typeof API !== 'undefined' && API && API.editInCloudCompare)) { toast('Доступно в десктоп-версии'); return; }
               const p = (typeof curCloudPath === 'function') ? curCloudPath() : null;
@@ -2739,13 +2643,13 @@
               } finally { geomBusy = false; if (_cs) { try { _cs(); } catch (e) {} } }
             } catch (e) { toast('Ошибка запуска CloudCompare'); }
           }],
-          [on ? '✓ Ручное лассо — выключить' : '🖊 Ручное лассо — удалить лишнее', on ? 'Режим включён. Обведите мусор мышью → Enter или 🗑. Нажмите, чтобы выйти' : 'Обведите мусор мышью → Enter или 🗑. Люди и мебель на полу убираются только так', () => { const e2 = $('vtEdit'); if (e2) e2.click(); setTimeout(() => { try { tbTools.classList.toggle('on', edOn()); } catch (e) {} }, 0); }],
-          ['🧹 Авто-очистка: шум + мусор', 'Быстро убирает шум и отсоединённые кластеры. Нажимайте повторно = сильнее', () => { const c = $('vtClean'); if (c) c.click(); }],
-          ['🧩 Убрать мелкие островки точек', 'Убирает отдельные сгустки И одиночные висящие точки-«мушки», не связанные с основной геометрией (Connected Components + тесный radius). Поверхности сохраняются. Ctrl+Z — отмена', () => { if (!viewer || !viewer.cleanIslandsInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.cleanIslandsInApp({}); if (rem > 0) toast('Убрано мелких островков: ' + nfmt(rem) + ' точек · Ctrl+Z — отмена'); else toast('Отдельных мелких кластеров не найдено — всё связано с основной геометрией'); }],
-          ['🌫 Убрать редкие «мушки» (radius outlier)', 'Удаляет точки, у которых мало соседей в заданном радиусе — редкий шум, который пропускает SOR (как remove_radius_outlier в Open3D). Ctrl+Z — отмена', () => { if (!viewer || !viewer.cleanRadiusInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.cleanRadiusInApp({ minNeighbors: (cleanParams && cleanParams.minNeighbors) || 4 }); if (rem > 0) toast('Удалено редких точек: ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Редких изолированных точек не найдено'); }],
-          ['🪶 Фильтр шума по поверхности (noise filter)', 'Убирает точки, выступающие над локальной плоскостью стен/пола — сглаживает «толщину» поверхности (как Noise filter в CloudCompare). Ctrl+Z — отмена', () => { if (!viewer || !viewer.noiseFilterInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.noiseFilterInApp({ stdRatio: (cleanParams && cleanParams.stdRatio) || 1.0, k: (cleanParams && cleanParams.k) || 16 }); if (rem > 0) toast('Сглажено (удалено шумовых точек): ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Шумовых выступов над поверхностью не найдено'); }],
-          ['🛡 Защита конструктива (лассо не режет пол/стены/потолок)', 'ВКЛ по умолчанию при ручном лассо: пол, стены и потолок (RANSAC) не удаляются — режется только объект. Здесь можно включить/выключить и увидеть, сколько плоскостей распознано', () => { if (!viewer || !viewer.setPlaneProtect) { toast('Недоступно в этом режиме'); return; } const cur = viewer.getPlaneProtect ? viewer.getPlaneProtect() : true; const nv = !cur; viewer.setPlaneProtect(nv); const np = (viewer._planes && viewer._planes.length) || 0; const eP = document.getElementById('edProtect'); if (eP) { eP.classList.toggle('on', nv); eP.textContent = nv ? ('🛡 Защита пол/стены/потолок: вкл (' + np + ')') : '🛡 Защита: выкл'; } toast(nv ? ('🛡 Защита конструктива ВКЛ · распознано плоскостей: ' + np + (np ? '' : ' — мало данных в кадре, отдалите камеру и повторите')) : '🛡 Защита ВЫКЛ — лассо удаляет всё внутри контура'); }],
-          ['🏷 Назначить LAS-класс выделенным точкам', 'Вручную назначает выбранным точкам код ASPRS LAS 0–255 (например, 2 — грунт, 6 — здание). Ctrl+Z отменяет и восстанавливает метки проекта', () => {
+          [on ? MI('check', 'Ручное лассо — выключить') : MI('lasso-select', 'Ручное лассо — удалить лишнее'), on ? 'Режим включён. Обведите мусор мышью → Enter или «Удалить». Нажмите, чтобы выйти' : 'Обведите мусор мышью → Enter или «Удалить». Люди и мебель на полу убираются только так', () => { const e2 = $('vtEdit'); if (e2) e2.click(); setTimeout(() => { try { tbTools.classList.toggle('on', edOn()); } catch (e) {} }, 0); }],
+          [MI('sparkles', 'Авто-очистка: шум + мусор'), 'Быстро убирает шум и отсоединённые кластеры. Нажимайте повторно = сильнее', () => { const c = $('vtClean'); if (c) c.click(); }],
+          [MI('puzzle', 'Убрать мелкие островки точек'), 'Убирает отдельные сгустки И одиночные висящие точки-«мушки», не связанные с основной геометрией (Connected Components + тесный radius). Поверхности сохраняются. Ctrl+Z — отмена', () => { if (!viewer || !viewer.cleanIslandsInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.cleanIslandsInApp({}); if (rem > 0) toast('Убрано мелких островков: ' + nfmt(rem) + ' точек · Ctrl+Z — отмена'); else toast('Отдельных мелких кластеров не найдено — всё связано с основной геометрией'); }],
+          [MI('cloud-fog', 'Убрать редкие «мушки» (radius outlier)'), 'Удаляет точки, у которых мало соседей в заданном радиусе — редкий шум, который пропускает SOR (как remove_radius_outlier в Open3D). Ctrl+Z — отмена', () => { if (!viewer || !viewer.cleanRadiusInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.cleanRadiusInApp({ minNeighbors: (cleanParams && cleanParams.minNeighbors) || 4 }); if (rem > 0) toast('Удалено редких точек: ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Редких изолированных точек не найдено'); }],
+          [MI('feather', 'Фильтр шума по поверхности (noise filter)'), 'Убирает точки, выступающие над локальной плоскостью стен/пола — сглаживает «толщину» поверхности (как Noise filter в CloudCompare). Ctrl+Z — отмена', () => { if (!viewer || !viewer.noiseFilterInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.noiseFilterInApp({ stdRatio: (cleanParams && cleanParams.stdRatio) || 1.0, k: (cleanParams && cleanParams.k) || 16 }); if (rem > 0) toast('Сглажено (удалено шумовых точек): ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Шумовых выступов над поверхностью не найдено'); }],
+          [MI('shield', 'Защита конструктива (лассо не режет пол, стены, потолок)'), 'ВКЛ по умолчанию при ручном лассо: пол, стены и потолок (RANSAC) не удаляются — режется только объект. Здесь можно включить/выключить и увидеть, сколько плоскостей распознано', () => { if (!viewer || !viewer.setPlaneProtect) { toast('Недоступно в этом режиме'); return; } const cur = viewer.getPlaneProtect ? viewer.getPlaneProtect() : true; const nv = !cur; viewer.setPlaneProtect(nv); const np = (viewer._planes && viewer._planes.length) || 0; const eP = document.getElementById('edProtect'); if (eP) { eP.classList.toggle('on', nv); } toast(nv ? ('Защита конструктива ВКЛ · распознано плоскостей: ' + np + (np ? '' : ' — мало данных в кадре, отдалите камеру и повторите')) : 'Защита ВЫКЛ — лассо удаляет всё внутри контура'); }],
+          [MI('tag', 'Назначить LAS-класс выделенным точкам'), 'Вручную назначает выбранным точкам код ASPRS LAS 0–255 (например, 2 — грунт, 6 — здание). Ctrl+Z отменяет и восстанавливает метки проекта', () => {
             if (!viewer || !viewer.assignClassificationInApp) { toast('Недоступно в этом режиме'); return; }
             if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; }
             if (!viewer.selectionCount || !viewer.selectionCount()) { toast('Сначала выделите точки лассо или рамкой'); return; }
@@ -2772,116 +2676,86 @@
               else toast('Разметка применена, но не сохранена в проект: ' + ((r && (r.message || r.error)) || 'ошибка'));
             });
           }],
-          ['🏗 Разметить конструктив (пол/стены/потолок)', 'RANSAC определяет пол, стены и потолок и выделяет всё остальное (мебель/люди/шум) для проверки перед удалением. Затем 🗑 или Ctrl+Z', () => { if (!viewer || !viewer.classifyInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const c = viewer.classifyInApp({ selectClass: 0 }); if (!c) { toast('Не удалось классифицировать'); return; } toast('Пол ' + nfmt(c.floor) + ' · стены ' + nfmt(c.wall) + ' · потолок ' + nfmt(c.ceiling) + ' · прочее ' + nfmt(c.other) + ' (выделено «прочее» — проверьте)'); if (viewer._lastClassificationPromise) viewer._lastClassificationPromise.then(r => { if (r && r.ok) toast('Метки классификации сохранены в проекте'); else toast('Метки рассчитаны, но не сохранены: ' + ((r && (r.message || r.error)) || 'ошибка')); }); }],
-          ['◼ Обводка точек чёрным: ' + ((viewer && viewer._edl) ? 'вкл' : 'выкл'), 'Возвращает тонкую чёрную обводку вокруг точек (эффект EDL) — помогает различать отдельные точки и грани при редактировании. По умолчанию выкл. Нажмите, чтобы переключить', () => { if (!viewer || !viewer.setEDL) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = !viewer._edl; const ok = viewer.setEDL(on); if (on && !ok) { toast('Обводка (EDL) недоступна на этом GPU'); return; } const qE = $('qEDL'); if (qE) { qE.classList.toggle('on', on); qE.textContent = on ? 'EDL: вкл' : 'EDL: выкл'; } toast(on ? '◼ Чёрная обводка точек включена' : 'Чёрная обводка точек выключена'); }],
-          ['💾 Сохранить облако (.ply)', 'Сохранить результат правки в файл', () => { const s = $('edSave'); if (s) s.click(); else toast('Сначала включите «Ручное лассо»'); }],
-          ['↩ Отменить (Ctrl+Z)', 'Отменить последнее удаление', () => { const u = $('edUndo'); if (u && u.offsetParent !== null) u.click(); else if (viewer && viewer.undoEdit) viewer.undoEdit(); }],
+          [MI('layout-grid', 'Разметить конструктив (пол, стены, потолок)'), 'RANSAC определяет пол, стены и потолок и выделяет всё остальное (мебель/люди/шум) для проверки перед удалением. Затем «Удалить» или Ctrl+Z', () => { if (!viewer || !viewer.classifyInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const c = viewer.classifyInApp({ selectClass: 0 }); if (!c) { toast('Не удалось классифицировать'); return; } toast('Пол ' + nfmt(c.floor) + ' · стены ' + nfmt(c.wall) + ' · потолок ' + nfmt(c.ceiling) + ' · прочее ' + nfmt(c.other) + ' (выделено «прочее» — проверьте)'); if (viewer._lastClassificationPromise) viewer._lastClassificationPromise.then(r => { if (r && r.ok) toast('Метки классификации сохранены в проекте'); else toast('Метки рассчитаны, но не сохранены: ' + ((r && (r.message || r.error)) || 'ошибка')); }); }],
+          [MI('square', 'Обводка точек чёрным: ' + ((viewer && viewer._edl) ? 'вкл' : 'выкл')), 'Возвращает тонкую чёрную обводку вокруг точек (эффект EDL) — помогает различать отдельные точки и грани при редактировании. По умолчанию выкл. Нажмите, чтобы переключить', () => { if (!viewer || !viewer.setEDL) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = !viewer._edl; const ok = viewer.setEDL(on); if (on && !ok) { toast('Обводка (EDL) недоступна на этом GPU'); return; } const qE = $('qEDL'); if (qE) { qE.classList.toggle('on', on); } toast(on ? 'Чёрная обводка точек включена' : 'Чёрная обводка точек выключена'); }],
+          [MI('save', 'Сохранить облако (.ply)'), 'Сохранить результат правки в файл', () => { const s = $('edSave'); if (s) s.click(); else toast('Сначала включите «Ручное лассо»'); }],
+          [MI('undo-2', 'Отменить (Ctrl+Z)'), 'Отменить последнее удаление', () => { const u = $('edUndo'); if (u && u.offsetParent !== null) u.click(); else if (viewer && viewer.undoEdit) viewer.undoEdit(); }],
         ];
-        items.forEach(row => {
-          const b = document.createElement('button');
-          b.className = 'lx-pop-item';
-          const l1 = document.createElement('div'); l1.textContent = row[0]; l1.className = 'lx-pop-item-title';
-          const l2 = document.createElement('div'); l2.textContent = row[1]; l2.className = 'lx-pop-item-sub';
-          b.appendChild(l1); b.appendChild(l2);
-          b.onclick = () => { menu.remove(); row[2](); };
-          menu.appendChild(b);
-        });
-        // v1046: панель параметров фильтров (k, std-ratio, соседи, воксель).
-        (function(){
-          const wrap = document.createElement('div'); wrap.style.cssText = 'border-top:1px solid var(--line);margin-top:4px;padding:6px 10px;display:flex;flex-direction:column;gap:4px';
-          const tt = document.createElement('div'); tt.textContent = '⚙ Параметры фильтров'; tt.className = 'lx-pop-head'; tt.style.padding = '0 0 2px'; wrap.appendChild(tt);
-          const mk = (label, key, step, min) => { const rw = document.createElement('label'); rw.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--txt);gap:8px'; const sp = document.createElement('span'); sp.textContent = label; const inp = document.createElement('input'); inp.type = 'number'; inp.step = String(step); if (min != null) inp.min = String(min); inp.value = String(cleanParams[key]); inp.style.cssText = 'width:70px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:4px;padding:2px 4px;font-size:11px'; inp.onchange = () => { const v = parseFloat(inp.value); if (isFinite(v)) cleanParams[key] = v; }; rw.appendChild(sp); rw.appendChild(inp); return rw; };
-          wrap.appendChild(mk('k соседей (SOR/шум)', 'k', 1, 1));
-          wrap.appendChild(mk('std-ratio (агрессивность)', 'stdRatio', 0.1, 0.1));
-          wrap.appendChild(mk('min соседей (radius)', 'minNeighbors', 1, 1));
-          wrap.appendChild(mk('фактор вокселя (прорежение)', 'voxelFactor', 0.5, 0.5));
-          // v1054: ползунок ширины защиты стен/пола/потолка (мм). Живо влияет на ручное лассо.
+        items.forEach(row => { menu.appendChild(window.__lxKit.menuItem({ ico: row[0].ico, label: row[0].text, sub: row[1], onClick: row[2] })); });
+        // v1046: параметры фильтров (k, std-ratio, соседи, воксель, защита плоскостей).
+        (function () {
+          const wrap = document.createElement('div'); wrap.className = 'lx-pop-params';
+          const tt = document.createElement('div'); tt.className = 'lx-pop-title'; tt.textContent = 'Параметры фильтров'; wrap.appendChild(tt);
+          const row = (label, ctl, cls) => { const rw = document.createElement('label'); rw.className = 'lx-pop-row' + (cls ? ' ' + cls : ''); const sp = document.createElement('span'); sp.textContent = label; rw.append(sp, ctl); wrap.appendChild(rw); return rw; };
+          const num = (label, key, step, min) => { const inp = document.createElement('input'); inp.type = 'number'; inp.step = String(step); if (min != null) inp.min = String(min); inp.value = String(cleanParams[key]); inp.onchange = () => { const v = parseFloat(inp.value); if (isFinite(v)) cleanParams[key] = v; }; row(label, inp); };
+          const range = (label, min, max, step, value, fmt, apply) => {
+            const rng = document.createElement('input'); rng.type = 'range'; rng.min = String(min); rng.max = String(max); rng.step = String(step); rng.value = String(value);
+            const out = document.createElement('output'); out.textContent = fmt(value);
+            const rw = row(label, out, 'lx-pop-range'); rw.appendChild(rng);
+            rng.oninput = () => { const v = parseFloat(rng.value); if (isFinite(v)) { out.textContent = fmt(v); apply(v); } };
+          };
+          num('Соседей k (SOR, шум)', 'k', 1, 1);
+          num('std-ratio (агрессивность)', 'stdRatio', 0.1, 0.1);
+          num('Мин. соседей (radius)', 'minNeighbors', 1, 1);
+          num('Фактор вокселя (прореживание)', 'voxelFactor', 0.5, 0.5);
+          // v1054: ширина защиты стен/пола/потолка (мм). Живо влияет на ручное лассо.
           if (cleanParams.protectWidth == null) cleanParams.protectWidth = 60;
-          const pwRow = document.createElement('label'); pwRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--txt);gap:8px';
-          const pwLab = document.createElement('span'); const pwRng = document.createElement('input'); pwRng.type = 'range'; pwRng.min = '15'; pwRng.max = '150'; pwRng.step = '5'; pwRng.value = String(cleanParams.protectWidth); pwRng.style.cssText = 'flex:1;min-width:90px';
-          const pwSet = () => { pwLab.textContent = 'ширина защиты стен: ' + cleanParams.protectWidth + ' мм'; };
-          pwSet();
-          pwRng.oninput = () => { const v = parseFloat(pwRng.value); if (isFinite(v)) { cleanParams.protectWidth = v; pwSet(); if (viewer && viewer.setProtectWidth) viewer.setProtectWidth(v); } };
-          pwRow.appendChild(pwLab); pwRow.appendChild(pwRng); wrap.appendChild(pwRow);
+          range('Ширина защиты стен', 15, 150, 5, cleanParams.protectWidth, v => v + ' мм', v => { cleanParams.protectWidth = v; if (viewer && viewer.setProtectWidth) viewer.setProtectWidth(v); });
           if (viewer && viewer.setProtectWidth) viewer.setProtectWidth(cleanParams.protectWidth);
-          // v1055: ползунок «защита мелких участков» — minFrac (какая доля точек считается поверхностью).
+          // v1055: «защита мелких участков» — minFrac (какая доля точек считается поверхностью).
           // Лево = защищаем только крупные плоскости (мусор на полу удаляется); право = бережём даже мелкие/шероховатые.
           if (cleanParams.protectSens == null) cleanParams.protectSens = 50;
           const psMinFrac = (S) => Math.max(0.05, Math.min(0.20, 0.20 - (S - 1) / 99 * 0.15));
-          const psRow = document.createElement('label'); psRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--txt);gap:8px';
-          const psLab = document.createElement('span'); const psRng = document.createElement('input'); psRng.type = 'range'; psRng.min = '1'; psRng.max = '100'; psRng.step = '1'; psRng.value = String(cleanParams.protectSens); psRng.style.cssText = 'flex:1;min-width:90px';
-          const psSet = () => { psLab.textContent = 'защита мелких участков: ' + cleanParams.protectSens + '%'; };
-          psSet();
-          psRng.oninput = () => { const v = parseFloat(psRng.value); if (isFinite(v)) { cleanParams.protectSens = v; psSet(); if (viewer && viewer.setProtectMinFrac) viewer.setProtectMinFrac(psMinFrac(v)); } };
-          psRow.appendChild(psLab); psRow.appendChild(psRng); wrap.appendChild(psRow);
+          range('Защита мелких участков', 1, 100, 1, cleanParams.protectSens, v => v + '%', v => { cleanParams.protectSens = v; if (viewer && viewer.setProtectMinFrac) viewer.setProtectMinFrac(psMinFrac(v)); });
           if (viewer && viewer.setProtectMinFrac) viewer.setProtectMinFrac(psMinFrac(cleanParams.protectSens));
-          // v1056: тумблер «умная защита» — автоотличие крупной поверхности от мусора/предметов на ней.
+          // v1056: «умная защита» — автоотличие крупной поверхности от мусора/предметов на ней.
           if (cleanParams.smartProtect == null) cleanParams.smartProtect = true;
-          const smRow = document.createElement('label'); smRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--txt);gap:8px;cursor:pointer';
-          const smLab = document.createElement('span'); smLab.textContent = 'Умная защита (поверхность ≠ мусор)';
-          const smChk = document.createElement('input'); smChk.type = 'checkbox'; smChk.checked = !!cleanParams.smartProtect; smChk.style.cssText = 'width:15px;height:15px';
+          const smChk = document.createElement('input'); smChk.type = 'checkbox'; smChk.checked = !!cleanParams.smartProtect;
           smChk.onchange = () => { cleanParams.smartProtect = !!smChk.checked; if (viewer && viewer.setSmartProtect) viewer.setSmartProtect(cleanParams.smartProtect); };
-          smRow.appendChild(smLab); smRow.appendChild(smChk); wrap.appendChild(smRow);
+          row('Умная защита (поверхность ≠ мусор)', smChk, 'lx-pop-check');
           if (viewer && viewer.setSmartProtect) viewer.setSmartProtect(cleanParams.smartProtect);
           menu.appendChild(wrap);
         })();
-        document.body.appendChild(menu);
+        window.__lxKit.popover({ anchor: tbTools, content: menu, id: 'cleanMenu', minWidth: 360, label: 'Чистка облака' });
         // v1029: определить и показать активный движок; если Open3D/CloudCompare нет — предложить автоустановку.
         (async () => {
           const eb = document.getElementById('cleanEngine'); if (!eb) return;
+          const setEng = (text, tone) => { eb.setAttribute('data-tone', tone || 'muted'); const sp = eb.querySelector('span'); if (sp) sp.textContent = 'Движок очистки: ' + text; };
           try {
-            if (!(typeof API !== 'undefined' && API && API.cleanStatus)) { eb.textContent = '⚙ Движок очистки: браузерный (в приложении)'; eb.style.color = 'var(--muted)'; return; }
+            if (!(typeof API !== 'undefined' && API && API.cleanStatus)) { setEng('браузерный (в приложении)', 'muted'); return; }
             const st = await API.cleanStatus();
-            let label = 'браузерный (в приложении)', color = 'var(--muted)';
-            if (st && st.cloudCompare) { label = 'CloudCompare (макс. качество)'; color = 'var(--ok)'; }
-            else if (st && st.open3d) { label = 'Open3D (полный конвейер)'; color = 'var(--ok)'; }
-            else if (st && st.numpy) { label = 'NumPy (базовый Python)'; color = 'var(--warn)'; }
-            else if (st && st.python) { label = 'Python есть, пакеты не найдены'; color = 'var(--warn)'; }
-            eb.textContent = '⚙ Движок очистки: ' + label;
-            eb.style.color = color;
+            let label = 'браузерный (в приложении)', color = 'muted';
+            if (st && st.cloudCompare) { label = 'CloudCompare (макс. качество)'; color = 'ok'; }
+            else if (st && st.open3d) { label = 'Open3D (полный конвейер)'; color = 'ok'; }
+            else if (st && st.numpy) { label = 'NumPy (базовый Python)'; color = 'warn'; }
+            else if (st && st.python) { label = 'Python есть, пакеты не найдены'; color = 'warn'; }
+            setEng(label, color);
             if (st && !st.open3d && !st.cloudCompare && (typeof CAN_PERSIST === 'undefined' || CAN_PERSIST) && API.installPyDeps) {
-              const ib = document.createElement('button');
-              ib.className = 'lx-pop-item';
-              const i1 = document.createElement('div'); i1.textContent = '⬇ Установить Open3D (макс. качество)'; i1.style.cssText = 'font-size:13px;font-weight:600;color:var(--ok)';
-              const i2 = document.createElement('div'); i2.textContent = 'Автоматически: изолированный Python + Open3D, без прав администратора'; i2.className = 'lx-pop-item-sub';
-              ib.appendChild(i1); ib.appendChild(i2);
-              ib.onclick = async () => { menu.remove(); try { const r = await API.installPyDeps(); toast((r && r.message) || 'Запущена установка Open3D…'); } catch (e) { toast('Не удалось запустить установку'); } };
-              menu.appendChild(ib);
+              menu.appendChild(window.__lxKit.menuItem({ ico: 'download', label: 'Установить Open3D (макс. качество)', sub: 'Автоматически: изолированный Python + Open3D, без прав администратора',
+                onClick: async () => { try { const r = await API.installPyDeps(); toast((r && r.message) || 'Запущена установка Open3D…'); } catch (e) { toast('Не удалось запустить установку'); } } }));
             }
             if ((!st || !st.cloudCompare) && API.installCloudCompare) {
-              const cb = document.createElement('button');
-              cb.className = 'lx-pop-item';
-              const c1 = document.createElement('div'); c1.textContent = '⬇ Подключить CloudCompare (готовый редактор)'; c1.style.cssText = 'font-size:13px;font-weight:600;color:var(--ok)';
-              const c2 = document.createElement('div'); c2.textContent = 'Открыть страницу загрузки и папку приложения — распакуйте туда CloudCompare.exe'; c2.className = 'lx-pop-item-sub';
-              cb.appendChild(c1); cb.appendChild(c2);
-              cb.onclick = async () => { menu.remove(); const _ds = beginProgress('Загрузка CloudCompare…'); try { toast('Скачиваю и устанавливаю CloudCompare… это может занять несколько минут'); const r = (API.downloadCloudCompare ? await API.downloadCloudCompare() : null); if (r && r.ok) { toast('CloudCompare установлен — откройте меню и нажмите «Редактировать в CloudCompare»'); } else { const r2 = await API.installCloudCompare(); toast((r2 && r2.message) || 'Открыта папка для CloudCompare'); } } catch (e) { try { await API.installCloudCompare(); } catch (e2) {} toast('Открыл страницу загрузки CloudCompare'); } finally { if (_ds) { try { _ds(); } catch (e) {} } } };
-              menu.appendChild(cb);
+              menu.appendChild(window.__lxKit.menuItem({ ico: 'download', label: 'Подключить CloudCompare (готовый редактор)', sub: 'Открыть страницу загрузки и папку приложения — распакуйте туда CloudCompare.exe',
+                onClick: async () => { const _ds = beginProgress('Загрузка CloudCompare…'); try { toast('Скачиваю и устанавливаю CloudCompare… это может занять несколько минут'); const r = (API.downloadCloudCompare ? await API.downloadCloudCompare() : null); if (r && r.ok) { toast('CloudCompare установлен — откройте меню и нажмите «Редактировать в CloudCompare»'); } else { const r2 = await API.installCloudCompare(); toast((r2 && r2.message) || 'Открыта папка для CloudCompare'); } } catch (e) { try { await API.installCloudCompare(); } catch (e2) {} toast('Открыл страницу загрузки CloudCompare'); } finally { if (_ds) { try { _ds(); } catch (e) {} } } } }));
             }
-          } catch (e) { eb.textContent = '⚙ Движок очистки: браузерный (в приложении)'; eb.style.color = 'var(--muted)'; }
+          } catch (e) { setEng('браузерный (в приложении)', 'muted'); }
         })();
-        const rect = tbTools.getBoundingClientRect();
-        const mw = menu.offsetWidth, mh = menu.offsetHeight;
-        let left = rect.left - mw - 8; if (left < 8) left = Math.min(rect.right + 8, window.innerWidth - mw - 8); left = Math.max(8, left);
-        let top = Math.max(8, Math.min(rect.top, window.innerHeight - mh - 8));
-        menu.style.left = left + 'px'; menu.style.top = top + 'px';
-        // Outside-click and Esc handled by lixel-workspace.js.
       });
     }
     (function setupDevConsole() {
       const panel = $('devConsole'); const body = $('dcBody');
       if (body) { __bimLog.el = body; if (!body.__inited) { body.__inited = true; body.innerHTML = ''; __bimLog.buf.forEach(__bimLogRender); body.scrollTop = body.scrollHeight; } }
       const stage = document.querySelector('.stage');
-      if (panel) panel.style.display = 'flex'; // v1078: консоль всегда открыта снизу отдельным доком
       let dockH = 232; // высота консоли (px) — можно тянуть мышью
-      const applyH = (h) => { dockH = Math.max(90, Math.min(Math.round(window.innerHeight * 0.8), Math.round(h))); if (panel && !panel.classList.contains('collapsed')) { panel.style.height = dockH + 'px'; if (stage) stage.style.paddingBottom = (dockH + 2) + 'px'; } };
-      const setCollapsed = (col) => { if (!panel) return; panel.classList.toggle('collapsed', col); if (stage) stage.classList.toggle('console-collapsed', col); if (col) { panel.style.height = ''; if (stage) stage.style.paddingBottom = ''; } else { panel.style.height = dockH + 'px'; if (stage) stage.style.paddingBottom = (dockH + 2) + 'px'; } const lb2 = $('vtLog'); if (lb2) lb2.classList.toggle('on', !col); try { window.dispatchEvent(new Event('resize')); } catch (e) {} if (!col && body) body.scrollTop = body.scrollHeight; };
+      const applyH = (h) => { dockH = Math.max(90, Math.min(Math.round(window.innerHeight * 0.8), Math.round(h))); if (panel && !panel.classList.contains('collapsed')) { panel.style.height = dockH + 'px'; if (stage) stage.style.setProperty('--dc-h', dockH + 'px'); } };
+      const setCollapsed = (col) => { if (!panel) return; panel.classList.toggle('collapsed', col); if (stage) stage.classList.toggle('console-collapsed', col); if (col) { panel.style.height = ''; if (stage) stage.style.removeProperty('--dc-h'); } else { panel.style.height = dockH + 'px'; if (stage) stage.style.setProperty('--dc-h', dockH + 'px'); } const lb2 = $('vtLog'); if (lb2) lb2.classList.toggle('on', !col); try { window.dispatchEvent(new Event('resize')); } catch (e) {} if (!col && body) body.scrollTop = body.scrollHeight; };
       if (panel && !panel.__resizer) { panel.__resizer = true; const grip = document.createElement('div'); grip.className = 'dc-resize'; grip.title = 'Потяните вверх/вниз, чтобы изменить высоту консоли'; panel.insertBefore(grip, panel.firstChild); let drag = null; grip.addEventListener('mousedown', (e) => { if (panel.classList.contains('collapsed')) return; drag = { y: e.clientY, h: panel.getBoundingClientRect().height }; document.body.style.userSelect = 'none'; e.preventDefault(); }); window.addEventListener('mousemove', (e) => { if (!drag) return; applyH(drag.h + (drag.y - e.clientY)); if (!panel.__raf) panel.__raf = requestAnimationFrame(() => { panel.__raf = 0; try { window.dispatchEvent(new Event('resize')); } catch (er) {} }); }); window.addEventListener('mouseup', () => { if (!drag) return; drag = null; document.body.style.userSelect = ''; try { window.dispatchEvent(new Event('resize')); } catch (e) {} }); }
       applyH(dockH); setCollapsed(true);
       const lb = $('vtLog'); if (lb) { lb.classList.remove('on'); lb.addEventListener('click', () => setCollapsed(!panel.classList.contains('collapsed'))); }
       const cl = $('dcClose'); if (cl) { cl.title = 'Свернуть/развернуть консоль'; cl.addEventListener('click', () => setCollapsed(!panel.classList.contains('collapsed'))); }
       const cc = $('dcClear'); if (cc) cc.addEventListener('click', () => { __bimLog.buf.length = 0; if (body) body.innerHTML = ''; bimLog('info', 'Консоль очищена'); });
       const cp = $('dcCopy'); if (cp) cp.addEventListener('click', async () => { const txt = __bimLog.buf.map((e) => { const d = new Date(e.t); return d.toLocaleTimeString('ru-RU') + ' [' + e.level + '] ' + e.msg; }).join('\n'); try { await navigator.clipboard.writeText(txt); toast('Лог скопирован (' + __bimLog.buf.length + ' строк)'); } catch (e) { toast('Не удалось скопировать'); } });
-      if (!document.__bimClickLog) { document.__bimClickLog = true; document.addEventListener('click', (ev) => { const b = ev.target && ev.target.closest ? ev.target.closest('button, .btn, .vtool, .vc') : null; if (!b) return; if (b.closest && b.closest('#devConsole')) return; const label = (b.title || (b.textContent || '').trim() || b.id || 'кнопка').slice(0, 48); bimLog('click', '🖱 ' + label + (b.id ? ' #' + b.id : '')); }, true); }
+      if (!document.__bimClickLog) { document.__bimClickLog = true; document.addEventListener('click', (ev) => { const b = ev.target && ev.target.closest ? ev.target.closest('button, .btn, .vtool, .vc') : null; if (!b) return; if (b.closest && b.closest('#devConsole')) return; const label = (b.title || (b.textContent || '').trim() || b.id || 'кнопка').slice(0, 48); bimLog('click', label + (b.id ? ' #' + b.id : '')); }, true); }
       bimLog('info', 'Консоль действий готова · v1160');
     })();
 
@@ -3050,10 +2924,12 @@
     });
     let selMode = 'lasso';
     const edModeBtn = $('edMode');
-    if (edModeBtn) edModeBtn.addEventListener('click', () => { if (!viewer.setSelectMode) return; selMode = selMode === 'lasso' ? 'rect' : selMode === 'rect' ? 'brush' : 'lasso'; viewer.setSelectMode(selMode); edModeBtn.textContent = selMode === 'lasso' ? 'Лассо' : selMode === 'rect' ? 'Рамка' : 'Кисть'; if (viewer.clearSelection) viewer.clearSelection(); toast(selMode === 'lasso' ? 'Лассо: обведите мусор произвольным контуром (ЛКМ). Alt — снять лишнее' : 'Рамка: выделите прямоугольную область (ЛКМ). Alt — снять лишнее'); });
+    const ED_ICO = { 'Лассо': 'lasso-select', 'Рамка': 'box-select', 'Кисть': 'brush', 'Палочка': 'wand-sparkles', 'Пипетка': 'pipette' };
+    const setEdModeLbl = t => setLbl(edModeBtn, t, ED_ICO[t]);
+    if (edModeBtn) edModeBtn.addEventListener('click', () => { if (!viewer.setSelectMode) return; selMode = selMode === 'lasso' ? 'rect' : selMode === 'rect' ? 'brush' : 'lasso'; viewer.setSelectMode(selMode); setEdModeLbl(selMode === 'lasso' ? 'Лассо' : selMode === 'rect' ? 'Рамка' : 'Кисть'); if (viewer.clearSelection) viewer.clearSelection(); toast(selMode === 'lasso' ? 'Лассо: обведите мусор произвольным контуром (ЛКМ). Alt — снять лишнее' : 'Рамка: выделите прямоугольную область (ЛКМ). Alt — снять лишнее'); });
     let selDepthMode = 0;
     const edThroughBtn = $('edThrough');
-    if (edThroughBtn) edThroughBtn.addEventListener('click', () => { if (!viewer.setSelectDepthMode) return; selDepthMode = (selDepthMode >= 2) ? 0 : 2; viewer.setSelectDepthMode(selDepthMode); edThroughBtn.textContent = selDepthMode >= 2 ? 'Насквозь' : 'Только объект'; edThroughBtn.classList.toggle('on', selDepthMode >= 2); if (viewer.clearSelection) viewer.clearSelection(); toast(selDepthMode >= 2 ? 'Насквозь: удаляются все точки внутри контура по всей глубине — надёжно для мусора в воздухе (разверните камеру так, чтобы мусор был на фоне пустоты)' : 'Только объект: затрагивается лишь видимая поверхность, без точек за ней'); });
+    if (edThroughBtn) edThroughBtn.addEventListener('click', () => { if (!viewer.setSelectDepthMode) return; selDepthMode = (selDepthMode >= 2) ? 0 : 2; viewer.setSelectDepthMode(selDepthMode); edThroughBtn.classList.toggle('on', selDepthMode >= 2); if (viewer.clearSelection) viewer.clearSelection(); toast(selDepthMode >= 2 ? 'Насквозь: удаляются все точки внутри контура по всей глубине — надёжно для мусора в воздухе (разверните камеру так, чтобы мусор был на фоне пустоты)' : 'Только объект: затрагивается лишь видимая поверхность, без точек за ней'); });
     // Ползунок «Латание» — ручное расширение точек-окклюдеров в pick-проходе (setSelectGrowPx, 0–20px).
     // null = авто (2.5px «точно» / 4px «с запасом»). Двойной клик по ползунку возвращает в авто.
     // Снятие выделения (Alt / кнопка): рамка/лассо убирают точки из выбора.
@@ -3066,11 +2942,11 @@
     const edAccumBtn = $('edAccum');
     if (edAccumBtn) edAccumBtn.addEventListener('click', () => { if (!viewer.setSelectAccumulate) return; selAccum = !selAccum; viewer.setSelectAccumulate(selAccum); edAccumBtn.textContent = selAccum ? 'Накопление: вкл' : 'Накопление: выкл'; edAccumBtn.classList.toggle('on', selAccum); toast(selAccum ? 'Накопление ВКЛ: выделяйте объекты один за другим — они складываются. Alt — снять, «Очистить»/Esc — сброс' : 'Накопление выкл: каждая новая рамка заменяет прошлый выбор'); });
     var edProtectBtn = $('edProtect');
-    if (edProtectBtn) edProtectBtn.addEventListener('click', function(){ if (!viewer.setPlaneProtect) { toast('\u041d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e'); return; } var on = !edProtectBtn.classList.contains('on'); edProtectBtn.classList.toggle('on', on); var cnt = 0; if (on && viewer.detectFloorWalls) { try { cnt = (viewer.detectFloorWalls() || []).length; } catch (e) { cnt = 0; } } viewer.setPlaneProtect(on); edProtectBtn.textContent = on ? ('\uD83D\uDEE1 \u0417\u0430\u0449\u0438\u0442\u0430: \u0432\u043a\u043b (' + cnt + ')') : '\uD83D\uDEE1 \u0417\u0430\u0449\u0438\u0442\u0430 \u043f\u043e\u043b\u0430/\u0441\u0442\u0435\u043d'; toast(on ? ('\u0417\u0430\u0449\u0438\u0442\u0430 \u043f\u043b\u043e\u0441\u043a\u043e\u0441\u0442\u0435\u0439 \u0412\u041a\u041b: ' + cnt + ' \u043f\u043b\u043e\u0441\u043a\u043e\u0441\u0442\u0435\u0439 (\u043f\u043e\u043b/\u0441\u0442\u0435\u043d\u044b) \u0441\u043e\u0445\u0440\u0430\u043d\u044f\u0442\u0441\u044f \u043f\u0440\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0438\u0438') : '\u0417\u0430\u0449\u0438\u0442\u0430 \u0432\u044b\u043a\u043b'); });
+    if (edProtectBtn) edProtectBtn.addEventListener('click', function(){ if (!viewer.setPlaneProtect) { toast('\u041d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e'); return; } var on = !edProtectBtn.classList.contains('on'); edProtectBtn.classList.toggle('on', on); var cnt = 0; if (on && viewer.detectFloorWalls) { try { cnt = (viewer.detectFloorWalls() || []).length; } catch (e) { cnt = 0; } } viewer.setPlaneProtect(on); toast(on ? ('\u0417\u0430\u0449\u0438\u0442\u0430 \u043f\u043b\u043e\u0441\u043a\u043e\u0441\u0442\u0435\u0439 \u0412\u041a\u041b: ' + cnt + ' \u043f\u043b\u043e\u0441\u043a\u043e\u0441\u0442\u0435\u0439 (\u043f\u043e\u043b/\u0441\u0442\u0435\u043d\u044b) \u0441\u043e\u0445\u0440\u0430\u043d\u044f\u0442\u0441\u044f \u043f\u0440\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0438\u0438') : '\u0417\u0430\u0449\u0438\u0442\u0430 \u0432\u044b\u043a\u043b'); });
     var edWandBtn = $('edWand');
-    if (edWandBtn) edWandBtn.addEventListener('click', function(){ if (!viewer.setSelectMode) return; selMode = 'wand'; viewer.setSelectMode('wand'); if (edModeBtn) edModeBtn.textContent = '\u041f\u0430\u043b\u043e\u0447\u043a\u0430'; if (viewer.clearSelection) viewer.clearSelection(); toast('\u041f\u0430\u043b\u043e\u0447\u043a\u0430: \u043a\u043b\u0438\u043a\u043d\u0438\u0442\u0435 \u043f\u043e \u043c\u0443\u0441\u043e\u0440\u0443 \u2014 \u0432\u044b\u0434\u0435\u043b\u0438\u0442\u0441\u044f \u0441\u0432\u044f\u0437\u043d\u044b\u0439 \u043e\u0431\u044a\u0435\u043a\u0442'); });
+    if (edWandBtn) edWandBtn.addEventListener('click', function(){ if (!viewer.setSelectMode) return; selMode = 'wand'; viewer.setSelectMode('wand'); if (edModeBtn) setEdModeLbl('Палочка'); if (viewer.clearSelection) viewer.clearSelection(); toast('\u041f\u0430\u043b\u043e\u0447\u043a\u0430: \u043a\u043b\u0438\u043a\u043d\u0438\u0442\u0435 \u043f\u043e \u043c\u0443\u0441\u043e\u0440\u0443 \u2014 \u0432\u044b\u0434\u0435\u043b\u0438\u0442\u0441\u044f \u0441\u0432\u044f\u0437\u043d\u044b\u0439 \u043e\u0431\u044a\u0435\u043a\u0442'); });
     var edDropBtn = $('edDrop');
-    if (edDropBtn) edDropBtn.addEventListener('click', function(){ if (!viewer.setSelectMode) return; selMode = 'eyedrop'; viewer.setSelectMode('eyedrop'); if (edModeBtn) edModeBtn.textContent = '\u041f\u0438\u043f\u0435\u0442\u043a\u0430'; if (viewer.clearSelection) viewer.clearSelection(); toast('\u041f\u0438\u043f\u0435\u0442\u043a\u0430: \u043a\u043b\u0438\u043a\u043d\u0438\u0442\u0435 \u043f\u043e \u0446\u0432\u0435\u0442\u0443 \u2014 \u0432\u044b\u0434\u0435\u043b\u044f\u0442\u0441\u044f \u0432\u0441\u0435 \u0442\u043e\u0447\u043a\u0438 \u044d\u0442\u043e\u0433\u043e \u0446\u0432\u0435\u0442\u0430'); });
+    if (edDropBtn) edDropBtn.addEventListener('click', function(){ if (!viewer.setSelectMode) return; selMode = 'eyedrop'; viewer.setSelectMode('eyedrop'); if (edModeBtn) setEdModeLbl('Пипетка'); if (viewer.clearSelection) viewer.clearSelection(); toast('\u041f\u0438\u043f\u0435\u0442\u043a\u0430: \u043a\u043b\u0438\u043a\u043d\u0438\u0442\u0435 \u043f\u043e \u0446\u0432\u0435\u0442\u0443 \u2014 \u0432\u044b\u0434\u0435\u043b\u044f\u0442\u0441\u044f \u0432\u0441\u0435 \u0442\u043e\u0447\u043a\u0438 \u044d\u0442\u043e\u0433\u043e \u0446\u0432\u0435\u0442\u0430'); });
     var edSORBtn = $('edSOR');
     if (edSORBtn) edSORBtn.addEventListener('click', function(){ if (!viewer.cleanSORInApp) { toast('\u041d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e'); return; } var r = viewer.cleanSORInApp({ k: 16, stdRatio: 1.0 }) | 0; toast(r > 0 ? ('SOR \u0443\u0434\u0430\u043b\u0438\u043b \u0432\u044b\u0431\u0440\u043e\u0441\u043e\u0432: ' + nfmt(r)) : 'SOR: \u0432\u044b\u0431\u0440\u043e\u0441\u043e\u0432 \u043d\u0435\u0442'); });
     const edClearBtn = $('edClear');
@@ -3090,7 +2966,7 @@
       edGrow.addEventListener('dblclick', () => { applyGrow(NaN, true); toast('Латание разрывов: авто (2.5px «точно» / 4px «с запасом»)'); });
     }
     const edBtn = (id, fn) => { const b = $(id); if (b) b.addEventListener('click', fn); };
-    edBtn('edDelete', () => { if (!viewer.selectionCount || !viewer.selectionCount()) { toast('Сначала выделите точки рамкой'); return; } const r = viewer.deleteSelection(); const _pb = (viewer._lastProtectRemoved | 0); if (r === 0 && _pb > 0) toast('Выделенное защищено как конструктив (' + nfmt(_pb) + ' т.). Меню «Чистка» → «🛡 Защита конструктива» — выключите, чтобы удалить'); else toast('Удалено точек: ' + nfmt(r) + (_pb > 0 ? ' (защищено конструктива: ' + nfmt(_pb) + ')' : '')); });
+    edBtn('edDelete', () => { if (!viewer.selectionCount || !viewer.selectionCount()) { toast('Сначала выделите точки рамкой'); return; } const r = viewer.deleteSelection(); const _pb = (viewer._lastProtectRemoved | 0); if (r === 0 && _pb > 0) toast('Выделенное защищено как конструктив (' + nfmt(_pb) + ' т.). Меню «Чистка» → «Защита конструктива» — выключите, чтобы удалить'); else toast('Удалено точек: ' + nfmt(r) + (_pb > 0 ? ' (защищено конструктива: ' + nfmt(_pb) + ')' : '')); });
     edBtn('edCrop', () => { if (!viewer.selectionCount || !viewer.selectionCount()) { toast('Сначала выделите точки рамкой'); return; } viewer.cropToSelection(); toast('Оставлены только выбранные точки'); });
     edBtn('edInvert', () => { if (viewer.invertSelection) viewer.invertSelection(); });
     edBtn('edUndo', () => { if (viewer.undoEdit && viewer.undoEdit()) toast('Отменено'); else toast('Нет действий для отмены'); });
@@ -3369,7 +3245,7 @@
       } catch (e) { toast('Ошибка сохранения'); }
       finally { try { stop(); } catch (e) {} }
     });
-    if (!window.__editKeys) { window.__editKeys = true; window.addEventListener('keydown', e => { if (!viewer || !viewer.editSelect) return; const k = (e.key || '').toLowerCase(); if (k === 'delete' || k === 'backspace' || k === 'enter') { const _t = e.target; if (_t && (/^(input|textarea|select)$/i.test(_t.tagName || '') || _t.isContentEditable)) return; if (viewer.selectionCount && viewer.selectionCount()) { const r = viewer.deleteSelection(); const _pb = (viewer._lastProtectRemoved | 0); if (r === 0 && _pb > 0) toast('Выделенное защищено как конструктив (' + nfmt(_pb) + ' т.). Меню «Чистка» → «🛡 Защита конструктива» — выключите, чтобы удалить'); else toast('Удалено точек: ' + nfmt(r) + (_pb > 0 ? ' (защищено конструктива: ' + nfmt(_pb) + ')' : '')); } } else if ((e.ctrlKey || e.metaKey) && k === 'z') { if (viewer.undoEdit && viewer.undoEdit()) toast('Отменено'); } else if (k === 'escape') { if (viewer.selectionCount && viewer.selectionCount() && viewer.clearSelection) { viewer.clearSelection(); toast('Выбор очищен (Esc)'); } } }); }
+    if (!window.__editKeys) { window.__editKeys = true; window.addEventListener('keydown', e => { if (!viewer || !viewer.editSelect) return; const k = (e.key || '').toLowerCase(); if (k === 'delete' || k === 'backspace' || k === 'enter') { const _t = e.target; if (_t && (/^(input|textarea|select)$/i.test(_t.tagName || '') || _t.isContentEditable)) return; if (viewer.selectionCount && viewer.selectionCount()) { const r = viewer.deleteSelection(); const _pb = (viewer._lastProtectRemoved | 0); if (r === 0 && _pb > 0) toast('Выделенное защищено как конструктив (' + nfmt(_pb) + ' т.). Меню «Чистка» → «Защита конструктива» — выключите, чтобы удалить'); else toast('Удалено точек: ' + nfmt(r) + (_pb > 0 ? ' (защищено конструктива: ' + nfmt(_pb) + ')' : '')); } } else if ((e.ctrlKey || e.metaKey) && k === 'z') { if (viewer.undoEdit && viewer.undoEdit()) toast('Отменено'); } else if (k === 'escape') { if (viewer.selectionCount && viewer.selectionCount() && viewer.clearSelection) { viewer.clearSelection(); toast('Выбор очищен (Esc)'); } } }); }
   }
   // v0.9.29: карточка свойств выбранного элемента поверх сцены
   function updateElProps() {
@@ -3380,48 +3256,57 @@
     if (selEl.ifc_guid) rows.push(['IFC GUID', selEl.ifc_guid]);
     const nDocs = (current && current.documents) ? current.documents.filter(d => d.element_id === selEl.id).length : 0;
     rows.push(['Документов', String(nDocs)]);
-    box.innerHTML = '<div class="ep-head"><i class="dot ' + st + '"></i><span>' + esc(selEl.name) + '</span><button class="ep-x" title="Закрыть">✕</button></div>' +
+    box.innerHTML = '<div class="ep-head"><i class="dot ' + st + '"></i><span>' + esc(selEl.name) + '</span><button class="ep-x" title="Закрыть" aria-label="Закрыть">' + ICON('x', 14) + '</button></div>' +
       '<div class="ep-body">' + rows.map(r => '<div class="ep-row"><span class="ep-k">' + esc(r[0]) + '</span><span class="ep-v">' + esc(r[1]) + '</span></div>').join('') + '</div>' +
-      '<div class="ep-foot"><button class="btn xs" id="epMore">' + ICON('sliders', 14) + '<span class="lbl">Все свойства</span></button></div>';
+      '<div class="ep-foot"><button class="btn xs" id="epMore">' + ICON('sliders-horizontal', 14) + '<span class="lbl">Все свойства</span></button></div>';
     box.style.display = '';
     const x = box.querySelector('.ep-x'); if (x) x.onclick = () => selectEl(null);
     const more = box.querySelector('#epMore'); if (more) more.onclick = () => { activeTab = 'props'; syncTabs(); };
   }
   // ── форматирование результатов измерения ──
+  function measIcon(mode) { return ({ point: 'crosshair', distance: 'ruler', polyline: 'polyline', angle: 'angle', area: 'vector-square', plane: 'brick-wall', deviation: 'arrow-up-down', corner: 'cuboid' })[mode] || 'ruler'; }
+  function measIco(mode, cls) { return '<span class="ro-ico' + (cls ? ' ' + cls : '') + '" data-ico="' + (mode === 'error' ? 'triangle-alert' : measIcon(mode)) + '"></span>'; }
   function measureHint(mode) {
     const H = {
-      distance: '📏 Расстояние: кликните две точки',
-      point: '📍 Точка: кликните по точке — покажу X/Y/Z',
-      polyline: '〰 Полилиния: кликайте точки подряд, «✓ Завершить» — новая',
-      angle: '📐 Угол: кликните 3 точки (вершина — вторая)',
-      area: '▱ Площадь: кликайте вершины контура (≥3), «✓ Завершить» — новая',
-      plane: '🧱 Плоскость: кликните по стене/потолку — подберу размеры',
-      deviation: '📐 Зазор: 1-й клик — опорная плоскость (ровная поверхность), дальше — клики для замера отклонения',
-      corner: '📦 Ребро/Угол: кликните 2 плоскости (стена+стена) → точное ребро и угол; 3-я плоскость (+пол/потолок) → точка угла комнаты'
+      distance: 'Расстояние: кликните две точки',
+      point: 'Точка: кликните по точке — покажу X/Y/Z',
+      polyline: 'Полилиния: кликайте точки подряд, «Завершить» — новая',
+      angle: 'Угол: кликните 3 точки (вершина — вторая)',
+      area: 'Площадь: кликайте вершины контура (≥3), «Завершить» — новая',
+      plane: 'Плоскость: кликните по стене/потолку — подберу размеры',
+      deviation: 'Зазор: 1-й клик — опорная плоскость (ровная поверхность), дальше — клики для замера отклонения',
+      corner: 'Ребро/Угол: кликните 2 плоскости (стена+стена) → точное ребро и угол; 3-я плоскость (+пол/потолок) → точка угла комнаты'
     };
-    return H[mode] || H.distance;
+    const m = H[mode] ? mode : 'distance';
+    return measIco(m) + '<span class="ro-t">' + H[m] + '</span>';
+  }
+  // Текст результата без значка (для строк списка и строки состояния)
+  function fmtMeasureText(res) {
+    if (!res) return '';
+    const Me = window.Measure, L = m => Me ? Me.fmtLen(m) : (m.toFixed(3) + ' м'), A = m => Me ? Me.fmtArea(m) : (m.toFixed(3) + ' м²');
+    switch (res.mode) {
+      case 'point': return 'X ' + res.point[0].toFixed(3) + ' · Y ' + res.point[1].toFixed(3) + ' · Z ' + res.point[2].toFixed(3) + ' м';
+      case 'distance': return '<b>' + L(res.d3) + '</b> · гориз. ' + L(res.horizontal) + ' · верт. ' + L(res.vertical) + ' · ΔX ' + L(Math.abs(res.dx)) + ' ΔY ' + L(Math.abs(res.dy)) + ' ΔZ ' + L(Math.abs(res.dz));
+      case 'polyline': return 'Длина <b>' + L(res.total) + '</b> · точек: ' + res.count + ' · сегментов: ' + (res.count - 1);
+      case 'angle': return 'Угол <b>' + res.deg.toFixed(2) + '°</b> · стороны ' + L(res.lenA) + ' и ' + L(res.lenC);
+      case 'area': return 'Площадь <b>' + A(res.area) + '</b> · периметр ' + L(res.perimeter) + ' · вершин: ' + res.count;
+      case 'plane': return esc(res.kind) + ' · <b>' + L(res.length) + ' × ' + L(res.width) + '</b> (≈' + A(res.rectArea) + ') · наклон ' + res.dip.toFixed(1) + '° · RMS ' + (res.rms * 1000).toFixed(1) + ' мм · точек ' + res.inlierCount + '/' + res.total;
+      case 'deviation':
+        if (res.ready) return 'Опорная плоскость готова (RMS ' + (res.rms * 1000).toFixed(1) + ' мм, точек ' + res.inlierCount + '/' + res.total + '). Теперь кликайте точки для замера зазора';
+        if (res.signed === undefined) return 'Кликните по ровной поверхности — задать опорную плоскость';
+        return 'Отклонение <b>' + (res.sign >= 0 ? '+' : '−') + L(res.distance) + '</b> · ' + (res.sign >= 0 ? 'со стороны нормали (снаружи)' : 'за плоскостью (внутри)') + ' · база RMS ' + ((res.refRms || 0) * 1000).toFixed(1) + ' мм';
+      case 'corner':
+        if (res.planeCount === 1) return 'Плоскость 1 задана (RMS ' + ((res.rms || 0) * 1000).toFixed(1) + ' мм). Кликните 2-ю плоскость для ребра/угла';
+        if (res.planeCount === 2) return 'Ребро найдено · двугранный угол <b>' + (res.angleDeg != null ? res.angleDeg.toFixed(2) : '?') + '°</b>. Кликните 3-ю плоскость → точка угла комнаты';
+        return 'Угол комнаты <b>X ' + res.corner[0].toFixed(3) + ' · Y ' + res.corner[1].toFixed(3) + ' · Z ' + res.corner[2].toFixed(3) + '</b> м · двугранный угол ' + (res.angleDeg != null ? res.angleDeg.toFixed(2) : '?') + '°';
+      default: return '';
+    }
   }
   function fmtMeasure(res) {
     if (!res) return '';
-    const Me = window.Measure, L = m => Me ? Me.fmtLen(m) : (m.toFixed(3) + ' м'), A = m => Me ? Me.fmtArea(m) : (m.toFixed(3) + ' м²');
-    if (res.error) return '⚠️ ' + res.error;
-    switch (res.mode) {
-      case 'point': return '📍 X ' + res.point[0].toFixed(3) + ' · Y ' + res.point[1].toFixed(3) + ' · Z ' + res.point[2].toFixed(3) + ' м';
-      case 'distance': return '📏 <b>' + L(res.d3) + '</b> · гориз. ' + L(res.horizontal) + ' · верт. ' + L(res.vertical) + ' · ΔX ' + L(Math.abs(res.dx)) + ' ΔY ' + L(Math.abs(res.dy)) + ' ΔZ ' + L(Math.abs(res.dz));
-      case 'polyline': return '〰 Длина <b>' + L(res.total) + '</b> · точек: ' + res.count + ' · сегментов: ' + (res.count - 1);
-      case 'angle': return '📐 Угол <b>' + res.deg.toFixed(2) + '°</b> · стороны ' + L(res.lenA) + ' и ' + L(res.lenC);
-      case 'area': return '▱ Площадь <b>' + A(res.area) + '</b> · периметр ' + L(res.perimeter) + ' · вершин: ' + res.count;
-      case 'plane': return '🧱 ' + res.kind + ' · <b>' + L(res.length) + ' × ' + L(res.width) + '</b> (≈' + A(res.rectArea) + ') · наклон ' + res.dip.toFixed(1) + '° · RMS ' + (res.rms * 1000).toFixed(1) + ' мм · точек ' + res.inlierCount + '/' + res.total;
-      case 'deviation':
-        if (res.ready) return '📐 Опорная плоскость готова (RMS ' + (res.rms * 1000).toFixed(1) + ' мм, точек ' + res.inlierCount + '/' + res.total + '). Теперь кликайте точки для замера зазора';
-        if (res.signed === undefined) return '📐 Кликните по ровной поверхности — задать опорную плоскость';
-        return '📐 Отклонение <b>' + (res.sign >= 0 ? '+' : '−') + L(res.distance) + '</b> · ' + (res.sign >= 0 ? 'со стороны нормали (снаружи)' : 'за плоскостью (внутри)') + ' · база RMS ' + ((res.refRms || 0) * 1000).toFixed(1) + ' мм';
-      case 'corner':
-        if (res.planeCount === 1) return '📦 Плоскость 1 задана (RMS ' + ((res.rms || 0) * 1000).toFixed(1) + ' мм). Кликните 2-ю плоскость для ребра/угла';
-        if (res.planeCount === 2) return '📦 Ребро найдено · двугранный угол <b>' + (res.angleDeg != null ? res.angleDeg.toFixed(2) : '?') + '°</b>. Кликните 3-ю плоскость → точка угла комнаты';
-        return '📦 Угол комнаты <b>X ' + res.corner[0].toFixed(3) + ' · Y ' + res.corner[1].toFixed(3) + ' · Z ' + res.corner[2].toFixed(3) + '</b> м · двугранный угол ' + (res.angleDeg != null ? res.angleDeg.toFixed(2) : '?') + '°';
-      default: return '';
-    }
+    if (res.error) return measIco('error', 'ro-err') + '<span class="ro-t">' + esc(res.error) + '</span>';
+    const t = fmtMeasureText(res);
+    return t ? measIco(res.mode) + '<span class="ro-t">' + t + '</span>' : '';
   }
   // ── список сохранённых измерений + CSV ──
   var __measurements = [];
@@ -3449,7 +3334,6 @@
       applyProjectMeasurements(detail.state, detail.revision);
     });
   }
-  function measIcon(mode) { return ({ point: '📍', distance: '📏', polyline: '〰', angle: '📐', area: '▱', plane: '🧱', deviation: '📐', corner: '📦' })[mode] || '•'; }
   function latestDocComparison(measurement) {
     const history = measurement && Array.isArray(measurement.docComparisons) ? measurement.docComparisons : [];
     const saved = history.length ? history[history.length - 1] : (measurement && measurement.docComparison) || null;
@@ -3472,16 +3356,16 @@
   }
   function renderMeasList() {
     const body = $('measureListBody'); const btn = $('mmList');
-    if (btn) btn.textContent = '📋 Список (' + __measurements.length + ')';
+    const cnt = $('mmListCount'); if (cnt) { cnt.textContent = String(__measurements.length); cnt.hidden = !__measurements.length; }
     if (!body) return;
-    if (!__measurements.length) { body.innerHTML = '<div style="opacity:.6">Пока пусто. Сделайте измерение и нажмите «➕ В список».</div>'; return; }
+    if (!__measurements.length) { body.innerHTML = '<div class="empty">Пока пусто. Сделайте измерение и нажмите «В список».</div>'; return; }
     body.innerHTML = __measurements.map((m, i) => {
-      const lbl = m.label ? '<span style="opacity:.85;color:var(--lx-blue)">✎ ' + esc(m.label) + '</span> ' : '';
+      const lbl = m.label ? '<span class="meas-label">' + esc(m.label) + '</span>' : '';
       const comparison = latestDocComparison(m);
       const status = comparison ? (comparison.statusLabel || docComparisonStatusLabel(comparison.status)) : 'Не сверено';
       const statusClass = comparison ? String(comparison.status || 'needs-review').replace(/[^a-z-]/g, '') : 'not-checked';
       const roomName = m.measurementContext && m.measurementContext.roomName ? ' · ' + esc(m.measurementContext.roomName) : '';
-      return '<div class="meas-saved-row"><div class="meas-saved-main"><span class="meas-saved-index">' + (i + 1) + '</span><span class="measure-row-label">' + lbl + measIcon(m.mode) + ' ' + fmtMeasure(m).replace(/^..\s/, '') + '</span><button class="btn-sm" data-mren="' + i + '" title="Переименовать" aria-label="Переименовать измерение ' + (i + 1) + '" style="padding:0 6px">✏</button><button class="btn-sm" data-mdel="' + i + '" title="Удалить" aria-label="Удалить измерение ' + (i + 1) + '" style="padding:0 6px">×</button></div><div class="meas-saved-footer"><span class="meas-room-context">' + roomName + '</span><span class="meas-doc-status ' + statusClass + '">' + esc(status) + '</span><button class="btn-sm meas-doc-compare" data-mcmp="' + i + '" title="Сопоставить с документацией помещения">⇄ Сверить</button></div></div>';
+      return '<div class="meas-saved-row"><div class="meas-saved-main"><span class="meas-saved-index">' + (i + 1) + '</span><span class="measure-row-label">' + lbl + measIco(m.mode) + '<span class="ro-t">' + fmtMeasureText(m) + '</span></span><button class="icon-btn xs" type="button" data-mren="' + i + '" data-ico="pencil" title="Переименовать" aria-label="Переименовать измерение ' + (i + 1) + '"></button><button class="icon-btn xs danger" type="button" data-mdel="' + i + '" data-ico="trash-2" title="Удалить" aria-label="Удалить измерение ' + (i + 1) + '"></button></div><div class="meas-saved-footer"><span class="meas-room-context">' + roomName + '</span><span class="meas-doc-status ' + statusClass + '">' + esc(status) + '</span><button class="btn xs meas-doc-compare" type="button" data-mcmp="' + i + '" title="Сопоставить с документацией помещения">' + IB('scale', 'Сверить', 14) + '</button></div></div>';
     }).join('');
     Array.prototype.forEach.call(body.querySelectorAll('[data-mdel]'), b => b.addEventListener('click', () => { __measurements.splice(Number(b.getAttribute('data-mdel')), 1); renderMeasList(); persistMeasurements(); }));
     Array.prototype.forEach.call(body.querySelectorAll('[data-mren]'), b => b.addEventListener('click', () => renameMeasurement(Number(b.getAttribute('data-mren')))));
@@ -3494,7 +3378,7 @@
     const rows = body.children; const row = rows[idx]; if (!row) return;
     const span = row.querySelector('.measure-row-label'); if (!span) return;
     const cur = m.label || '';
-    span.innerHTML = '<input type="text" value="' + esc(cur).replace(/"/g, '&quot;') + '" placeholder="Подпись измерения…" style="width:100%;background:var(--panel2);border:1px solid var(--lx-blue);border-radius:5px;color:var(--txt);padding:2px 6px;font:inherit" />';
+    span.innerHTML = '<input type="text" value="' + esc(cur).replace(/"/g, '&quot;') + '" placeholder="Подпись измерения…" class="meas-rename" />';
     const inp = span.querySelector('input'); if (!inp) return;
     inp.focus(); inp.select();
     let finished = false;
@@ -3999,7 +3883,7 @@
   async function autoCompareAllMeasurements() {
     if (!__measurements.length) { toast('Список измерений пуст'); return; }
     const button = $('mlAutoCompare');
-    if (button) { button.disabled = true; button.textContent = 'Анализ…'; }
+    if (button) { button.disabled = true; setLbl(button, 'Анализ…'); }
     const counts = { total: __measurements.length, confirmed: 0, within: 0, outside: 0, noTolerance: 0, review: 0, noMatch: 0 };
     const scans = new Map();
     try {
@@ -4024,7 +3908,7 @@
       renderMeasList(); persistMeasurements();
       showAutomaticComparisonSummary(counts);
     } finally {
-      if (button) { button.disabled = false; button.textContent = '⚡ Сверить всё'; }
+      if (button) { button.disabled = false; setLbl(button, 'Сверить всё'); }
     }
   }
   function compareSavedMeasurement(index) {
@@ -4680,7 +4564,7 @@
     if (!__measurements.length) { toast('Список измерений пуст'); return; }
     const title = 'BIM Twin — измерения ' + new Date().toLocaleString('ru-RU');
     const md = window.Measure ? window.Measure.measurementsToMarkdown(__measurements, title) : '';
-    const done = () => toast('📝 Markdown-таблица скопирована — вставьте (Ctrl+V) в Notion');
+    const done = () => toast('Markdown-таблица скопирована — вставьте (Ctrl+V) в Notion');
     let copied = false;
     try { if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(md).then(done, () => fallbackCopy(md, done)); copied = true; } } catch (e) {}
     if (!copied) fallbackCopy(md, done);
@@ -4698,7 +4582,7 @@
     if (on && !toolsOK()) return false;
     if (on && window.__lxWorkspace) window.__lxWorkspace.exitTools('measure');
     if (viewer && viewer.setMeasure) viewer.setMeasure(!!on);
-    ['btnMeasure', 'vtMeasure'].forEach(id => { const b = $(id); if (b) { b.classList.toggle('on', !!on); b.setAttribute('aria-pressed', String(!!on)); } });
+    ['btnMeasure'].forEach(id => { const b = $(id); if (b) { b.classList.toggle('on', !!on); b.setAttribute('aria-pressed', String(!!on)); } });
     const bar = $('measureBar'); if (bar) bar.style.display = on ? 'flex' : 'none';
     const readout = $('measureReadout'); if (readout) { readout.style.display = on ? '' : 'none'; if (on) {readout.dataset.hint='1';readout.innerHTML = measureHint(viewer.measureMode || 'distance');} }
     if (!on && $('measureListPanel')) $('measureListPanel').style.display = 'none';
@@ -4707,16 +4591,16 @@
   }
   window.__bimSetMeasuring = setMeasuring;
   function wirePhaseB() {
-    if (viewer) viewer.onMeasure = res => { const r = $('measureReadout'); if (r) { r.dataset.hint='0';r.style.display = ''; r.innerHTML = fmtMeasure(res); } };
+    if (viewer) viewer.onMeasure = res => { const r = $('measureReadout'); if (r) { r.dataset.hint='0';r.style.display = ''; r.innerHTML = fmtMeasure(res); } if (res && res.mode === 'point' && res.point && window.__lxSetCoords) window.__lxSetCoords(res.point[0], res.point[1], res.point[2]); };
     const bind = (id, fn) => { const b = $(id); if (b) b.addEventListener('click', fn); };
     // кнопки выбора режима измерения
-    const mmBtns = Array.prototype.slice.call(document.querySelectorAll('#measureBar [data-mm]'));
+    const mmBtns = Array.prototype.slice.call(document.querySelectorAll('[data-mm]'));
     const setMM = mode => { if (!viewer || !viewer.setMeasureMode) return; viewer.setMeasureMode(mode); mmBtns.forEach(b => b.classList.toggle('on', b.getAttribute('data-mm') === mode)); const r = $('measureReadout'); if (r) { r.dataset.hint='1';r.style.display = ''; r.innerHTML = measureHint(mode); } };
     mmBtns.forEach(b => b.addEventListener('click', () => setMM(b.getAttribute('data-mm'))));
     bind('mmClear', () => { if (viewer && viewer.setMeasureMode) { viewer.setMeasureMode(viewer.measureMode || 'distance'); } const r = $('measureReadout'); if (r){r.dataset.hint='1';r.innerHTML = measureHint(viewer && viewer.measureMode || 'distance');} });
     bind('mmFinish', () => { if (viewer && viewer.finishMeasure) viewer.finishMeasure(); });
     // привязка (snap)
-    bind('mmSnap', e => { if (!viewer || !viewer.setMeasureSnap) return; const on = viewer.setMeasureSnap(!viewer.measureSnap); e.currentTarget.classList.toggle('on', on); toast(on ? '🧲 Привязка к рёбрам/углам вкл.' : 'Привязка выкл.'); });
+    bind('mmSnap', e => { if (!viewer || !viewer.setMeasureSnap) return; const on = viewer.setMeasureSnap(!viewer.measureSnap); e.currentTarget.classList.toggle('on', on); toast(on ? 'Привязка к рёбрам и углам включена' : 'Привязка выключена'); });
     // список / сохранение / CSV
     bind('mmSave', () => saveMeasurement());
     bind('mmCsv', () => exportMeasCsv());
@@ -4733,23 +4617,25 @@
     const sr = $('sectionRange'); if (sr) sr.addEventListener('input', e => { if (viewer && viewer.setSectionValue) viewer.setSectionValue(Number(e.target.value) / 100); });
     function ensureSectionPanel() {
       if (window.__secPanel) return window.__secPanel;
-      const host = document.querySelector('.stage') || document.body;
-      const wrap = document.createElement('div'); wrap.id = 'sectionPanel'; wrap.className = 'lx-float-panel'; wrap.style.cssText += 'top:70px;left:14px;display:none;width:250px;';
-      const axes = [ { a: 'y', label: 'Верх ↕ низ' }, { a: 'x', label: 'Лево ↔ право' }, { a: 'z', label: 'Перёд ↔ зад' } ];
-      let html = '<div style="font-weight:600;margin-bottom:8px;color:var(--txt)">Секущий бокс (срез)</div>';
-      html += '<div style="color:var(--muted);font-size:11px;margin:6px 0">Быстрый тонкий срез · толщина 0,2 м</div>' +
-        '<div style="display:flex;gap:4px;flex-wrap:wrap">' +
-        '<button type="button" class="btn-sm" id="sec_preset_y" title="Горизонтальный плановый срез по Y">План · Y</button>' +
-        '<button type="button" class="btn-sm" id="sec_preset_z" title="Вертикальный фасадный срез по Z">Фасад · Z</button>' +
-        '<button type="button" class="btn-sm" id="sec_preset_x" title="Вертикальный боковой срез по X">Бок · X</button></div>';
+      const host = $('stageSideL') || document.querySelector('.stage') || document.body;
+      const wrap = document.createElement('section'); wrap.id = 'sectionPanel'; wrap.className = 'fpanel fp-left'; wrap.style.display = 'none';
+      wrap.setAttribute('aria-label', 'Секущий бокс');
+      const axes = [ { a: 'y', label: 'Верх — низ' }, { a: 'x', label: 'Лево — право' }, { a: 'z', label: 'Перёд — зад' } ];
+      let html = '<div class="fpanel-inner"><header class="fpanel-head"><span class="fpanel-ico" data-ico="square-split-vertical"></span><h3>Секущий бокс</h3>' +
+        '<div class="fpanel-actions"><button class="icon-btn" type="button" data-close="sectionPanel" data-ico="x" title="Закрыть" aria-label="Закрыть"></button></div></header><div class="fpanel-body">' +
+        '<p class="sec-note">Быстрый тонкий срез · толщина 0,2 м</p>' +
+        '<div class="sec-presets">' +
+        '<button type="button" class="btn sm" id="sec_preset_y" title="Горизонтальный плановый срез по Y">План · Y</button>' +
+        '<button type="button" class="btn sm" id="sec_preset_z" title="Вертикальный фасадный срез по Z">Фасад · Z</button>' +
+        '<button type="button" class="btn sm" id="sec_preset_x" title="Вертикальный боковой срез по X">Бок · X</button></div>';
       for (const ax of axes) {
-        html += '<div style="margin:9px 0"><div style="color:var(--muted);margin-bottom:3px">' + ax.label + '</div>' +
-          '<input type="range" id="sec_' + ax.a + '_min" min="0" max="100" step="0.02" value="0" style="width:100%">' +
-          '<input type="range" id="sec_' + ax.a + '_max" min="0" max="100" step="0.02" value="100" style="width:100%">' +
-          '<div id="sec_' + ax.a + '_readout" style="font-size:10px;color:var(--muted)">Полный диапазон</div></div>';
+        html += '<div class="sec-axis"><div class="sec-axis-lbl">' + ax.label + '</div>' +
+          '<input type="range" id="sec_' + ax.a + '_min" min="0" max="100" step="0.02" value="0" aria-label="' + ax.label + ': от">' +
+          '<input type="range" id="sec_' + ax.a + '_max" min="0" max="100" step="0.02" value="100" aria-label="' + ax.label + ': до">' +
+          '<div id="sec_' + ax.a + '_readout" class="sec-readout">Полный диапазон</div></div>';
       }
-      html += '<button id="sec_reset" class="btn" style="margin-top:8px;width:100%">Сбросить срез</button>' +
-        '<div style="color:var(--muted);margin-top:8px;line-height:1.35">Очистка/выделение работают только по видимой (несрезанной) части. Срезанное защищено и вернётся при сбросе.</div>';
+      html += '<button id="sec_reset" class="btn sec-reset" type="button">Сбросить срез</button>' +
+        '<p class="sec-note">Очистка и выделение работают только по видимой (несрезанной) части. Срезанное защищено и вернётся при сбросе.</p></div></div>';
       wrap.innerHTML = html; host.appendChild(wrap); window.__secPanel = wrap;
       const axisI = { x: 0, y: 1, z: 2 };
       const readout = (a) => {
@@ -4806,7 +4692,6 @@
       if (applied === false && on) toast('Сначала выберите объект или элемент, который нужно изолировать');
       const active = !!viewer.isolate;
       e.currentTarget.classList.toggle('on', active); e.currentTarget.setAttribute('aria-pressed', String(active));
-      const floating = $('vtIsolate'); if (floating) { floating.classList.toggle('on', active); floating.setAttribute('aria-pressed', String(active)); }
     });
     bind('btnLOD', e => {
       if (!toolsOK()) return;
@@ -4861,6 +4746,8 @@
   }
 
   // ---------- helpers ----------
+  /** Содержимое кнопки: иконка + подпись (подпись в .lbl — её подменяет i18n) */
+  function IB(name, text, size) { return (window.ICON ? window.ICON(name, size || 15) : '') + '<span class="lbl">' + esc(text) + '</span>'; }
   function mk(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function syncTabs() { document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab)); renderTab(); }
@@ -5165,8 +5052,8 @@
       card.innerHTML = '<div class="dhead"><b>' + esc(d.title) + '</b><span class="dstatus ' + d.status + '">' + (d.status === 'resolved' ? 'решено' : 'открыто') + '</span></div>' +
         (d.author ? '<div class="dmeta">автор: ' + esc(d.author) + '</div>' : '') + '<div class="dcomments">' + cmts + '</div>';
       const acts = mk('div', 'dacts');
-      const rep = mk('button', 'btn xs', '💬 Ответить'); rep.onclick = () => replyDiscussionUI(d);
-      const res = mk('button', 'btn xs', d.status === 'resolved' ? '↩ Открыть' : '✓ Решить'); res.onclick = () => toggleDiscussion(d);
+      const rep = mk('button', 'btn xs', IB('message-circle', 'Ответить', 14)); rep.onclick = () => replyDiscussionUI(d);
+      const res = mk('button', 'btn xs', d.status === 'resolved' ? IB('rotate-ccw', 'Открыть', 14) : IB('check', 'Решить', 14)); res.onclick = () => toggleDiscussion(d);
       const del = mk('button', 'btn xs danger', ICON('trash', 14)); del.onclick = async () => { if (await confirmBox('Удалить тему?')) removeDiscussion(d); };
       acts.append(rep, res, del); card.appendChild(acts);
       body.appendChild(card);
