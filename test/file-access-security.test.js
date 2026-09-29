@@ -62,9 +62,12 @@ test('planned output grants do not authorize sibling files', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bim-write-grant-'));
   try {
     const output = path.join(root, 'chosen.ply');
+    // Grants are keyed by canonical paths. Hosted Windows runners expose os.tmpdir()
+    // through an 8.3 alias (C:\Users\RUNNER~1), so compare with the real directory.
+    const canonicalOutput = path.join(fs.realpathSync.native(root), 'chosen.ply');
     const grants = new PathGrantRegistry({ fs });
     grants.grantPlannedFile(1, output, { read: true, write: true });
-    assert.equal(grants.resolvePlannedFile(1, output), path.resolve(output));
+    assert.equal(grants.resolvePlannedFile(1, output), canonicalOutput);
     assert.equal(grants.resolvePlannedFile(1, path.join(root, 'other.ply')), null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
