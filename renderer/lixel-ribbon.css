@@ -1,0 +1,35 @@
+/* ============================================================
+   LixelStudio-style «большие» вертикальные кнопки ленты — v1084.
+   Активно только под html[data-lxskin="on"]. Дополняет lixel-ui.css.
+   ============================================================ */
+
+/* Ряд кнопок внутри группы */
+html[data-lxskin="on"] .toolbar .tbtns.lx-bigribbon .tgrow{
+  display:flex;gap:6px;align-items:flex-start;flex-wrap:nowrap}
+
+/* Сама большая кнопка: иконка сверху + подпись снизу */
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn{
+  display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:6px;
+  min-width:60px;max-width:82px;min-height:62px;padding:7px 6px 6px;
+  background:transparent;border:1px solid transparent;border-radius:8px;
+  color:#c9ccd2;font-size:11px;font-weight:500;line-height:1.15;text-align:center;
+  white-space:normal;cursor:pointer;transition:background .14s ease,border-color .14s ease}
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn:hover{
+  background:rgba(255,255,255,.05);border-color:var(--line)}
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn:active{background:rgba(255,255,255,.09)}
+
+/* Иконка (сине-голубая, как в LixelStudio) */
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn .lx-bic{
+  width:30px;height:30px;display:flex;align-items:center;justify-content:center;color:#5f7fd6}
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn .lx-bic svg{display:block}
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn.lx-primary .lx-bic{color:var(--accent)}
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn:hover .lx-bic{color:#7ea6ff}
+
+/* Подпись: макс. 2 строки с обрезкой (как LixelStudio «Обработка п…») */
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn .lx-blabel{
+  max-width:78px;overflow:hidden;text-overflow:ellipsis;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}
+
+/* Сброс старых ярких фонов (напр. фиолетовый 3DGS-тур) в скине */
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn[style]{background:transparent !important;border-color:transparent !important;color:var(--txt) !important}
+html[data-lxskin="on"] .toolbar .btn.lx-bigbtn[style]:hover{background:rgba(255,255,255,.05) !important;border-color:var(--line) !important}

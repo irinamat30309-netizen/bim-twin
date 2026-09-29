@@ -19,16 +19,32 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
+    - name: Check Datadog credentials
+      id: datadog-secrets
+      env:
+        DD_API_KEY: ${{ secrets.DD_API_KEY }}
+        DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
+      run: |
+        if [ -n "$DD_API_KEY" ] && [ -n "$DD_APP_KEY" ]; then
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::Skipping Datadog Synthetic tests; repository secrets DD_API_KEY and DD_APP_KEY are not both configured."
+        fi
 
-    # Run Synthetic tests within your GitHub workflow.
+    # Run Synthetic tests within your GitHub workflow only when both keys exist.
     # For additional configuration options visit the action within the marketplace: https://github.com/marketplace/actions/datadog-synthetics-ci
     - name: Run Datadog Synthetic tests
+      if: steps.datadog-secrets.outputs.configured == 'true'
       uses: DataDog/synthetics-ci-github-action@87b505388a22005bb8013481e3f73a367b9a53eb # v1.4.0
       with:
         api_key: ${{secrets.DD_API_KEY}}

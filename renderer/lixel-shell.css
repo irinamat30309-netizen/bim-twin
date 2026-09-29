@@ -1,0 +1,57 @@
+/* ============================================================
+   LixelStudio shell details — v1085. Активно под html[data-lxskin="on"].
+   Гизмо осей + «дом», тайтлбар, иконки дерева + LCC.
+   ============================================================ */
+
+/* ---------- 1) Гизмо осей + кнопка дом — верх-справа вьюпорта ---------- */
+html[data-lxskin="on"] .stage{position:relative}
+html[data-lxskin="on"] .lx-gizmo{
+  position:absolute;top:12px;right:14px;z-index:6;
+  display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:none}
+html[data-lxskin="on"] .lx-gizmo > *{pointer-events:auto}
+html[data-lxskin="on"] .lx-home{
+  width:34px;height:34px;border-radius:8px;
+  background:rgba(28,29,31,.82);border:1px solid var(--line);color:#c9ccd2;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  -webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);transition:color .14s,border-color .14s}
+html[data-lxskin="on"] .lx-home:hover{color:#7ea6ff;border-color:#3a3b40}
+html[data-lxskin="on"] .lx-cube{
+  width:74px;height:74px;border-radius:10px;
+  background:rgba(28,29,31,.72);border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;
+  -webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+html[data-lxskin="on"] .lx-cube .lx-ax:hover{opacity:.75}
+
+/* ---------- 2) Тайтлбар ---------- */
+html[data-lxskin="on"] #titlebar{position:relative;display:flex;align-items:center;gap:9px}
+html[data-lxskin="on"] #titlebar .tb-dot{display:none}
+html[data-lxskin="on"] #titlebar .lx-tblogo{width:15px;height:15px;display:inline-flex;align-items:center}
+html[data-lxskin="on"] #titlebar .tb-title{font-size:13px;color:var(--txt);font-weight:600}
+html[data-lxskin="on"] #titlebar .lx-tbmenu{
+  font-size:12.5px;color:var(--muted);cursor:pointer;padding:3px 7px;border-radius:6px}
+html[data-lxskin="on"] #titlebar .lx-tbmenu:hover{background:rgba(255,255,255,.06)}
+html[data-lxskin="on"] #titlebar .lx-tbcenter{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  font-size:12.5px;color:var(--muted);pointer-events:none;white-space:nowrap;max-width:40%;overflow:hidden;text-overflow:ellipsis}
+html[data-lxskin="on"] #titlebar .lx-tbright{margin-left:auto;display:flex;align-items:center;gap:8px}
+html[data-lxskin="on"] #titlebar .lx-tbtheme{
+  width:28px;height:24px;border:none;background:transparent;color:var(--muted);
+  cursor:pointer;border-radius:5px;display:flex;align-items:center;justify-content:center}
+html[data-lxskin="on"] #titlebar .lx-tbtheme:hover{background:var(--panel2);color:var(--txt)}
+html[data-lxskin="on"] #titlebar .lx-tbauth{
+  font-size:11px;color:#e79a9a;background:rgba(255,77,77,.12);
+  border:1px solid rgba(255,77,77,.32);padding:2px 9px;border-radius:10px;white-space:nowrap}
+html[data-lxskin="on"] #titlebar .tb-winbtns{margin-left:6px}
+
+/* ---------- 3) Дерево: SVG-иконки + LCC ---------- */
+html[data-lxskin="on"] .lx-scene .lx-ico.lx-svgico{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;color:var(--muted);vertical-align:middle}
+html[data-lxskin="on"] .lx-scene .lx-ico.lx-svgico svg{display:block}
+html[data-lxskin="on"] .lx-scene .lx-node[data-layer="cloud"] .lx-svgico{color:#7ea6ff}
+html[data-lxskin="on"] .lx-scene .lx-node[data-layer="lcc"] .lx-svgico{color:#5f7fd6}
+html[data-lxskin="on"] .lx-scene .lx-lcc .lx-nm{font-weight:600}
+html[data-lxskin="on"] .lx-scene .lx-badge{
+  margin-left:6px;font-size:9px;font-weight:700;letter-spacing:.3px;
+  color:#8fb0ff;background:rgba(31,71,202,.18);
+  border:1px solid rgba(31,71,202,.42);border-radius:8px;padding:1px 6px}

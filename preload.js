@@ -1,12 +1,16 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const inv = (ch, payload) => ipcRenderer.invoke(ch, payload);
-const snd = (ch, payload) => ipcRenderer.send(ch, payload);
+const inv = (ch, ...payload) => ipcRenderer.invoke(ch, ...payload);
+const snd = (ch, ...payload) => ipcRenderer.send(ch, ...payload);
 
 contextBridge.exposeInMainWorld('bimAPI', {
   platform: process.platform,
   getPathForFile: (file) => {
-    try { return webUtils && file ? webUtils.getPathForFile(file) : ''; } catch (_) { return ''; }
+    try {
+      const p = webUtils && file ? webUtils.getPathForFile(file) : '';
+      if (!p) return '';
+      return ipcRenderer.sendSync('bim:authorizePickedPath', p) === true ? p : '';
+    } catch (_) { return ''; }
   },
   winMin: () => snd('bim:win:min'),
   winMax: () => snd('bim:win:max'),
@@ -52,6 +56,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   ccFolder: () => inv('bim:ccFolder'),
   geomStatus: () => inv('bim:geomStatus'),
   s2bStatus: () => inv('bim:s2bStatus'),
+  s2bAuth: () => inv('bim:s2bAuth'),
   s2bRestart: () => inv('bim:s2bRestart'),
   deviation: (a) => inv('bim:deviation', a),
   registerClouds: (a) => inv('bim:registerClouds', a),
@@ -117,6 +122,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   recordProjectOperation: (entry) => inv('bim:recordProjectOperation', entry),
   listProjectOperations: (payload) => inv('bim:listProjectOperations', payload || {}),
   saveProjectClassification: (payload) => inv('bim:saveProjectClassification', payload),
+  clearProjectClassification: (payload) => inv('bim:clearProjectClassification', payload),
   loadProjectClassification: (payload) => inv('bim:loadProjectClassification', payload || {}),
   listSectionPresets: () => inv('bim:listSectionPresets'),
   saveSectionPreset: (preset) => inv('bim:saveSectionPreset', preset),
@@ -150,6 +156,11 @@ contextBridge.exposeInMainWorld('bimAPI', {
   saveCloud: (payload) => inv('bim:saveCloud', payload),
   // v1156 — умное сохранение: экспорт в любой формат (диалог), тихое сохранение в путь, закрытие с вопросом
   exportFile: (payload) => inv('bim:exportFile', payload),
+  // Bounded-memory single-scan PTX export; every token is scoped to this renderer.
+  beginExportStream: (payload) => inv('bim:beginExportStream', payload),
+  writeExportStreamChunk: (payload) => inv('bim:writeExportStreamChunk', payload),
+  finishExportStream: (streamId) => inv('bim:finishExportStream', { streamId }),
+  cancelExportStream: (streamId) => inv('bim:cancelExportStream', { streamId }),
   saveCloudToPath: (payload) => inv('bim:saveCloudToPath', payload),
   setDirty: (v) => ipcRenderer.send('bim:setDirty', v),
   setProjectDirty: (v) => ipcRenderer.send('bim:setProjectDirty', v),
@@ -169,5 +180,23 @@ contextBridge.exposeInMainWorld('bimAPI', {
 
   // Пункт 4 (patch 28): дисковый octree — сборка на диск и потоковая подгрузка узлов
   buildOctree: (payload) => inv('bim:buildOctree', payload),
-  readOctreeNode: (payload) => inv('bim:readOctreeNode', payload)
+  readOctreeNode: (payload) => inv('bim:readOctreeNode', payload),
+  deleteOctree: (payload) => inv('bim:deleteOctree', payload),
+  onOctreeProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => {
+      if (!payload || payload.jobId !== jobId) return;
+      try { callback(payload.progress); } catch (_) {}
+    };
+    ipcRenderer.on('bim:octreeProgress', listener);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      try { ipcRenderer.removeListener('bim:octreeProgress', listener); } catch (_) {}
+    };
+  },
+  cancelOctreeBuild: (jobId) => {
+    if (typeof jobId === 'string' && jobId) snd('bim:cancelOctreeBuild', { jobId });
+  }
 });

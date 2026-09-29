@@ -45,7 +45,10 @@
     var fmt = r.u8(104) & 0x3f;
     var recLen = r.u16(105);
     var count = r.u32(107);
-    if (count === 0 && verMinor >= 4 && r.big64) count = r.big64(247);
+    if (verMinor >= 4 && r.big64) {
+      var extendedCount = r.big64(247);
+      if (Number.isFinite(extendedCount) && extendedCount > 0) count = extendedCount;
+    }
     var scale = { x: r.f64(131), y: r.f64(139), z: r.f64(147) };
     var offset = { x: r.f64(155), y: r.f64(163), z: r.f64(171) };
     var colorOff = LAS_COLOR_OFFSETS[fmt];

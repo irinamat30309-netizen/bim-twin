@@ -7,7 +7,8 @@ try {
   app.commandLine.appendSwitch('enable-zero-copy');
 } catch (e) { /* no-op */ }
 const path = require('path');
-const { pathToFileURL } = require('url');
+const osNative = require('node:os');
+const { pathToFileURL, fileURLToPath } = require('url');
 const fs = require('fs');
 const crypto = require('crypto');
 const { Worker } = require('worker_threads');
@@ -18,48 +19,112 @@ const verify = require('./ai/verify');
 const llm = require('./ai/llm');
 const report = require('./ai/report');
 const cloud = require('./las-node');
+const { writePlyBinaryToDisk: writePlyBinaryToDiskImpl } = require('./pointcloud-ply-io');
+const octreeStore = require('./renderer/octree-store');
 const e57 = require('./renderer/e57-stations');
-const octstore = require('./renderer/octree-store');
+const { PTXStreamValidator } = require('./renderer/ptx-stream-validator');
 const { atomicWriteFileSync, atomicWriteJsonSync } = require('./db/atomic-file');
 const { CloudAutosaveStore } = require('./db/cloud-autosave');
+const {
+  PathGrantRegistry,
+  canonicalExistingFile,
+  canonicalExistingDirectory,
+  canonicalPlannedFile,
+  decodeBase64Strict,
+  hasAllowedExtension,
+  isPathInside
+} = require('./security/file-access');
+const {
+  MAX_PIPELINE_BYTES,
+  inspectPdalPipeline,
+  bindPdalFile,
+  assertPdalFilesBound
+} = require('./security/pdal-policy');
+const {
+  writeSyncBundle,
+  readSyncBundleToStage,
+  installStagedFiles
+} = require('./sync-bundle');
+const {
+  protectSettingsPatch,
+  revealSettings,
+  migrateLegacySettings,
+  publicSettings
+} = require('./security/secret-settings');
+const {
+  assessOctreeBuildMemory,
+  assessOctreeBuildDiskSpace,
+  assessOutOfCoreOctreeMemory,
+  assessOutOfCoreOctreeDiskSpace,
+  formatMiB: formatResourceMiB
+} = require('./octree-resource-budget');
 
+let octreeCleanupOnQuit = function () {};
+
+function currentAvailableMemoryBytes() {
+  const candidates = [];
+  try {
+    if (typeof process.availableMemory === 'function') {
+      const value = Number(process.availableMemory());
+      if (Number.isFinite(value) && value >= 0) candidates.push(value);
+    }
+  } catch (_) {}
+  try {
+    const value = Number(osNative.freemem());
+    if (Number.isFinite(value) && value >= 0) candidates.push(value);
+  } catch (_) {}
+  return candidates.length ? Math.min.apply(null, candidates) : null;
+}
+
+function currentAvailableDiskBytes(directory) {
+  try {
+    if (typeof fs.statfsSync !== 'function') return null;
+    const stats = fs.statfsSync(directory);
+    const freeBlocks = Number(stats && stats.bavail);
+    const blockSize = Number(stats && stats.bsize);
+    const bytes = freeBlocks * blockSize;
+    return Number.isFinite(bytes) && bytes >= 0 ? bytes : null;
+  } catch (_) {
+    return null;
+  }
+}
 // Белый список расширений для bim:readPicked — читаем только файлы моделей/облаков/документов, а не произвольные пути на диске.
 const PICKED_EXT_ALLOW = new Set(['.glb', '.gltf', '.obj', '.stl', '.ply', '.las', '.laz', '.e57', '.ptx', '.ifc', '.pdf', '.xlsx', '.xls', '.csv', '.txt', '.docx', '.doc', '.png', '.jpg', '.jpeg', '.webp', '.svg', '.dxf', '.dwg']);
 
 // Разрешённые расширения облаков точек для bim:parseCloud (чтение с диска).
 const CLOUD_EXT_ALLOW = new Set(['.las', '.laz', '.ply', '.e57', '.ptx', '.pcd', '.xyz', '.pts', '.txt', '.csv', '.xyzrgb']);
+const USER_PICK_EXT_ALLOW = new Set([...PICKED_EXT_ALLOW, ...CLOUD_EXT_ALLOW, '.json']);
+const MAX_IN_MEMORY_PICKED_BYTES = 512 * 1024 * 1024;
+const MAX_DOCUMENT_WRITE_BYTES = 256 * 1024 * 1024;
 
 // Валидаторы входных данных IPC: отсекают некорректные/вредоносные аргументы до обращения к хранилищу.
 function vId(x) { if (typeof x !== 'string' || !x) throw new Error('invalid id'); return x; }
 function vStr(x) { if (typeof x !== 'string') throw new Error('invalid string'); return x; }
 function vPatch(x) { if (x == null) return x; if (typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid payload'); return x; }
 function vArgs(x) { if (x == null || typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid args'); return x; }
-
-// Настройки: LLM-ключ на диске хранится зашифрованным (safeStorage). Помощники прозрачно шифруют при записи и расшифровывают при чтении.
-function decryptSettings(s) {
-  const out = Object.assign({}, s || {});
-  try {
-    const { safeStorage } = require('electron');
-    if (out.llmApiKeyEnc && !out.llmApiKey && safeStorage.isEncryptionAvailable()) {
-      out.llmApiKey = safeStorage.decryptString(Buffer.from(out.llmApiKeyEnc, 'base64'));
-    }
-  } catch (e) {}
-  return out;
+function vDocumentPatch(x) {
+  const patch = Object.assign({}, vPatch(x) || {});
+  for (const key of ['file', 'versions', 'is_upload', 'size']) delete patch[key];
+  return patch;
 }
-function readSettings() { return decryptSettings(store && store.getSettings ? store.getSettings() : {}); }
+
+// Настройки: API-ключ никогда не возвращается renderer-процессу и не хранится
+// открытым текстом. Legacy plaintext мигрируется один раз или удаляется, если
+// системное защищённое хранилище недоступно.
+function settingsSafeStorage() {
+  try { return require('electron').safeStorage; } catch (_) { return null; }
+}
+function readSettings() {
+  const raw = store && store.getSettings ? store.getSettings() : {};
+  const migration = migrateLegacySettings(raw, settingsSafeStorage());
+  if (migration.patch && store && store.updateSettings) {
+    try { store.updateSettings(migration.patch); }
+    catch (error) { console.warn('[settings] secret migration failed:', error && error.message || error); }
+  }
+  return revealSettings(migration.settings, settingsSafeStorage());
+}
 function encryptSettingsPatch(patch) {
-  const p = Object.assign({}, patch || {});
-  if (!Object.prototype.hasOwnProperty.call(p, 'llmApiKey')) return p;
-  try {
-    const { safeStorage } = require('electron');
-    if (p.llmApiKey && safeStorage.isEncryptionAvailable()) {
-      p.llmApiKeyEnc = safeStorage.encryptString(String(p.llmApiKey)).toString('base64');
-      p.llmApiKey = '';
-    } else if (!p.llmApiKey) {
-      p.llmApiKeyEnc = '';
-    }
-  } catch (e) {}
-  return p;
+  return protectSettingsPatch(patch, settingsSafeStorage());
 }
 
 let store = null;
@@ -166,19 +231,36 @@ function initStore() {
   }
 }
 
+function uploadFileName(name) {
+  const cleaned = String(name || 'file')
+    .normalize('NFC')
+    .replace(/[^\w.\-а-яА-Я]+/giu, '_')
+    .replace(/^[._-]+|[. _-]+$/gu, '')
+    .slice(0, 160) || 'file';
+  return `${Date.now()}_${crypto.randomBytes(8).toString('hex')}_${cleaned}`;
+}
+
 function saveUpload(name, base64) {
-  const safe = Date.now() + '_' + String(name || 'file').replace(/[^\w.\-а-яА-Я]+/gi, '_');
+  const safe = uploadFileName(name);
   const abs = path.join(store.uploadsDir, safe);
-  fs.writeFileSync(abs, Buffer.from(base64, 'base64'));
-  return { file: safe, abs };
+  const bytes = decodeBase64Strict(base64, MAX_DOCUMENT_WRITE_BYTES);
+  atomicWriteFileSync(abs, bytes, { mode: 0o600 });
+  return { file: safe, abs, size: bytes.length };
 }
 
 // Копирование большого файла (3D-модель/облако точек) напрямую с диска — без base64, чтобы не перегружать память.
 function saveUploadFromPath(name, srcPath) {
-  const safe = Date.now() + '_' + String(name || 'file').replace(/[^\w.\-а-яА-Я]+/gi, '_');
+  const safe = uploadFileName(name);
   const abs = path.join(store.uploadsDir, safe);
-  fs.copyFileSync(srcPath, abs);
-  return { file: safe, abs };
+  const temporary = `${abs}.tmp-${crypto.randomBytes(8).toString('hex')}`;
+  try {
+    fs.copyFileSync(srcPath, temporary, fs.constants.COPYFILE_EXCL);
+    fs.renameSync(temporary, abs);
+  } catch (error) {
+    try { fs.unlinkSync(temporary); } catch (_) {}
+    throw error;
+  }
+  return { file: safe, abs, size: fs.statSync(abs).size };
 }
 
 function payloadBuffer(value) {
@@ -200,8 +282,17 @@ function sha256File(filePath) {
 }
 function fsyncPath(filePath) {
   let fd;
-  try { fd = fs.openSync(filePath, 'r'); fs.fsyncSync(fd); }
+  // Windows can reject fsync on a read-only handle with EPERM.
+  try { fd = fs.openSync(filePath, 'r+'); fs.fsyncSync(fd); }
   finally { if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {} }
+}
+function fsyncDirectory(dirPath) {
+  let fd;
+  try { fd = fs.openSync(dirPath, 'r'); fs.fsyncSync(fd); }
+  catch (error) {
+    // Directory fsync is unavailable on some Windows/network filesystems.
+    if (!error || !['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM', 'EBADF', 'EACCES'].includes(error.code)) throw error;
+  } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {} }
 }
 function cloudHistoryDir(target) {
   const abs = path.resolve(target);
@@ -238,6 +329,7 @@ async function saveCloudOutput(target, data, options) {
       backupPath = path.join(dir, backupName);
       try {
         fs.copyFileSync(abs, backupPath, fs.constants.COPYFILE_EXCL);
+        fs.chmodSync(backupPath, 0o600);
         fsyncPath(backupPath);
       } catch (e) {
         try { fs.unlinkSync(backupPath); } catch (_) {}
@@ -261,6 +353,71 @@ async function saveCloudOutput(target, data, options) {
     } catch (e) { console.warn('[project-journal] cloud save log failed:', e && e.message || e); }
   }
   return { path: abs, bytes: bytes.length, sha256: outputHash, inputHash: previousHash, backupPath };
+}
+
+// Commit a same-directory streamed export without materializing the whole
+// output in main-process memory. The temporary is created exclusively by the
+// export session and is renamed only after the stream has been fsynced.
+async function saveCloudOutputFromTemp(target, tempPath, options) {
+  options = options || {};
+  const abs = path.resolve(String(target || ''));
+  const temp = path.resolve(String(tempPath || ''));
+  if (!path.isAbsolute(abs) || !path.basename(abs) || !path.isAbsolute(temp) ||
+      path.dirname(abs) !== path.dirname(temp) || abs === temp) {
+    throw new Error('invalid streamed output path');
+  }
+  const st = fs.statSync(temp);
+  if (!st.isFile()) throw new Error('streamed output is not a regular file');
+  const bytes = st.size;
+  fsyncPath(temp);
+  const outputHash = await sha256File(temp);
+  let previousHash = null, backupPath = null;
+  if (fs.existsSync(abs)) {
+    const targetStat = fs.statSync(abs);
+    if (!targetStat.isFile()) throw new Error('output path is not a regular file');
+    previousHash = await sha256File(abs);
+    if (previousHash !== outputHash) {
+      const dir = cloudHistoryDir(abs);
+      fs.mkdirSync(dir, { recursive: true });
+      const backupName = 'rev-' + Date.now() + '-' + previousHash.slice(0, 16) + '-' + safeFilePart(abs) + '.bak';
+      backupPath = path.join(dir, backupName);
+      try {
+        fs.copyFileSync(abs, backupPath, fs.constants.COPYFILE_EXCL);
+        fs.chmodSync(backupPath, 0o600);
+        fsyncPath(backupPath);
+      } catch (e) {
+        try { fs.unlinkSync(backupPath); } catch (_) {}
+        throw new Error('Не удалось сохранить предыдущую версию файла; исходник оставлен без изменений: ' + String(e && e.message || e));
+      }
+      pruneCloudHistory(dir, 8);
+    }
+  }
+  const durabilityWarnings = [];
+  try {
+    if (previousHash === outputHash) {
+      fs.unlinkSync(temp);
+      return { path: abs, bytes, sha256: outputHash, inputHash: previousHash, backupPath: null, noOp: true, warnings: durabilityWarnings };
+    }
+    fs.renameSync(temp, abs);
+    try { fsyncPath(abs); } catch (error) { durabilityWarnings.push('Файл сохранён, но fsync файла не подтверждён: ' + String(error && error.message || error)); }
+    try { fsyncDirectory(path.dirname(abs)); } catch (error) { durabilityWarnings.push('Файл сохранён, но fsync каталога не подтверждён: ' + String(error && error.message || error)); }
+  } catch (e) {
+    throw new Error('Не удалось атомарно завершить потоковый экспорт; временный результат сохранён: ' + String(e && e.message || e));
+  }
+  if (store && store.recordOperation) {
+    try {
+      const activeId = store.getData && store.getData().project && store.getData().project.id;
+      store.recordOperation({
+        operation: options.operation || 'project.export',
+        inputHash: options.inputHash || previousHash || null,
+        parameters: { format: options.format || path.extname(abs).slice(1).toLowerCase(), fileName: safeFilePart(abs), overwrite: !!previousHash, streaming: true },
+        output: { fileName: safeFilePart(abs), sha256: outputHash, bytes, backupCreated: !!backupPath },
+        warnings: (options.warnings || []).concat(durabilityWarnings),
+        appVersion: (() => { try { return app.getVersion(); } catch (_) { return 'unknown'; } })()
+      }, activeId);
+    } catch (e) { console.warn('[project-journal] streamed export log failed:', e && e.message || e); }
+  }
+  return { path: abs, bytes, sha256: outputHash, inputHash: previousHash, backupPath, warnings: durabilityWarnings };
 }
 
 function linkIFC(parsed, targetRoomId) {
@@ -372,8 +529,8 @@ async function analyzeRoom(roomId) {
   const report = [];
   for (const d of (room.documents || [])) {
     if (!d.file) { report.push({ name: d.name, kind: d.type || 'документ', ok: false, note: 'нет файла' }); continue; }
-    const abs = path.isAbsolute(d.file) ? d.file : path.join(store.uploadsDir, d.file);
-    if (!fs.existsSync(abs)) { report.push({ name: d.name, kind: 'файл', ok: false, note: 'файл не найден' }); continue; }
+    const abs = safeReadPath(d.file);
+    if (!abs) { report.push({ name: d.name, kind: 'файл', ok: false, note: 'файл не найден или заблокирован' }); continue; }
     const wres = await runDocWorker(abs, d.name || d.file, settings);
     if (!wres.ok) { report.push({ name: d.name, kind: 'файл', ok: false, note: 'ошибка обработки' }); continue; }
     const ext = wres.ext;
@@ -391,7 +548,8 @@ async function analyzeRoom(roomId) {
   }
   // Optional LLM escalation for ambiguous (warn/open) findings
   let llmUsed = 0;
-  const llmOn = llm.llmAvailable(settings);
+  const llmStatus = llm.privacyStatus ? llm.privacyStatus(settings) : { allowed: llm.llmAvailable(settings) };
+  const llmOn = llmStatus.allowed === true;
   if (llmOn) {
     const joined = docTexts.map(d => d.text).join('\n');
     for (const f of findings) {
@@ -404,7 +562,18 @@ async function analyzeRoom(roomId) {
   store.setRoomFindings(roomId, findings);
   const counts = { err: 0, warn: 0, ok: 0 };
   for (const f of findings) if (counts[f.severity] != null) counts[f.severity]++;
-  return { ok: true, roomId, counts, total: findings.length, documents: report, ocrAvailable: ocrmod.ocrAvailable(settings.ocrCmd), llmConfigured: llmOn, llmUsed };
+  return {
+    ok: true, roomId, counts, total: findings.length, documents: report,
+    ocrAvailable: ocrmod.ocrAvailable(settings.ocrCmd),
+    llmConfigured: llmOn,
+    llmStatus: {
+      allowed: llmOn,
+      remote: !!llmStatus.remote,
+      reason: llmStatus.reason || null,
+      destination: llmStatus.destination || null
+    },
+    llmUsed
+  };
 }
 
 async function analyzeAllRooms() {
@@ -485,6 +654,10 @@ app.whenReady().then(() => {
     const s2b = require('./scan2bim-server');
     s2b.start();
     ipcMain.handle('bim:s2bStatus', () => { try { return s2b.status(); } catch (e) { return { running: false, error: String(e && e.message || e) }; } });
+    ipcMain.handle('bim:s2bAuth', (event) => {
+      if (!isTrustedIpcEvent(event)) throw new Error('untrusted_sender');
+      return s2b.authToken();
+    });
     ipcMain.handle('bim:s2bRestart', () => { try { s2b.stop(); return s2b.start(); } catch (e) { return { running: false, error: String(e && e.message || e) }; } });
     // Явная установка опционального AI/GPU-стека (по кнопке). Режим 1:1 его НЕ требует.
     ipcMain.handle('bim:s2bInstall', () => { try { return s2b.install(); } catch (e) { return { running: false, error: String(e && e.message || e) }; } });
@@ -492,42 +665,287 @@ app.whenReady().then(() => {
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', () => { try { require('./scan2bim-server').stop(); } catch (e) {} });
+app.on('before-quit', () => {
+  try { octreeCleanupOnQuit(); } catch (e) {}
+  try { require('./scan2bim-server').stop(); } catch (e) {}
+});
 
-// --- path safety (защита от чтения произвольных путей из renderer) ---
-function _resolveWithin(baseDir, p) {
-  const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(baseDir, p);
-  const rel = path.relative(baseDir, abs);
-  const within = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-  return { abs, within };
-}
-function _isRegisteredFile(abs) {
-  try {
-    const data = store.getData();
-    const norm = (f) => path.isAbsolute(f) ? path.resolve(f) : path.resolve(store.uploadsDir, f);
-    for (const r of (data.rooms || [])) {
-      if (r.model && r.model.file && norm(r.model.file) === abs) return true;
-      for (const d of (r.documents || [])) {
-        if (d.file && norm(d.file) === abs) return true;
-        for (const v of (d.versions || [])) if (v && v.file && norm(v.file) === abs) return true;
-      }
-    }
-  } catch (e) { /* ignore */ }
-  return false;
-}
-// Возвращает абсолютный путь только если он внутри uploads или зарегистрирован в хранилище.
+// --- path safety (защита от чтения произвольных путей из renderer/backup) ---
+// Persistent document/model references are portable upload names. Merely
+// placing an absolute path in imported project JSON never grants file access.
 function safeReadPath(p) {
   if (p == null) return null;
-  const { abs, within } = _resolveWithin(store.uploadsDir, String(p));
-  if (within || _isRegisteredFile(abs)) return abs;
+  try {
+    const requested = path.isAbsolute(String(p)) ? String(p) : path.resolve(store.uploadsDir, String(p));
+    const abs = canonicalExistingFile(fs, requested);
+    const uploads = canonicalExistingDirectory(fs, store.uploadsDir);
+    if (isPathInside(uploads, abs)) return abs;
+  } catch (_) {}
   return null;
+}
+
+function isTrustedIpcEvent(event) {
+  try {
+    const url = String(
+      event && event.senderFrame && event.senderFrame.url ||
+      event && event.sender && typeof event.sender.getURL === 'function' && event.sender.getURL() ||
+      ''
+    );
+    if (!url.startsWith('file:')) return false;
+    const file = fileURLToPath(new URL(url));
+    return isPathInside(path.join(__dirname, 'renderer'), file);
+  } catch (_) {
+    return false;
+  }
 }
 
 function registerIpc() {
   const activeCloudParseJobs = new Map();
+  const activeOctreeBuildJobs = new Map();
+  const activeExportStreams = new Map();
+  const fileGrants = new PathGrantRegistry({ fs });
+  const grantCleanupHooked = new Set();
+  const MAX_EXPORT_STREAMS_PER_SENDER = 1;
+  const MAX_EXPORT_STREAM_BYTES = 16 * 1024 * 1024 * 1024;
+  const MAX_EXPORT_CHUNK_CHARS = 4 * 1024 * 1024;
+  function ipcSender(event) {
+    const sender = event && event.sender;
+    if (!sender || sender.id == null || (sender.isDestroyed && sender.isDestroyed()) || !isTrustedIpcEvent(event)) return null;
+    if (!grantCleanupHooked.has(sender.id)) {
+      grantCleanupHooked.add(sender.id);
+      try {
+        sender.once('destroyed', () => {
+          fileGrants.revokeSender(sender.id);
+          grantCleanupHooked.delete(sender.id);
+        });
+      } catch (_) {}
+    }
+    return sender;
+  }
+  function resolveAuthorizedFile(event, requested, allowedExtensions) {
+    const sender = ipcSender(event);
+    if (!sender || typeof requested !== 'string' || !requested) return null;
+    const stored = safeReadPath(requested);
+    const abs = stored || fileGrants.resolveExistingFile(sender.id, requested);
+    if (!abs || !hasAllowedExtension(abs, allowedExtensions)) return null;
+    return abs;
+  }
+  function grantExistingOutput(event, outputPath) {
+    const sender = ipcSender(event);
+    if (!sender || !outputPath) return null;
+    try { return fileGrants.grantExistingFile(sender.id, outputPath, { read: true, write: true }); }
+    catch (_) { return null; }
+  }
+  function grantPlannedOutput(event, outputPath) {
+    const sender = ipcSender(event);
+    if (!sender || !outputPath) return null;
+    try { return fileGrants.grantPlannedFile(sender.id, outputPath, { read: true, write: true }); }
+    catch (_) { return null; }
+  }
+  function resolveAuthorizedOutput(event, outputPath) {
+    const sender = ipcSender(event);
+    return sender && outputPath ? fileGrants.resolvePlannedFile(sender.id, outputPath) : null;
+  }
+  ipcMain.on('bim:authorizePickedPath', (event, requested) => {
+    event.returnValue = false;
+    const sender = ipcSender(event);
+    if (!sender || typeof requested !== 'string' || !requested) return;
+    try {
+      const abs = canonicalExistingFile(fs, requested);
+      if (!hasAllowedExtension(abs, USER_PICK_EXT_ALLOW)) return;
+      fileGrants.grantExistingFile(sender.id, abs, { read: true, write: false });
+      event.returnValue = true;
+    } catch (_) {}
+  });
   function cloudJobKey(sender, jobId) {
     return String(sender && sender.id != null ? sender.id : 'unknown') + ':' + jobId;
   }
+  function exportStreamFor(event, payload) {
+    const id = typeof payload === 'string' ? payload : payload && payload.streamId;
+    if (typeof id !== 'string' || !/^[a-f0-9]{48}$/.test(id)) return null;
+    const session = activeExportStreams.get(id);
+    return session && session.sender === (event && event.sender) ? session : null;
+  }
+  function waitForWriteStreamClose(stream) {
+    if (!stream || stream.closed) return Promise.resolve();
+    return new Promise(resolve => stream.once('close', resolve));
+  }
+  function removeExportStream(session, keepTemp) {
+    if (!session) return Promise.resolve();
+    if (session.cleanupPromise) return session.cleanupPromise;
+    session.cleanupPromise = (async () => {
+      session.cleaned = true;
+      if (session.state !== 'committing' && session.state !== 'committed') session.state = 'cancelled';
+      try { if (session.sender && session.onSenderDestroyed) session.sender.removeListener('destroyed', session.onSenderDestroyed); } catch (_) {}
+      const writer = session.writer;
+      if (writer && !writer.closed) {
+        const closed = waitForWriteStreamClose(writer);
+        try { if (!writer.destroyed) writer.destroy(); } catch (_) {}
+        await closed;
+      }
+      if (!keepTemp) try { fs.unlinkSync(session.tempPath); } catch (error) { if (!error || error.code !== 'ENOENT') console.warn('[export-stream] temp cleanup failed:', error && error.message || error); }
+      activeExportStreams.delete(session.id);
+    })();
+    return session.cleanupPromise;
+  }
+  // Streamed PTX is the first bounded-memory export path. It is intentionally
+  // restricted to PTX; renderer never supplies a destination path, and every
+  // token is tied to the WebContents that opened the native save dialog.
+  ipcMain.handle('bim:beginExportStream', async (event, payload) => {
+    let session = null;
+    try {
+      const sender = event && event.sender;
+      if (!sender || (sender.isDestroyed && sender.isDestroyed())) return { ok: false, error: 'invalid_sender' };
+      const ext = String(payload && payload.ext || '').replace(/^\./, '').toLowerCase();
+      if (ext !== 'ptx') return { ok: false, error: 'stream_format_not_supported' };
+      const expectedPoints = Number(payload && payload.expectedPoints);
+      if (!Number.isSafeInteger(expectedPoints) || expectedPoints < 1 || expectedPoints > 2147483647) return { ok: false, error: 'invalid_point_count' };
+      const activeForSender = Array.from(activeExportStreams.values()).filter(item => item.sender === sender && !item.cleaned).length;
+      if (activeForSender >= MAX_EXPORT_STREAMS_PER_SENDER) return { ok: false, error: 'export_busy' };
+
+      const requestedName = safeFilePart(payload && payload.name || 'pointcloud.ptx');
+      const defaultPath = path.extname(requestedName).toLowerCase() === '.ptx' ? requestedName : requestedName + '.ptx';
+      const options = {
+        title: String(payload && payload.title || 'Экспорт · PTX').slice(0, 120),
+        defaultPath,
+        filters: [{ name: 'PTX', extensions: ['ptx'] }]
+      };
+      let owner = null;
+      try { owner = BrowserWindow.fromWebContents(sender); } catch (_) {}
+      const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+      if (!result || result.canceled || !result.filePath) return { ok: false, canceled: true };
+
+      let target = path.resolve(String(result.filePath));
+      if (path.extname(target).toLowerCase() !== '.ptx') target += '.ptx';
+      const directory = path.dirname(target);
+      const dirStat = fs.statSync(directory);
+      if (!dirStat.isDirectory()) return { ok: false, error: 'output_directory_not_found' };
+      if (fs.existsSync(target) && !fs.statSync(target).isFile()) return { ok: false, error: 'output_path_not_file' };
+
+      const id = crypto.randomBytes(24).toString('hex');
+      const tempName = '.' + path.basename(target).slice(0, 72) + '.bimtwin-' + id + '.tmp';
+      const tempPath = path.join(directory, tempName);
+      session = {
+        id, sender, target, tempPath, expectedPoints,
+        validator: new PTXStreamValidator(expectedPoints),
+        writer: null, state: 'opening', bytes: 0,
+        writeChain: Promise.resolve(), error: null, cleaned: false
+      };
+      session.onSenderDestroyed = () => {
+        if (session.state !== 'committing' && session.state !== 'committed') {
+          removeExportStream(session, false).catch(error => console.warn('[export-stream] sender cleanup failed:', error && error.message || error));
+        }
+      };
+      activeExportStreams.set(id, session);
+      try { sender.on('destroyed', session.onSenderDestroyed); } catch (_) {}
+
+      session.writer = fs.createWriteStream(tempPath, { flags: 'wx', mode: 0o600, highWaterMark: 512 * 1024 });
+      const opened = new Promise((resolve, reject) => {
+        session.openResolve = resolve;
+        session.openReject = reject;
+      });
+      session.writer.on('error', error => {
+        session.error = error;
+        if (session.openReject) {
+          const reject = session.openReject;
+          session.openResolve = null;
+          session.openReject = null;
+          reject(error);
+        }
+      });
+      session.writer.once('open', () => {
+        if (session.openResolve) session.openResolve();
+        session.openResolve = null;
+        session.openReject = null;
+      });
+      await opened;
+      if (session.cleaned || session.error || (sender.isDestroyed && sender.isDestroyed())) {
+        await removeExportStream(session, false);
+        return { ok: false, canceled: true };
+      }
+      session.state = 'writing';
+      return { ok: true, streamId: id, fileName: path.basename(target), expectedPoints };
+    } catch (error) {
+      if (session) await removeExportStream(session, false);
+      return { ok: false, error: String(error && error.message || error) };
+    }
+  });
+
+  ipcMain.handle('bim:writeExportStreamChunk', async (event, payload) => {
+    const session = exportStreamFor(event, payload);
+    if (!session) return { ok: false, error: 'invalid_or_expired_stream' };
+    const text = payload && payload.text;
+    if (session.state !== 'writing' || typeof text !== 'string' || !text.length || text.length > MAX_EXPORT_CHUNK_CHARS) {
+      await removeExportStream(session, false);
+      return { ok: false, error: 'invalid_stream_chunk' };
+    }
+    const operation = session.writeChain.then(async () => {
+      if (session.cleaned || session.error || !['writing', 'finishing'].includes(session.state)) throw session.error || new Error('export stream was cancelled');
+      const validated = session.validator.push(text);
+      const bytes = Buffer.from(text, 'ascii');
+      if (session.bytes + bytes.length > MAX_EXPORT_STREAM_BYTES) throw new Error('PTX export exceeds 16 GiB safety limit');
+      await new Promise((resolve, reject) => {
+        try { session.writer.write(bytes, error => error ? reject(error) : resolve()); }
+        catch (error) { reject(error); }
+      });
+      session.bytes += bytes.length;
+      return { ok: true, bytes: session.bytes, points: validated.points, expectedPoints: session.expectedPoints };
+    });
+    session.writeChain = operation.catch(error => { session.error = error; });
+    try { return await operation; }
+    catch (error) {
+      await removeExportStream(session, false);
+      return { ok: false, error: String(error && error.message || error) };
+    }
+  });
+
+  ipcMain.handle('bim:finishExportStream', async (event, payload) => {
+    const session = exportStreamFor(event, payload);
+    if (!session) return { ok: false, error: 'invalid_or_expired_stream' };
+    if (session.state !== 'writing') return { ok: false, error: 'stream_not_writable' };
+    session.state = 'finishing';
+    try {
+      await session.writeChain;
+      if (session.cleaned || session.error) throw session.error || new Error('export stream was cancelled');
+      const validated = session.validator.finish();
+      if (validated.bytes !== session.bytes || validated.points !== session.expectedPoints) throw new Error('PTX stream integrity check failed');
+      await new Promise((resolve, reject) => {
+        session.writer.once('error', reject);
+        session.writer.once('finish', resolve);
+        session.writer.end();
+      });
+      await waitForWriteStreamClose(session.writer);
+      if (session.error) throw session.error;
+
+      session.state = 'committing';
+      const saved = await saveCloudOutputFromTemp(session.target, session.tempPath, {
+        operation: 'pointcloud.export.stream',
+        format: 'ptx'
+      });
+      grantExistingOutput(event, saved.path);
+      session.state = 'committed';
+      await removeExportStream(session, false);
+      return {
+        ok: true, path: saved.path, sha256: saved.sha256, bytes: saved.bytes,
+        backupPath: saved.backupPath, noOp: !!saved.noOp,
+        warnings: saved.warnings || []
+      };
+    } catch (error) {
+      const preserve = session.state === 'committing' && fs.existsSync(session.tempPath);
+      const recoveryPath = preserve ? session.tempPath : null;
+      await removeExportStream(session, preserve);
+      return { ok: false, error: String(error && error.message || error), recoveryPath };
+    }
+  });
+
+  ipcMain.handle('bim:cancelExportStream', async (event, payload) => {
+    const session = exportStreamFor(event, payload);
+    if (!session) return { ok: true, alreadyClosed: true };
+    if (session.state === 'committing' || session.state === 'committed') return { ok: false, error: 'stream_already_committing' };
+    await removeExportStream(session, false);
+    return { ok: true, cancelled: true };
+  });
+
   ipcMain.on('bim:cancelCloudParse', (event, payload) => {
     const jobId = typeof payload === 'string' ? payload : payload && payload.jobId;
     if (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId)) return;
@@ -535,6 +953,14 @@ function registerIpc() {
     if (job) {
       try { job.controller.abort(); } catch (_) {}
     }
+  });
+  ipcMain.on('bim:cancelOctreeBuild', (event, payload) => {
+    const jobId = typeof payload === 'string' ? payload : payload && payload.jobId;
+    if (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId)) return;
+    const job = activeOctreeBuildJobs.get(cloudJobKey(event && event.sender, 'octree:' + jobId));
+    if (!job || job.finished || job.cancelled) return;
+    job.cancelled = true;
+    try { job.worker.terminate().catch(() => {}); } catch (_) {}
   });
 
   let autosaveStore;
@@ -571,13 +997,15 @@ function registerIpc() {
     return fs.readFileSync(abs).toString('base64');
   });
   // Чтение файла, который пользователь сам выбрал/перетащил (3D-модели и облака точек могут лежать где угодно и быть очень большими).
-  ipcMain.handle('bim:readPicked', (_e, p) => {
+  ipcMain.handle('bim:readPicked', (event, p) => {
     try {
-      const abs = String(p || '');
-      if (!abs || !fs.existsSync(abs)) return { ok: false, error: 'not_found' };
+      const abs = resolveAuthorizedFile(event, String(p || ''), PICKED_EXT_ALLOW);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const st = fs.statSync(abs);
       if (!st || !st.isFile()) return { ok: false, error: 'not_file' };
-      if (!PICKED_EXT_ALLOW.has(path.extname(abs).toLowerCase())) return { ok: false, error: 'ext_not_allowed' };
+      if (st.size > MAX_IN_MEMORY_PICKED_BYTES) {
+        return { ok: false, error: 'too_large_use_streaming', size: st.size, limit: MAX_IN_MEMORY_PICKED_BYTES };
+      }
       return { ok: true, base64: fs.readFileSync(abs).toString('base64'), size: st.size };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
@@ -585,10 +1013,11 @@ function registerIpc() {
   // window controls; progress and cancellation are scoped to the initiating
   // WebContents and job id.
   ipcMain.handle('bim:parseCloud', async (event, payload) => {
-    const abs = String(payload && typeof payload === 'object' ? payload.path || '' : payload || '');
+    const requested = String(payload && typeof payload === 'object' ? payload.path || '' : payload || '');
     const jobId = payload && typeof payload === 'object' ? payload.jobId : null;
     try {
-      if (!CLOUD_EXT_ALLOW.has(path.extname(abs).toLowerCase())) return { ok: false, message: 'ext_not_allowed' };
+      const abs = resolveAuthorizedFile(event, requested, CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, message: 'path_not_authorized' };
       if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
       const s = readSettings();
       const maxPoints = Number(s && s.pointBudget) > 0 ? Number(s.pointBudget) : undefined;
@@ -630,8 +1059,8 @@ function registerIpc() {
       for (const r of (data.rooms || [])) { const d = (r.documents || []).find(x => x.id === docId); if (d) { doc = d; break; } }
       if (!doc) return { ok: false, error: 'not_found' };
       if (!doc.file) return { ok: false, error: 'no_file', name: doc.name };
-      const abs = path.isAbsolute(doc.file) ? doc.file : path.join(store.uploadsDir, doc.file);
-      if (!fs.existsSync(abs)) return { ok: false, error: 'missing', name: doc.name };
+      const abs = safeReadPath(doc.file);
+      if (!abs) return { ok: false, error: 'path_not_authorized', name: doc.name };
       const buf = fs.readFileSync(abs);
       const ext = (String(doc.name || doc.file).split('.').pop() || '').toLowerCase();
       const IMG = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'ico', 'avif'];
@@ -692,8 +1121,8 @@ function registerIpc() {
       for (const r of (data.rooms || [])) { const d = (r.documents || []).find(x => x.id === docId); if (d) { doc = d; break; } }
       if (!doc) return { ok: false, reason: 'not_found' };
       if (!doc.file) return { ok: false, reason: 'no_file', name: doc.name };
-      const abs = path.isAbsolute(doc.file) ? doc.file : path.join(store.uploadsDir, doc.file);
-      if (!fs.existsSync(abs)) return { ok: false, reason: 'missing', name: doc.name };
+      const abs = safeReadPath(doc.file);
+      if (!abs) return { ok: false, reason: 'path_not_authorized', name: doc.name };
       const settings = readSettings();
       const ocrOpts = { cmd: settings.ocrCmd, lang: settings.ocrLang };
       const ext = (String(doc.name || doc.file).split('.').pop() || '').toLowerCase();
@@ -822,8 +1251,8 @@ function registerIpc() {
       const data = store.getData(); let doc = null;
       for (const r of (data.rooms || [])) { const dd = (r.documents || []).find(x => x.id === docId); if (dd) { doc = dd; break; } }
       if (!doc || !doc.file) return { ok: false, error: 'no_file' };
-      const abs = path.isAbsolute(doc.file) ? doc.file : path.join(store.uploadsDir, doc.file);
-      if (!fs.existsSync(abs)) return { ok: false, error: 'missing' };
+      const abs = safeReadPath(doc.file);
+      if (!abs) return { ok: false, error: 'missing' };
       // 1) Preferred: parse in-process with libredwg-web (GNU LibreDWG -> WASM).
       //    Fully offline, no external CAD tools, works from node_modules directly.
       try {
@@ -863,9 +1292,11 @@ function registerIpc() {
       const data = store.getData(); let doc = null;
       for (const r of (data.rooms || [])) { const dd = (r.documents || []).find(x => x.id === docId); if (dd) { doc = dd; break; } }
       if (!doc || !doc.file) return { ok: false, error: 'no_file' };
-      const abs = path.isAbsolute(doc.file) ? doc.file : path.join(store.uploadsDir, doc.file);
-      fs.writeFileSync(abs, Buffer.from(base64, 'base64'));
-      return { ok: true };
+      const abs = safeReadPath(doc.file);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
+      const bytes = decodeBase64Strict(base64, MAX_DOCUMENT_WRITE_BYTES);
+      atomicWriteFileSync(abs, bytes, { mode: 0o600 });
+      return { ok: true, bytes: bytes.length, sha256: sha256Buffer(bytes) };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
   ipcMain.handle('bim:openFile', (_e, p) => {
@@ -879,18 +1310,21 @@ function registerIpc() {
       const data = store.getData(); let doc = null;
       for (const r of (data.rooms || [])) { const d = (r.documents || []).find(x => x.id === docId); if (d) { doc = d; break; } }
       if (!doc || !doc.file) return { ok: false, error: 'no_file' };
-      const abs = path.isAbsolute(doc.file) ? doc.file : path.join(store.uploadsDir, doc.file);
-      if (!fs.existsSync(abs)) return { ok: false, error: 'missing' };
+      const abs = safeReadPath(doc.file);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const res = await dialog.showSaveDialog({ title: 'Сохранить копию документа', defaultPath: doc.name || path.basename(abs) });
       if (res.canceled || !res.filePath) return { ok: false, canceled: true };
       fs.copyFileSync(abs, res.filePath);
       return { ok: true, path: res.filePath };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
-  ipcMain.handle('bim:getModelPath', (_e, roomId) => store.getModelPath(roomId));
+  ipcMain.handle('bim:getModelPath', (_e, roomId) => {
+    const candidate = store.getModelPath(roomId);
+    return candidate ? safeReadPath(candidate) : null;
+  });
 
   // Phase 4: сохранение отредактированного облака точек в PLY
-  ipcMain.handle('bim:saveCloud', async (_e, a) => {
+  ipcMain.handle('bim:saveCloud', async (event, a) => {
     try {
       a = a || {};
       const hasBinary = a.binary != null;
@@ -900,12 +1334,13 @@ function registerIpc() {
       if (res.canceled || !res.filePath) return { ok: false, canceled: true };
       const buf = hasBinary ? payloadBuffer(a.binary) : Buffer.from(text, 'utf8');
       const saved = await saveCloudOutput(res.filePath, buf, { operation: 'cloud.export', format: 'ply' });
+      grantExistingOutput(event, saved.path);
       return { ok: true, path: saved.path, sha256: saved.sha256, bytes: saved.bytes, backupPath: saved.backupPath };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
   // v1156 — экспорт в произвольный формат с корректным расширением/фильтром (диалог).
-  ipcMain.handle('bim:exportFile', async (_e, a) => {
+  ipcMain.handle('bim:exportFile', async (event, a) => {
     try {
       a = a || {};
       const hasBinary = a.binary != null;
@@ -917,31 +1352,39 @@ function registerIpc() {
       if (res.canceled || !res.filePath) return { ok: false, canceled: true };
       const buf = hasBinary ? payloadBuffer(a.binary) : Buffer.from(text, 'utf8');
       const saved = await saveCloudOutput(res.filePath, buf, { operation: 'project.export', format: ext });
+      grantExistingOutput(event, saved.path);
       return { ok: true, path: saved.path, sha256: saved.sha256, bytes: saved.bytes, backupPath: saved.backupPath };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
   // v1156 — тихое сохранение в уже известный путь (без диалога), атомарная замена.
-  ipcMain.handle('bim:saveCloudToPath', async (_e, a) => {
+  ipcMain.handle('bim:saveCloudToPath', async (event, a) => {
     try {
       a = a || {};
       if (!a.path) return { ok: false, error: 'no-path' };
       const hasBinary = a.binary != null;
       const text = typeof a.text === 'string' ? a.text : '';
       if (!hasBinary && !text) return { ok: false, error: 'empty' };
+      const target = resolveAuthorizedOutput(event, String(a.path));
+      if (!target) return { ok: false, error: 'path_not_authorized' };
       const buf = hasBinary ? payloadBuffer(a.binary) : Buffer.from(text, 'utf8');
-      const saved = await saveCloudOutput(a.path, buf, { operation: 'cloud.working-copy.save', format: path.extname(a.path).slice(1).toLowerCase() });
+      const saved = await saveCloudOutput(target, buf, { operation: 'cloud.working-copy.save', format: path.extname(target).slice(1).toLowerCase() });
+      grantExistingOutput(event, saved.path);
       return { ok: true, path: saved.path, sha256: saved.sha256, bytes: saved.bytes, inputHash: saved.inputHash, backupPath: saved.backupPath, savedAt: Date.now() };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
-  ipcMain.handle('bim:autosaveCloud', async (_e, a) => {
+  ipcMain.handle('bim:autosaveCloud', async (event, a) => {
     try {
       a = vArgs(a || {});
       if (!autosaveStore) return { ok: false, error: 'autosave_store_unavailable' };
+      const sourcePath = a.sourcePath
+        ? resolveAuthorizedFile(event, String(a.sourcePath), CLOUD_EXT_ALLOW)
+        : null;
       return await autosaveStore.save(Object.assign({}, a, {
         projectId: a.projectId ? vId(a.projectId) : (store && store.getData().project.id),
-        binary: a.binary
+        binary: a.binary,
+        sourcePath: sourcePath || ''
       }));
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
@@ -964,66 +1407,24 @@ function registerIpc() {
   // Парсим файл в main-процессе (Node, без GPU) и потоково пишем бинарный PLY на диск
   // чанками — не держим весь PLY в памяти, поэтому не вылетает на больших облаках.
   function writePlyBinaryToDisk(filePath, pos, col, hasColor, opts) {
-    opts = opts || {};
-    const n = (pos.length / 3) | 0;
-    const doublePrecision = opts.doublePrecision === true;
-    const coordType = doublePrecision ? 'double' : 'float';
-    const coordBytes = doublePrecision ? 8 : 4;
-    const H = ['ply', 'format binary_little_endian 1.0', 'comment BIM Twin cloud export'];
-    if (opts.upAxis === 'z' || opts.upAxis === 'y') H.push('comment up=' + opts.upAxis);
-    if (opts.crsWkt) H.push('comment crs_wkt_uri=' + encodeURIComponent(String(opts.crsWkt)));
-    if (opts.coordinateFrame) H.push('comment coordinate_frame=' + String(opts.coordinateFrame).replace(/[^A-Za-z0-9_.:-]/g, '_'));
-    H.push('element vertex ' + n, 'property ' + coordType + ' x', 'property ' + coordType + ' y', 'property ' + coordType + ' z');
-    if (hasColor) { H.push('property uchar red', 'property uchar green', 'property uchar blue'); }
-    H.push('end_header', '');
-    let scaled = true; // col в диапазоне 0..1 → умножаем на 255
-    if (hasColor && col) { let mx = 0; const lim = Math.min(col.length, 300); for (let i = 0; i < lim; i++) if (col[i] > mx) mx = col[i]; if (mx > 1.0001) scaled = false; }
-    const toByte = v => { v = scaled ? Math.round(v * 255) : Math.round(v); return v < 0 ? 0 : (v > 255 ? 255 : v); };
-    const fd = fs.openSync(filePath, 'w');
-    try {
-      fs.writeSync(fd, Buffer.from(H.join('\n'), 'ascii'));
-      const stride = coordBytes * 3 + (hasColor ? 3 : 0);
-      const CHUNK = 200000;
-      const buf = Buffer.allocUnsafe(CHUNK * stride);
-      let i = 0;
-      while (i < n) {
-        const mm = Math.min(CHUNK, n - i);
-        let off = 0;
-        for (let k = 0; k < mm; k++) {
-          const p = (i + k) * 3;
-          if (doublePrecision) {
-            buf.writeDoubleLE(pos[p], off); off += 8;
-            buf.writeDoubleLE(pos[p + 1], off); off += 8;
-            buf.writeDoubleLE(pos[p + 2], off); off += 8;
-          } else {
-            buf.writeFloatLE(pos[p], off); off += 4;
-            buf.writeFloatLE(pos[p + 1], off); off += 4;
-            buf.writeFloatLE(pos[p + 2], off); off += 4;
-          }
-          if (hasColor) {
-            buf.writeUInt8(toByte(col[p]), off); off += 1;
-            buf.writeUInt8(toByte(col[p + 1]), off); off += 1;
-            buf.writeUInt8(toByte(col[p + 2]), off); off += 1;
-          }
-        }
-        fs.writeSync(fd, buf, 0, off);
-        i += mm;
-      }
-    } finally { try { fs.closeSync(fd); } catch (_) {} }
-    return n;
+    return writePlyBinaryToDiskImpl(filePath, pos, col, hasColor, opts);
   }
 
-  ipcMain.handle('bim:convertCloudToPly', async (_e, a) => {
+  ipcMain.handle('bim:convertCloudToPly', async (event, a) => {
     try {
       a = a || {};
-      let abs = String(a.path || '');
-      if (!abs) {
+      let requested = String(a.path || '');
+      let abs = null;
+      if (!requested) {
         const pick = await dialog.showOpenDialog({ title: 'Выберите облако (LAS/LAZ/E57/PTX/PCD/XYZ) для конвертации в PLY', properties: ['openFile'], filters: [{ name: 'Облака точек', extensions: ['las', 'laz', 'e57', 'ptx', 'pcd', 'xyz', 'pts', 'xyzrgb'] }] });
         if (pick.canceled || !pick.filePaths || !pick.filePaths[0]) return { ok: false, canceled: true };
-        abs = pick.filePaths[0];
+        requested = pick.filePaths[0];
+        const sender = ipcSender(event);
+        if (!sender) return { ok: false, error: 'invalid_sender' };
+        abs = fileGrants.grantExistingFile(sender.id, requested, { read: true, write: false });
       }
-      if (!CLOUD_EXT_ALLOW.has(path.extname(abs).toLowerCase())) return { ok: false, error: 'ext_not_allowed' };
-      if (!fs.existsSync(abs)) return { ok: false, error: 'not_found' };
+      if (!abs) abs = resolveAuthorizedFile(event, requested, CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const s = readSettings();
       const maxPoints = Number(a.maxPoints) > 0 ? Number(a.maxPoints) : 120000000;
       const pr = await cloud.parseCloudFileAsync(abs, { maxPoints });
@@ -1034,8 +1435,12 @@ function registerIpc() {
       const out = await dialog.showSaveDialog({ title: 'Сохранить PLY', defaultPath: def, filters: [{ name: 'PLY', extensions: ['ply'] }] });
       if (out.canceled || !out.filePath) return { ok: false, canceled: true };
       const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
-      const n = writePlyBinaryToDisk(out.filePath, pr.pos, pr.col, hasColor);
-      return { ok: true, path: out.filePath, count: n, colored: hasColor, total: (pr.meta && pr.meta.total) || n };
+      const n = writePlyBinaryToDisk(out.filePath, pr.pos, pr.col, hasColor, {
+        intensity: pr.intensity || null, classification: pr.classification || null
+      });
+      grantExistingOutput(event, out.filePath);
+      return { ok: true, path: out.filePath, count: n, colored: hasColor,
+        hasIntensity: !!pr.intensity, hasClassification: !!pr.classification, total: (pr.meta && pr.meta.total) || n };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
@@ -1070,16 +1475,20 @@ function registerIpc() {
     finally { if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} } }
   }
 
-  ipcMain.handle('bim:parseScanStations', async (_e, p) => {
+  ipcMain.handle('bim:parseScanStations', async (event, p) => {
     if (typeof p !== 'string' || !p) return { ok: false, error: 'bad path' };
-    return await readE57Stations(p);
+    const abs = resolveAuthorizedFile(event, p, new Set(['.e57']));
+    if (!abs) return { ok: false, error: 'path_not_authorized' };
+    return await readE57Stations(abs);
   });
 
-  ipcMain.handle('bim:importStations', async () => {
+  ipcMain.handle('bim:importStations', async (event) => {
     try {
       const res = await dialog.showOpenDialog({ title: 'Импорт станций сканера', properties: ['openFile'], filters: [{ name: 'Станции (E57/JSON)', extensions: ['e57', 'json'] }] });
       if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, canceled: true };
-      const p = res.filePaths[0];
+      const sender = ipcSender(event);
+      if (!sender) return { ok: false, error: 'invalid_sender' };
+      const p = fileGrants.grantExistingFile(sender.id, res.filePaths[0], { read: true, write: false });
       const ext = path.extname(p).toLowerCase();
       if (ext === '.json') {
         const text = fs.readFileSync(p, 'utf8');
@@ -1108,35 +1517,194 @@ function registerIpc() {
   // ---------- Дисковый octree: сборка и потоковая подгрузка узлов (пункт 4) ----------
   // Каталог хранилищ octree внутри userData; читать/писать разрешено только здесь.
   function octreeBaseDir() { return path.join(app.getPath('userData'), 'octrees'); }
+  const octreeIndexCache = new Map();
+  const octreeDirOwners = new Map();
   function safeOctreeDir(dir) {
     const base = path.resolve(octreeBaseDir());
     const rd = path.resolve(String(dir || ''));
-    if (rd !== base && !rd.startsWith(base + path.sep)) return null;
+    const relative = path.relative(base, rd);
+    if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+    try {
+      if (fs.lstatSync(base).isSymbolicLink() || fs.lstatSync(rd).isSymbolicLink() || !fs.lstatSync(rd).isDirectory()) return null;
+    } catch (_) { return null; }
     return rd;
   }
+  octreeCleanupOnQuit = function cleanupOctreeStoresOnQuit() {
+    for (const job of activeOctreeBuildJobs.values()) {
+      if (!job || job.finished) continue;
+      job.cancelled = true;
+      try { job.worker.terminate().catch(() => {}); } catch (_) {}
+      try { if (job.outputDir) fs.rmSync(job.outputDir, { recursive: true, force: true }); } catch (_) {}
+    }
+    const base = path.resolve(octreeBaseDir());
+    try {
+      const stat = fs.lstatSync(base);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return;
+      for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+        // Remove only names produced by buildOctree, never arbitrary userData.
+        if (!entry.isDirectory() || !/^\d+-[a-f0-9]{16}$/.test(entry.name)) continue;
+        const dir = safeOctreeDir(path.join(base, entry.name));
+        if (dir) fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (_) {}
+    octreeIndexCache.clear();
+    octreeDirOwners.clear();
+  };
 
-  // Строит многоуровневый octree из большого облака и пишет его на диск: index.json + nodes.bin.
-  ipcMain.handle('bim:buildOctree', async (_e, a) => {
+  // Parse, partition and pack point data in a dedicated worker. Only the
+  // relatively small index returns through IPC; node bytes are written in
+  // bounded blocks directly to disk.
+  ipcMain.handle('bim:buildOctree', async (event, a) => {
+    let job = null;
     try {
       a = a || {};
-      const abs = String(a.path || '');
-      if (!CLOUD_EXT_ALLOW.has(path.extname(abs).toLowerCase())) return { ok: false, error: 'ext_not_allowed' };
+      const abs = resolveAuthorizedFile(event, String(a.path || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
+      const sender = event && event.sender;
+      if (!sender || (sender.isDestroyed && sender.isDestroyed())) return { ok: false, error: 'invalid_sender' };
+      const jobId = a.jobId == null ? crypto.randomBytes(12).toString('hex') : a.jobId;
+      if (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId)) return { ok: false, error: 'invalid_job_id' };
+      const key = cloudJobKey(sender, 'octree:' + jobId);
+      if (activeOctreeBuildJobs.has(key)) return { ok: false, error: 'duplicate_job_id' };
       const s = readSettings();
-      // для octree берём расширенный бюджет: детализация раскрывается по узлам, а не грузится целиком
-      const cfgBudget = Number(s && s.pointBudget) > 0 ? Number(s.pointBudget) : 0;
-      const maxPoints = Math.max(cfgBudget, Number(a.maxPoints) || 0, 40000000);
-      const pr = await cloud.parseCloudFileAsync(abs, { maxPoints });
-      if (!pr || !pr.ok) return { ok: false, error: (pr && pr.message) || 'parse_failed' };
-      if (pr.kind && pr.kind !== 'points') return { ok: false, error: 'not_points' };
-      const nodeCapacity = Math.max(1000, Number(a.nodeCapacity) || 120000);
-      const built = octstore.buildOctree(pr.pos, pr.col || null, { nodeCapacity });
-      const packed = octstore.packOctree(built);
-      const dir = path.join(octreeBaseDir(), String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8));
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'nodes.bin'), Buffer.from(packed.blob.buffer, packed.blob.byteOffset, packed.blob.byteLength));
-      fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify(packed.index));
-      return { ok: true, dir, index: packed.index, meta: pr.meta };
-    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      // Scalar ASCII/binary PLY, uncompressed LAS and ASCII/interleaved-binary/
+      // LZF PCD point clouds use bounded source reads and external disk partitions.
+      // Other formats still use the memory-backed parser below.
+      const configuredBudget = Number(s && s.pointBudget) > 0 ? Number(s.pointBudget) : 0;
+      const requestedBudget = Math.max(configuredBudget, Number(a.maxPoints) || 0, 40000000);
+      const maxPoints = Math.min(40000000, Number.isSafeInteger(requestedBudget) ? requestedBudget : 40000000);
+      const requestedCapacity = Number(a.nodeCapacity) || 120000;
+      const nodeCapacity = Math.max(1000, Math.min(500000, Number.isSafeInteger(requestedCapacity) ? requestedCapacity : 120000));
+      let sourcePreflightInfo = null;
+      const sourceExtension = path.extname(abs).toLowerCase();
+      if (sourceExtension === '.ply' &&
+          typeof cloud.getOutOfCorePlyPointFileInfo === 'function') {
+        try { sourcePreflightInfo = cloud.getOutOfCorePlyPointFileInfo(abs); } catch (_) {}
+      } else if (sourceExtension === '.las' &&
+          typeof cloud.getOutOfCoreLasPointFileInfo === 'function') {
+        try { sourcePreflightInfo = cloud.getOutOfCoreLasPointFileInfo(abs); } catch (_) {}
+      } else if (sourceExtension === '.pcd' &&
+          typeof cloud.getOutOfCorePcdPointFileInfo === 'function') {
+        try { sourcePreflightInfo = cloud.getOutOfCorePcdPointFileInfo(abs); } catch (_) {}
+      }
+      const useOutOfCore = !!sourcePreflightInfo;
+      const outOfCoreRecordStride = 15 +
+        (useOutOfCore && sourcePreflightInfo.hasIntensity ? 4 : 0) +
+        (useOutOfCore && sourcePreflightInfo.hasClassification ? 1 : 0);
+      const advertisedSourcePoints = Number(a.expectedPoints);
+      const sourcePointCount = useOutOfCore
+        ? Number(sourcePreflightInfo.pointCount || sourcePreflightInfo.vertexCount)
+        : advertisedSourcePoints;
+      const estimatePointCount = Number.isSafeInteger(sourcePointCount) && sourcePointCount > 0
+        ? Math.min(sourcePointCount, maxPoints)
+        : null;
+      if (estimatePointCount !== null) {
+        const memory = useOutOfCore
+          ? assessOutOfCoreOctreeMemory(estimatePointCount, currentAvailableMemoryBytes(), { nodeCapacity })
+          : assessOctreeBuildMemory(estimatePointCount, currentAvailableMemoryBytes());
+        if (!memory.ok) {
+          return {
+            ok: false,
+            error: 'insufficient_memory',
+            message: 'Индексация остановлена до запуска worker: ' +
+              (useOutOfCore ? 'оценка потокового рабочего набора ' : 'консервативная оценка памяти ') +
+              formatResourceMiB(memory.estimatedBytes) + ', безопасный бюджет сейчас ' +
+              formatResourceMiB(memory.safeBudgetBytes) + '. Закройте другие приложения или уменьшите объём облака.'
+          };
+        }
+      }
+      const base = octreeBaseDir();
+      fs.mkdirSync(base, { recursive: true });
+      if (estimatePointCount !== null) {
+        const pcdLzfScratchBytes = useOutOfCore && sourceExtension === '.pcd' &&
+          sourcePreflightInfo.mode === 'binary_compressed'
+          ? sourcePreflightInfo.pointBytes
+          : 0;
+        const disk = useOutOfCore
+          ? assessOutOfCoreOctreeDiskSpace(
+            estimatePointCount, currentAvailableDiskBytes(base),
+            {
+              // Canonical scratch and final node blob each contain one record.
+              // Include the v2 intensity/classification payload instead of
+              // preflighting the older XYZ+RGB-only 30-byte estimate.
+              bytesPerPoint: outOfCoreRecordStride * 2,
+              extraBytes: pcdLzfScratchBytes
+            }
+          )
+          : assessOctreeBuildDiskSpace(estimatePointCount, currentAvailableDiskBytes(base));
+        if (!disk.ok) {
+          return {
+            ok: false,
+            error: 'insufficient_disk',
+            message: 'Индексация остановлена до запуска worker: свободно ' +
+              formatResourceMiB(disk.availableBytes) + ', по оценке требуется ' +
+              formatResourceMiB(disk.requiredBytes) + ' с резервом' +
+              (useOutOfCore ? ' для промежуточных и итоговых дисковых данных.' : '.') +
+              ' Освободите место на диске приложения или уменьшите объём облака.'
+          };
+        }
+      }
+      let sourceTransform;
+      if (a.sourceTransform != null) {
+        const candidate = a.sourceTransform;
+        if (!candidate || !['zup', 'yup'].includes(candidate.axis) ||
+            !Array.isArray(candidate.t) || candidate.t.length < 3 ||
+            !candidate.t.slice(0, 3).every(value => Number.isFinite(Number(value)) && Math.abs(Number(value)) <= 1e12)) {
+          return { ok: false, error: 'invalid_source_transform' };
+        }
+        sourceTransform = { axis: candidate.axis, t: candidate.t.slice(0, 3).map(Number) };
+      }
+      const outputDir = path.join(base, Date.now() + '-' + crypto.randomBytes(8).toString('hex'));
+      const worker = new Worker(path.join(__dirname, 'octree-build-worker.js'), {
+        workerData: { sourcePath: abs, outputDir, maxPoints, nodeCapacity, sourceTransform, sourcePreflightInfo }
+      });
+      return await new Promise(resolve => {
+        let settled = false;
+        const finish = result => {
+          if (settled) return;
+          settled = true;
+          job.finished = true;
+          activeOctreeBuildJobs.delete(key);
+          try { sender.removeListener('destroyed', job.onSenderDestroyed); } catch (_) {}
+          if (!result || !result.ok) {
+            try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch (_) {}
+            result = result || { ok: false, error: 'octree_worker_failed' };
+          } else {
+            // The index is immutable after build. Cache it once instead of
+            // reparsing index.json for every node requested by the renderer.
+            const canonicalDir = path.resolve(outputDir);
+            octreeIndexCache.set(canonicalDir, result.index);
+            octreeDirOwners.set(canonicalDir, sender.id);
+            while (octreeIndexCache.size > 8) octreeIndexCache.delete(octreeIndexCache.keys().next().value);
+          }
+          resolve(result);
+        };
+        job = { key, jobId, sender, worker, outputDir, cancelled: false, finished: false };
+        job.onSenderDestroyed = () => {
+          if (job.finished || job.cancelled) return;
+          job.cancelled = true;
+          try { worker.terminate().catch(() => {}); } catch (_) {}
+        };
+        activeOctreeBuildJobs.set(key, job);
+        try { sender.once('destroyed', job.onSenderDestroyed); } catch (_) {}
+        worker.on('message', message => {
+          if (job.cancelled || job.finished) return;
+          if (message && message.type === 'progress') {
+            try { if (!(sender.isDestroyed && sender.isDestroyed())) sender.send('bim:octreeProgress', { jobId, progress: message.progress }); } catch (_) {}
+          } else if (message && message.type === 'result') {
+            finish(Object.assign({ ok: false }, message.result || {}));
+          }
+        });
+        worker.on('error', error => finish({ ok: false, error: String(error && error.message || error) }));
+        worker.on('exit', code => {
+          if (job.cancelled) finish({ ok: false, cancelled: true, error: 'cancelled' });
+          else if (!settled) finish({ ok: false, error: 'octree_worker_exit_' + code });
+        });
+      });
+    } catch (e) {
+      if (job && job.outputDir) try { fs.rmSync(job.outputDir, { recursive: true, force: true }); } catch (_) {}
+      return { ok: false, error: String((e && e.message) || e) };
+    }
   });
 
   // Читает байты одного узла octree по смещению/длине из index (для потоковой подгрузки в рендерере).
@@ -1149,15 +1717,56 @@ function registerIpc() {
       const idxPath = path.join(dir, 'index.json');
       const binPath = path.join(dir, 'nodes.bin');
       if (!fs.existsSync(idxPath) || !fs.existsSync(binPath)) return { ok: false, error: 'not_found' };
-      const index = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
-      const node = (index.nodes || []).find(x => x.key === a.key);
+      let index = octreeIndexCache.get(dir);
+      if (!index) {
+        const idxStat = fs.statSync(idxPath);
+        if (!idxStat.isFile() || idxStat.size > 64 * 1024 * 1024) return { ok: false, error: 'index_too_large' };
+        index = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+        if (!index || !Array.isArray(index.nodes) ||
+            !octreeStore.validateOctreeIndex) return { ok: false, error: 'invalid_index' };
+        const dataStat = fs.statSync(binPath);
+        if (!dataStat.isFile() ||
+            !octreeStore.validateOctreeIndex(index, dataStat.size)) {
+          return { ok: false, error: 'invalid_index' };
+        }
+        octreeIndexCache.set(dir, index);
+      }
+      if (typeof a.key !== 'string' || !/^r[0-7]*$/.test(a.key)) return { ok: false, error: 'invalid_node_key' };
+      const node = index.nodes.find(x => x.key === a.key);
       if (!node) return { ok: false, error: 'no_node' };
+      if (!Number.isSafeInteger(node.count) || node.count < 0 ||
+          !Number.isSafeInteger(node.offset) || node.offset < 0 ||
+          !Number.isSafeInteger(node.byteLength) || node.byteLength !== node.count * index.stride ||
+          node.byteLength > 16 * 1024 * 1024) return { ok: false, error: 'invalid_node_range' };
+      const binStat = fs.statSync(binPath);
+      if (!binStat.isFile() || node.offset + node.byteLength > binStat.size) return { ok: false, error: 'node_out_of_bounds' };
       fd = fs.openSync(binPath, 'r');
       const buf = Buffer.alloc(node.byteLength);
-      fs.readSync(fd, buf, 0, node.byteLength, node.offset);
-      return { ok: true, key: node.key, count: node.count, hasColor: !!index.hasColor, bytes: buf };
+      const read = fs.readSync(fd, buf, 0, node.byteLength, node.offset);
+      if (read !== node.byteLength) return { ok: false, error: 'short_node_read' };
+      return {
+        ok: true, key: node.key, count: node.count, hasColor: !!index.hasColor,
+        hasIntensity: !!index.hasIntensity, hasClassification: !!index.hasClassification,
+        bytes: buf
+      };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     finally { if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} } }
+  });
+
+  // Deletes one completed, sender-owned derived store. Raw source files and
+  // other renderer sessions are never in scope for this operation.
+  ipcMain.handle('bim:deleteOctree', async (event, a) => {
+    try {
+      a = a || {};
+      const dir = safeOctreeDir(a.dir);
+      if (!dir) return { ok: false, error: 'denied' };
+      const sender = event && event.sender;
+      if (!sender || octreeDirOwners.get(dir) !== sender.id) return { ok: false, error: 'denied' };
+      await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      octreeIndexCache.delete(dir);
+      octreeDirOwners.delete(dir);
+      return { ok: true, deleted: true };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
   // ---------- Potree: конвертация облака во внешний формат Potree 2.0 (опционально) ----------
@@ -1178,11 +1787,10 @@ function registerIpc() {
     try { const c = potreeConverterPath(); return { ok: true, converter: !!c, path: c || null }; }
     catch (e) { return { ok: false, converter: false, error: String((e && e.message) || e) }; }
   });
-  ipcMain.handle('bim:convertPotree', async (_e, p) => {
+  ipcMain.handle('bim:convertPotree', async (event, p) => {
     try {
-      const abs = String(p || '');
-      if (!CLOUD_EXT_ALLOW.has(path.extname(abs).toLowerCase())) return { ok: false, error: 'ext_not_allowed' };
-      if (!fs.existsSync(abs)) return { ok: false, error: 'missing' };
+      const abs = resolveAuthorizedFile(event, String(p || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const conv = potreeConverterPath();
       if (!conv) return { ok: false, error: 'no_converter' };
       const base = path.join(app.getPath('userData'), 'potree');
@@ -1219,13 +1827,12 @@ function registerIpc() {
     try { return { ok: true, converter: !!splatTransformBin() }; }
     catch (e) { return { ok: false, converter: false, error: String((e && e.message) || e) }; }
   });
-  ipcMain.handle('bim:convertSplat', async (_e, a) => {
+  ipcMain.handle('bim:convertSplat', async (event, a) => {
     try {
       a = a || {};
-      const abs = String(a.path || '');
+      const abs = resolveAuthorizedFile(event, String(a.path || ''), new Set(['.ply']));
       const mode = a.mode === 'optimize' ? 'optimize' : 'sog';
-      if (path.extname(abs).toLowerCase() !== '.ply') return { ok: false, error: 'ext_not_allowed' };
-      if (!fs.existsSync(abs)) return { ok: false, error: 'missing' };
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const bin = splatTransformBin();
       if (!bin) return { ok: false, error: 'no_converter' };
       const st = fs.statSync(abs);
@@ -1243,7 +1850,10 @@ function registerIpc() {
         if (size > 0 && size <= cap) { try { res.base64 = fs.readFileSync(out).toString('base64'); } catch (_) {} }
         return res;
       };
-      if (fs.existsSync(out) && fs.statSync(out).size > 0) return Object.assign({ cached: true }, readOut());
+      if (fs.existsSync(out) && fs.statSync(out).size > 0) {
+        grantExistingOutput(event, out);
+        return Object.assign({ cached: true }, readOut());
+      }
       const args = [bin, abs];
       if (mode === 'optimize') { args.push('-d', '60%', '--filter-nan', '--filter-harmonics', '2'); }
       args.push(out);
@@ -1256,6 +1866,7 @@ function registerIpc() {
         }, (err) => err ? reject(err) : resolve());
       });
       if (!fs.existsSync(out) || fs.statSync(out).size === 0) return { ok: false, error: 'no_output' };
+      grantExistingOutput(event, out);
       return readOut();
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
@@ -1403,13 +2014,12 @@ function registerIpc() {
       return { ok: true, python: true, pythonBin: py, open3d: !!(r && r.open3d), numpy: !!(r && r.numpy), pyVersion: (r && r.python) || null, cloudCompare: cc };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
-  ipcMain.handle('bim:cleanCloud', async (_e, a) => {
+  ipcMain.handle('bim:cleanCloud', async (event, a) => {
     let tmpIn = null;
     try {
       a = a || {};
-      const abs = String(a.path || '');
-      if (!abs) return { ok: false, error: 'no_path' };
-      if (!fs.existsSync(abs)) return { ok: false, error: 'not_found' };
+      const abs = resolveAuthorizedFile(event, String(a.path || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const ext = path.extname(abs).toLowerCase();
       if (ext !== '.ply' && !CLOUD_EXT_ALLOW.has(ext)) return { ok: false, error: 'ext_not_allowed' };
       // Движок выбираем ДО тяжёлого парсинга.
@@ -1429,10 +2039,16 @@ function registerIpc() {
         fs.mkdirSync(base, { recursive: true });
         tmpIn = path.join(base, 'in-' + Date.now() + '.ply');
         const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
-        writePlyBinaryToDisk(tmpIn, pr.pos, pr.col, hasColor);
+        writePlyBinaryToDisk(tmpIn, pr.pos, pr.col, hasColor, {
+          intensity: pr.intensity || null, classification: pr.classification || null
+        });
         inPly = tmpIn;
       }
       let outp = String(a.output || '');
+      if (outp) {
+        outp = resolveAuthorizedOutput(event, outp);
+        if (!outp) return { ok: false, error: 'output_path_not_authorized' };
+      }
       if (!outp) {
         const b = path.basename(abs).replace(/\.[^.]+$/, '');
         const dir = path.dirname(abs);
@@ -1449,12 +2065,14 @@ function registerIpc() {
         const r = await runCC(cc, inPly, outp, ops, Number(a.count) || inCount || 0);
         if (!r.ok) return r;
         const outCount = plyVertexCount(outp);
+        grantExistingOutput(event, outp);
         return { ok: true, engine: 'cloudcompare', path: outp, inputCount: inCount, outputCount: outCount, removed: (inCount != null && outCount != null) ? (inCount - outCount) : null };
       }
       const py = pythonBin();
       if (!py) return { ok: false, error: 'no_python', needPython: true };
       const script = ensureCleanScript();
       const res = await runPyClean(py, script, { input: inPly, output: outp, ops });
+      if (res && res.ok && res.path) grantExistingOutput(event, res.path);
       return res;
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     finally { if (tmpIn) { try { fs.unlinkSync(tmpIn); } catch (_) {} } }
@@ -1517,12 +2135,11 @@ function registerIpc() {
       return { ok: false, code, message: 'Не удалось установить CloudCompare (код ' + code + ')', out: out.slice(-600) };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
-  ipcMain.handle('bim:editInCloudCompare', async (_e, a) => {
+  ipcMain.handle('bim:editInCloudCompare', async (event, a) => {
     try {
       a = a || {};
-      const abs = String(a.path || '');
-      if (!abs) return { ok: false, error: 'no_path' };
-      if (!fs.existsSync(abs)) return { ok: false, error: 'not_found' };
+      const abs = resolveAuthorizedFile(event, String(a.path || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const cc = ccBin();
       if (!cc) return { ok: false, error: 'no_cloudcompare', needCloudCompare: true };
       const base = path.join(app.getPath('userData'), 'cc-edit');
@@ -1539,7 +2156,9 @@ function registerIpc() {
         if (!pr || !pr.ok) return { ok: false, error: 'parse_failed' };
         if (pr.kind && pr.kind !== 'points') return { ok: false, error: 'not_points' };
         const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
-        writePlyBinaryToDisk(work, pr.pos, pr.col, hasColor);
+        writePlyBinaryToDisk(work, pr.pos, pr.col, hasColor, {
+          intensity: pr.intensity || null, classification: pr.classification || null
+        });
       }
       let before = 0; try { before = fs.statSync(work).mtimeMs; } catch (_) {}
       const cp = require('child_process');
@@ -1550,14 +2169,15 @@ function registerIpc() {
       let after = before, changed = false, outCount = null;
       try { after = fs.statSync(work).mtimeMs; } catch (_) {}
       changed = after > before;
-      if (changed) { outCount = plyVertexCount(work); return { ok: true, path: work, changed: true, exitCode: code, outputCount: outCount }; }
+      if (changed) { outCount = plyVertexCount(work); grantExistingOutput(event, work); return { ok: true, path: work, changed: true, exitCode: code, outputCount: outCount }; }
       // Фолбэк: если юзер сохранил «Save as» в ту же папку — возьмём самый свежий .ply.
       try {
         const files = fs.readdirSync(base).filter((f) => /\.ply$/i.test(f)).map((f) => path.join(base, f));
         let newest = null, nt = before;
         for (const f of files) { try { const m = fs.statSync(f).mtimeMs; if (m > nt) { nt = m; newest = f; } } catch (_) {} }
-        if (newest) return { ok: true, path: newest, changed: true, exitCode: code, outputCount: plyVertexCount(newest) };
+        if (newest) { grantExistingOutput(event, newest); return { ok: true, path: newest, changed: true, exitCode: code, outputCount: plyVertexCount(newest) }; }
       } catch (_) {}
+      grantExistingOutput(event, work);
       return { ok: true, path: work, changed: false, exitCode: code, outputCount: null };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
@@ -1599,16 +2219,15 @@ function registerIpc() {
     } catch (_) { return null; }
   }
   let _ccEmbedProc = null;
-  ipcMain.handle('bim:embedCloudCompare', async (_e, a) => {
+  ipcMain.handle('bim:embedCloudCompare', async (event, a) => {
     try {
       if (process.platform !== 'win32') return { ok: false, error: 'win_only', fallbackExternal: true };
       a = a || {};
-      const abs = String(a.path || '');
-      if (!abs) return { ok: false, error: 'no_path' };
-      if (!fs.existsSync(abs)) return { ok: false, error: 'not_found' };
+      const abs = resolveAuthorizedFile(event, String(a.path || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const cc = ccBin();
       if (!cc) return { ok: false, error: 'no_cloudcompare', needCloudCompare: true };
-      const win = BrowserWindow.fromWebContents(_e.sender) || (BrowserWindow.getAllWindows() || [])[0] || null;
+      const win = BrowserWindow.fromWebContents(event.sender) || (BrowserWindow.getAllWindows() || [])[0] || null;
       const parentDec = win ? parentHwndDecimal(win) : null;
       if (!parentDec) return { ok: false, error: 'no_parent_hwnd', fallbackExternal: true };
       if (!embedHelper()) return { ok: false, error: 'no_embed_helper', fallbackExternal: true };
@@ -1639,7 +2258,7 @@ function registerIpc() {
       try { embedSend({ cmd: 'release' }); } catch (_) {}
       // 1) Тот же файл перезаписан (Ctrl+S поверх)?
       let after = before; try { after = fs.statSync(abs).mtimeMs; } catch (_) {}
-      if (after > before) { return { ok: true, embedded: true, path: abs, changed: true, exitCode: code, outputCount: (/\.ply$/i.test(abs) ? plyVertexCount(abs) : null) }; }
+      if (after > before) { grantExistingOutput(event, abs); return { ok: true, embedded: true, path: abs, changed: true, exitCode: code, outputCount: (/\.ply$/i.test(abs) ? plyVertexCount(abs) : null) }; }
       // 2) Иначе — самый свежий облачный файл в папке, созданный/изменённый после запуска.
       try {
         let newest = null, nt = launchTs - 1500;
@@ -1650,8 +2269,9 @@ function registerIpc() {
           const prev = snapshot[f];
           if ((prev === undefined || m > prev) && m > nt) { nt = m; newest = fp; }
         }
-        if (newest) return { ok: true, embedded: true, path: newest, changed: true, exitCode: code, outputCount: (/\.ply$/i.test(newest) ? plyVertexCount(newest) : null) };
+        if (newest) { grantExistingOutput(event, newest); return { ok: true, embedded: true, path: newest, changed: true, exitCode: code, outputCount: (/\.ply$/i.test(newest) ? plyVertexCount(newest) : null) }; }
       } catch (_) {}
+      grantExistingOutput(event, abs);
       return { ok: true, embedded: true, path: abs, changed: false, exitCode: code, outputCount: null };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
@@ -1689,7 +2309,9 @@ function registerIpc() {
     fs.mkdirSync(base, { recursive: true });
     const tmp = path.join(base, 'in-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '.ply');
     const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
-    writePlyBinaryToDisk(tmp, pr.pos, pr.col, hasColor);
+    writePlyBinaryToDisk(tmp, pr.pos, pr.col, hasColor, {
+      intensity: pr.intensity || null, classification: pr.classification || null
+    });
     return { ply: tmp, tmp };
   }
   // Registration must see both inputs in the same viewer-local Y-up frame.
@@ -1706,14 +2328,21 @@ function registerIpc() {
     fs.mkdirSync(base, { recursive: true });
     const tmp = path.join(base, 'register-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9) + '.ply');
     const hasColor = !!(pr.meta && pr.meta.colored) && !!(pr.col && pr.col.length);
+    const intensity = pr.intensity || null;
+    const classification = pr.classification || null;
     try {
       // pr.pos is already centred and converted to the viewer's Y-up frame.
-      writePlyBinaryToDisk(tmp, pr.pos, pr.col, hasColor, { upAxis: 'y', coordinateFrame: 'viewer-local' });
+      writePlyBinaryToDisk(tmp, pr.pos, pr.col, hasColor, {
+        upAxis: 'y', coordinateFrame: 'viewer-local',
+        intensity: intensity, classification: classification
+      });
     } catch (e) {
       try { fs.unlinkSync(tmp); } catch (_) {}
       return { error: 'ply_write_failed', message: String((e && e.message) || e) };
     }
-    return { ply: tmp, tmp, meta: pr.meta || {}, count: pr.count || pr.pos.length / 3, pos: pr.pos, col: pr.col || null, hasColor: hasColor };
+    return { ply: tmp, tmp, meta: pr.meta || {}, count: pr.count || pr.pos.length / 3,
+      pos: pr.pos, col: pr.col || null, hasColor: hasColor,
+      intensity: intensity, classification: classification };
   }
   function validGeomSourceTransform(meta) {
     const x = meta && meta.srcXform;
@@ -1748,7 +2377,8 @@ function registerIpc() {
   function writeGeomPointInput(input, pos, frameName) {
     if (!input || !input.tmp || !pos) return false;
     writePlyBinaryToDisk(input.tmp, pos, input.col, input.hasColor, {
-      upAxis: 'y', coordinateFrame: frameName || 'comparison-viewer-local'
+      upAxis: 'y', coordinateFrame: frameName || 'comparison-viewer-local',
+      intensity: input.intensity || null, classification: input.classification || null
     });
     input.pos = pos;
     return true;
@@ -1770,13 +2400,13 @@ function registerIpc() {
       return { ok: true, python: true, pythonBin: py, numpy: !!(r && r.numpy), scipy: !!(r && r.scipy), open3d: !!(r && r.open3d), pdal: !!(r && r.pdal), pyVersion: (r && r.python) || null, cloudCompare: !!ccBin() };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
-  ipcMain.handle('bim:deviation', async (_e, a) => {
+  ipcMain.handle('bim:deviation', async (event, a) => {
     const tmps = [];
     try {
       a = a || {};
-      const refAbs = String(a.reference || ''), cmpAbs = String(a.compared || '');
-      if (!refAbs || !cmpAbs) return { ok: false, error: 'no_path' };
-      if (!fs.existsSync(refAbs) || !fs.existsSync(cmpAbs)) return { ok: false, error: 'not_found' };
+      const refAbs = resolveAuthorizedFile(event, String(a.reference || ''), CLOUD_EXT_ALLOW);
+      const cmpAbs = resolveAuthorizedFile(event, String(a.compared || ''), CLOUD_EXT_ALLOW);
+      if (!refAbs || !cmpAbs) return { ok: false, error: 'path_not_authorized' };
       const py = pythonBin(); if (!py) return { ok: false, error: 'no_python', needPython: true };
       const ri = await ensureGeomPointInput(refAbs, a.maxPoints);
       if (ri.error) return { ok: false, error: ri.error, message: ri.message || '' };
@@ -1805,7 +2435,11 @@ function registerIpc() {
       }
       const referenceInCompared = mapGeomPositionsToFrame(ri.pos, ri.meta, ci.meta);
       if (referenceInCompared) writeGeomPointInput(ri, referenceInCompared, 'compared-viewer-local');
-      const out = String(a.output || '') || geomDefaultOut(cmpAbs, '_deviation.ply');
+      let out = String(a.output || '');
+      if (out) {
+        out = resolveAuthorizedOutput(event, out);
+        if (!out) return { ok: false, error: 'output_path_not_authorized' };
+      } else out = geomDefaultOut(cmpAbs, '_deviation.ply');
       const normPath = p => {
         const resolved = path.resolve(String(p));
         return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
@@ -1825,6 +2459,7 @@ function registerIpc() {
         outputCrsWkt: comparedFrame ? ((ci.meta && ci.meta.crsWkt) || null) : null
       });
       if (r && r.ok) {
+        if (r.path) grantExistingOutput(event, r.path);
         r.frameCheck = frameCheck;
         r.outputFrame = comparedFrame ? 'target-source' : 'target-viewer-local';
         r.outputCrsWkt = comparedFrame ? ((ci.meta && ci.meta.crsWkt) || null) : null;
@@ -1833,13 +2468,13 @@ function registerIpc() {
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     finally { for (const t of tmps) { try { fs.unlinkSync(t); } catch (_) {} } }
   });
-  ipcMain.handle('bim:registerClouds', async (_e, a) => {
+  ipcMain.handle('bim:registerClouds', async (event, a) => {
     const tmps = [];
     try {
       a = a || {};
-      const srcAbs = String(a.source || ''), tgtAbs = String(a.target || '');
-      if (!srcAbs || !tgtAbs) return { ok: false, error: 'no_path' };
-      if (!fs.existsSync(srcAbs) || !fs.existsSync(tgtAbs)) return { ok: false, error: 'not_found' };
+      const srcAbs = resolveAuthorizedFile(event, String(a.source || ''), CLOUD_EXT_ALLOW);
+      const tgtAbs = resolveAuthorizedFile(event, String(a.target || ''), CLOUD_EXT_ALLOW);
+      if (!srcAbs || !tgtAbs) return { ok: false, error: 'path_not_authorized' };
       const py = pythonBin(); if (!py) return { ok: false, error: 'no_python', needPython: true };
       const si = await ensureGeomPointInput(srcAbs, a.maxPoints);
       if (si.error) return { ok: false, error: si.error, message: si.message || '' };
@@ -1868,7 +2503,11 @@ function registerIpc() {
       }
       const sourceInTarget = mapGeomPositionsToFrame(si.pos, si.meta, ti.meta);
       if (sourceInTarget) writeGeomPointInput(si, sourceInTarget, 'target-viewer-local');
-      const out = String(a.output || '') || geomDefaultOut(srcAbs, '_registered.ply');
+      let out = String(a.output || '');
+      if (out) {
+        out = resolveAuthorizedOutput(event, out);
+        if (!out) return { ok: false, error: 'output_path_not_authorized' };
+      } else out = geomDefaultOut(srcAbs, '_registered.ply');
       const normPath = p => {
         const resolved = path.resolve(String(p));
         return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
@@ -1888,6 +2527,7 @@ function registerIpc() {
         outputCrsWkt: targetTransform ? ((ti.meta && ti.meta.crsWkt) || null) : null
       });
       if (r && r.ok) {
+        if (r.path) grantExistingOutput(event, r.path);
         r.frameCheck = frameCheck;
         r.outputFrame = targetTransform ? 'target-source' : 'target-viewer-local';
         r.outputCrsWkt = targetTransform ? ((ti.meta && ti.meta.crsWkt) || null) : null;
@@ -1896,17 +2536,21 @@ function registerIpc() {
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     finally { for (const t of tmps) { try { fs.unlinkSync(t); } catch (_) {} } }
   });
-  ipcMain.handle('bim:meshCloud', async (_e, a) => {
+  ipcMain.handle('bim:meshCloud', async (event, a) => {
     const tmps = [];
     try {
       a = a || {};
-      const abs = String(a.path || ''); if (!abs) return { ok: false, error: 'no_path' };
-      if (!fs.existsSync(abs)) return { ok: false, error: 'not_found' };
+      const abs = resolveAuthorizedFile(event, String(a.path || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, error: 'path_not_authorized' };
       const py = pythonBin(); if (!py) return { ok: false, error: 'no_python', needPython: true };
       const pi = await ensureGeomPointInput(abs, a.maxPoints);
       if (pi.error) return { ok: false, error: pi.error, message: pi.message || '' };
       if (pi.tmp) tmps.push(pi.tmp);
-      const out = String(a.output || '') || geomDefaultOut(abs, '_mesh.ply');
+      let out = String(a.output || '');
+      if (out) {
+        out = resolveAuthorizedOutput(event, out);
+        if (!out) return { ok: false, error: 'output_path_not_authorized' };
+      } else out = geomDefaultOut(abs, '_mesh.ply');
       const normPath = p => {
         const resolved = path.resolve(String(p));
         return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
@@ -1925,6 +2569,7 @@ function registerIpc() {
         outputCrsWkt: inputFrame ? ((pi.meta && pi.meta.crsWkt) || null) : null
       });
       if (r && r.ok) {
+        if (r.path) grantExistingOutput(event, r.path);
         r.outputFrame = inputFrame ? 'source' : 'viewer-local';
         r.outputCrsWkt = inputFrame ? ((pi.meta && pi.meta.crsWkt) || null) : null;
       }
@@ -1932,34 +2577,142 @@ function registerIpc() {
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     finally { for (const t of tmps) { try { fs.unlinkSync(t); } catch (_) {} } }
   });
-  ipcMain.handle('bim:pdalRun', async (_e, a) => {
+  ipcMain.handle('bim:pdalRun', async (event, a) => {
+    const temporaryOutputs = [];
     try {
-      a = a || {};
-      const py = pythonBin(); if (!py) return { ok: false, error: 'no_python', needPython: true };
+      a = vArgs(a);
+      const pipelinePath = resolveAuthorizedFile(event, String(a.pipelinePath || ''), new Set(['.json']));
+      if (!pipelinePath) return { ok: false, error: 'path_not_authorized' };
+      const pipelineStat = fs.statSync(pipelinePath);
+      if (!pipelineStat.isFile()) return { ok: false, error: 'not_file' };
+      if (pipelineStat.size > MAX_PIPELINE_BYTES) return { ok: false, error: 'pdal_pipeline_too_large' };
+
+      let parsed;
+      try { parsed = JSON.parse(fs.readFileSync(pipelinePath, 'utf8')); }
+      catch (_) { return { ok: false, error: 'pdal_pipeline_invalid_json' }; }
+      const policy = inspectPdalPipeline(parsed);
+      const py = pythonBin();
+      if (!py) return { ok: false, error: 'no_python', needPython: true };
+
+      const sender = ipcSender(event);
+      if (!sender) return { ok: false, error: 'invalid_sender' };
+      let owner = null;
+      try { owner = BrowserWindow.fromWebContents(sender); } catch (_) {}
+      const pipelineDirectory = path.dirname(pipelinePath);
+      const committedOutputs = [];
+
+      for (const slot of policy.files) {
+        if (slot.kind === 'input') {
+          const options = {
+            title: `PDAL · выберите вход для ${slot.type}`,
+            defaultPath: path.join(pipelineDirectory, slot.suggestedName),
+            properties: ['openFile']
+          };
+          const picked = owner
+            ? await dialog.showOpenDialog(owner, options)
+            : await dialog.showOpenDialog(options);
+          if (!picked || picked.canceled || !picked.filePaths || !picked.filePaths[0]) {
+            return { ok: false, canceled: true };
+          }
+          bindPdalFile(policy, slot.id, canonicalExistingFile(fs, picked.filePaths[0]));
+          continue;
+        }
+
+        const options = {
+          title: `PDAL · сохраните результат ${slot.type}`,
+          defaultPath: path.join(pipelineDirectory, slot.suggestedName)
+        };
+        const picked = owner
+          ? await dialog.showSaveDialog(owner, options)
+          : await dialog.showSaveDialog(options);
+        if (!picked || picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+        const target = canonicalPlannedFile(fs, picked.filePath);
+        const targetKey = process.platform === 'win32' ? target.toLowerCase() : target;
+        if (temporaryOutputs.some(item =>
+          (process.platform === 'win32' ? item.target.toLowerCase() : item.target) === targetKey
+        )) {
+          throw new Error('pdal_duplicate_output_path');
+        }
+        const extension = path.extname(target);
+        const stem = path.basename(target, extension);
+        const temporary = path.join(
+          path.dirname(target),
+          `.${stem}.pdal-${crypto.randomBytes(10).toString('hex')}${extension}`
+        );
+        bindPdalFile(policy, slot.id, temporary);
+        temporaryOutputs.push({ temporary, target, backup: null, committed: false });
+      }
+
+      const safePipeline = assertPdalFilesBound(policy);
       const script = ensureGeomScript();
-      return await runPyClean(py, script, { mode: 'pdal', pipeline: a.pipeline, output: a.output });
+      const result = await runPyClean(py, script, {
+        mode: 'pdal',
+        pipeline: safePipeline,
+        output: temporaryOutputs[0] ? temporaryOutputs[0].temporary : null
+      });
+      if (!result || !result.ok) return result;
+
+      for (const output of temporaryOutputs) {
+        const outputStat = fs.statSync(output.temporary);
+        if (!outputStat.isFile()) throw new Error('pdal_output_not_file');
+      }
+      try {
+        for (const output of temporaryOutputs) {
+          if (fs.existsSync(output.target)) {
+            output.backup = `${output.target}.pdal-backup-${crypto.randomBytes(8).toString('hex')}`;
+            fs.renameSync(output.target, output.backup);
+          }
+          fs.renameSync(output.temporary, output.target);
+          output.committed = true;
+          committedOutputs.push(output.target);
+        }
+      } catch (error) {
+        for (const output of temporaryOutputs.slice().reverse()) {
+          try { if (output.committed && fs.existsSync(output.target)) fs.unlinkSync(output.target); } catch (_) {}
+          try { if (output.backup && fs.existsSync(output.backup)) fs.renameSync(output.backup, output.target); } catch (_) {}
+        }
+        throw error;
+      }
+      for (const output of temporaryOutputs) {
+        try { if (output.backup) fs.unlinkSync(output.backup); } catch (_) {}
+        grantExistingOutput(event, output.target);
+      }
+      result.output = committedOutputs[0] || null;
+      result.outputs = committedOutputs;
+      return result;
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    finally {
+      for (const output of temporaryOutputs) {
+        try { if (output.temporary && fs.existsSync(output.temporary)) fs.unlinkSync(output.temporary); } catch (_) {}
+      }
+    }
   });
 
   ipcMain.handle('bim:uploadDocument', (_e, a) => {
-    const { file } = saveUpload(a.name, a.base64);
+    a = vArgs(a);
+    const roomId = vId(a.roomId);
+    const elementId = a.elementId == null ? null : vId(a.elementId);
+    const { file, size } = saveUpload(a.name, a.base64);
     // F1: если в этом же помещении/элементе уже есть загруженный документ с таким именем — создаём новую версию
     const data = store.getData();
-    const room = (data.rooms || []).find(r => r.id === a.roomId);
-    const existing = room && (room.documents || []).find(d => d.name === a.name && (d.element_id || null) === (a.elementId || null) && d.is_upload);
+    const room = (data.rooms || []).find(r => r.id === roomId);
+    const existing = room && (room.documents || []).find(d => d.name === a.name && (d.element_id || null) === elementId && d.is_upload);
     if (existing) {
       const versions = Array.isArray(existing.versions) ? existing.versions.slice() : [];
       const curLabel = existing.version || 'v1';
       if (!versions.some(v => v.v === curLabel)) versions.push({ v: curLabel, file: existing.file, date: existing.date });
       const nextNum = versions.reduce((m, v) => Math.max(m, parseInt(String(v.v).replace(/\D/g, ''), 10) || 0), 0) + 1;
       versions.push({ v: 'v' + nextNum, file, date: new Date().toISOString().slice(0, 10) });
-      return store.updateDocument(existing.id, { file, mime: a.mime || existing.mime, version: 'v' + nextNum, date: new Date().toISOString().slice(0, 10), versions });
+      return store.updateDocument(existing.id, { file, mime: a.mime || existing.mime, size, version: 'v' + nextNum, date: new Date().toISOString().slice(0, 10), versions });
     }
-    return store.createDocument({ room_id: a.roomId, element_id: a.elementId || null, type: a.type || 'документ', name: a.name, author: a.author || '', file, mime: a.mime || '', is_upload: 1, version: 'v1', versions: [] });
+    return store.createDocument({ room_id: roomId, element_id: elementId, type: a.type || 'документ', name: a.name, author: a.author || '', file, mime: a.mime || '', size, is_upload: 1, version: 'v1', versions: [] });
   });
-  ipcMain.handle('bim:uploadModel', (_e, a) => {
-    const { file } = (a && a.srcPath && fs.existsSync(a.srcPath)) ? saveUploadFromPath(a.name, a.srcPath) : saveUpload(a.name, a.base64);
-    return store.attachModel(a.roomId, { name: a.name, file, mime: a.mime || '', is_upload: 1 });
+  ipcMain.handle('bim:uploadModel', (event, a) => {
+    a = vArgs(a);
+    const source = a.srcPath ? resolveAuthorizedFile(event, String(a.srcPath), PICKED_EXT_ALLOW) : null;
+    if (a.srcPath && !source) throw new Error('path_not_authorized');
+    const { file, size } = source ? saveUploadFromPath(a.name, source) : saveUpload(a.name, a.base64);
+    return store.attachModel(vId(a.roomId), { name: a.name, file, mime: a.mime || '', size, is_upload: 1 });
   });
 
   ipcMain.handle('bim:updateProject', (_e, patch) => store.updateProject(vPatch(patch)));
@@ -1972,13 +2725,13 @@ function registerIpc() {
   ipcMain.handle('bim:createElement', (_e, a) => { a = vArgs(a); return store.createElement(vId(a.roomId), vPatch(a.patch)); });
   ipcMain.handle('bim:updateElement', (_e, a) => { a = vArgs(a); return store.updateElement(vId(a.id), vPatch(a.patch)); });
   ipcMain.handle('bim:deleteElement', (_e, id) => store.deleteElement(vId(id)));
-  ipcMain.handle('bim:createDocument', (_e, patch) => store.createDocument(vPatch(patch)));
-  ipcMain.handle('bim:updateDocument', (_e, a) => { a = vArgs(a); return store.updateDocument(vId(a.id), vPatch(a.patch)); });
+  ipcMain.handle('bim:createDocument', (_e, patch) => store.createDocument(vDocumentPatch(patch)));
+  ipcMain.handle('bim:updateDocument', (_e, a) => { a = vArgs(a); return store.updateDocument(vId(a.id), vDocumentPatch(a.patch)); });
   ipcMain.handle('bim:deleteDocument', (_e, id) => store.deleteDocument(vId(id)));
 
   ipcMain.handle('bim:importIFC', async (_e, a) => {
     a = vArgs(a);
-    const text = Buffer.from(vStr(a.base64), 'base64').toString('utf8');
+    const text = decodeBase64Strict(vStr(a.base64), MAX_DOCUMENT_WRITE_BYTES).toString('utf8');
     const wres = await runIfcWorker(text);
     const parsed = (wres && wres.ok) ? wres.parsed : parseIFC(text); // фолбэк на синхронный разбор
     return linkIFC(parsed, a.targetRoomId);
@@ -1994,8 +2747,11 @@ function registerIpc() {
   });
   ipcMain.handle('bim:updateFinding', (_e, a) => { a = vArgs(a); return store.updateFinding(vId(a.id), vPatch(a.patch)); });
   ipcMain.handle('bim:addFindingComment', (_e, a) => { a = vArgs(a); return store.addFindingComment(vId(a.id), a.comment); });
-  ipcMain.handle('bim:getSettings', () => readSettings());
-  ipcMain.handle('bim:setSettings', (_e, patch) => { const saved = store.updateSettings ? store.updateSettings(encryptSettingsPatch(patch)) : {}; return decryptSettings(saved); });
+  ipcMain.handle('bim:getSettings', () => publicSettings(readSettings()));
+  ipcMain.handle('bim:setSettings', (_e, patch) => {
+    const saved = store.updateSettings ? store.updateSettings(encryptSettingsPatch(vPatch(patch))) : {};
+    return publicSettings(revealSettings(saved, settingsSafeStorage()));
+  });
 
   // Phase E: app info, data paths, updates
   ipcMain.handle('bim:getVersion', () => { try { return app.getVersion(); } catch (e) { return '0.0.0'; } });
@@ -2008,7 +2764,33 @@ function registerIpc() {
     p.mode = MODE;
     return p;
   });
-  ipcMain.handle('bim:openPath', (_e, p) => { try { if (p) shell.openPath(p); return { ok: true }; } catch (e) { return { ok: false, error: String(e && e.message || e) }; } });
+  ipcMain.handle('bim:openPath', async (event, p) => {
+    try {
+      if (!ipcSender(event) || typeof p !== 'string' || !p) {
+        return { ok: false, error: 'path_not_authorized' };
+      }
+      const allowed = [];
+      const addKnown = (candidate) => {
+        if (!candidate) return;
+        try { allowed.push(canonicalExistingDirectory(fs, candidate)); return; } catch (_) {}
+        try { allowed.push(canonicalExistingFile(fs, candidate)); } catch (_) {}
+      };
+      try { addKnown(app.getPath('userData')); } catch (_) {}
+      try { addKnown(app.getPath('documents')); } catch (_) {}
+      addKnown(store && store.uploadsDir);
+      addKnown(store && store.storePath);
+
+      let requested = null;
+      try { requested = canonicalExistingDirectory(fs, p); }
+      catch (_) { try { requested = canonicalExistingFile(fs, p); } catch (_) {} }
+      const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
+      if (!requested || !allowed.some(candidate => key(candidate) === key(requested))) {
+        return { ok: false, error: 'path_not_authorized' };
+      }
+      const openError = await shell.openPath(requested);
+      return openError ? { ok: false, error: openError } : { ok: true };
+    } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+  });
   ipcMain.handle('bim:checkUpdates', async () => checkForUpdates());
 
   // Кастомные кнопки окна (frameless-режим)
@@ -2079,7 +2861,7 @@ function registerIpc() {
     a = a == null ? {} : vArgs(a);
     return store.listOperations(a.limit, a.projectId ? vId(a.projectId) : undefined);
   });
-  ipcMain.handle('bim:saveProjectClassification', async (_e, a) => {
+  ipcMain.handle('bim:saveProjectClassification', async (event, a) => {
     a = vArgs(a);
     if (!store || !store.projectAssets) throw new Error('project asset storage is unavailable');
     const projectId = a.projectId ? vId(a.projectId) : store.getData().project.id;
@@ -2091,9 +2873,11 @@ function registerIpc() {
       return { ok: false, error: 'REVISION_CONFLICT', currentRevision: before.revision };
     }
     let sourceHash = a.sourceHash == null ? null : String(a.sourceHash).replace(/^sha256:/i, '').toLowerCase();
-    const sourcePath = typeof a.sourcePath === 'string' ? a.sourcePath : '';
-    if (!sourceHash && path.isAbsolute(sourcePath) && CLOUD_EXT_ALLOW.has(path.extname(sourcePath).toLowerCase())) {
-      try { if (fs.existsSync(sourcePath) && fs.statSync(sourcePath).isFile()) sourceHash = await sha256File(sourcePath); } catch (_) {}
+    const sourcePath = typeof a.sourcePath === 'string'
+      ? resolveAuthorizedFile(event, a.sourcePath, CLOUD_EXT_ALLOW)
+      : null;
+    if (!sourceHash && sourcePath) {
+      try { sourceHash = await sha256File(sourcePath); } catch (_) {}
     }
     const metadata = store.projectAssets.saveClassification({
       projectId,
@@ -2117,7 +2901,7 @@ function registerIpc() {
         expectedRevision: before.revision,
         appVersion: app.getVersion(),
         operation: {
-          operation: 'cloud.classify.structure',
+          operation: a.operation === 'cloud.classify.manual' ? 'cloud.classify.manual' : 'cloud.classify.structure',
           inputHash: metadata.sourceHash,
           parameters: {
             cloudId,
@@ -2132,6 +2916,47 @@ function registerIpc() {
         }
       });
       return { ok: true, classification: metadata, state: saved };
+    } catch (error) {
+      if (error && error.code === 'REVISION_CONFLICT') {
+        return { ok: false, error: 'REVISION_CONFLICT', currentRevision: error.currentRevision };
+      }
+      throw error;
+    }
+  });
+  ipcMain.handle('bim:clearProjectClassification', (_e, a) => {
+    a = a == null ? {} : vArgs(a);
+    if (!store || !store.projectAssets) throw new Error('project asset storage is unavailable');
+    const projectId = a.projectId ? vId(a.projectId) : store.getData().project.id;
+    const cloudId = vId(a.cloudId);
+    const expectedRevision = a.expectedRevision == null ? undefined : Number(a.expectedRevision);
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) {
+      throw new Error('invalid expectedRevision');
+    }
+    const before = store.getProjectState(projectId);
+    if (expectedRevision !== undefined && before.revision !== expectedRevision) {
+      return { ok: false, error: 'REVISION_CONFLICT', currentRevision: before.revision };
+    }
+    const next = before.payload;
+    const classifications = Array.isArray(next.classifications) ? next.classifications : [];
+    const retained = classifications.filter(item => !item || item.cloudId !== cloudId);
+    const removed = classifications.length - retained.length;
+    if (!removed) return { ok: true, cleared: false, state: before };
+    next.classifications = retained;
+    try {
+      const saved = store.saveProjectState(next, {
+        projectId,
+        expectedRevision: before.revision,
+        appVersion: app.getVersion(),
+        operation: {
+          operation: 'cloud.classification.clear',
+          parameters: { cloudId },
+          output: { removed: true },
+          warnings: []
+        }
+      });
+      // Content-addressed label bytes are intentionally retained. Old project
+      // revisions/backups may still reference them; only the active pointer is cleared.
+      return { ok: true, cleared: true, state: saved };
     } catch (error) {
       if (error && error.code === 'REVISION_CONFLICT') {
         return { ok: false, error: 'REVISION_CONFLICT', currentRevision: error.currentRevision };
@@ -2185,44 +3010,118 @@ function registerIpc() {
     return { ok: true, path: res.filePath };
   });
 
-  // ---- Phase D5: team sync bundle ----
-  ipcMain.handle('bim:exportSync', async () => {
-    const bundle = store.exportWorkspace();
-    const files = {};
-    try { for (const f of fs.readdirSync(store.uploadsDir)) { const abs = path.join(store.uploadsDir, f); if (fs.statSync(abs).isFile()) files[f] = fs.readFileSync(abs).toString('base64'); } } catch (e) {}
-    bundle.files = files;
-    const dir = safePath(['documents', 'userData']);
-    const res = await dialog.showSaveDialog({ title: 'Экспорт рабочего пространства', defaultPath: path.join(dir, 'workspace-' + Date.now() + '.bimsync'), filters: [{ name: 'BIM Sync', extensions: ['bimsync', 'json'] }] });
-    if (res.canceled || !res.filePath) return { canceled: true };
-    fs.writeFileSync(res.filePath, JSON.stringify(bundle));
-    return { ok: true, path: res.filePath };
+  // ---- Phase D5: streamed, hash-verified team sync bundle ----
+  ipcMain.handle('bim:exportSync', async (event) => {
+    let tempPath = null;
+    try {
+      const dir = safePath(['documents', 'userData']);
+      const res = await dialog.showSaveDialog({
+        title: 'Экспорт рабочего пространства',
+        defaultPath: path.join(dir, 'workspace-' + Date.now() + '.bimsync'),
+        filters: [{ name: 'BIM Sync', extensions: ['bimsync'] }]
+      });
+      if (res.canceled || !res.filePath) return { canceled: true };
+      let target = path.resolve(res.filePath);
+      if (path.extname(target).toLowerCase() !== '.bimsync') target += '.bimsync';
+      tempPath = path.join(path.dirname(target), '.' + path.basename(target) + '.tmp-' + crypto.randomBytes(12).toString('hex'));
+      const summary = await writeSyncBundle(tempPath, {
+        workspace: store.exportWorkspace(),
+        uploadsDir: store.uploadsDir
+      });
+      const saved = await saveCloudOutputFromTemp(target, tempPath, {
+        operation: 'workspace.sync.export',
+        format: 'bimsync'
+      });
+      tempPath = null;
+      grantExistingOutput(event, saved.path);
+      return {
+        ok: true,
+        path: saved.path,
+        sha256: saved.sha256,
+        bytes: saved.bytes,
+        files: summary.files,
+        fileBytes: summary.fileBytes,
+        format: summary.format,
+        warnings: saved.warnings || []
+      };
+    } catch (error) {
+      if (tempPath) try { fs.unlinkSync(tempPath); } catch (_) {}
+      return { ok: false, error: String(error && error.message || error) };
+    }
   });
   ipcMain.handle('bim:importSync', async (_e, a) => {
-    const res = await dialog.showOpenDialog({ title: 'Импорт синхронизации', properties: ['openFile'], filters: [{ name: 'BIM Sync', extensions: ['bimsync', 'json'] }] });
-    if (res.canceled || !res.filePaths[0]) return { canceled: true };
-    const bundle = JSON.parse(fs.readFileSync(res.filePaths[0], 'utf8'));
-    if (bundle.files) { for (const name in bundle.files) { try { fs.writeFileSync(path.join(store.uploadsDir, name), Buffer.from(bundle.files[name], 'base64')); } catch (e) {} } }
-    store.importWorkspace(bundle, { merge: !!(a && a.merge) });
-    return { ok: true };
+    let stageDir = null;
+    let fileTransaction = null;
+    let restoreRequired = false;
+    let previousWorkspace = null;
+    try {
+      const res = await dialog.showOpenDialog({
+        title: 'Импорт синхронизации',
+        properties: ['openFile'],
+        filters: [{ name: 'BIM Sync', extensions: ['bimsync', 'json'] }]
+      });
+      if (res.canceled || !res.filePaths[0]) return { canceled: true };
+      previousWorkspace = store.exportWorkspace();
+      stageDir = fs.mkdtempSync(path.join(store.uploadsDir, '.bimsync-stage-'));
+      try { fs.chmodSync(stageDir, 0o700); } catch (_) {}
+      const parsed = await readSyncBundleToStage(res.filePaths[0], stageDir);
+      fileTransaction = installStagedFiles(parsed.files, store.uploadsDir);
+      restoreRequired = true;
+      const imported = store.importWorkspace(parsed.workspace, { merge: !!(a && a.merge) });
+      fileTransaction.complete();
+      fileTransaction = null;
+      restoreRequired = false;
+      return {
+        ok: true,
+        format: parsed.format,
+        files: parsed.files.length,
+        fileBytes: parsed.totalBytes,
+        imported: imported || null
+      };
+    } catch (error) {
+      if (fileTransaction) {
+        try { fileTransaction.rollback(); } catch (_) {}
+      }
+      if (restoreRequired && previousWorkspace) {
+        try { store.importWorkspace(previousWorkspace, { merge: false }); }
+        catch (restoreError) {
+          return {
+            ok: false,
+            error: String(error && error.message || error),
+            restoreError: String(restoreError && restoreError.message || restoreError)
+          };
+        }
+      }
+      return { ok: false, error: String(error && error.message || error) };
+    } finally {
+      if (stageDir) try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch (_) {}
+    }
   });
 
   /* LCC2: нативный выбор папки через dialog */
-  ipcMain.handle('lcc2:openFolder', async () => {
+  ipcMain.handle('lcc2:openFolder', async (event) => {
     const res = await dialog.showOpenDialog({
       title: 'Выберите LCC2-папку',
       properties: ['openDirectory']
     });
     if (res.canceled || !res.filePaths[0]) return { canceled: true };
-    const folder = res.filePaths[0];
+    const sender = ipcSender(event);
+    if (!sender) return { canceled: false, error: 'invalid_sender' };
+    const folder = fileGrants.grantExistingDirectory(sender.id, res.filePaths[0], { read: true, write: false });
     // Рекурсивно читаем все файлы
     const allFiles = [];
     function walk(dir) {
       let entries;
       try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
       for (const e of entries) {
+        if (allFiles.length >= 100000) throw new Error('lcc2_file_limit_exceeded');
+        if (e.isSymbolicLink()) continue;
         const full = path.join(dir, e.name);
         if (e.isDirectory()) { walk(full); }
-        else { allFiles.push({ name: e.name, fullPath: full, size: 0 }); }
+        else if (e.isFile()) {
+          let size = 0; try { size = fs.statSync(full).size; } catch (_) {}
+          allFiles.push({ name: e.name, fullPath: full, size });
+        }
       }
     }
     walk(folder);
@@ -2230,8 +3129,13 @@ function registerIpc() {
   });
 
   /* LCC2: чтение файла как ArrayBuffer */
-  ipcMain.handle('lcc2:readFile', async (_e, fullPath) => {
-    const buf = fs.readFileSync(fullPath);
+  ipcMain.handle('lcc2:readFile', async (event, fullPath) => {
+    const sender = ipcSender(event);
+    const abs = sender ? fileGrants.resolveExistingFile(sender.id, String(fullPath || '')) : null;
+    if (!abs) throw new Error('path_not_authorized');
+    const stat = fs.statSync(abs);
+    if (stat.size > MAX_IN_MEMORY_PICKED_BYTES) throw new Error('lcc2_file_too_large');
+    const buf = fs.readFileSync(abs);
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   });
 }
