@@ -58,6 +58,7 @@ RC предназначен для внутренней проверки. Реа
 | Packaged version | `1.2.0-rc.2` |
 | Required ASAR runtime entries | PASS; 12 123 entries |
 | CycloneDX SBOM | 507 components; spec 1.5 |
+| GitHub-hosted CI, коммит `341a8f1` | Ubuntu `test`; Windows `windows-test`; Windows `windows-package` (regression suite, NSIS installer, ASAR entries, SBOM): PASS |
 
 Benchmark зависит от машины и проверяет compact section kernel без UI, Worker startup и source I/O.
 

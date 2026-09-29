@@ -2,7 +2,7 @@
 
 ## Что содержит этот архив
 
-Это исходники release candidate `1.2.0-rc.2`. В текущей Linux-среде проверяются AppImage/ASAR и production dependency audit. Исторический Windows package workflow собирал и проверял NSIS/ASAR, но Windows installer именно для текущего RC ещё должен пройти GitHub-hosted Windows build и clean-machine приёмку. Подробности, локальные хеши и ограничения: `RELEASE-1.2.0-rc.2.md`.
+Это исходники release candidate `1.2.0-rc.2`. В Linux-среде проверяются AppImage/ASAR и production dependency audit. GitHub-hosted Windows workflow для коммита `341a8f1` прошёл полный regression suite, собрал NSIS installer и ASAR, сгенерировал SBOM и проверил обязательные ASAR entries; установка на чистой Windows-машине, подпись и SmartScreen остаются внешними gates. Подробности, локальные хеши и ограничения: `RELEASE-1.2.0-rc.2.md`.
 
 ## Требования
 
