@@ -35,3 +35,6 @@ bim-twin-handoff-*.docx
 /preview_c.png
 renderer/preview.png
 ai/samples/
+# UI-стенд: сгенерированные снимки и облако-заготовка
+dev/ui-lab/shots/
+dev/ui-lab/room.ply

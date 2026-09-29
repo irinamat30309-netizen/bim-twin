@@ -247,7 +247,8 @@ html.lx-side-closed .sidebar, html.lx-insp-closed .inspector { visibility: hidde
 /* ---------- Узкие окна ---------- */
 @media (max-width: 1280px) { :root { --w-side: 236px; --w-insp: 296px; } .tb-cmd { width: min(240px, 100%); } }
 @media (max-width: 1100px) {
-  .app, html.lx-side-closed .app, html.lx-insp-closed .app, html.lx-side-closed.lx-insp-closed .app { grid-template-columns: 0 minmax(0, 1fr) 0; }
+  /* панели вынимаются из потока (position: absolute), поэтому в сетке остаётся одна колонка — сцена */
+  .app, html.lx-side-closed .app, html.lx-insp-closed .app, html.lx-side-closed.lx-insp-closed .app { grid-template-columns: minmax(0, 1fr); }
   .sidebar, .inspector { position: absolute; top: 0; bottom: 0; z-index: var(--z-drawer); box-shadow: var(--shadow-3); visibility: hidden; transition: transform var(--t-slow) var(--ease), visibility 0s linear var(--t-slow); }
   .sidebar { left: 0; width: var(--w-side); transform: translateX(-102%); border-width: 0 1px 0 0; }
   .inspector { right: 0; width: var(--w-insp); transform: translateX(102%); border-width: 0 0 0 1px; }
