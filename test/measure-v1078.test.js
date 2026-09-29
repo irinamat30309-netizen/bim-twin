@@ -12,7 +12,9 @@ const VW = fs.readFileSync(path.join(R, 'webgl-viewer.js'), 'utf8');
 test('index.html: кнопки Плотно/Рамки в панели качества', () => {
   assert.ok(HTML.includes('id="qDense"'), 'qDense button missing');
   assert.ok(HTML.includes('id="qFrame"'), 'qFrame button missing');
-  assert.ok(HTML.includes('🎨 Вид облака:'), 'quality panel label missing');
+  // подпись панели без эмодзи: иконка — из общего набора (data-ico="palette")
+  assert.ok(/id="qualityBar"[^>]*aria-label="Вид облака"/.test(HTML), 'quality panel label missing');
+  assert.ok(/data-ico="palette"><\/span><h3>Вид облака<\/h3>/.test(HTML), 'quality panel title/icon missing');
 });
 
 test('app.js: обработчики qDense/qFrame подключены', () => {
@@ -45,21 +47,24 @@ test('webgl-viewer.js: плотная заливка расширяет uPtMax',
   assert.ok(VW.includes('this._attenuate || this._denseFill || adaptive'), 'dense fill attenuation not enabled');
 });
 
-test('app.js: перенос панели 3D-инструментов в верхнюю панель', () => {
-  assert.ok(APP.includes("getElementById('vtGroup')"), 'vtGroup relocation missing');
-  assert.ok(APP.includes("_g.id = 'vtGroup'"), 'vtGroup id not set');
-  assert.ok(APP.includes(".toolbar .tbtns"), 'toolbar target selector missing');
-  assert.ok(APP.includes("'3D-\u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b'"), 'group label missing');
+test('index.html: панель 3D-навигации — рельса в сцене (без переноса в ленту)', () => {
+  // Инструменты вида — постоянная вертикальная рельса поверх 3D; лента их не дублирует и JS ничего не перемещает.
+  assert.ok(/id="viewTools" role="toolbar"/.test(HTML), 'nav-rail viewTools missing');
+  for (const id of ['vtFit', 'vtZoomIn', 'vtZoomOut', 'vtWalk', 'vtFull']) assert.ok(new RegExp('id="' + id + '"[^>]*data-ico="[a-z0-9-]+"').test(HTML), id + ' с иконкой');
+  assert.ok(!APP.includes("_g.id = 'vtGroup'"), 'перенос панели в верхнюю полосу больше не нужен');
 });
 
-test('index.html: группа «Облако точек» рядом с 3D-туром', () => {
-  assert.ok(HTML.includes('>Облако точек<'), 'point-cloud group label missing');
-  assert.ok(HTML.includes('id="btnOpenCloud"'), 'btnOpenCloud missing');
-  // кнопка больше не скрыта через display:none в разметке
+test('лента: группа «Облака точек» — на вкладке «Импорт», кнопка открытия — главная', () => {
+  const C = require('../renderer/ui/commands.js');
+  const hit = C.all().find((c) => c.item.id === 'btnOpenCloud');
+  assert.ok(hit, 'btnOpenCloud missing');
+  assert.equal(hit.tab.id, 'import');
+  assert.equal(hit.group.label, 'Облака точек');
+  assert.ok(hit.item.primary, 'открытие облака выделено как главное действие');
+  // исходная кнопка есть в разметке и не скрыта инлайн-стилем
   const seg = HTML.slice(HTML.indexOf('id="btnOpenCloud"') - 40, HTML.indexOf('id="btnOpenCloud"') + 40);
   assert.ok(!seg.includes('display:none'), 'btnOpenCloud should be visible');
-  // группа стоит после 3D-тура (tsSplatTop) и до группы Правка
-  assert.ok(HTML.indexOf('id="tsSplatTop"') < HTML.indexOf('id="btnOpenCloud"'), 'point-cloud group should follow 3D-tour');
+  assert.ok(HTML.indexOf('id="btnOpenCloud"') > 0);
 });
 
 test('app.js: кнопка облака всегда видна + fallback на выбор файла', () => {
@@ -73,29 +78,33 @@ test('index.html: легенда убрана, консоль всегда от�
   assert.ok(HTML.includes('id="devConsole" class="devconsole">'), 'devConsole should be always-open');
 });
 
-test('app.js: куб видов перенесён в тулбар + консоль-док', () => {
-  assert.ok(APP.includes("_g2.id = 'vcGroup'"), 'viewCube not relocated into toolbar');
+test('куб видов — в сцене, консоль-док сворачивается и не перекрывает 3D', () => {
+  assert.ok(/<div class="viewcube" id="viewCube"/.test(HTML), 'viewCube missing');
+  assert.ok(HTML.indexOf('id="viewCube"') > HTML.indexOf('id="stage"'), 'куб видов внутри сцены');
   assert.ok(APP.includes('console-collapsed'), 'console dock collapse logic missing');
-  assert.ok(APP.includes("panel.style.display = 'flex'"), 'console not forced open');
+  assert.ok(APP.includes("stage.style.setProperty('--dc-h'"), 'высота консоли передаётся в сцену переменной --dc-h');
+  assert.ok(/id="vtLog"/.test(HTML), 'кнопка консоли в статус-баре');
 });
 
-test('styles.css: док снизу резервирует место под 3D', () => {
-  const CSS = fs.readFileSync(path.join(R, 'styles.css'), 'utf8');
-  assert.ok(/\.stage\{ padding-bottom: 232px/.test(CSS), 'stage bottom padding missing');
-  assert.ok(CSS.includes('.tbtns #vcGroup .viewcube'), 'toolbar viewcube styling missing');
+test('CSS: док снизу резервирует место под 3D через --dc-h', () => {
+  const SHELL = fs.readFileSync(path.join(R, 'ui', 'shell.css'), 'utf8');
+  const TOOLS = fs.readFileSync(path.join(R, 'ui', 'tools.css'), 'utf8');
+  assert.ok(/#viewer\s*\{[^}]*inset:\s*0 0 var\(--dc-h, 0px\) 0/.test(SHELL), 'viewer bottom inset missing');
+  assert.ok(/\.viewcube\s*\{/.test(SHELL), 'viewcube styling missing');
+  assert.ok(/\.stage-side-l\s*\{[^}]*var\(--dc-h, 0px\)/.test(TOOLS), 'side panels respect the console dock height');
 });
 
 test('app.js: консоль с регулируемой высотой', () => {
   assert.ok(APP.includes("grip.className = 'dc-resize'"), 'console resize grip missing');
   assert.ok(APP.includes('const applyH ='), 'applyH resize handler missing');
-  assert.ok(APP.includes('stage.style.paddingBottom'), 'stage padding should follow console height');
+  assert.ok(APP.includes("stage.style.setProperty('--dc-h', dockH + 'px')"), 'scene bottom inset should follow console height');
 });
 
-test('styles.css: fix кнопки облака + Виды вправо + грип', () => {
-  const CSS = fs.readFileSync(path.join(R, 'styles.css'), 'utf8');
-  assert.ok(CSS.includes('.btn#btnOpenCloud{ width:auto'), 'open-cloud button not un-boxed');
-  assert.ok(/\.tbtns #vcGroup\{ margin-left:auto/.test(CSS), 'Виды not pushed right');
-  assert.ok(CSS.includes('.dc-resize{'), 'resize grip CSS missing');
+test('CSS: главная кнопка ленты выделена, ручка изменения высоты консоли стилизована', () => {
+  const SHELL = fs.readFileSync(path.join(R, 'ui', 'shell.css'), 'utf8');
+  const TOOLS = fs.readFileSync(path.join(R, 'ui', 'tools.css'), 'utf8');
+  assert.ok(SHELL.includes('.lx-primary.lx-lg .lx-ico'), 'primary ribbon button not highlighted');
+  assert.ok(TOOLS.includes('.dc-resize {'), 'resize grip CSS missing');
 });
 
 test('webgl-viewer.js: _frame() — метод, не перезаписан флагом', () => {

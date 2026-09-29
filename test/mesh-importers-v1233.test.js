@@ -168,7 +168,10 @@ test('OBJ/STL are available through both model and mesh pickers; importer script
   assert.ok(app.includes("_meshInput.accept = '.glb,.gltf,.obj,.stl,.ply'"));
   assert.ok(app.includes("if (/\\.(obj|stl)$/i.test(name))"));
   assert.ok(app.includes('window.MeshViewer.loadAsync'), 'the UI uses the Worker parser');
-  assert.match(meshViewer, /z-index:13/, 'mesh overlay must keep Lixel controls visible above it');
+  // Стили меш-вьювера вынесены из inline-строк в ui/viewers.css (CSP style-src 'self').
+  const viewersCss = fs.readFileSync(path.join(root, 'renderer/ui/viewers.css'), 'utf8');
+  assert.match(viewersCss, /#meshViewer\s*\{[^}]*z-index:\s*13/, 'mesh overlay must keep Lixel controls visible above it');
+  assert.ok(meshViewer.includes("'meshViewer'") || meshViewer.includes('"meshViewer"') || meshViewer.includes('meshViewer'), 'MeshViewer builds the #meshViewer overlay');
   assert.ok(fs.existsSync(path.join(root, 'renderer/mesh-import-worker.js')));
   assert.ok(Utils.is3DModelName('building.OBJ'));
   assert.ok(Utils.is3DModelName('prototype.stl'));

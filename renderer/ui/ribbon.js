@@ -204,6 +204,12 @@
       t.groups.forEach(function (g) { p.appendChild(buildGroup(g, t.id)); });
       ribbonEl.appendChild(p); panels[t.id] = p;
     });
+    ['prev', 'next'].forEach(function (dir) {
+      var nb = el('button', 'icon-btn lx-rib-nav ' + dir, { type: 'button', tabindex: '-1', 'aria-label': dir === 'prev' ? 'Прокрутить ленту влево' : 'Прокрутить ленту вправо' });
+      nb.appendChild(icon(dir === 'prev' ? 'chevron-left' : 'chevron-right', 16));
+      nb.addEventListener('click', function () { scrollPanel(dir === 'prev' ? -1 : 1); });
+      ribbonEl.appendChild(nb);
+    });
     tabsEl.appendChild(el('span', 'lx-tab-fill'));
     var tg = el('button', 'icon-btn lx-ribbon-toggle', { type: 'button', id: 'lxRibbonToggle', 'aria-label': 'Свернуть ленту', 'data-tip': 'Свернуть или развернуть ленту', 'aria-expanded': 'true' });
     tg.appendChild(icon('chevron-up', 16));
@@ -212,6 +218,18 @@
     tabsEl.addEventListener('keydown', onTabKey);
   }
 
+  /* Прокрутка широких вкладок: стрелки по краям, затухание края, колесо мыши = горизонтальная прокрутка. */
+  function scrollPanel(sign) {
+    var p = panels[current]; if (!p) return;
+    var reduce = W.matchMedia && W.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    p.scrollBy({ left: sign * Math.max(200, Math.round(p.clientWidth * 0.6)), behavior: reduce ? 'auto' : 'smooth' });
+  }
+  function navUpdate() {
+    var p = panels[current]; if (!p) return;
+    var max = p.scrollWidth - p.clientWidth - 1;
+    ribbonEl.classList.toggle('can-prev', p.scrollLeft > 1);
+    ribbonEl.classList.toggle('can-next', p.scrollLeft < max);
+  }
   function collapse(on) {
     R.classList.toggle('lx-ribbon-collapsed', !!on);
     var tg = $('lxRibbonToggle');
@@ -234,6 +252,7 @@
     });
     R.setAttribute('data-ribbon-tab', id);
     store(KEY_TAB, id);
+    raf(navUpdate);
     if (opts.user && W.__lxChrome && W.__lxChrome.onTab) W.__lxChrome.onTab(id);
     schedule();
     try { var t = tabBtns[id]; if (t && t.scrollIntoView && opts.user) t.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) {}
@@ -321,6 +340,7 @@
         }
       });
       paintAutosave();
+      navUpdate();
     } finally { syncing = false; }
   }
   var queued = false;
@@ -361,6 +381,13 @@
       new MutationObserver(schedule).observe(ribbonEl, { attributes: true, subtree: true, attributeFilter: ['style', 'hidden', 'class', 'disabled'] });
       new MutationObserver(function () { if (pending.length && pending.some(function (i) { return !!findLegacy(i.sel); })) schedule(); }).observe(D.body, { childList: true, subtree: true });
     }
+    Object.keys(panels).forEach(function (k) { panels[k].addEventListener('scroll', navUpdate, { passive: true }); });
+    ribbonEl.addEventListener('wheel', function (e) {
+      var p = panels[current]; if (!p || p.scrollWidth <= p.clientWidth + 1 || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      e.preventDefault(); p.scrollLeft += e.deltaY;
+    }, { passive: false });
+    W.addEventListener('resize', navUpdate);
+    if (W.ResizeObserver) new W.ResizeObserver(navUpdate).observe(ribbonEl);
     setInterval(function () { if (!D.hidden) sync(); }, 700);
     D.addEventListener('DOMContentLoaded', function () { refreshDynamic(); schedule(); });
   }

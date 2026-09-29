@@ -16,7 +16,7 @@ html[data-theme="dark"],
   --line-strong: #363e4b;
   --txt: #e9edf3;
   --txt-2: #a5afbf;
-  --txt-3: #7a8598;
+  --txt-3: #838ea1;
   --accent: #5a8dff;
   --accent-hi: #7aa3ff;
   --accent-fill: #3b6fe6;
@@ -63,7 +63,7 @@ html[data-theme="light"] {
   --line-strong: #c6cedb;
   --txt: #141a24;
   --txt-2: #465264;
-  --txt-3: #6b7789;
+  --txt-3: #5d697b;
   --accent: #2a5fdd;
   --accent-hi: #1f4fc4;
   --accent-fill: #2a5fdd;

@@ -9,7 +9,8 @@ const root = path.join(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'renderer', 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'renderer', 'styles.css'), 'utf8');
-const dock = fs.readFileSync(path.join(root, 'renderer', 'lixel-tool-dock.js'), 'utf8');
+// Интерфейс перерабатывался: группа «Результаты» измерений описана в реестре команд ленты.
+const commands = fs.readFileSync(path.join(root, 'renderer', 'ui', 'commands.js'), 'utf8');
 
 test('measurement list exposes batch automatic document comparison', () => {
   assert.match(html, /id="mlAutoCompare"/);
@@ -49,7 +50,10 @@ test('comparison dialog renders confidence summary and top alternatives', () => 
   assert.match(app, /Лучшие варианты/);
 });
 
-test('measurement toolbar preserves QA export after dock rebuild', () => {
-  assert.match(dock, /\['mmList','mmCsv','mmQaReport','mmNotion','mmClear'\]/);
+test('measurement toolbar preserves QA export after ribbon rebuild', () => {
+  for (const id of ['mmList', 'mmCsv', 'mmQaReport', 'mmNotion']) {
+    assert.match(commands, new RegExp("'" + id + "', '[a-z0-9-]+', '[^']+', \\{ sel: '#" + id + "'"), 'команда ' + id + ' есть в ленте и связана с исходной кнопкой');
+  }
+  assert.match(html, /id="mmClear"/, 'сброс текущего измерения остаётся в панели режима измерений');
   assert.match(html, /measurement-doc-compare\.js\?v=2/);
 });

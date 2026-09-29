@@ -2,7 +2,7 @@
 /* Генератор renderer/icons.js — единый набор линейных иконок интерфейса.
  *
  * Источник: Lucide (ISC, https://lucide.dev). В приложение попадают только те иконки, которые реально
- * используются (сканируются data-ico="…", ico:'…', ICON('…'), ic('…'), icon('…') и реестр команд),
+ * используются (сканируются data-ico="…", ico:'…', ICON/ic/icon/hudBtn/miniBtn/mkBtn/setBtn('…') и реестр команд),
  * плюс небольшой список EXTRA. Несколько фирменных иконок (виды куба, дуга, полилиния, горизонтали)
  * нарисованы вручную в той же геометрии 24×24 / stroke 1.75.
  *
@@ -10,6 +10,7 @@
  *   npm i --no-save lucide-static      # один раз, только для регенерации
  *   node tools/build-ui-icons.mjs [--lucide путь/к/lucide-static/icons] [--check]
  * --check ничего не пишет: завершает работу с ошибкой, если icons.js устарел или иконка не найдена.
+ *   Без каталога Lucide --check проверяет только, что все используемые имена есть в icons.js (годится для CI).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -72,7 +73,7 @@ function scanNames() {
     }
   };
   walk(path.join(ROOT, 'renderer'), true);
-  const re = /(?:data-ico=["']|\bico:\s*["']|\bICON\(\s*["']|\bic\(\s*["']|\bicon\(\s*["'])([a-z0-9][a-z0-9-]*)["']/g;
+  const re = /(?:data-ico=\\?["']|\bico:\s*["']|\b(?:ICON|ic|icon|ico|iconBtn|hudBtn|toolBtn|setBtn)\(\s*["']|\bminiBtn\(\s*["'](?!id["']|data-)|\bminiBtn\(\s*["'](?:id|data-[a-z]+)["']\s*,\s*[^,]+,\s*["']|\bmkBtn\(\s*["'][^"']*["']\s*,\s*["']|\bsetBtn\(\s*\w+\s*,\s*["'])([a-z0-9][a-z0-9-]*)["']/g;
   for (const f of files) {
     const src = fs.readFileSync(f, 'utf8');
     if (src.length > 3_000_000) continue;
@@ -90,6 +91,19 @@ function lucideInner(name) {
 }
 
 const names = scanNames();
+
+/* Режим --check без каталога Lucide (например, в CI): сверяем только, что все используемые имена есть в icons.js. */
+if (CHECK && !fs.existsSync(LUCIDE)) {
+  const cur = fs.existsSync(OUT) ? fs.readFileSync(OUT, 'utf8') : '';
+  const have = new Set([...cur.matchAll(/^ {4}"([a-z0-9-]+)":/gm)].map((m) => m[1]));
+  const lack = names.filter((n) => !have.has(n));
+  if (lack.length) {
+    console.error('В renderer/icons.js нет иконок: ' + lack.join(', ') + '\nЗапустите: npm i --no-save lucide-static && node tools/build-ui-icons.mjs');
+    process.exit(1);
+  }
+  console.log(`icons.js покрывает все ${names.length} используемых иконок (каталог Lucide не найден — побайтовая сверка пропущена)`);
+  process.exit(0);
+}
 const paths = {}; const missing = [];
 for (const n of names) {
   if (CUSTOM[n]) { paths[n] = CUSTOM[n]; continue; }
@@ -113,8 +127,9 @@ ${body}
   var A = ${JSON.stringify(ALIASES)};
   function resolve(name) { name = A[name] || name; return P[name] ? name : null; }
   function svg(name, size, cls) {
-    var n = resolve(name) || 'square';
-    return '<svg class="ic' + (cls ? ' ' + cls : '') + '" data-icon="' + n + '" viewBox="0 0 24 24" width="' + (size || 18) + '" height="' + (size || 18) +
+    var n = resolve(name), miss = n ? '' : ' data-icon-missing="' + String(name).replace(/[^a-z0-9-]/gi, '') + '"';
+    n = n || 'square';
+    return '<svg class="ic' + (cls ? ' ' + cls : '') + '" data-icon="' + n + '"' + miss + ' viewBox="0 0 24 24" width="' + (size || 18) + '" height="' + (size || 18) +
       '" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + P[n] + '</svg>';
   }
   function hydrate(scope) {

@@ -7,8 +7,11 @@ const path = require('path');
 const R = path.join(__dirname, '..', 'renderer');
 const M = require(path.join(R, 'measure.js'));
 const HTML = fs.readFileSync(path.join(R, 'index.html'), 'utf8');
-const RIBBON = fs.readFileSync(path.join(R, 'lixel-ribbon.js'), 'utf8');
-const POLISH = fs.readFileSync(path.join(R, 'lixel-polish.css'), 'utf8');
+// Интерфейс перерабатывался: лента — ui/ribbon.js + реестр ui/commands.js, стили — ui/shell.css и ui/tools.css.
+const RIBBON = fs.readFileSync(path.join(R, 'ui', 'ribbon.js'), 'utf8');
+const COMMANDS = fs.readFileSync(path.join(R, 'ui', 'commands.js'), 'utf8');
+const SHELL = fs.readFileSync(path.join(R, 'ui', 'shell.css'), 'utf8');
+const TOOLS = fs.readFileSync(path.join(R, 'ui', 'tools.css'), 'utf8');
 
 function near(a, b, e) { return Math.abs(a - b) <= (e == null ? 1e-6 : e); }
 
@@ -78,26 +81,26 @@ test('ransacPlane: второй рефит и medianError (старый тест
 
 // ---------- ДИЗАЙН (иконки / ровность / вмещаемость) ----------
 
-test('index.html: подключены polish CSS + новые версии', () => {
-  assert.ok(HTML.includes('lixel-polish.css?v=1217'), 'polish css не подключен');
+test('index.html: подключены стили нового интерфейса + актуальные версии', () => {
+  for (const css of ['fonts', 'tokens', 'base', 'components', 'shell', 'panels', 'tools', 'viewers', 'motion']) {
+    assert.ok(HTML.includes('ui/' + css + '.css?v='), 'нет ui/' + css + '.css');
+  }
   assert.ok(HTML.includes('measure.js?v=1156'), 'measure.js not current');
-  assert.ok(HTML.includes('lixel-ribbon.js?v=1154'), 'ribbon js не 1153');
+  assert.ok(HTML.includes('ui/ribbon.js?v='), 'ribbon js не подключён');
 });
 
-test('lixel-ribbon.js: иконка LCC2 + fallback для любых кнопок', () => {
-  assert.ok(RIBBON.includes('tsSplatLcc2:'), 'нет карты tsSplatLcc2');
-  assert.ok(RIBBON.includes('ICON.lcc'), 'нет иконки lcc');
-  assert.ok(RIBBON.includes('function guessIcon'), 'нет guessIcon');
-  assert.ok(RIBBON.includes(".tgroup .btn, .tgroup label.btn"), 'нет fallback-перебора кнопок');
-  // fallback всё равно через decorate -> innerHTML (обработчики сохраняются)
-  assert.ok(!RIBBON.includes('removeChild') && !RIBBON.includes('replaceWith'), 'нельзя заменять узлы кнопок');
+test('лента: иконка LCC2 + любые кнопки получают иконку из реестра', () => {
+  assert.match(COMMANDS, /I\('tsSplatLcc2', 'folder-open', 'LCC2'/, 'нет иконки LCC2');
+  // исходные кнопки «усыновляются» лентой (двигаются в ячейку, обработчики сохраняются), а не клонируются/заменяются
+  assert.ok(RIBBON.includes('function adopt') && RIBBON.includes('function skin'), 'нет усыновления кнопок');
+  assert.ok(!RIBBON.includes('cloneNode'), 'нельзя клонировать кнопки');
+  assert.ok(!/\.replaceWith\(\s*skin|removeChild\(\s*node/.test(RIBBON), 'нельзя заменять узлы исходных кнопок');
 });
 
-test('lixel-polish.css: адаптивная лента и ровные панели', () => {
-  assert.ok(POLISH.includes('data-lxskin'), 'нет гарда скина');
-  assert.ok(POLISH.includes('clamp('), 'нет адаптивной ширины кнопок');
-  assert.ok(POLISH.includes('scrollbar-width'), 'нет тонкого скролла ленты');
-  assert.ok(POLISH.includes('.lx-bigbtn'), 'нет правил больших кнопок');
-  assert.ok(POLISH.includes('max-height: calc(100vh'), 'панели могут выйти за экран');
-  assert.ok(POLISH.includes('@media (max-width: 1200px)'), 'нет адаптивности для узких экранов');
+test('стили: адаптивная лента и ровные панели', () => {
+  assert.ok(SHELL.includes('scrollbar-width'), 'нет тонкого скролла ленты');
+  assert.ok(SHELL.includes('.lx-rb'), 'нет правил кнопок ленты');
+  assert.ok(SHELL.includes('@media (max-width: 1280px)'), 'нет адаптивности для узких экранов');
+  assert.ok(/max-height:\s*calc\(100%/.test(TOOLS), 'панели могут выйти за экран');
+  assert.ok(/@media \(max-width: 900px\)/.test(TOOLS), 'нет адаптивности для панелей инструментов');
 });

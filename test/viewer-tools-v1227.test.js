@@ -82,8 +82,10 @@ test('loading a BIM room clears stale mesh LOD capability', () => {
 test('UI gates LOD and explains unsupported point-cloud state', () => {
   assert.match(APP, /LOD доступен только для полигональных моделей/);
   assert.match(APP, /Сначала выберите объект или элемент/);
-  assert.match(WORKSPACE, /grid\.disabled = !canLOD/);
-  for (const [script, version] of [['webgl-viewer.js', '1230'], ['app.js', '1251'], ['lixel-workspace.js', '1233']]) {
+  // Кнопка LOD (btnLOD) блокируется и объясняет причину; лента усыновляет её как есть, поэтому состояние отражается на ленте.
+  assert.match(APP, /btn\.disabled = !supported/);
+  assert.match(APP, /btn\.title = title/);
+  for (const [script, version] of [['webgl-viewer.js', '1230'], ['app.js', '1300'], ['lixel-workspace.js', '1233']]) {
     assert.ok(HTML.includes(script + '?v=' + version), script + ' cache-bust version');
   }
 });

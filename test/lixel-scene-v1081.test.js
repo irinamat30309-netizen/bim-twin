@@ -6,8 +6,9 @@ const path = require('path');
 const R = path.join(__dirname, '..', 'renderer');
 const HTML = fs.readFileSync(path.join(R, 'index.html'), 'utf8');
 const SCENE = fs.readFileSync(path.join(R, 'lixel-scene.js'), 'utf8');
-const UI = fs.readFileSync(path.join(R, 'lixel-ui.js'), 'utf8');
-const CSS = fs.readFileSync(path.join(R, 'lixel-ui.css'), 'utf8');
+// Интерфейс перерабатывался: команды ленты живут в реестре ui/commands.js, стили дерева/модалок — в ui/panels.css.
+const UI = fs.readFileSync(path.join(R, 'ui', 'commands.js'), 'utf8');
+const CSS = fs.readFileSync(path.join(R, 'ui', 'panels.css'), 'utf8');
 const APP = fs.readFileSync(path.join(R, 'app.js'), 'utf8');
 
 test('index.html подключает lixel-scene.js v1081', () => {
@@ -55,10 +56,11 @@ test('scene: панель документации', () => {
 });
 
 test('ui: кнопки «Объект» связаны с __lxScene', () => {
-  assert.ok(UI.includes('window.__lxScene.addFloor'), 'add wire');
-  assert.ok(UI.includes('window.__lxScene.isolateActive'), 'isolate wire');
-  assert.ok(UI.includes('window.__lxScene.autoSlice'), 'slice wire');
-  assert.ok(UI.includes('window.__lxScene.report'), 'report wire');
+  assert.ok(UI.includes("call: '__lxScene.addFloor'"), 'add wire');
+  assert.ok(UI.includes("call: '__lxScene.isolateActive'"), 'isolate wire');
+  assert.ok(UI.includes("call: '__lxScene.autoSlice'"), 'slice wire');
+  assert.ok(UI.includes("call: '__lxScene.attachDoc'"), 'attach wire');
+  assert.ok(UI.includes("call: '__lxScene.report'"), 'report wire');
 });
 
 test('css: стили дерева и модалки', () => {

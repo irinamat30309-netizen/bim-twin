@@ -38,7 +38,10 @@ test('sprints-ext: вызывает чистые функции спринт-м�
   assert.ok(EXT.includes('window.IfcExport.exportIFC'), 'IfcExport not used');
   assert.ok(EXT.includes('S.toDXF(model'), 'Scan→BIM DXF route not used');
   assert.ok(EXT.includes('S.toIFC(model'), 'Scan→BIM IFC4 route not used');
-  assert.ok(EXT.includes("mkBtn('IFC4 BIM'"), 'IFC4 action not exposed');
+  // Кнопки модуля теперь описаны реестром команд ленты (ui/commands.js): действие IFC4 экспонируется как opIFC4
+  const commands = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'ui', 'commands.js'), 'utf8');
+  assert.ok(EXT.includes('function opIFC4()') && EXT.includes('opIFC4: opIFC4'), 'IFC4 action not exported by module');
+  assert.ok(/I\('opIFC4', 'building-2', 'IFC4 BIM', \{ call: OPS_S \+ 'opIFC4'/.test(commands), 'IFC4 action not exposed in ribbon');
   assert.ok(EXT.includes('window.PotreeLoader'), 'PotreeLoader not used');
 });
 

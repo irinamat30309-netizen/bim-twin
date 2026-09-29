@@ -200,3 +200,6 @@ body.editing .row-actions { display: inline-flex; }
 .lx-fld input, .lx-fld select { width: 100%; }
 .lx-fld2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .lx-modal-a { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* Заголовок узла «Этажи» в дереве сцены */
+.lx-floors-head { font-weight: 600; }

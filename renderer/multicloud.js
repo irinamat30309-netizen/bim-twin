@@ -227,9 +227,9 @@
       html+='<span class="mc-dot" style="background:'+esc(c.color)+'"></span>';
       html+='<span class="mc-name" title="'+esc(c.path)+'">'+esc(c.name)+'</span>';
       html+='<span class="mc-cnt">'+cnt+'</span>';
-      html+='<button class="lx-eye'+(c.visible?' on':'')+'" data-mcvis="'+esc(c.id)+'">'+(c.visible?'👁':'🚫')+'</button>';
-      html+='<button class="lx-mini" data-mcact="'+esc(c.id)+'">●</button>';
-      html+='<button class="lx-mini danger" data-mcdel="'+esc(c.id)+'">✕</button>';
+      html+='<button type="button" class="lx-eye'+(c.visible?' on':'')+'" data-mcvis="'+esc(c.id)+'" aria-label="Видимость облака" data-ico="'+(c.visible?'eye':'eye-off')+'"></button>';
+      html+='<button type="button" class="lx-mini" data-mcact="'+esc(c.id)+'" aria-label="Сделать активным" data-ico="crosshair"></button>';
+      html+='<button type="button" class="lx-mini danger" data-mcdel="'+esc(c.id)+'" aria-label="Удалить облако" data-ico="x"></button>';
       html+='</div>';
     });
     return html;

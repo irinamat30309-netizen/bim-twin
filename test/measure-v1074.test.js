@@ -43,7 +43,8 @@ test('app.js: buttons wired (snap/save/csv/list/deviation)', () => {
 });
 
 test('index.html: new toolbar buttons + list panel present', () => {
-  for (const id of ['mmDeviation', 'mmSnap', 'mmSave', 'mmList', 'mmCsv', 'measureListPanel', 'measureListBody', 'mlCsv', 'mlClearAll']) {
+  // Экспорт списка (CSV/Notion) теперь в группе «Результаты» на вкладке «Измерения» (mmCsv, mmNotion), а не дублируется в самой панели списка.
+  for (const id of ['mmDeviation', 'mmSnap', 'mmSave', 'mmList', 'mmCsv', 'mmNotion', 'measureListPanel', 'measureListBody', 'mlClearAll']) {
     assert.ok(HTML.includes('id="' + id + '"'), 'missing element ' + id);
   }
   assert.ok(HTML.includes('data-mm="deviation"'), 'no deviation mode button');

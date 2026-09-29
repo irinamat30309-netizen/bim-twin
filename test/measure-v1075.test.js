@@ -51,7 +51,7 @@ test('viewer: _clearMeasure сбрасывает _measCornerPlanes', () => {
 
 // —— app.js: fmt/hint/кнопки/переименование/Notion ——
 test('app.js: measureHint и fmtMeasure знают corner', () => {
-  assert.ok(APP.includes("corner: '📦"), 'no corner hint');
+  assert.ok(/corner: 'Ребро\/Угол:/.test(APP), 'no corner hint');
   assert.ok(APP.includes("case 'corner':"), 'no corner fmt case');
 });
 test('app.js: переименование измерений (renameMeasurement + data-mren)', () => {
@@ -64,16 +64,18 @@ test('app.js: exportMeasNotion + привязка mmNotion/mlNotion', () => {
   assert.ok(APP.includes("bind('mlNotion'"), 'mlNotion not bound');
 });
 test('app.js: measIcon и meas. знают corner', () => {
-  assert.ok(/measIcon[\s\S]{0,200}corner: '📦'/.test(APP), 'no corner icon');
+  // Эмодзи заменены единым набором иконок (Lucide «cuboid»)
+  assert.ok(/measIcon[\s\S]{0,300}corner: 'cuboid'/.test(APP), 'no corner icon');
 });
 
 // —— index.html: кнопки и версия ——
 test('index.html: кнопка mmCorner (data-mm=corner)', () => {
   assert.ok(HTML.includes('id="mmCorner"') && HTML.includes('data-mm="corner"'), 'no corner button');
 });
-test('index.html: кнопки Notion (mmNotion/mlNotion)', () => {
+test('index.html: кнопка Notion (mmNotion) — единственная точка экспорта в Notion', () => {
   assert.ok(HTML.includes('id="mmNotion"'), 'no mmNotion');
-  assert.ok(HTML.includes('id="mlNotion"'), 'no mlNotion');
+  // дубль mlNotion из панели списка убран: экспорт — в группе «Результаты» ленты
+  assert.ok(!HTML.includes('id="mlNotion"'), 'mlNotion-дубликат вернулся');
 });
 test('index.html: версия — все теги 1079, нет 1078', () => {
   assert.ok(HTML.includes('?v=1089'), 'no 1079');

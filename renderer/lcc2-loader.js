@@ -414,7 +414,7 @@
     cb('Чтение '+lcc2Files[0].name+'…');
     var metaJson = JSON.parse(new TextDecoder().decode(await lcc2Files[0].arrayBuffer()));
     var total = metaJson.totalSplats || 0;
-    cb('ℹ️ '+(metaJson.name||'LCC2')+' · '+(total/1e6).toFixed(1)+'M · '+sogMap.size+' SOG');
+    cb('ℹ '+(metaJson.name||'LCC2')+' · '+(total/1e6).toFixed(1)+'M · '+sogMap.size+' SOG');
 
     var splatFiles = (metaJson.root && metaJson.root.splatFiles) || [];
 
@@ -457,7 +457,7 @@
       var depths = {};
       tiles.forEach(function(t){if(t.wBMin!==null)depths[t.depth]=1;});
       if (Object.keys(depths).length > 1)
-        cb('⚠️ mixed-depth pack: ' + pn + ' (уровни: ' + Object.keys(depths).join(',') + ') → per-tile remap');
+        cb('Предупреждение: mixed-depth pack: ' + pn + ' (уровни: ' + Object.keys(depths).join(',') + ') → per-tile remap');
     });
 
     var allArrays = [], totalLoaded = 0;
