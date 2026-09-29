@@ -1353,7 +1353,7 @@
   function setWalk(on) {
     if (!S.bounds) return;
     S.walk = !!on;
-    if (S.walkBtn) S.walkBtn.style.background = S.walk ? '#2563eb' : '#2a2f3a';
+    setPressed(S.walkBtn, S.walk);
     if (S.walk) {
       // Entering avatar mode: drop onto the local floor at eye height, reset fall state.
       S.velY = 0; S.onGround = false;
@@ -1374,11 +1374,16 @@
     if (cw <= 1e-6) return null;
     return { x: cx / cw, y: cy / cw, w: cw };
   }
-  function miniBtn(t) {
+  function miniBtn(ico, tip, cls) {
     var b = document.createElement('button');
-    b.textContent = t;
-    b.style.cssText = 'flex:none;width:22px;height:22px;background:#2a2f3a;border:1px solid #7fb6ff;border-radius:4px;color:#fff;cursor:pointer;font:12px sans-serif;padding:0';
+    b.type = 'button'; b.className = 'icon-btn xs' + (cls ? ' ' + cls : '');
+    b.setAttribute('data-ico', ico); b.setAttribute('data-tip', tip); b.setAttribute('aria-label', tip);
     return b;
+  }
+  function setPressed(btn, on) {
+    if (!btn) return;
+    btn.classList.toggle('on', !!on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   }
   function moveStation(from, to) {
     S.stations = withStationMoved(S.stations, from, to);
@@ -1391,75 +1396,57 @@
     var sts = S.stations || [];
     if (!sts.length) {
       var empty = document.createElement('div');
-      empty.textContent = 'Нет точек. Добавьте кнопкой ➕ Точка.';
-      empty.style.cssText = 'opacity:.6;padding:6px 2px;font-size:12px';
+      empty.className = 'sv-empty';
+      empty.textContent = 'Нет точек. Добавьте кнопкой «Точка» на панели сверху.';
       body.appendChild(empty); return;
     }
     for (var i = 0; i < sts.length; i++) {
       (function (idx) {
         var row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:5px;padding:3px 0;border-top:1px solid rgba(127,182,255,.12)';
-        var num = document.createElement('span'); num.textContent = (idx + 1) + '.'; num.style.cssText = 'opacity:.7;width:18px;flex:none;text-align:right';
+        row.className = 'sv-stn'; row.setAttribute('role', 'listitem');
+        var num = document.createElement('span'); num.className = 'sv-stn-n'; num.textContent = String(idx + 1);
         var nameBtn = document.createElement('button');
+        nameBtn.type = 'button'; nameBtn.className = 'sv-stn-name';
         nameBtn.textContent = sts[idx].name || ('Точка ' + (idx + 1));
-        nameBtn.title = 'Перейти к точке';
-        nameBtn.style.cssText = 'flex:1;min-width:0;text-align:left;background:transparent;border:none;color:#e6edf3;cursor:pointer;font:13px sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 2px';
+        nameBtn.setAttribute('data-tip', 'Перейти к точке');
         nameBtn.onclick = function () { cancelTour(); S.tourIndex = idx; goToStation(idx); };
-        var upB = miniBtn('↑'); upB.onclick = function () { moveStation(idx, idx - 1); };
-        var dnB = miniBtn('↓'); dnB.onclick = function () { moveStation(idx, idx + 1); };
-        var delB = miniBtn('✕'); delB.style.background = '#a33'; delB.onclick = function () { S.stations = withStationRemoved(S.stations, idx); if (S.tourIndex >= S.stations.length) S.tourIndex = 0; buildMarkers(); };
+        var upB = miniBtn('arrow-up', 'Выше'); upB.disabled = idx === 0; upB.onclick = function () { moveStation(idx, idx - 1); };
+        var dnB = miniBtn('arrow-down', 'Ниже'); dnB.disabled = idx === sts.length - 1; dnB.onclick = function () { moveStation(idx, idx + 1); };
+        var delB = miniBtn('trash-2', 'Удалить точку', 'danger'); delB.onclick = function () { S.stations = withStationRemoved(S.stations, idx); if (S.tourIndex >= S.stations.length) S.tourIndex = 0; buildMarkers(); };
         row.appendChild(num); row.appendChild(nameBtn); row.appendChild(upB); row.appendChild(dnB); row.appendChild(delB);
         body.appendChild(row);
       })(i);
     }
+    hydrateIcons(body);
   }
+  function hydrateIcons(root) { try { if (window.__lxKit && window.__lxKit.hydrate) window.__lxKit.hydrate(root); } catch (e) {} }
 
   function closeStationMenu() {
-    if (S.ctxMenu && S.ctxMenu.parentNode) S.ctxMenu.parentNode.removeChild(S.ctxMenu);
-    S.ctxMenu = null;
-    if (S._ctxOutside) { document.removeEventListener('mousedown', S._ctxOutside, true); S._ctxOutside = null; }
+    try { if (window.__lxKit && window.__lxKit.closePopover) window.__lxKit.closePopover(); } catch (e) {}
   }
   function showStationMenu(idx, clientX, clientY) {
     closeStationMenu();
     if (!S.stations || !S.stations[idx] || !S.wrap) return;
-    var r = S.wrap.getBoundingClientRect();
-    var menu = document.createElement('div');
-    menu.style.cssText = 'position:absolute;z-index:60;min-width:180px;background:rgba(16,20,28,.97);border:1px solid rgba(127,182,255,.4);border-radius:9px;padding:5px;box-shadow:0 6px 22px rgba(0,0,0,.6);font:13px sans-serif;color:#e6edf3;pointer-events:auto';
-    var nm0 = S.stations[idx].name || ('\u0422\u043e\u0447\u043a\u0430 ' + (idx + 1));
-    var hdr = document.createElement('div');
-    hdr.textContent = nm0;
-    hdr.style.cssText = 'font-weight:700;padding:4px 8px 6px;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px';
-    menu.appendChild(hdr);
-    function item(label, danger, fn) {
-      var b = document.createElement('button');
-      b.textContent = label;
-      b.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;border:none;border-radius:6px;color:' + (danger ? '#ff8080' : '#e6edf3') + ';cursor:pointer;font:13px sans-serif;padding:7px 8px';
-      b.onmouseenter = function () { b.style.background = danger ? 'rgba(220,60,60,.18)' : 'rgba(127,182,255,.16)'; };
-      b.onmouseleave = function () { b.style.background = 'transparent'; };
-      b.onclick = function (ev) { ev.stopPropagation(); closeStationMenu(); fn(); };
-      menu.appendChild(b);
-    }
-    item('\u25b6  \u041f\u0435\u0440\u0435\u0439\u0442\u0438 \u0441\u044e\u0434\u0430', false, function () { cancelTour(); S.tourIndex = idx; goToStation(idx); });
-    item('\u270f  \u041f\u0435\u0440\u0435\u0438\u043c\u0435\u043d\u043e\u0432\u0430\u0442\u044c', false, function () {
-      promptModal('\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u0442\u043e\u0447\u043a\u0438:', nm0).then(function (nm) {
-        if (nm === null) return;
-        if (nm.trim() === '') { S.stations = withStationRemoved(S.stations, idx); if (S.tourIndex >= S.stations.length) S.tourIndex = 0; toast('\u0422\u043e\u0447\u043a\u0430 \u0443\u0434\u0430\u043b\u0435\u043d\u0430'); }
-        else { S.stations = withStationRenamed(S.stations, idx, nm.trim()); toast('\u041f\u0435\u0440\u0435\u0438\u043c\u0435\u043d\u043e\u0432\u0430\u043d\u043e'); }
+    var kit = window.__lxKit; if (!kit || !kit.menu || !kit.pointAnchor) return;
+    var nm0 = S.stations[idx].name || ('Точка ' + (idx + 1));
+    kit.menu(kit.pointAnchor(clientX, clientY), [
+      { label: 'Перейти сюда', ico: 'play', onClick: function () { cancelTour(); S.tourIndex = idx; goToStation(idx); } },
+      { label: 'Переименовать', ico: 'pencil', onClick: function () {
+        promptModal('Название точки (пусто — удалить):', nm0).then(function (nm) {
+          if (nm === null) return;
+          if (nm.trim() === '') { S.stations = withStationRemoved(S.stations, idx); if (S.tourIndex >= S.stations.length) S.tourIndex = 0; toast('Точка удалена'); }
+          else { S.stations = withStationRenamed(S.stations, idx, nm.trim()); toast('Переименовано'); }
+          buildMarkers();
+        });
+      } },
+      { sep: true },
+      { label: 'Удалить точку', ico: 'trash-2', danger: true, onClick: function () {
+        S.stations = withStationRemoved(S.stations, idx);
+        if (S.tourIndex >= S.stations.length) S.tourIndex = 0;
         buildMarkers();
-      });
-    });
-    item('\ud83d\uddd1  \u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0442\u043e\u0447\u043a\u0443', true, function () {
-      S.stations = withStationRemoved(S.stations, idx);
-      if (S.tourIndex >= S.stations.length) S.tourIndex = 0;
-      buildMarkers();
-      toast('\u0422\u043e\u0447\u043a\u0430 \u0443\u0434\u0430\u043b\u0435\u043d\u0430');
-    });
-    menu.style.left = Math.max(4, Math.min(clientX - r.left, r.width - 190)) + 'px';
-    menu.style.top = Math.max(4, Math.min(clientY - r.top, r.height - 160)) + 'px';
-    S.wrap.appendChild(menu);
-    S.ctxMenu = menu;
-    S._ctxOutside = function (ev) { if (S.ctxMenu && !S.ctxMenu.contains(ev.target)) closeStationMenu(); };
-    setTimeout(function () { document.addEventListener('mousedown', S._ctxOutside, true); }, 0);
+        toast('Точка удалена');
+      } }
+    ], { title: nm0, minWidth: 200 });
   }
 
   function buildMarkers() {
@@ -1473,7 +1460,8 @@
         var el = document.createElement('button');
         el.textContent = String(idx + 1);
         el.title = (S.stations[idx] && S.stations[idx].name) ? S.stations[idx].name : ('Точка ' + (idx + 1));
-        el.style.cssText = 'position:absolute;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;border:2px solid #fff;background:rgba(20,110,220,.85);color:#fff;font:bold 12px sans-serif;cursor:pointer;pointer-events:auto;box-shadow:0 1px 4px rgba(0,0,0,.5);display:none;padding:0';
+        el.type = 'button'; el.className = 'sv-marker'; el.style.display = 'none';
+        el.setAttribute('aria-label', el.title);
         el.onclick = function (ev) { ev.stopPropagation(); if (S.editMode) { editStationPrompt(idx); } else { cancelTour(); goToStation(idx); } };
         el.oncontextmenu = function (ev) { ev.preventDefault(); ev.stopPropagation(); showStationMenu(idx, ev.clientX, ev.clientY); };
         S.markerWrap.appendChild(el);
@@ -1516,7 +1504,7 @@
       el.style.fontSize = Math.max(9, size * 0.46) + 'px';
       el.style.opacity = String(op);
       el.style.zIndex = String(2000 - Math.round(dist * 4));   // nearer markers paint on top
-      el.style.background = (i === S.tourIndex && S.tourActive) ? 'rgba(31,157,85,.92)' : 'rgba(20,110,220,.85)';
+      el.classList.toggle('active', i === S.tourIndex && S.tourActive);
     }
     drawRoute(pts, cw, ch);
   }
@@ -1839,11 +1827,11 @@
       document.body.appendChild(a); a.click();
       setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 200);
       S._recording = false; S._recorder = null; S._recOff = null; S._recOffCtx = null;
-      if (S.recBtn) { setBtn(S.recBtn, 'video', 'Видео'); S.recBtn.style.background = '#2a2f3a'; }
+      if (S.recBtn) { setBtn(S.recBtn, 'video', 'Видео'); S.recBtn.classList.remove('rec'); }
       toast('Видео облёта сохранено');
     };
     S._recording = true; S._recorder = rec;
-    if (S.recBtn) { setBtn(S.recBtn, 'stop', 'Стоп'); S.recBtn.style.background = '#dc2626'; }
+    if (S.recBtn) { setBtn(S.recBtn, 'stop', 'Стоп'); S.recBtn.classList.add('rec'); }
     S._recDateStr = new Date().toLocaleDateString('ru-RU'); S._capAlpha = 0;
     rec.start();
     var wasLoop = S.tourLoop; S.tourLoop = false;
@@ -1922,33 +1910,9 @@
   }
   // v1042: Electron блокирует window.prompt — свой DOM-модал (Promise, Enter/Esc, клик мимо = Отмена).
   function promptModal(message, defVal) {
-    return new Promise(function (resolve) {
-      try {
-        var ov = document.createElement('div');
-        ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;';
-        var box = document.createElement('div');
-        box.style.cssText = 'min-width:320px;max-width:90vw;background:#1e1f24;color:#eee;border:1px solid #3a3d44;border-radius:10px;padding:16px;box-shadow:0 12px 40px rgba(0,0,0,.5);font:14px system-ui,Segoe UI,sans-serif;';
-        var lab = document.createElement('div'); lab.textContent = message || ''; lab.style.cssText = 'margin-bottom:10px;white-space:pre-wrap;';
-        var inp = document.createElement('input'); inp.type = 'text'; inp.value = (defVal == null ? '' : String(defVal));
-        inp.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid #4a4d55;background:#0f1013;color:#fff;outline:none;';
-        var row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;';
-        var cancel = document.createElement('button'); cancel.textContent = 'Отмена';
-        var ok = document.createElement('button'); ok.textContent = 'OK';
-        var bs = 'padding:7px 14px;border-radius:6px;border:1px solid #4a4d55;cursor:pointer;font:inherit;';
-        cancel.style.cssText = bs + 'background:#26272d;color:#ddd;';
-        ok.style.cssText = bs + 'background:#2f6fed;color:#fff;border-color:#2f6fed;';
-        function done(v) { try { document.removeEventListener('keydown', onKey, true); } catch (_) {} try { ov.remove(); } catch (_) {} resolve(v); }
-        function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); done(null); } else if (e.key === 'Enter') { e.preventDefault(); done(inp.value); } }
-        cancel.onclick = function () { done(null); };
-        ok.onclick = function () { done(inp.value); };
-        ov.onmousedown = function (e) { if (e.target === ov) done(null); };
-        document.addEventListener('keydown', onKey, true);
-        row.appendChild(cancel); row.appendChild(ok);
-        box.appendChild(lab); box.appendChild(inp); box.appendChild(row);
-        ov.appendChild(box); (document.body || document.documentElement).appendChild(ov);
-        setTimeout(function () { try { inp.focus(); inp.select(); } catch (_) {} }, 30);
-      } catch (e) { resolve(null); }
-    });
+    var kit = window.__lxKit;
+    if (!kit || !kit.ask) return Promise.resolve(null);
+    return kit.ask({ title: 'Точка тура', message: message, input: true, value: defVal == null ? '' : String(defVal), okLabel: 'Сохранить' });
   }
   function editStationPrompt(idx) {
     if (!S.stations || !S.stations[idx]) return;
@@ -1968,7 +1932,7 @@
   }
   function setEdit(on) {
     S.editMode = !!on;
-    if (S.editBtn) S.editBtn.style.background = S.editMode ? '#2563eb' : '#2a2f3a';
+    setPressed(S.editBtn, S.editMode);
     toast(S.editMode ? 'Правка точек: клик по маркеру — переименовать/удалить' : 'Правка выключена');
   }
 
@@ -1983,30 +1947,60 @@
     if (hit) { cancelTour(); teleportTo(hit.point, dir); }
   }
 
+  function mk(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  // Строка «подпись + ползунок» для панели настроек.
+  function rangeRow(text, min, max, step, value, tip, oninput) {
+    var row = mk('label', 'sv-row sv-range'), lab = mk('span', 'sv-row-t'), inp = document.createElement('input');
+    lab.textContent = text; inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = String(value); if (tip) inp.setAttribute('data-tip', tip);
+    inp.setAttribute('aria-label', text);
+    inp.oninput = function () { oninput(+inp.value, lab); };
+    row.appendChild(lab); row.appendChild(inp); return { row: row, label: lab, input: inp };
+  }
+  function checkRow(text, checked, onchange) {
+    var row = mk('label', 'lx-cp-check'), cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = !!checked; cb.onchange = function () { onchange(cb.checked); };
+    row.appendChild(cb); row.appendChild(document.createTextNode(text)); return { row: row, input: cb };
+  }
+  function selectRow(labelText, options, current, onPick) {
+    var row = mk('label', 'sv-row sv-select'), tx = mk('span', 'sv-row-t'), sel = document.createElement('select');
+    tx.textContent = labelText; sel.setAttribute('aria-label', labelText);
+    for (var o = 0; o < options.length; o++) {
+      var opt = document.createElement('option'); opt.value = String(options[o].v); opt.textContent = options[o].t;
+      if (options[o].v === current) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.onchange = function () { onPick(+sel.value); };
+    row.appendChild(tx); row.appendChild(sel); return row;
+  }
+  function hudBtn(ico, label, tip, onclick, cls) {
+    var b = mk('button', 'hbtn' + (cls ? ' ' + cls : '')); b.type = 'button';
+    setBtn(b, ico, label);
+    if (tip) b.setAttribute('data-tip', tip);
+    if (!label && tip) b.setAttribute('aria-label', tip);
+    b.onclick = onclick; return b;
+  }
+  function group(label) { var g = mk('div', 'seg-group'); g.setAttribute('role', 'group'); g.setAttribute('aria-label', label); return g; }
+  function toggleMap() {
+    if (!S.mmCanvas) return;
+    var hide = S.mmCanvas.style.display !== 'none';
+    S.mmCanvas.style.display = hide ? 'none' : 'block';
+    setPressed(S.mapBtn, !hide);
+  }
+
   function buildDom() {
-    var wrap = document.createElement('div');
-    wrap.id = 'splatWrap';
-    wrap.style.cssText = 'position:absolute;inset:0;z-index:45;display:none;background:#0a0d12';
-    var canvas = document.createElement('canvas');
-    canvas.id = 'splatCanvas';
-    canvas.style.cssText = 'width:100%;height:100%;display:block;cursor:grab;outline:none';
-    canvas.tabIndex = 0;
+    var wrap = mk('div', 'sv-wrap theme-dark'); wrap.id = 'splatWrap';
+    var canvas = mk('canvas', 'sv-canvas'); canvas.id = 'splatCanvas'; canvas.tabIndex = 0;
     wrap.appendChild(canvas);
-    var routeCv = document.createElement('canvas');
-    routeCv.id = 'splatRoute';
-    routeCv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
+    var routeCv = mk('canvas', 'sv-route'); routeCv.id = 'splatRoute';
     wrap.appendChild(routeCv);
     S.routeCanvas = routeCv; S.routeCtx = routeCv.getContext('2d');
-    var markerWrap = document.createElement('div');
-    markerWrap.id = 'splatMarkers';
-    markerWrap.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden';
+    var markerWrap = mk('div', 'sv-markers'); markerWrap.id = 'splatMarkers';
     wrap.appendChild(markerWrap);
     S.markerWrap = markerWrap;
-    var mm = document.createElement('canvas');
-    mm.id = 'splatMinimap';
+    var mm = mk('canvas', 'sv-minimap'); mm.id = 'splatMinimap';
     mm.width = 170; mm.height = 170;
-    mm.title = 'Мини-карта · клик — телепорт';
-    mm.style.cssText = 'position:absolute;right:12px;bottom:12px;width:170px;height:170px;border-radius:10px;border:1px solid rgba(127,182,255,.35);cursor:crosshair;pointer-events:auto;box-shadow:0 2px 10px rgba(0,0,0,.5);display:none';
+    mm.setAttribute('data-tip', 'Мини-карта · клик — телепорт, перетаскивание точки — сдвиг');
+    mm.style.display = 'none';
     var mmDragIdx = -1, mmDown = false, mmMoved = 0;
     function mmToPix(ev) {
       var rect = mm.getBoundingClientRect();
@@ -2050,7 +2044,7 @@
     wrap.appendChild(mm);
     S.mmCanvas = mm; S.mmCtx = mm.getContext('2d');
     var fileIn = document.createElement('input');
-    fileIn.type = 'file'; fileIn.accept = '.json,application/json'; fileIn.style.display = 'none';
+    fileIn.type = 'file'; fileIn.accept = '.json,application/json'; fileIn.hidden = true;
     fileIn.addEventListener('change', function () {
       var f = fileIn.files && fileIn.files[0]; if (!f) return;
       var rd = new FileReader();
@@ -2059,260 +2053,132 @@
     });
     wrap.appendChild(fileIn);
     S.tourFileInput = fileIn;
-    // station list + tour settings panel
-    var listPanel = document.createElement('div');
-    listPanel.id = 'splatStationList';
-    listPanel.style.cssText = 'position:absolute;left:12px;bottom:12px;width:236px;max-height:46%;overflow:auto;background:rgba(10,14,20,.85);border:1px solid rgba(127,182,255,.35);border-radius:10px;padding:8px 10px;font:13px sans-serif;color:#e6edf3;pointer-events:auto;box-shadow:0 2px 10px rgba(0,0,0,.5);display:none';
-    var lpTitle = document.createElement('div');
-    lpTitle.textContent = 'Точки тура';
-    lpTitle.style.cssText = 'font-weight:bold;margin-bottom:6px';
-    listPanel.appendChild(lpTitle);
-    var dwellRow = document.createElement('label');
-    dwellRow.style.cssText = 'display:block;margin:4px 0;opacity:.9;font-size:12px';
-    var dwellLab = document.createElement('span'); dwellLab.textContent = 'Задержка: ' + (S.dwellMs / 1000).toFixed(1) + ' с';
-    var dwell = document.createElement('input'); dwell.type = 'range'; dwell.min = '800'; dwell.max = '6000'; dwell.step = '100'; dwell.value = String(S.dwellMs); dwell.style.cssText = 'width:100%';
-    dwell.oninput = function () { S.dwellMs = +dwell.value; dwellLab.textContent = 'Задержка: ' + (S.dwellMs / 1000).toFixed(1) + ' с'; };
-    dwellRow.appendChild(dwellLab); dwellRow.appendChild(dwell);
-    var spdRow = document.createElement('label');
-    spdRow.style.cssText = 'display:block;margin:4px 0;opacity:.9;font-size:12px';
-    var spdLab = document.createElement('span'); spdLab.textContent = 'Переход: ' + (S.moveDurMs / 1000).toFixed(1) + ' с';
-    var spd = document.createElement('input'); spd.type = 'range'; spd.min = '400'; spd.max = '2000'; spd.step = '50'; spd.value = String(S.moveDurMs); spd.style.cssText = 'width:100%';
-    spd.oninput = function () { S.moveDurMs = +spd.value; spdLab.textContent = 'Переход: ' + (S.moveDurMs / 1000).toFixed(1) + ' с'; };
-    spdRow.appendChild(spdLab); spdRow.appendChild(spd);
-    listPanel.appendChild(dwellRow); listPanel.appendChild(spdRow);
-    var loopRow = document.createElement('label');
-    loopRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
-    var loopCb = document.createElement('input'); loopCb.type = 'checkbox'; loopCb.checked = !!S.tourLoop;
-    loopCb.onchange = function () { S.tourLoop = loopCb.checked; };
-    var loopTx = document.createElement('span'); loopTx.textContent = 'Зациклить тур';
-    loopRow.appendChild(loopCb); loopRow.appendChild(loopTx);
-    var routeRow = document.createElement('label');
-    routeRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
-    var routeCb = document.createElement('input'); routeCb.type = 'checkbox'; routeCb.checked = !!S.showRoute;
-    routeCb.onchange = function () { S.showRoute = routeCb.checked; };
-    var routeTx = document.createElement('span'); routeTx.textContent = 'Линия маршрута';
-    routeRow.appendChild(routeCb); routeRow.appendChild(routeTx);
-    listPanel.appendChild(loopRow); listPanel.appendChild(routeRow);
-    var smoothRow = document.createElement('label');
-    smoothRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
-    var smoothCb = document.createElement('input'); smoothCb.type = 'checkbox'; smoothCb.checked = !!S.smoothRoute;
-    smoothCb.onchange = function () { S.smoothRoute = smoothCb.checked; };
-    var smoothTx = document.createElement('span'); smoothTx.textContent = 'Сглаживать маршрут';
-    smoothRow.appendChild(smoothCb); smoothRow.appendChild(smoothTx);
-    listPanel.appendChild(smoothRow);
-    var vidHdr = document.createElement('div');
-    vidHdr.textContent = 'Видео-облёт';
-    vidHdr.style.cssText = 'font-weight:bold;margin:8px 0 3px;border-top:1px solid rgba(127,182,255,.18);padding-top:6px';
-    listPanel.appendChild(vidHdr);
-    function mkSelect(labelText, options, current, onPick) {
-      var row = document.createElement('label');
-      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;margin:3px 0;font-size:12px';
-      var tx = document.createElement('span'); tx.textContent = labelText;
-      var sel = document.createElement('select');
-      sel.style.cssText = 'background:#0d1420;color:#e6edf3;border:1px solid rgba(127,182,255,.35);border-radius:4px;padding:2px 4px;font:12px sans-serif';
-      for (var o = 0; o < options.length; o++) {
-        var opt = document.createElement('option'); opt.value = String(options[o].v); opt.textContent = options[o].t;
-        if (options[o].v === current) opt.selected = true;
-        sel.appendChild(opt);
-      }
-      sel.onchange = function () { onPick(+sel.value); };
-      row.appendChild(tx); row.appendChild(sel); return row;
-    }
-    listPanel.appendChild(mkSelect('Разрешение', [{ v: 0, t: 'Исходное' }, { v: 720, t: '720p' }, { v: 1080, t: '1080p' }, { v: 1440, t: '1440p' }], S.recRes, function (v) { S.recRes = v; }));
-    listPanel.appendChild(mkSelect('Битрейт', [{ v: 8, t: 'Низкий' }, { v: 16, t: 'Средний' }, { v: 40, t: 'Высокий' }], S.recBitrate, function (v) { S.recBitrate = v; }));
-    var titlesRow = document.createElement('label');
-    titlesRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
-    var titlesCb = document.createElement('input'); titlesCb.type = 'checkbox'; titlesCb.checked = !!S.recTitles;
-    titlesCb.onchange = function () { S.recTitles = titlesCb.checked; };
-    var titlesTx = document.createElement('span'); titlesTx.textContent = 'Титры на видео';
-    titlesRow.appendChild(titlesCb); titlesRow.appendChild(titlesTx);
-    listPanel.appendChild(titlesRow);
-    var subRow = document.createElement('label');
-    subRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;margin:3px 0;font-size:12px';
-    var subTx = document.createElement('span'); subTx.textContent = 'Подзаголовок';
-    var subIn = document.createElement('input'); subIn.type = 'text'; subIn.value = S.recSubtitle || '';
-    subIn.placeholder = 'Проект / клиент';
-    subIn.style.cssText = 'flex:1;min-width:0;width:120px;background:#0d1420;color:#e6edf3;border:1px solid rgba(127,182,255,.35);border-radius:4px;padding:2px 6px;font:12px sans-serif';
+
+    // ---- панель «Точки тура»: список, параметры тура, видео-облёт ----
+    var listPanel = mk('section', 'sv-panel'); listPanel.id = 'splatStationList'; listPanel.setAttribute('aria-label', 'Точки тура');
+    listPanel.style.display = 'none';
+    var lpHead = mk('header', 'sv-panel-head', '<span data-ico="map-pin"></span><h3>Точки тура</h3>');
+    var lpClose = miniBtn('x', 'Скрыть список'); lpClose.onclick = function () { listPanel.style.display = 'none'; setPressed(S.listBtn, false); };
+    lpHead.appendChild(lpClose);
+    listPanel.appendChild(lpHead);
+    var lpBody = mk('div', 'sv-list'); lpBody.setAttribute('role', 'list');
+    listPanel.appendChild(lpBody);
+
+    var tourSet = mk('details', 'lx-details');
+    tourSet.innerHTML = '<summary><span data-ico="sliders-horizontal"></span>Параметры тура<span class="lx-details-chev" data-ico="chevron-down"></span></summary>';
+    var dwell = rangeRow('Задержка: ' + (S.dwellMs / 1000).toFixed(1) + ' с', 800, 6000, 100, S.dwellMs, '', function (v, lab) { S.dwellMs = v; lab.textContent = 'Задержка: ' + (S.dwellMs / 1000).toFixed(1) + ' с'; });
+    var spd = rangeRow('Переход: ' + (S.moveDurMs / 1000).toFixed(1) + ' с', 400, 2000, 50, S.moveDurMs, '', function (v, lab) { S.moveDurMs = v; lab.textContent = 'Переход: ' + (S.moveDurMs / 1000).toFixed(1) + ' с'; });
+    tourSet.appendChild(dwell.row); tourSet.appendChild(spd.row);
+    tourSet.appendChild(checkRow('Зациклить тур', S.tourLoop, function (v) { S.tourLoop = v; }).row);
+    tourSet.appendChild(checkRow('Линия маршрута', S.showRoute, function (v) { S.showRoute = v; }).row);
+    tourSet.appendChild(checkRow('Сглаживать маршрут', S.smoothRoute, function (v) { S.smoothRoute = v; }).row);
+    listPanel.appendChild(tourSet);
+
+    var vidSet = mk('details', 'lx-details');
+    vidSet.innerHTML = '<summary><span data-ico="video"></span>Видео-облёт<span class="lx-details-chev" data-ico="chevron-down"></span></summary>';
+    vidSet.appendChild(selectRow('Разрешение', [{ v: 0, t: 'Исходное' }, { v: 720, t: '720p' }, { v: 1080, t: '1080p' }, { v: 1440, t: '1440p' }], S.recRes, function (v) { S.recRes = v; }));
+    vidSet.appendChild(selectRow('Битрейт', [{ v: 8, t: 'Низкий' }, { v: 16, t: 'Средний' }, { v: 40, t: 'Высокий' }], S.recBitrate, function (v) { S.recBitrate = v; }));
+    vidSet.appendChild(checkRow('Титры на видео', S.recTitles, function (v) { S.recTitles = v; }).row);
+    var subRow = mk('label', 'sv-row sv-select'), subTx = mk('span', 'sv-row-t'), subIn = document.createElement('input');
+    subTx.textContent = 'Подзаголовок'; subIn.type = 'text'; subIn.value = S.recSubtitle || ''; subIn.placeholder = 'Проект / клиент'; subIn.setAttribute('aria-label', 'Подзаголовок');
     subIn.oninput = function () { S.recSubtitle = subIn.value; };
-    subRow.appendChild(subTx); subRow.appendChild(subIn);
-    listPanel.appendChild(subRow);
-    var dateRow = document.createElement('label');
-    dateRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;cursor:pointer';
-    var dateCb = document.createElement('input'); dateCb.type = 'checkbox'; dateCb.checked = !!S.recShowDate;
-    dateCb.onchange = function () { S.recShowDate = dateCb.checked; };
-    var dateTx = document.createElement('span'); dateTx.textContent = 'Дата на видео';
-    dateRow.appendChild(dateCb); dateRow.appendChild(dateTx);
-    listPanel.appendChild(dateRow);
-    var logoRow = document.createElement('div');
-    logoRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;margin:4px 0;font-size:12px';
-    var logoTx = document.createElement('span'); logoTx.textContent = 'Логотип';
-    var logoWrap = document.createElement('span'); logoWrap.style.cssText = 'display:flex;gap:4px;align-items:center';
-    var logoBtn = document.createElement('button'); logoBtn.type = 'button'; logoBtn.textContent = S.recLogoImg ? 'Заменить' : 'Загрузить';
-    logoBtn.style.cssText = 'background:#2a2f3a;color:#fff;border:0;border-radius:4px;padding:2px 8px;font:12px sans-serif;cursor:pointer';
-    var logoClear = document.createElement('button'); logoClear.type = 'button'; logoClear.textContent = '✕';
-    logoClear.style.cssText = 'background:#a33;color:#fff;border:0;border-radius:4px;padding:2px 6px;font:12px sans-serif;cursor:pointer;' + (S.recLogoImg ? '' : 'display:none');
-    var logoInput = document.createElement('input'); logoInput.type = 'file'; logoInput.accept = 'image/*'; logoInput.style.display = 'none';
+    subRow.appendChild(subTx); subRow.appendChild(subIn); vidSet.appendChild(subRow);
+    vidSet.appendChild(checkRow('Дата на видео', S.recShowDate, function (v) { S.recShowDate = v; }).row);
+    var logoRow = mk('div', 'sv-row sv-select'), logoTx = mk('span', 'sv-row-t'), logoWrap = mk('span', 'sv-logo');
+    logoTx.textContent = 'Логотип';
+    var logoBtn = mk('button', 'btn xs'); logoBtn.type = 'button'; logoBtn.textContent = S.recLogoImg ? 'Заменить' : 'Загрузить';
+    var logoClear = miniBtn('x', 'Сбросить логотип', 'danger'); logoClear.hidden = !S.recLogoImg;
+    var logoInput = document.createElement('input'); logoInput.type = 'file'; logoInput.accept = 'image/*'; logoInput.hidden = true;
     logoInput.onchange = function () {
       var f = logoInput.files && logoInput.files[0]; if (!f) return;
       if (S.recLogoUrl) { try { URL.revokeObjectURL(S.recLogoUrl); } catch (e) {} }
       var url = URL.createObjectURL(f);
       var img = new Image();
-      img.onload = function () { S.recLogoImg = img; S.recLogoUrl = url; logoBtn.textContent = 'Заменить'; logoClear.style.display = ''; toast('Логотип загружен'); };
+      img.onload = function () { S.recLogoImg = img; S.recLogoUrl = url; logoBtn.textContent = 'Заменить'; logoClear.hidden = false; toast('Логотип загружен'); };
       img.onerror = function () { toast('Не удалось загрузить логотип'); };
       img.src = url;
     };
     logoBtn.onclick = function () { logoInput.click(); };
     logoClear.onclick = function () {
       if (S.recLogoUrl) { try { URL.revokeObjectURL(S.recLogoUrl); } catch (e) {} }
-      S.recLogoImg = null; S.recLogoUrl = ''; logoInput.value = ''; logoBtn.textContent = 'Загрузить'; logoClear.style.display = 'none'; toast('Логотип сброшен');
+      S.recLogoImg = null; S.recLogoUrl = ''; logoInput.value = ''; logoBtn.textContent = 'Загрузить'; logoClear.hidden = true; toast('Логотип сброшен');
     };
     logoWrap.appendChild(logoBtn); logoWrap.appendChild(logoClear); logoWrap.appendChild(logoInput);
-    logoRow.appendChild(logoTx); logoRow.appendChild(logoWrap);
-    listPanel.appendChild(logoRow);
-    var lpBody = document.createElement('div'); lpBody.style.cssText = 'margin-top:4px';
-    listPanel.appendChild(lpBody);
+    logoRow.appendChild(logoTx); logoRow.appendChild(logoWrap); vidSet.appendChild(logoRow);
+    listPanel.appendChild(vidSet);
     wrap.appendChild(listPanel);
     S.listPanel = listPanel; S.listBody = lpBody;
-    // HUD
-    var hud = document.createElement('div');
-    hud.style.cssText = 'position:absolute;top:10px;left:10px;right:10px;display:flex;gap:8px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;pointer-events:none;font:13px sans-serif;color:#e6edf3';
-    var left = document.createElement('div');
-    left.style.cssText = 'display:flex;gap:10px;align-items:center;background:rgba(10,14,20,.7);padding:6px 10px;border-radius:8px;pointer-events:auto';
-    var title = document.createElement('span'); title.textContent = '3DGS';
-    var cnt = document.createElement('span'); cnt.style.opacity = '.7'; cnt.textContent = '';
-    left.appendChild(title); left.appendChild(cnt);
-    var brWrap = document.createElement('label');
-    brWrap.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:11px;opacity:.92;margin-left:4px';
-    brWrap.appendChild(document.createTextNode('Свет'));
-    var brIn = document.createElement('input'); brIn.type = 'range'; brIn.min = '0.5'; brIn.max = '5'; brIn.step = '0.1'; brIn.value = String(S.exposure); brIn.title = 'Яркость сцены'; brIn.style.cssText = 'width:82px;accent-color:#2563eb';
-    brIn.oninput = function () { S.exposure = +brIn.value; };
-    brWrap.appendChild(brIn); left.appendChild(brWrap);
-    var psWrap = document.createElement('label');
-    psWrap.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:11px;opacity:.92;margin-left:4px';
-    psWrap.appendChild(document.createTextNode('Точки'));
-    var psIn = document.createElement('input'); psIn.type = 'range'; psIn.min = '0.15'; psIn.max = '2'; psIn.step = '0.05'; psIn.value = String(S.sizeMul); psIn.title = 'Размер точек: меньше — резче, больше — плотнее (без дыр)'; psIn.style.cssText = 'width:82px;accent-color:#2563eb';
-    psIn.oninput = function () { S.sizeMul = +psIn.value; };
-    psWrap.appendChild(psIn); left.appendChild(psWrap);
-    var shWrap = document.createElement('label');
-    shWrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;font-size:11px;opacity:.92;margin-left:6px;cursor:pointer';
-    var shCb = document.createElement('input'); shCb.type = 'checkbox'; shCb.checked = !!S.sharp; shCb.title = 'Чёткие непрозрачные точки (без размытия, легче)'; shCb.style.cssText = 'accent-color:#2563eb';
-    shCb.onchange = function () { S.sharp = shCb.checked; S.needsSort = true; };
-    S.sharpCb = shCb;
-    shWrap.appendChild(shCb); shWrap.appendChild(document.createTextNode('Чёткие'));
-    left.appendChild(shWrap);
-    var right = document.createElement('div');
-    right.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;max-width:100%;pointer-events:auto';
-    var hint = document.createElement('span');
-    hint.style.cssText = 'opacity:.7;background:rgba(10,14,20,.7);padding:6px 10px;border-radius:8px';
-    hint.textContent = 'ЛКМ — телепорт · WASD — ход · Shift — бег · Space — прыжок · Q/E — полёт вверх/вниз · «Ходьба» — аватар';
-    var tourBtn = document.createElement('button');
-    setBtn(tourBtn, 'play', 'Тур');
-    tourBtn.title = 'Авто-тур по точкам сцены';
-    tourBtn.style.cssText = btnCss();
-    tourBtn.onclick = function () { setTour(!S.tourActive); };
-    var nextBtn = document.createElement('button');
-    setBtn(nextBtn, 'next', '');
-    nextBtn.title = 'Следующая точка';
-    nextBtn.style.cssText = btnCss();
-    nextBtn.onclick = function () { cancelTour(); nextStation(); };
-    var overBtn = document.createElement('button');
-    setBtn(overBtn, 'frame', 'Обзор');
-    overBtn.title = 'Вернуться к общему виду';
-    overBtn.style.cssText = btnCss();
-    overBtn.onclick = function () { cancelTour(); overview(); };
-    var walkBtn = document.createElement('button');
-    setBtn(walkBtn, 'walk', 'Ходьба');
-    walkBtn.title = 'Режим ходьбы: камера на уровне глаз, движение по полу';
-    walkBtn.style.cssText = btnCss();
-    walkBtn.onclick = function () { setWalk(!S.walk); };
-    S.walkBtn = walkBtn;
-    var mapBtn = document.createElement('button');
-    setBtn(mapBtn, 'map', 'Карта');
-    mapBtn.title = 'Показать/скрыть мини-карту';
-    mapBtn.style.cssText = btnCss();
-    mapBtn.onclick = function () { if (S.mmCanvas) S.mmCanvas.style.display = (S.mmCanvas.style.display === 'none' ? 'block' : 'none'); };
-    S.mapBtn = mapBtn;
-    var saveBtn = document.createElement('button');
-    setBtn(saveBtn, 'save', '');
-    saveBtn.title = 'Сохранить координаты точек в проекте (откроются автоматически при следующем открытии этой сцены)';
-    saveBtn.style.cssText = btnCss();
-    saveBtn.onclick = function () { saveToProject(); };
-    var expBtn = document.createElement('button');
-    setBtn(expBtn, 'download', '');
-    expBtn.title = 'Экспортировать координаты точек в файл .json';
-    expBtn.style.cssText = btnCss();
-    expBtn.onclick = function () { exportTour(); };
-    var openBtn2 = document.createElement('button');
-    setBtn(openBtn2, 'folder', '');
-    openBtn2.title = 'Загрузить маршрут тура из файла';
-    openBtn2.style.cssText = btnCss();
-    openBtn2.onclick = function () { if (S.tourFileInput) S.tourFileInput.click(); };
-    var addBtn = document.createElement('button');
-    setBtn(addBtn, 'pin', 'Точка');
-    addBtn.title = 'Добавить точку тура в текущей позиции и ракурсе камеры';
-    addBtn.style.cssText = btnCss();
-    addBtn.onclick = function () { addStationHere(); };
-    var editBtn = document.createElement('button');
-    setBtn(editBtn, 'pencil', 'Правка');
-    editBtn.title = 'Режим правки: клик по маркеру — переименовать или удалить';
-    editBtn.style.cssText = btnCss();
-    editBtn.onclick = function () { setEdit(!S.editMode); };
-    S.editBtn = editBtn;
-    var listBtn = document.createElement('button');
-    setBtn(listBtn, 'list', 'Список');
-    listBtn.title = 'Показать/скрыть список точек и настройки тура';
-    listBtn.style.cssText = btnCss();
-    listBtn.onclick = function () { if (S.listPanel) { var vis = S.listPanel.style.display === 'none'; S.listPanel.style.display = vis ? 'block' : 'none'; if (vis) renderStationList(); } };
-    var recBtn = document.createElement('button');
-    setBtn(recBtn, 'video', 'Видео');
-    recBtn.title = 'Записать видео-облёт по точкам тура (WebM)';
-    recBtn.style.cssText = btnCss();
-    recBtn.onclick = function () { if (S._recording) stopTourVideo(); else exportTourVideo(); };
-    S.recBtn = recBtn;
-    var flip = document.createElement('button');
-    setBtn(flip, 'flip', 'Перевернуть');
-    flip.style.cssText = btnCss();
-    flip.onclick = function () { S.cam.upSign *= -1; S.cam.pitch = -S.cam.pitch; S.needsSort = true; try { localStorage.setItem('splat_up', String(S.cam.upSign)); } catch (e) {} };
-    var exit = document.createElement('button');
-    setBtn(exit, 'exit', 'Выйти');
-    exit.style.cssText = btnCss() + ';background:#b3402f;border-color:rgba(255,180,170,.45)';
-    exit.title = 'Закрыть 3DGS-тур и вернуться к облаку точек (или клавиша Esc)';
+
+    // ---- HUD ----
+    var hud = mk('div', 'sv-hud');
+    var left = mk('div', 'sv-chip');
+    var title = mk('span', 'sv-title'); title.textContent = '3DGS';
+    var cnt = mk('span', 'sv-count'); cnt.textContent = '';
+    left.appendChild(mk('span', 'sv-chip-ico', '<span data-ico="orbit"></span>')); left.appendChild(title); left.appendChild(cnt);
+    left.appendChild(mk('span', 'sv-sep'));
+    var br = rangeRow('Свет', 0.5, 5, 0.1, S.exposure, 'Яркость сцены', function (v) { S.exposure = v; });
+    var ps = rangeRow('Точки', 0.15, 2, 0.05, S.sizeMul, 'Размер точек: меньше — резче, больше — плотнее (без дыр)', function (v) { S.sizeMul = v; });
+    br.row.className = ps.row.className = 'sv-slider';
+    left.appendChild(br.row); left.appendChild(ps.row);
+    var sh = checkRow('Чёткие', S.sharp, function (v) { S.sharp = v; S.needsSort = true; });
+    sh.row.className = 'sv-check'; sh.row.setAttribute('data-tip', 'Чёткие непрозрачные точки (без размытия, легче)');
+    S.sharpCb = sh.input;
+    left.appendChild(sh.row);
+
+    var right = mk('div', 'sv-tools');
+    var gTour = group('Тур');
+    S.tourBtn = hudBtn('play', 'Тур', 'Авто-тур по точкам сцены', function () { setTour(!S.tourActive); });
+    gTour.appendChild(S.tourBtn);
+    gTour.appendChild(hudBtn('skip-forward', '', 'Следующая точка', function () { cancelTour(); nextStation(); }));
+    gTour.appendChild(hudBtn('map-pin', 'Точка', 'Добавить точку тура в текущей позиции и ракурсе камеры', function () { addStationHere(); }));
+    S.editBtn = hudBtn('pencil', '', 'Режим правки: клик по маркеру — переименовать или удалить', function () { setEdit(!S.editMode); });
+    S.editBtn.setAttribute('aria-pressed', 'false');
+    gTour.appendChild(S.editBtn);
+    S.listBtn = hudBtn('list', '', 'Показать/скрыть список точек и настройки тура', function () {
+      if (!S.listPanel) return;
+      var vis = S.listPanel.style.display === 'none';
+      S.listPanel.style.display = vis ? 'flex' : 'none'; setPressed(S.listBtn, vis);
+      if (vis) renderStationList();
+    });
+    S.listBtn.setAttribute('aria-pressed', 'false');
+    gTour.appendChild(S.listBtn);
+
+    var gNav = group('Навигация');
+    gNav.appendChild(hudBtn('maximize', 'Обзор', 'Вернуться к общему виду', function () { cancelTour(); overview(); }));
+    S.walkBtn = hudBtn('footprints', 'Ходьба', 'Режим ходьбы: камера на уровне глаз, движение по полу', function () { setWalk(!S.walk); });
+    S.walkBtn.setAttribute('aria-pressed', 'false');
+    gNav.appendChild(S.walkBtn);
+    S.mapBtn = hudBtn('map', '', 'Показать/скрыть мини-карту', toggleMap);
+    S.mapBtn.setAttribute('aria-pressed', 'false');
+    gNav.appendChild(S.mapBtn);
+    gNav.appendChild(hudBtn('flip-vertical', '', 'Перевернуть сцену (верх/низ)', function () { S.cam.upSign *= -1; S.cam.pitch = -S.cam.pitch; S.needsSort = true; try { localStorage.setItem('splat_up', String(S.cam.upSign)); } catch (e) {} }));
+
+    var gFile = group('Файл');
+    gFile.appendChild(hudBtn('save', '', 'Сохранить координаты точек в проекте (откроются автоматически при следующем открытии этой сцены)', function () { saveToProject(); }));
+    gFile.appendChild(hudBtn('download', '', 'Экспортировать координаты точек в файл .json', function () { exportTour(); }));
+    gFile.appendChild(hudBtn('folder-open', '', 'Загрузить маршрут тура из файла', function () { if (S.tourFileInput) S.tourFileInput.click(); }));
+    S.recBtn = hudBtn('video', 'Видео', 'Записать видео-облёт по точкам тура (WebM)', function () { if (S._recording) stopTourVideo(); else exportTourVideo(); });
+    gFile.appendChild(S.recBtn);
+
+    var exit = mk('button', 'btn sm danger sv-exit'); exit.type = 'button';
+    setBtn(exit, 'log-out', 'Выйти');
+    exit.setAttribute('data-tip', 'Закрыть 3DGS-тур и вернуться к облаку точек (Esc)');
     exit.onclick = function () { api.exit(); };
-    S.tourBtn = tourBtn;
-    right.appendChild(hint); right.appendChild(tourBtn); right.appendChild(nextBtn);
-    right.appendChild(overBtn); right.appendChild(walkBtn); right.appendChild(mapBtn); right.appendChild(saveBtn); right.appendChild(expBtn); right.appendChild(openBtn2); right.appendChild(addBtn); right.appendChild(editBtn); right.appendChild(listBtn); right.appendChild(recBtn); right.appendChild(flip); right.appendChild(exit);
+    right.appendChild(gTour); right.appendChild(gNav); right.appendChild(gFile); right.appendChild(exit);
     hud.appendChild(left); hud.appendChild(right);
     wrap.appendChild(hud);
+
+    var hint = mk('div', 'sv-hint');
+    hint.innerHTML = '<span><kbd>ЛКМ</kbd> телепорт</span><span><kbd>WASD</kbd> ход</span><span><kbd>Shift</kbd> бег</span><span><kbd>Space</kbd> прыжок</span><span><kbd>Q</kbd>/<kbd>E</kbd> полёт вверх / вниз</span><span>«Ходьба» — аватар</span>';
+    wrap.appendChild(hint);
+    hydrateIcons(wrap);
     S.wrap = wrap; S.canvas = canvas; S.hud = hud; S.titleEl = title; S.countEl = cnt;
     bindControls();
   }
-  var SV_ICONS = {
-    play: "<polygon points='6 4 20 12 6 20'/>",
-    pause: "<rect x='6' y='5' width='4' height='14' rx='1'/><rect x='14' y='5' width='4' height='14' rx='1'/>",
-    next: "<polygon points='5 4 15 12 5 20'/><line x1='19' y1='5' x2='19' y2='19'/>",
-    frame: "<path d='M8 3H5a2 2 0 0 0-2 2v3'/><path d='M21 8V5a2 2 0 0 0-2-2h-3'/><path d='M3 16v3a2 2 0 0 0 2 2h3'/><path d='M16 21h3a2 2 0 0 0 2-2v-3'/>",
-    walk: "<circle cx='12' cy='4' r='1.6'/><path d='m9 20 3-6 3 6'/><path d='m6 9 6 2 6-2'/><path d='M12 11v3'/>",
-    map: "<polygon points='3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21 3 6'/><line x1='9' y1='3' x2='9' y2='18'/><line x1='15' y1='6' x2='15' y2='21'/>",
-    save: "<path d='M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z'/><polyline points='17 21 17 13 7 13 7 21'/><polyline points='7 3 7 8 15 8'/>",
-    folder: "<path d='M4 20a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2z'/>",
-    download: "<path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><polyline points='7 10 12 15 17 10'/><line x1='12' y1='15' x2='12' y2='3'/>",
-    pin: "<path d='M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z'/><circle cx='12' cy='10' r='3'/>",
-    pencil: "<path d='M17 3a2.83 2.83 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z'/><path d='m15 5 4 4'/>",
-    list: "<line x1='8' y1='6' x2='21' y2='6'/><line x1='8' y1='12' x2='21' y2='12'/><line x1='8' y1='18' x2='21' y2='18'/><line x1='3' y1='6' x2='3.01' y2='6'/><line x1='3' y1='12' x2='3.01' y2='12'/><line x1='3' y1='18' x2='3.01' y2='18'/>",
-    video: "<path d='m22 8-6 4 6 4V8Z'/><rect x='2' y='6' width='14' height='12' rx='2'/>",
-    stop: "<rect x='6' y='6' width='12' height='12' rx='2'/>",
-    flip: "<path d='m17 3 4 4-4 4'/><path d='M21 7H9a4 4 0 0 0-4 4'/><path d='m7 21-4-4 4-4'/><path d='M3 17h12a4 4 0 0 0 4-4'/>",
-    exit: "<path d='M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4'/><polyline points='16 17 21 12 16 7'/><line x1='21' y1='12' x2='9' y2='12'/>"
-  };
-  function svgIcon(name) {
-    var p = SV_ICONS[name] || '';
-    return "<svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' style='flex:none;pointer-events:none'>" + p + "</svg>";
-  }
+  // Иконки: имена Lucide, рисуются общим набором (icons.js); setBtn перерисовывает содержимое кнопки.
   function setBtn(btn, name, label) {
-    btn.innerHTML = svgIcon(name) + (label ? ("<span>" + label + "</span>") : "");
-  }
-  function btnCss() {
-    return 'display:inline-flex;align-items:center;gap:6px;background:#2a2f3a;color:#eef2f7;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:6px 10px;font:600 12.5px system-ui,-apple-system,sans-serif;cursor:pointer;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.3)';
+    btn.innerHTML = '<span data-ico="' + name + '"></span>' + (label ? '<span class="lbl">' + label + '</span>' : '');
+    hydrateIcons(btn);
   }
 
   function bindControls() {
@@ -2355,7 +2221,11 @@
     window.addEventListener('keyup', function (e) { S.keys[keyName(e)] = false; if (e.key === 'Escape' && S.open) api.exit(); });
   }
 
-  function toast(msg) { if (typeof window !== 'undefined' && typeof window.toast === 'function') window.toast(msg); }
+  function toast(msg) {
+    if (typeof window === 'undefined') return;
+    if (window.__lxKit && window.__lxKit.toast) window.__lxKit.toast(msg);
+    else if (typeof window.toast === 'function') window.toast(msg);
+  }
 
   // ---------- public API ----------
   var api = {
@@ -2396,8 +2266,8 @@
       var savedTour = loadPersistedStations();
       S.stations = (savedTour && savedTour.length) ? savedTour : computeStations(S.buf, S.count, 8, rb);
       S.tourIndex = 0; S.tourActive = false; S.tween = null; S._dwellSet = false; S.editMode = false;
-      if (S.editBtn) S.editBtn.style.background = '#2a2f3a';
-      if (S.tourBtn) S.tourBtn.textContent = '▶ Тур';
+      setPressed(S.editBtn, false);
+      if (S.tourBtn) setBtn(S.tourBtn, 'play', 'Тур');
       // v1147: default is FREE FLIGHT (fly anywhere for overview); the "Ходьба" button
       // switches to the first-person avatar (gravity, jump, run, wall collision).
       var eyeH = Math.min(1.7, Math.max(0.8, (rb.hi[1] - rb.lo[1]) * 0.28));
@@ -2412,11 +2282,11 @@
       // Collision voxels: finer vertical layers (0.35 m) for smoother floor-following & jumps.
       try { S.collision = buildCollisionGrid(S.buf, S.count, rb, { layerH: 0.35 }); } catch (e) { S.collision = null; }
       S.walk = false;
-      if (S.walkBtn) S.walkBtn.style.background = '#2a2f3a';
+      setPressed(S.walkBtn, false);
       S._suppressPersist = true; buildMarkers(); S._suppressPersist = false;
       S.moveSpeed = S.step * 14;
       S.vel = [0, 0, 0]; S.zoomVel = 0;
-      if (S.mmCanvas) S.mmCanvas.style.display = 'block';
+      if (S.mmCanvas) { S.mmCanvas.style.display = 'block'; setPressed(S.mapBtn, true); }
       // Spawn INSIDE at the initial position (like LCC Studio): stand on the local floor
       // at eye height in the most central tour station, facing the room.
       var b = rb;

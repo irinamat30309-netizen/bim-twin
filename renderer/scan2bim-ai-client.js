@@ -47,8 +47,11 @@
 
   function mainV() { try { if (window.__pcTools && window.__pcTools.viewer) return window.__pcTools.viewer(); } catch (e) {} return window.__viewer || null; }
   function toast(msg, err) { try { if (window.__toast) return window.__toast(msg, err ? 'error' : 'info'); } catch (e) {} console[err ? 'error' : 'log']('[scan2bim-ai] ' + msg); }
-  function el(tag, css, html) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (html != null) e.innerHTML = html; return e; }
-  function bcss(bg) { return 'display:inline-flex;align-items:center;gap:6px;justify-content:center;padding:7px 10px;margin:3px 3px 0 0;border:none;border-radius:8px;background:' + bg + ';color:#fff;font:600 12px/1.1 system-ui,Segoe UI,Arial;cursor:pointer'; }
+  function el(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  function hy(root) { try { if (window.__lxKit && window.__lxKit.hydrate) window.__lxKit.hydrate(root); } catch (e) {} }
+  function setOn(b, on) { if (!b) return; b.classList.toggle('on', !!on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+  function actBtn(label, ico, cls, fn) { var b = el('button', 'btn sm' + (cls ? ' ' + cls : '')); b.type = 'button'; if (ico) b.setAttribute('data-ico', ico); b.textContent = label; if (fn) b.onclick = fn; return b; }
+  function iconBtn(ico, tip, cls, fn) { var b = el('button', 'icon-btn xs' + (cls ? ' ' + cls : '')); b.type = 'button'; b.setAttribute('data-ico', ico); b.setAttribute('data-tip', tip); b.setAttribute('aria-label', tip); if (fn) b.onclick = fn; return b; }
   function nfmt(x, d) { return (x == null || !isFinite(x)) ? '—' : (+x).toFixed(d == null ? 2 : d); }
   function nowMs() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); }
 
@@ -249,52 +252,53 @@
   function s2bPanel() {
     var id = 'lxS2BEditPanel', ex = document.getElementById(id);
     if (ex) { ex.style.display = 'block'; return ex; }
-    var p = document.createElement('div'); p.id = id;
-    p.className = 'lx-tool-panel'; p.style.cssText = 'right:14px;top:70px;width:236px;max-height:calc(100vh - 120px);overflow:auto;font:12px/1.45 system-ui,Segoe UI,sans-serif;padding:12px';
-    document.body.appendChild(p); return p;
+    var p = el('section', 'fpanel fp-right'); p.id = id; p.setAttribute('aria-label', 'Правка модели 1:1'); p.setAttribute('data-esc', '1');
+    (document.getElementById('stageSideR') || document.querySelector('.stage') || document.body).appendChild(p); return p;
   }
-  function mkBtn(txt, css) { var b = document.createElement('button'); b.textContent = txt; b.style.cssText = css; return b; }
-  var TONE = { blue: 'var(--lx-blue)', green: 'var(--lx-green)', purple: 'var(--lx-purple)', orange: 'var(--lx-orange)', neutral: 'var(--lx-neutral)' };
+  var CATS = [['walls', 'Стена', 'Стены'], ['pipes', 'Труба', 'Трубы'], ['services', 'Воздуховод / лоток', 'Воздуховоды и лотки'], ['beams', 'Балка', 'Балки'], ['objects', 'Объект', 'Объекты'], ['cables', 'Провод', 'Провода']];
+  function resetEdits() {
+    S2B_VIEW.del = { walls: {}, pipes: {}, services: {}, beams: {}, objects: {}, cables: {} };
+    S2B_VIEW.walls = S2B_VIEW.pipes = S2B_VIEW.services = S2B_VIEW.beams = S2B_VIEW.objects = S2B_VIEW.cables = true;
+    rebuildPreview(); renderEditPanel();
+  }
   function renderEditPanel() {
     if (!lastModel || !lastModel.ok) return;
     var m = lastModel, p = s2bPanel(); p.innerHTML = '';
-    var head = document.createElement('div'); head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px';
-    var ht = document.createElement('div'); ht.textContent = '✏️ Правка модели 1:1'; ht.style.cssText = 'font:700 13px system-ui;color:var(--txt)';
-    var hx = mkBtn('×', 'border:none;background:transparent;color:var(--muted);font-size:18px;cursor:pointer;line-height:1'); hx.onclick = function () { p.style.display = 'none'; };
-    head.appendChild(ht); head.appendChild(hx); p.appendChild(head);
-    p.appendChild((function () { var d = document.createElement('div'); d.style.cssText = 'font:11px system-ui;color:var(--muted);margin-bottom:8px'; d.textContent = 'Наведите на элемент — он подсветится красным. ✕ — удалить лишнее.'; return d; })());
-    var st = document.createElement('label'); st.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0 8px;cursor:pointer';
+    p.style.display = 'block';
+    var inner = el('div', 'fpanel-inner'), body = el('div', 'fpanel-body lx-sec-body');
+    inner.innerHTML = '<header class="fpanel-head"><span class="fpanel-ico" data-ico="pencil-ruler"></span><h3>Правка модели 1:1</h3>' +
+      '<div class="fpanel-actions"><button class="icon-btn" type="button" data-panel-close data-ico="x" data-tip="Закрыть" aria-label="Закрыть"></button></div></header>';
+    inner.querySelector('[data-panel-close]').onclick = function () { p.style.display = 'none'; };
+    body.appendChild(el('p', 'sec-note', 'Наведите на элемент в списке — он подсветится красным. Корзина удаляет лишнее.'));
+    var st = el('label', 'lx-cp-check');
     var sc = document.createElement('input'); sc.type = 'checkbox'; sc.checked = S2B_VIEW.solid;
     sc.onchange = function () { S2B_VIEW.solid = sc.checked; rebuildPreview(); };
-    st.appendChild(sc); st.appendChild(document.createTextNode('Сплошная модель (как в FARO)')); p.appendChild(st);
-    var cats = [['walls', 'Стена', m.walls], ['pipes', 'Труба', m.pipes], ['services', 'Вентиляция/лоток', m.services], ['beams', 'Балка', m.beams], ['objects', 'Объект', m.objects], ['cables', 'Провод', m.cables]];
-    cats.forEach(function (c) {
-      var key = c[0], label = c[1], arr = c[2] || [];
+    st.appendChild(sc); st.appendChild(document.createTextNode('Сплошная модель (как в FARO)')); body.appendChild(st);
+    CATS.forEach(function (c) {
+      var key = c[0], one = c[1], many = c[2], arr = m[key] || [];
       var live = arr.filter(function (_, i) { return !S2B_VIEW.del[key][i]; }).length;
-      var sec = document.createElement('div'); sec.style.cssText = 'border-top:1px solid var(--line);padding-top:6px;margin-top:6px';
-      var row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:6px;font-weight:600';
-      var vc = document.createElement('input'); vc.type = 'checkbox'; vc.checked = S2B_VIEW[key]; vc.title = 'Показывать/скрыть';
+      var sec = el('div', 'lx-edit-cat');
+      var row = el('div', 'lx-edit-head');
+      var vc = document.createElement('input'); vc.type = 'checkbox'; vc.checked = S2B_VIEW[key]; vc.setAttribute('aria-label', 'Показывать: ' + many);
       vc.onchange = function () { S2B_VIEW[key] = vc.checked; rebuildPreview(); };
-      var lb = document.createElement('span'); lb.textContent = label + 'ы (' + live + ')'; lb.style.flex = '1';
-      var clr = mkBtn('очистить', 'font:11px system-ui;cursor:pointer;background:color-mix(in srgb, var(--err) 15%, transparent);color:var(--err);border:1px solid color-mix(in srgb, var(--err) 45%, transparent);border-radius:6px;padding:1px 6px');
-      clr.onclick = function () { arr.forEach(function (_, i) { S2B_VIEW.del[key][i] = 1; }); rebuildPreview(); renderEditPanel(); };
+      var lb = el('span', 'lx-edit-name'); lb.textContent = many; var cnt = el('small'); cnt.textContent = String(live); lb.appendChild(cnt);
+      var clr = actBtn('Очистить', '', 'xs danger', function () { arr.forEach(function (_, i) { S2B_VIEW.del[key][i] = 1; }); rebuildPreview(); renderEditPanel(); });
+      clr.classList.remove('sm'); clr.disabled = !live;
       row.appendChild(vc); row.appendChild(lb); row.appendChild(clr); sec.appendChild(row);
-      var list = document.createElement('div'); list.style.cssText = 'margin-top:4px;max-height:150px;overflow:auto';
-      arr.forEach(function (el3, i) {
+      var list = el('div', 'lx-edit-list'); list.setAttribute('role', 'list');
+      arr.forEach(function (_, i) {
         if (S2B_VIEW.del[key][i]) return;
-        var it = document.createElement('div'); it.style.cssText = 'display:flex;align-items:center;gap:6px;padding:1px 2px;border-radius:4px;cursor:default';
-        var nm = document.createElement('span'); nm.textContent = label + ' ' + (i + 1); nm.style.flex = '1';
-        var del = mkBtn('✕', 'cursor:pointer;background:transparent;color:var(--err);border:none;font-size:12px;line-height:1');
-        it.onmouseenter = function () { it.style.background = 'var(--panel2)'; rebuildPreview({ cat: key, idx: i }); };
-        it.onmouseleave = function () { it.style.background = 'transparent'; rebuildPreview(); };
-        del.onclick = function (e) { e.stopPropagation(); S2B_VIEW.del[key][i] = 1; rebuildPreview(); renderEditPanel(); };
+        var it = el('div', 'lx-edit-item'); it.setAttribute('role', 'listitem'); it.tabIndex = 0;
+        var nm = el('span', 'lx-edit-item-name'); nm.textContent = one + ' ' + (i + 1);
+        var del = iconBtn('trash-2', 'Удалить: ' + one + ' ' + (i + 1), 'danger', function (e) { e.stopPropagation(); S2B_VIEW.del[key][i] = 1; rebuildPreview(); renderEditPanel(); });
+        var on = function () { rebuildPreview({ cat: key, idx: i }); }, off = function () { rebuildPreview(); };
+        it.addEventListener('mouseenter', on); it.addEventListener('mouseleave', off); it.addEventListener('focus', on); it.addEventListener('blur', off);
         it.appendChild(nm); it.appendChild(del); list.appendChild(it);
       });
-      sec.appendChild(list); p.appendChild(sec);
+      sec.appendChild(list); body.appendChild(sec);
     });
-    var rb = mkBtn('↺ Сбросить правки', 'margin-top:10px;width:100%;cursor:pointer;background:var(--panel2);color:var(--lx-blue);border:1px solid var(--line);border-radius:8px;padding:5px');
-    rb.onclick = function () { S2B_VIEW.del = { walls: {}, pipes: {}, services:{}, beams: {}, objects: {}, cables: {} }; S2B_VIEW.walls = S2B_VIEW.pipes = S2B_VIEW.services = S2B_VIEW.beams = S2B_VIEW.objects = S2B_VIEW.cables = true; rebuildPreview(); renderEditPanel(); };
-    p.appendChild(rb);
+    body.appendChild(actBtn('Сбросить правки', 'rotate-ccw', '', resetEdits));
+    inner.appendChild(body); p.appendChild(inner); hy(p);
   }
 
   // ===================== ВСТРОЕННЫЙ ДВИЖОК (ОФЛАЙН, БЕЗ СЕРВЕРА) =====================
@@ -446,19 +450,20 @@
     toast('DXF-план доступен для встроенной модели (режим auto/geom)', true);
   }
 
-  var panel = null, statusEl = null, statsEl = null, urlInput = null, modeSel = null;
+  var panel = null, statusEl = null, statsEl = null, urlInput = null, modeSel = null, launchBtn = null;
   function setStatus(t) { if (statusEl) statusEl.textContent = t; }
-  function row(k, v) { return '<div style="display:flex;justify-content:space-between;gap:8px;font:12px system-ui;color:var(--muted);padding:1px 0"><span>' + k + '</span><b style="color:var(--txt)">' + v + '</b></div>'; }
+  function row(k, v) { return '<div class="lx-stat"><span>' + k + '</span><b>' + v + '</b></div>'; }
   function renderStats(j) {
     if (!statsEl) return; var s = j.stats || {};
-    statsEl.innerHTML = '<div style="font:600 12px system-ui;color:var(--ok);margin-bottom:4px">🤖 Модель (' + (j.engine === 'ai' ? 'ИИ/GPU' : 'геометрия') + ')</div>' +
+    statsEl.innerHTML = '<div class="lx-stats-h"><span data-ico="circle-check"></span>Модель (' + (j.engine === 'ai' ? 'ИИ / GPU' : 'геометрия') + ')</div>' +
       row('Стен', s.wall_count || 0) + row('Труб', s.pipe_count || 0) + row('Объектов', s.object_count || 0) +
       row('Высота', (j.height != null ? j.height.toFixed(2) : '—') + ' м') +
       row('Площадь', (j.floor_area != null ? j.floor_area.toFixed(1) : '—') + ' м²');
+    hy(statsEl);
   }
   function renderStatsLocal(m, dt) {
     if (!statsEl) return; var s = m.stats, st = m.storey;
-    statsEl.innerHTML = '<div style="font:600 12px system-ui;color:var(--ok);margin-bottom:4px">🏗️ Модель 1:1 (встроенный движок)</div>' +
+    statsEl.innerHTML = '<div class="lx-stats-h"><span data-ico="circle-check"></span>Модель 1:1 (встроенный движок)</div>' +
       row('Стен', s.wallCount) + row('Проёмов', s.openingCount) + row('Труб', s.pipeCount) +
       row('Балок', s.beamCount || 0) + row('Колонн', s.columnCount || 0) + row('Оборуд./щитки', Math.max(0, (s.objectCount || 0) - (s.columnCount || 0))) +
       row('Высота этажа', nfmt(st.height) + ' м') +
@@ -466,70 +471,76 @@
       row('Сумм. длина стен', nfmt(s.totalWallLength) + ' м') +
       row('Ср. RMS подгонки', nfmt(s.meanWallRms * 1000, 1) + ' мм') +
       (dt != null ? row('Время', dt + ' с') : '');
+    hy(statsEl);
+  }
+
+  function diagText(d) {
+    var mb = Math.round(((d.checkpoint_size || 0) / 1048576) * 10) / 10;
+    return 'torch=' + (d.torch || '-') + ' · cuda=' + (d.cuda ? 'да' : 'НЕТ') + ' · gpu=' + (d.device_name || '-')
+      + ' · spconv=' + (d.spconv ? 'да' : 'НЕТ') + ' · ptv3=' + (d.ptv3_import ? 'да' : 'НЕТ')
+      + ' · веса=' + (d.checkpoint_exists ? ('да, ' + mb + 'МБ') : 'НЕТ')
+      + ' · загрузка=' + (d.load_ok ? 'OK' : 'НЕТ')
+      + ' · форвард=' + (d.forward_ok === true ? 'OK' : (d.forward_ok === false ? 'НЕТ' : '?'))
+      + (d.error ? (' · ОШИБКА: ' + d.error) : (d.note ? (' · ' + d.note) : ''))
+      + (d.forward_trace ? (' · TRACE: ' + d.forward_trace) : (d.error_trace ? (' · TRACE: ' + d.error_trace) : ''))
+      + (d.head_scan ? (' · ГОЛОВЫ[' + (d.head_count != null ? d.head_count : (d.head_scan.length || 0)) + ']: ' + (Array.isArray(d.head_scan) ? d.head_scan.join(' | ') : d.head_scan)) : '');
   }
 
   function buildPanel() {
     if (panel) return panel;
-    panel = el('div', ''); panel.className = 'lx-tool-panel'; panel.style.cssText = 'left:14px;bottom:132px;width:280px;max-height:calc(100vh - 170px);overflow-y:auto;padding:12px;display:none';
-    var head = el('div', 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px');
-    head.appendChild(el('div', 'font:700 13px system-ui;color:var(--txt)', '🏗️ Скан → BIM (1:1)'));
-    var x = el('button', 'border:none;background:transparent;color:var(--muted);font-size:18px;cursor:pointer;line-height:1', '×'); x.onclick = close; head.appendChild(x);
-    panel.appendChild(head);
-    panel.appendChild(el('div', 'font:11px system-ui;color:var(--muted);margin-bottom:6px', 'Сервер поднимается автоматически вместе с приложением. Пока он загружается или если недоступен — модель 1:1 строится встроенным движком (офлайн).'));
-    // v1170: селектор режимов убран — теперь есть один режим «1:1», чтобы не путать.
+    panel = el('section', 'fpanel fp-left'); panel.id = 'lxScan2BimAiPanel'; panel.setAttribute('aria-label', 'Скан → BIM 1:1'); panel.setAttribute('data-esc', '1');
+    panel.style.display = 'none';
+    panel.innerHTML = '<div class="fpanel-inner"><header class="fpanel-head"><span class="fpanel-ico" data-ico="boxes"></span><h3>BIM 1:1 по облаку</h3>' +
+      '<div class="fpanel-actions"><button id="lxScan2BimAiClose" class="icon-btn" type="button" data-panel-close data-ico="x" data-tip="Закрыть" aria-label="Закрыть"></button></div></header>' +
+      '<div class="fpanel-body lx-sec-body"></div></div>';
+    var body = panel.querySelector('.fpanel-body');
+    body.appendChild(el('p', 'sec-note', 'Модель 1:1 строится встроенным движком по геометрии облака — офлайн, результат одинаков при каждом запуске. Сервер поднимается вместе с приложением и подключается автоматически, если готов.'));
+    // v1170: селектор режимов убран — теперь один режим «1:1», чтобы не путать.
     modeSel = null;
-    panel.appendChild(el('div', 'font:11px system-ui;color:var(--muted);margin:2px 0 4px', 'Единый режим «1:1»: модель строится встроенным движком по геометрии облака точек.'));
 
-    var bGo = el('button', bcss(TONE.blue) + ';width:100%;margin-top:6px', '🏗️ Построить BIM 1:1'); bGo.id = 'lxS2BBuildBtn'; bGo.onclick = reconstruct;
-    panel.appendChild(bGo);
+    var bGo = actBtn('Построить BIM 1:1', 'boxes', 'primary', reconstruct); bGo.id = 'lxS2BBuildBtn';
+    body.appendChild(bGo);
 
     // Сервер (опционально) — сворачиваемый блок.
-    var det = document.createElement('details'); det.style.cssText = 'margin-top:8px';
-    var sum = document.createElement('summary'); sum.style.cssText = 'font:600 11px system-ui;color:var(--muted);cursor:pointer'; sum.textContent = '⚙️ Сервер GPU (опционально)'; det.appendChild(sum);
-    var ul = el('label', 'display:block;font:12px system-ui;color:var(--muted);margin:6px 0 4px');
-    ul.appendChild(el('span', 'display:block;margin-bottom:3px', 'URL сервера'));
-    urlInput = document.createElement('input'); urlInput.type = 'text'; urlInput.value = getServer();
-    urlInput.style.cssText = 'width:100%;padding:5px 7px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:12px system-ui;box-sizing:border-box';
+    var det = el('details', 'lx-details');
+    var sum = el('summary'); sum.innerHTML = '<span data-ico="server"></span>Сервер GPU (опционально)<span class="lx-details-chev" data-ico="chevron-down"></span>'; det.appendChild(sum);
+    var ul = el('label', 'lx-field'); ul.appendChild(el('span', null, 'URL сервера'));
+    urlInput = document.createElement('input'); urlInput.type = 'text'; urlInput.value = getServer(); urlInput.setAttribute('spellcheck', 'false');
     urlInput.addEventListener('change', function () { setServer(urlInput.value.trim()); });
     ul.appendChild(urlInput); det.appendChild(ul);
-    var bHealth = el('button', bcss(TONE.neutral) + ';width:100%;margin-top:4px', '➕ Проверить сервер');
-    bHealth.onclick = function () { setStatus('Проверка…'); health().then(function (h) { setStatus('Сервер ok · GPU: ' + (h.gpu ? 'да' : 'нет') + ' · модель: ' + (h.checkpoint ? 'да' : 'нет')); }).catch(function (e) { setStatus('Недоступен: ' + (e && e.message || e)); }); };
-    det.appendChild(bHealth);
-    var bDiag = el('button', bcss(TONE.purple) + ';width:100%;margin-top:4px', '🔬 Диагностика ИИ');
-    bDiag.onclick = function () {
+    var srvRow = el('div', 'lx-btnrow');
+    srvRow.appendChild(actBtn('Проверить сервер', 'activity', '', function () {
+      setStatus('Проверка…');
+      health().then(function (h) { setStatus('Сервер ok · GPU: ' + (h.gpu ? 'да' : 'нет') + ' · модель: ' + (h.checkpoint ? 'да' : 'нет')); })
+        .catch(function (e) { setStatus('Недоступен: ' + (e && e.message || e)); });
+    }));
+    srvRow.appendChild(actBtn('Диагностика ИИ', 'stethoscope', '', function () {
       setStatus('Диагностика ИИ…');
       var url = resolveHost(getServer().replace(/\/$/, '')) + '/diag';
       authFetch(url).then(function (r) { return r.json(); }).then(function (d) {
-        var mb = Math.round(((d.checkpoint_size || 0) / 1048576) * 10) / 10;
-        var msg = 'torch=' + (d.torch || '-') + ' · cuda=' + (d.cuda ? 'да' : 'НЕТ') + ' · gpu=' + (d.device_name || '-')
-          + ' · spconv=' + (d.spconv ? 'да' : 'НЕТ') + ' · ptv3=' + (d.ptv3_import ? 'да' : 'НЕТ')
-          + ' · веса=' + (d.checkpoint_exists ? ('да, ' + mb + 'МБ') : 'НЕТ')
-          + ' · загрузка=' + (d.load_ok ? 'OK' : 'НЕТ')
-          + ' · форвард=' + (d.forward_ok === true ? 'OK' : (d.forward_ok === false ? 'НЕТ' : '?'))
-          + (d.error ? (' · ОШИБКА: ' + d.error) : (d.note ? (' · ' + d.note) : ''))
-          + (d.forward_trace ? (' · TRACE: ' + d.forward_trace) : (d.error_trace ? (' · TRACE: ' + d.error_trace) : ''))
-          + (d.head_scan ? (' · ГОЛОВЫ[' + (d.head_count != null ? d.head_count : (d.head_scan.length || 0)) + ']: ' + (Array.isArray(d.head_scan) ? d.head_scan.join(' | ') : d.head_scan)) : '');
+        var msg = diagText(d);
         setStatus(msg);
         try { if (navigator.clipboard) navigator.clipboard.writeText(msg); } catch (e) {}
-        toast('Диагностика скопирована в буфер — пришлите её мне', false);
+        toast('Диагностика скопирована в буфер обмена', false);
       }).catch(function (e) { setStatus('Диагностика недоступна: ' + (e && e.message || e) + ' (сервер не запущен?)'); });
-    };
-    det.appendChild(bDiag);
-    panel.appendChild(det);
+    }));
+    det.appendChild(srvRow);
+    body.appendChild(det);
 
-    statusEl = el('div', 'font:11px system-ui;color:var(--muted);margin-top:6px;min-height:14px', '');
-    panel.appendChild(statusEl);
-    statsEl = el('div', 'margin-top:8px'); panel.appendChild(statsEl);
-    panel.appendChild(el('div', 'height:1px;background:var(--line);margin:10px 0'));
-    panel.appendChild(el('div', 'font:600 11px system-ui;color:var(--muted);margin-bottom:2px', 'ЭКСПОРТ'));
-    var exp = el('div', 'display:flex;flex-wrap:wrap');
-    var bRevit = el('button', bcss(TONE.green), 'Revit ZIP'); bRevit.onclick = saveRevitPack;
-    var bIfc = el('button', bcss(TONE.green), 'IFC 2x3'); bIfc.onclick = saveIfc;
-    var bObj = el('button', bcss(TONE.purple), 'OBJ'); bObj.onclick = saveObj;
-    var bDxf = el('button', bcss(TONE.orange), 'DXF'); bDxf.onclick = saveDxf;
-    var bClr = el('button', bcss(TONE.neutral), 'Очистить'); bClr.onclick = function () { clearPreview(mainV()); };
-    exp.appendChild(bRevit); exp.appendChild(bIfc); exp.appendChild(bObj); exp.appendChild(bDxf); exp.appendChild(bClr); panel.appendChild(exp);
-    document.body.appendChild(panel);
+    statusEl = el('div', 'sec-note', ''); statusEl.setAttribute('role', 'status'); statusEl.setAttribute('aria-live', 'polite');
+    body.appendChild(statusEl);
+    statsEl = el('div', 'lx-stats'); body.appendChild(statsEl);
+    body.appendChild(el('div', 'lx-obj-h', 'Экспорт'));
+    var exp = el('div', 'lx-btnrow');
+    exp.appendChild(actBtn('Revit ZIP', 'download', '', saveRevitPack));
+    exp.appendChild(actBtn('IFC 2x3', 'download', '', saveIfc));
+    exp.appendChild(actBtn('OBJ', 'download', '', saveObj));
+    exp.appendChild(actBtn('DXF', 'download', '', saveDxf));
+    exp.appendChild(actBtn('Убрать каркас', 'eraser', '', function () { clearPreview(mainV()); }));
+    body.appendChild(exp);
+    panel.querySelector('#lxScan2BimAiClose').onclick = close;
+    (document.getElementById('stageSideL') || document.querySelector('.stage') || document.body).appendChild(panel);
+    hy(panel);
     return panel;
   }
   var _healthTimer = null, _hbTimer = null, _hbOn = false;
@@ -572,15 +583,18 @@
       });
     })();
   }
-  function open() { buildPanel().style.display = 'block'; autoHealthPoll(); }
-  function close() { if (panel) panel.style.display = 'none'; var ep = document.getElementById('lxS2BEditPanel'); if (ep) ep.style.display = 'none'; clearPreview(mainV()); }
+  function open() { buildPanel().style.display = 'block'; setOn(launchBtn, true); autoHealthPoll(); }
+  function close() { if (panel) panel.style.display = 'none'; var ep = document.getElementById('lxS2BEditPanel'); if (ep) ep.style.display = 'none'; clearPreview(mainV()); setOn(launchBtn, false); }
 
   function mountButton() {
     if (document.getElementById('lxScan2BimAiBtn')) return;
-    var b = el('button', 'position:fixed;left:150px;bottom:52px;z-index:99998;' + bcss(TONE.blue), '🏗️ BIM 1:1');
+    var b = el('button', '', 'BIM 1:1');
+    b.type = 'button';
     b.id = 'lxScan2BimAiBtn';
+    b.setAttribute('data-tip', 'AI-построение BIM-модели 1:1 по облаку');
     b.onclick = function () { if (panel && panel.style.display === 'block') close(); else open(); };
-    document.body.appendChild(b);
+    launchBtn = b;
+    (document.getElementById('lxLegacy') || document.body).appendChild(b);
   }
   function boot() { try { mountButton(); } catch (e) { console.error('[scan2bim-ai] boot', e); } }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

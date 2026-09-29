@@ -20,6 +20,7 @@
   function viewer(){return (typeof window!=='undefined')?(window.__viewer||null):null;}
   function projectKey() { var ps=typeof window!=='undefined'&&window.BimProjectState; return ps&&ps.projectId?LS_KEY+':'+ps.projectId:LS_KEY; }
   function toast(m){
+    try{if(typeof window!=='undefined'&&window.__lxKit&&window.__lxKit.toast){window.__lxKit.toast(m);return;}}catch(e){}
     try{var el=document&&document.getElementById('toast');
     if(el){el.textContent=m;el.classList.add('show');setTimeout(function(){el.classList.remove('show');},2600);}}catch(e){}
   }

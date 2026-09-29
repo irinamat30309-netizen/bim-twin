@@ -465,7 +465,11 @@
   };
 
   function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
-  function toast(msg) { if (typeof window !== 'undefined' && typeof window.toast === 'function') window.toast(msg); }
+  function toast(msg) {
+    if (typeof window === 'undefined') return;
+    if (window.__lxKit && window.__lxKit.toast) window.__lxKit.toast(msg);
+    else if (typeof window.toast === 'function') window.toast(msg);
+  }
   function forwardVec() {
     var cp = Math.cos(S.cam.pitch), sp = Math.sin(S.cam.pitch);
     return normalize([cp * Math.sin(S.cam.yaw), sp, cp * Math.cos(S.cam.yaw)]);
@@ -581,11 +585,11 @@
     if (exportButton) exportButton.disabled = false;
     if (cancelButton) {
       cancelButton.disabled = true;
-      cancelButton.style.display = 'none';
+      cancelButton.hidden = true;
     }
     if (progress) {
       progress.value = 0;
-      progress.style.display = 'none';
+      progress.hidden = true;
     }
     if (status) status.textContent = 'Выберите плоскость сечения для текущего меша.';
     S.sectionPreview = null;
@@ -949,68 +953,69 @@
   }
 
   // ---------- DOM / controls ----------
-  function btnCss() {
-    return 'display:inline-flex;align-items:center;gap:6px;background:#2a2f3a;color:#eef2f7;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:6px 10px;font:600 12.5px system-ui,sans-serif;cursor:pointer;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.3)';
+  function mkEl(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  function mkBtn(label, ico, cls, tip) {
+    var b = mkEl('button', 'btn sm' + (cls ? ' ' + cls : '')); b.type = 'button';
+    if (ico) b.setAttribute('data-ico', ico);
+    b.textContent = label; if (tip) b.setAttribute('data-tip', tip);
+    return b;
   }
+  function hydrateIcons(root) { try { if (window.__lxKit && window.__lxKit.hydrate) window.__lxKit.hydrate(root); } catch (e) {} }
   function buildDom() {
     var wrap = document.createElement('div');
-    wrap.id = 'meshViewer';
-    // Sit above the base point-cloud canvas, but below the optional Lixel overlay
-    // (left tool column/version tag). The mesh canvas still receives pointer input
-    // everywhere except those explicit controls.
-    wrap.style.cssText = 'position:absolute;inset:0;z-index:13;background:#0f1216;overflow:hidden;display:none';
+    wrap.id = 'meshViewer'; wrap.className = 'theme-dark';
+    // Слой лежит над базовым холстом облака, но под панелями рабочей области (ui/tools.css: #meshViewer, z-index 13);
+    // холст меша принимает ввод везде, кроме явных элементов управления.
     var canvas = document.createElement('canvas');
-    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;outline:none';
+    canvas.className = 'mv-canvas';
     canvas.tabIndex = 0;
     wrap.appendChild(canvas);
     var overlayCanvas = document.createElement('canvas');
     overlayCanvas.id = 'meshSectionOverlay';
+    overlayCanvas.className = 'mv-overlay';
     overlayCanvas.setAttribute('aria-hidden', 'true');
-    overlayCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
-    // The workspace skin applies an opaque background to every stage canvas;
-    // keep this 2D layer transparent so it cannot hide the WebGL mesh beneath it.
-    overlayCanvas.style.setProperty('background', 'transparent', 'important');
     wrap.appendChild(overlayCanvas);
-    var hud = document.createElement('div');
-    hud.style.cssText = 'position:absolute;left:0;right:0;top:0;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;pointer-events:none';
-    var left = document.createElement('div');
-    left.style.cssText = 'display:flex;align-items:center;gap:10px;pointer-events:auto;background:rgba(10,14,20,.72);border:1px solid rgba(127,182,255,.3);border-radius:10px;padding:6px 12px;color:#e6edf3;font:600 12.5px system-ui,sans-serif';
-    var title = document.createElement('span'); title.textContent = 'Меш (glTF)'; left.appendChild(title);
-    var right = document.createElement('div');
-    right.style.cssText = 'display:flex;align-items:center;gap:8px;pointer-events:auto';
+    var hud = mkEl('div', 'mv-hud');
+    var left = mkEl('div', 'mv-chip', '<span data-ico="box"></span>');
+    var title = mkEl('span', 'mv-title'); title.textContent = 'Меш (glTF)'; left.appendChild(title);
+    var right = mkEl('div', 'mv-tools');
     // exposure slider
-    var expWrap = document.createElement('label');
-    expWrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;background:#2a2f3a;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:4px 10px;color:#eef2f7;font:600 12px system-ui,sans-serif';
-    var expLab = document.createElement('span'); expLab.textContent = 'Свет';
-    var expIn = document.createElement('input'); expIn.type = 'range'; expIn.min = '0.4'; expIn.max = '2.5'; expIn.step = '0.05'; expIn.value = String(S.exposure); expIn.style.cssText = 'width:80px;accent-color:#2563eb';
+    var expWrap = mkEl('label', 'mv-light');
+    expWrap.setAttribute('data-tip', 'Яркость освещения');
+    var expLab = mkEl('span', null, '<span data-ico="sun"></span><span class="sr-only">Свет</span>');
+    var expIn = document.createElement('input'); expIn.type = 'range'; expIn.min = '0.4'; expIn.max = '2.5'; expIn.step = '0.05'; expIn.value = String(S.exposure); expIn.setAttribute('aria-label', 'Свет');
     expIn.oninput = function () { S.exposure = +expIn.value; S._dirty = true; };
     expWrap.appendChild(expLab); expWrap.appendChild(expIn);
-    var resetBtn = document.createElement('button'); resetBtn.textContent = '⌂ Сброс вида'; resetBtn.style.cssText = btnCss();
+    var resetBtn = mkBtn('Сброс вида', 'home', '', 'Вернуть камеру к модели');
     resetBtn.onclick = function () { resetView(); };
-    var wireBtn = document.createElement('button'); wireBtn.textContent = '▦ Каркас'; wireBtn.style.cssText = btnCss();
-    wireBtn.onclick = function () { S.wire = !S.wire; wireBtn.style.background = S.wire ? '#2563eb' : '#2a2f3a'; S._dirty = true; };
-    var sectionBtn = document.createElement('button'); sectionBtn.textContent = '✂ Сечение'; sectionBtn.title = 'Точное пересечение треугольной геометрии меша плоскостью'; sectionBtn.style.cssText = btnCss();
-    var exitBtn = document.createElement('button'); exitBtn.textContent = '✕ Выйти'; exitBtn.style.cssText = btnCss() + ';background:#b3402f;border-color:rgba(255,180,170,.45)';
+    var wireBtn = mkBtn('Каркас', 'grid-3x3', '', 'Показать рёбра треугольников');
+    wireBtn.setAttribute('aria-pressed', 'false');
+    wireBtn.onclick = function () { S.wire = !S.wire; wireBtn.classList.toggle('on', !!S.wire); wireBtn.setAttribute('aria-pressed', S.wire ? 'true' : 'false'); S._dirty = true; };
+    var sectionBtn = mkBtn('Сечение', 'scissors', '', 'Точное пересечение треугольной геометрии меша плоскостью');
+    var exitBtn = mkBtn('Выйти', 'log-out', 'danger', 'Закрыть просмотр меша (Esc)');
     exitBtn.onclick = function () { api.exit(); };
     right.appendChild(expWrap); right.appendChild(resetBtn); right.appendChild(wireBtn); right.appendChild(sectionBtn); right.appendChild(exitBtn);
     hud.appendChild(left); hud.appendChild(right);
     wrap.appendChild(hud);
-    var sectionPanel = document.createElement('div');
+    var sectionPanel = document.createElement('section');
     sectionPanel.id = 'meshSectionPanel';
+    sectionPanel.className = 'fpanel mv-section';
     sectionPanel.setAttribute('role', 'dialog');
     sectionPanel.setAttribute('aria-label', 'Точное сечение меша');
-    sectionPanel.style.cssText = 'position:absolute;right:12px;top:58px;width:290px;max-height:calc(100% - 80px);overflow:auto;display:none;background:rgba(27,31,38,.97);border:1px solid rgba(127,182,255,.35);border-radius:10px;padding:12px;color:#e6edf3;font:12px system-ui,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.45)';
     sectionPanel.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;font-weight:700;margin-bottom:10px"><span>Точное сечение меша</span><button id="meshSectionClose" type="button" aria-label="Закрыть" style="background:#2a2f3a;color:#e6edf3;border:1px solid rgba(255,255,255,.18);border-radius:6px;padding:3px 8px;cursor:pointer">×</button></div>' +
-      '<label style="display:block;margin:8px 0">Плоскость<select id="meshSectionAxis" style="display:block;width:100%;margin-top:4px;background:#20242c;color:#e6edf3;padding:6px;border:1px solid #525d6d;border-radius:5px"><option value="y">Плоскость Y = const</option><option value="z">Плоскость Z = const</option><option value="x">Плоскость X = const</option></select></label>' +
-      '<label id="meshSectionLevelLabel" style="display:block;margin:8px 0">Уровень Y, ед.<input id="meshSectionLevel" type="number" step="0.001" style="display:block;width:100%;margin-top:4px;background:#20242c;color:#e6edf3;padding:6px;border:1px solid #525d6d;border-radius:5px;box-sizing:border-box"></label>' +
-      '<input id="meshSectionRange" aria-label="Положение плоскости сечения" type="range" step="0.001" style="width:100%;accent-color:#4c8dff">' +
-      '<button id="meshSectionPreview" type="button" style="width:100%;margin-top:10px;background:#165b66;color:#fff;border:1px solid rgba(36,224,194,.45);border-radius:6px;padding:8px;cursor:pointer;font-weight:700">Показать контур сечения</button>' +
-      '<button id="meshSectionExport" type="button" style="width:100%;margin-top:10px;background:#2563eb;color:#fff;border:0;border-radius:6px;padding:8px;cursor:pointer;font-weight:700">Сохранить точное сечение DXF</button>' +
-      '<progress id="meshSectionProgress" max="100" value="0" aria-label="Прогресс расчёта сечения" style="display:none;width:100%;height:8px;margin-top:9px"></progress>' +
-      '<button id="meshSectionCancel" type="button" disabled style="display:none;width:100%;margin-top:7px;background:#3b414b;color:#f2f4f7;border:1px solid rgba(255,255,255,.18);border-radius:6px;padding:7px;cursor:pointer">Отменить расчёт</button>' +
-      '<div id="meshSectionStatus" role="status" aria-live="polite" style="margin-top:9px;line-height:1.4;color:#b9c4d0">Контур рассчитывается по треугольникам. Нажмите «Показать контур сечения»; исходный меш не обрезается.</div>' +
-      '<p style="margin:8px 0 0;color:#9aa6b5;line-height:1.35">DXF сохраняет координаты плоскости и единицы меша. CRS может читаться из PLY, но формат DXF R12 её не переносит — назначьте систему координат в CAD.</p>';
+      '<div class="fpanel-inner"><header class="fpanel-head"><span class="fpanel-ico" data-ico="scissors"></span><h3>Точное сечение меша</h3>' +
+      '<div class="fpanel-actions"><button id="meshSectionClose" class="icon-btn" type="button" data-ico="x" data-tip="Закрыть" aria-label="Закрыть"></button></div></header>' +
+      '<div class="fpanel-body lx-sec-body">' +
+      '<label class="lx-field">Плоскость<select id="meshSectionAxis"><option value="y">Плоскость Y = const</option><option value="z">Плоскость Z = const</option><option value="x">Плоскость X = const</option></select></label>' +
+      '<label id="meshSectionLevelLabel" class="lx-field">Уровень Y, ед.<input id="meshSectionLevel" type="number" step="0.001"></label>' +
+      '<input id="meshSectionRange" aria-label="Положение плоскости сечения" type="range" step="0.001">' +
+      '<button id="meshSectionPreview" class="btn sm" type="button" data-ico="scan-line">Показать контур сечения</button>' +
+      '<button id="meshSectionExport" class="btn sm primary" type="button" data-ico="download">Сохранить точное сечение DXF</button>' +
+      '<progress id="meshSectionProgress" class="lx-sec-progress" max="100" value="0" aria-label="Прогресс расчёта сечения" hidden></progress>' +
+      '<button id="meshSectionCancel" class="btn sm" type="button" disabled hidden>Отменить расчёт</button>' +
+      '<div id="meshSectionStatus" class="sec-note" role="status" aria-live="polite">Контур рассчитывается по треугольникам. Нажмите «Показать контур сечения»; исходный меш не обрезается.</div>' +
+      '<p class="sec-note">DXF сохраняет координаты плоскости и единицы меша. CRS может читаться из PLY, но формат DXF R12 её не переносит — назначьте систему координат в CAD.</p>' +
+      '</div></div>';
     wrap.appendChild(sectionPanel);
     function updateSectionLevel(keepCurrent) {
       if (!S.sectionBounds) return;
@@ -1050,8 +1055,8 @@
       previewButton.disabled = !!busy;
       exportButton.disabled = !!busy;
       cancelButton.disabled = !busy;
-      cancelButton.style.display = busy ? 'block' : 'none';
-      progress.style.display = busy ? 'block' : 'none';
+      cancelButton.hidden = !busy;
+      progress.hidden = !busy;
       progress.value = Number.isFinite(Number(percent)) ? Math.max(0, Math.min(100, Number(percent))) : 0;
     }
     function makeSectionRequest() {
@@ -1211,10 +1216,10 @@
     });
     sectionPanel.querySelector('#meshSectionPreview').onclick = function () { runSectionAction('preview'); };
     sectionPanel.querySelector('#meshSectionExport').onclick = function () { runSectionAction('export'); };
-    var help = document.createElement('div');
-    help.style.cssText = 'position:absolute;left:12px;bottom:12px;background:rgba(10,14,20,.72);border:1px solid rgba(127,182,255,.3);border-radius:8px;padding:6px 10px;color:#b9c4d0;font:12px system-ui,sans-serif;pointer-events:none';
-    help.textContent = 'ЛКМ — вращение · колесо — зум · WASD — ходьба · Q/E — вниз/вверх · Esc — выход';
+    var help = mkEl('div', 'mv-help');
+    help.innerHTML = '<span><kbd>ЛКМ</kbd> вращение</span><span><kbd>Колесо</kbd> зум</span><span><kbd>WASD</kbd> ходьба</span><span><kbd>Q</kbd>/<kbd>E</kbd> вниз / вверх</span><span><kbd>Esc</kbd> выход</span>';
     wrap.appendChild(help);
+    hydrateIcons(wrap);
     S.wrap = wrap; S.canvas = canvas; S.overlayCanvas = overlayCanvas; S.overlayCtx = overlayCanvas.getContext('2d'); S.hud = hud; S.titleEl = title;
     bindControls();
   }
