@@ -3297,7 +3297,9 @@
         const SN = { corner: 'угол', edge: 'ребро', plane: 'плоскость', point: 'точка', raw: 'без привязки' };
         const sn = res.snap ? ' · ' + (SN[res.snap.a.kind] || '') + ' → ' + (SN[res.snap.b.kind] || '') : '';
         const acc = res.sigma != null && res.sigma > 0 && res.snap && res.snap.a.grown && res.snap.b.grown ? ' · ±' + (Math.max(res.sigma, 0.0001) * 1000).toFixed(1).replace('.', ',') + ' мм' : '';
-        if (res.perp != null && res.perpKind === 'planes') return '<b>' + L(res.perp) + '</b> между плоскостями (по нормали)' + sn + acc + ' · сдвиг вдоль плоскостей ' + L(Math.sqrt(Math.max(0, res.d3 * res.d3 - res.perp * res.perp)));
+        // плоскости не параллельны (откосы, перекрытия): расстояние зависит от места замера — говорим об этом, а не выдаём одно число за «ширину вообще»
+        const tiltNote = res.tilt != null && res.tilt >= 0.0052 ? ' · не параллельны на ' + (res.tilt * 180 / Math.PI).toFixed(1).replace('.', ',') + '°: значение зависит от места (' + (Math.tan(res.tilt) * 100).toFixed(1).replace('.', ',') + ' мм на 10 см)' : '';
+        if (res.perp != null && res.perpKind === 'planes') return '<b>' + L(res.perp) + '</b> между плоскостями (по нормали)' + sn + acc + ' · сдвиг вдоль плоскостей ' + L(Math.sqrt(Math.max(0, res.d3 * res.d3 - res.perp * res.perp))) + tiltNote;
         if (res.perp != null && res.perpKind === 'edges') return '<b>' + L(res.perp) + '</b> между рёбрами (по перпендикуляру)' + sn + acc + (res.along != null ? ' · вдоль ребра ' + L(res.along) : '');
         return '<b>' + L(res.d3) + '</b> · гориз. ' + L(res.horizontal) + ' · верт. ' + L(res.vertical) + ' · ΔX ' + L(Math.abs(res.dx)) + ' ΔY ' + L(Math.abs(res.dy)) + ' ΔZ ' + L(Math.abs(res.dz)) + sn + acc + (res.perp != null ? ' · до плоскости ⊥ ' + L(res.perp) : '');
       }

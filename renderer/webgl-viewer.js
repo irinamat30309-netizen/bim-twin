@@ -1533,7 +1533,7 @@
           res.snap = { a: brief(S[0]), b: brief(S[1]) };
           res.sigma = +Math.sqrt(Math.pow(S[0].sigma || 0, 2) + Math.pow(S[1].sigma || 0, 2)).toFixed(6);
           const g = this._measGap || (PS ? PS.pairGap(S[0], S[1]) : null);
-          if (g) { res.perp = g.value; res.perpKind = g.kind; if (g.along != null) res.along = g.along; res.perpSigma = +(g.uncertainty || 0).toFixed(6); }
+          if (g) { res.perp = g.value; res.perpKind = g.kind; if (g.along != null) res.along = g.along; if (g.tilt != null) res.tilt = +g.tilt.toFixed(5); res.perpSigma = +(g.uncertainty || 0).toFixed(6); }
         } else if (S.length >= 2 && (S[0] || S[1])) res.snap = { a: S[0] ? { kind: S[0].kind } : { kind: 'raw' }, b: S[1] ? { kind: S[1].kind } : { kind: 'raw' } };
       }
       else if (mode === 'polyline' && P.length >= 2 && Me) { const r = Me.polylineLength(P, false); res = { mode: 'polyline', pts: P.slice(), total: r.total, segments: r.segments, count: P.length }; }

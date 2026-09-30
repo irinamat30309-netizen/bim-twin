@@ -311,3 +311,25 @@ test('подсказка у курсора: слабый угол подписа
   const css = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'ui', 'viewers.css'), 'utf8');
   assert.match(css, /\.meas-snap-tip\.q-low span:last-child \{ color: var\(--err\)/);
 });
+
+test('непараллельные плоскости: угол между ними отдаётся отдельно, расстояние зависит от места замера', () => {
+  const th = 2 * Math.PI / 180, na = [0, 1, 0], nb = [0, -Math.cos(th), Math.sin(th)];   // потолок с уклоном 2° к полу: y = 2,2 + z·tg(2°)
+  const mk = (p, n) => ({ kind: 'plane', point: p, sigma: 0.0003, rms: 0.001, planes: [{ normal: n }] });
+  const flat = PS.pairGap(mk([0, 0, 0], na), mk([0, 2.2, 0], [0, -1, 0]));
+  assert.ok(flat.tilt < 1e-6, 'параллельные: угол ' + flat.tilt);
+  const at = z => PS.pairGap(mk([0, 0, z], na), mk([0, 2.2 + z * Math.tan(th), z], nb));
+  const g0 = at(0), g3 = at(0.3);
+  assert.equal(g0.kind, 'planes');
+  assert.ok(Math.abs(g0.tilt - th) < 1e-6, 'угол между плоскостями ' + g0.tilt);
+  assert.ok(Math.abs((g3.value - g0.value) - 0.3 * Math.tan(th) * Math.cos(th / 2)) < 1e-9, 'на 30 см вдоль плоскости расстояние меняется на ' + mm(g3.value - g0.value));
+  assert.equal(PS.pairGap(mk([0, 0, 0], na), mk([0, 2.2, 0], [0, -Math.cos(4 * th), Math.sin(4 * th)])), null, 'плоскости под 8° — уже не «параллельные»');
+});
+
+test('непараллельность доходит до пользователя: результат замера хранит угол, панель говорит о зависимости от места', () => {
+  const rd = f => require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', f), 'utf8');
+  assert.match(rd('webgl-viewer.js'), /if \(g\.tilt != null\) res\.tilt = \+g\.tilt\.toFixed\(5\)/);
+  const app = rd('app.js');
+  assert.match(app, /res\.tilt != null && res\.tilt >= 0\.0052/);
+  assert.match(app, /не параллельны на /);
+  assert.match(app, /значение зависит от места/);
+});

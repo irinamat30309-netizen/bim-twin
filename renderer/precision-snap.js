@@ -730,7 +730,9 @@
     if (na && nb) {
       if (Math.abs(dot(na, nb)) < PARALLEL_COS) return null;   // непараллельные плоскости: расстояние между ними не определено
       var s = dot(na, nb) >= 0 ? 1 : -1, nn = unit(add(na, mul(nb, s)));
-      return { kind: 'planes', value: Math.abs(dot(nn, dv)), normal: nn, uncertainty: unc() };
+      // tilt — угол между плоскостями: у настоящих стен, откосов и перекрытий он бывает в 1–2°, и тогда расстояние зависит от места замера
+      // (tan(tilt) мм на каждый мм вдоль плоскости); погрешность плоскостей этого не содержит, поэтому угол отдаём отдельно
+      return { kind: 'planes', value: Math.abs(dot(nn, dv)), normal: nn, uncertainty: unc(), tilt: Math.acos(Math.min(1, Math.abs(dot(na, nb)))) };
     }
     if (ua && ub && Math.abs(dot(ua, ub)) >= PARALLEL_COS) {
       var sg = dot(ua, ub) >= 0 ? 1 : -1, uu = unit(add(ua, mul(ub, sg))), along = dot(dv, uu), perp = sub(dv, mul(uu, along));
