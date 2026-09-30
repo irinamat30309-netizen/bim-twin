@@ -92,11 +92,24 @@
       }
     } catch (e) {}
     try { if (W.__lxObjectExtract && W.__lxObjectExtract.close) W.__lxObjectExtract.close(); } catch (e) {}
-    try { if (W.__lxObjectInspector && W.__lxObjectInspector.close) W.__lxObjectInspector.close(); } catch (e) {}
+    try { var oi = W.__lxObjectInspector; if (oi) { if (oi.stopPick) oi.stopPick(); if (oi.close) oi.close(); } } catch (e) {}
     try { if (W.__lxDraw && W.__lxDraw.active && W.__lxDrawUI && W.__lxDrawUI.deactivate) W.__lxDrawUI.deactivate(true); } catch (e) {}
     clearMarks();
     ['measureBar', 'measureListPanel', 'measureReadout', 'editBar', 'tourBar', 'sectionPanel', 'sectionRange', 'qualityBar', 'lxSectionControls'].forEach(function (id) { var e = $(id); if (e) e.style.display = 'none'; });
     W.dispatchEvent(new CustomEvent('lx-tools-cancelled'));
+  }
+  /* Инструмент мог завершиться сам (выбор рамкой закончен, панель закрыта крестиком, «Выйти» в HUD) — тогда менеджер и кнопка
+     остаются «включёнными», и следующий клик по кнопке был бы принят за выключение. alive(): работает ли инструмент на самом деле;
+     release(): снимает такое состояние без побочных действий отмены (панели других инструментов не трогает). */
+  function alive(cmd) {
+    if (cmd === 'lxObjInspectBtn') { var oi = W.__lxObjectInspector; return !!(oi && oi.state && oi.state.pick); }
+    if (cmd === 'lxObjExtractBtn') { var op = $('lxObjPanel'); return !!(op && op.style.display !== 'none'); }
+    return engineActive();
+  }
+  function release(cmd) {
+    var id = 'tool:' + cmd;
+    if (toolManager && toolManager.activeId === id) { managerCancelling = true; try { toolManager.deactivate('finished'); } finally { managerCancelling = false; } }
+    D.querySelectorAll('[data-cmd="' + cmd + '"]').forEach(function (x) { x.classList.remove('lx-mode-active', 'on'); x.setAttribute('aria-pressed', 'false'); });
   }
   function managedId(b) { return 'tool:' + (b.getAttribute('data-cmd') || b.id || 'unknown'); }
   function ensureManaged(id) {
@@ -113,7 +126,9 @@
     W.addEventListener('click', function (e) {
       var b = modeButton(e.target); if (!b) return;
       var id = managedId(b); ensureManaged(id);
-      if ((toolManager && toolManager.activeId === id) || pressed(b)) { e.preventDefault(); e.stopImmediatePropagation(); cancelAll('toggle'); return; }
+      var cmd = b.getAttribute('data-cmd') || '', live = (toolManager && toolManager.activeId === id) || pressed(b);
+      if (live && !alive(cmd)) { release(cmd); live = false; }
+      if (live) { e.preventDefault(); e.stopImmediatePropagation(); cancelAll('toggle'); return; }
       if (toolManager && toolManager.activeId) toolManager.cancel('switch'); else if (engineActive()) legacyCancelAll();
       var token = epoch;
       setTimeout(function () {
@@ -164,5 +179,5 @@
     W.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { var v = W.__viewer; if (v && v._resize) v._resize(); }, 80); });
   }
   if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', init); else init();
-  W.__lxModes = { cancelAll: cancelAll, engineActive: engineActive, begin: begin };
+  W.__lxModes = { cancelAll: cancelAll, engineActive: engineActive, release: release, begin: begin };
 })();

@@ -209,6 +209,7 @@
     if (bandEl) bandEl.hidden = true;
     setOn(launchBtn, false);
     if (launchBtn) launchBtn.classList.remove('lx-mode-active');
+    try { if (window.__lxModes && window.__lxModes.release) window.__lxModes.release('lxObjInspectBtn'); } catch (e) {}
   }
 
   function ensureBand() { if (bandEl) return bandEl; bandEl = el('div', 'lx-band'); bandEl.hidden = true; document.body.appendChild(bandEl); return bandEl; }

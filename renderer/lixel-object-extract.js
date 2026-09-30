@@ -260,6 +260,7 @@
     if (panel) panel.style.display = 'none';
     var v = V(); if (v) { if (v.resetSection) v.resetSection(); if (v.setSection) v.setSection(false); }
     setOn(btn, false);
+    try { if (window.__lxModes && window.__lxModes.release) window.__lxModes.release('lxObjExtractBtn'); } catch (e) {}  // панель закрыта крестиком — кнопка и менеджер инструментов отпускаются
   }
   function toggle() { if (isOpen()) close(); else open(); }
 

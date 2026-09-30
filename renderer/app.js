@@ -4606,6 +4606,9 @@
     mmBtns.forEach(b => b.addEventListener('click', () => setMM(b.getAttribute('data-mm'))));
     bind('mmClear', () => { if (viewer && viewer.setMeasureMode) { viewer.setMeasureMode(viewer.measureMode || 'distance'); } const r = $('measureReadout'); if (r){r.dataset.hint='1';r.innerHTML = measureHint(viewer && viewer.measureMode || 'distance');} });
     bind('mmFinish', () => { if (viewer && viewer.finishMeasure) viewer.finishMeasure(); });
+    // «Выйти» в панелях измерения, правки и станций — то же, что Esc: выключает активный инструмент
+    const exitTool = () => { if (window.__lxModes && window.__lxModes.cancelAll) window.__lxModes.cancelAll('exit'); else if (window.__lxWorkspace && window.__lxWorkspace.exitTools) window.__lxWorkspace.exitTools(); };
+    ['mmExit', 'edExit', 'tsExit'].forEach(id => bind(id, exitTool));
     // привязка (snap)
     bind('mmSnap', e => { if (!viewer || !viewer.setMeasureSnap) return; const on = viewer.setMeasureSnap(!viewer.measureSnap); e.currentTarget.classList.toggle('on', on); toast(on ? 'Привязка к рёбрам и углам включена' : 'Привязка выключена'); });
     // список / сохранение / CSV
