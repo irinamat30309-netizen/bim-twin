@@ -92,6 +92,22 @@ exports.audit = (page) => page.evaluate(() => {
     const t = (b.getAttribute('aria-label') || b.textContent || b.getAttribute('data-tip') || b.getAttribute('title') || '').trim();
     if (!t) out.push('NO-NAME ' + nm(b));
   });
+  // WCAG 2.2 (2.5.8, «размер цели»): цель указателя не меньше 24×24 px, иначе круг 24 px вокруг неё не должен задевать соседние цели
+  const tg = [...document.querySelectorAll('button, [role="button"], [role="tab"], [role="menuitem"], a[href], select, summary, input:not([type="hidden"]):not([type="file"])')].filter((e) => !(e instanceof SVGElement) && vis(e) && !e.disabled);   // SVG-узлы — это ручки 3D-гизмо, а не элементы интерфейса
+  const rc = tg.map((e) => e.getBoundingClientRect());
+  const layer = (x) => x.closest('.lx-pop,.lx-win,.modal-card,.lx-toast,.lx-palette,.lx-progress-card') || document.body;
+  tg.forEach((e, i) => {
+    const r = rc[i]; if (r.width >= 24 && r.height >= 24) return;
+    if (e.matches('input[type="checkbox"],input[type="radio"],input[type="range"]') && e.closest('label')) return;   // целью служит вся подпись
+    const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    const top = document.elementFromPoint(cx, cy); if (!top || !(e.contains(top) || top.contains(e))) return;   // закрыто меню/окном — не цель
+    for (let j = 0; j < tg.length; j++) {
+      if (j === i || tg[j].contains(e) || e.contains(tg[j])) continue;
+      if (layer(tg[j]) !== layer(e)) continue;   // меню, окно и тост лежат поверх страницы — это другой слой
+      const o = rc[j], dx = Math.max(o.left - cx, 0, cx - o.right), dy = Math.max(o.top - cy, 0, cy - o.bottom);
+      if (dx * dx + dy * dy < 144) { out.push('SMALL-TARGET ' + nm(e) + ' ' + Math.round(r.width) + '×' + Math.round(r.height) + ' рядом с ' + nm(tg[j])); return; }
+    }
+  });
   // Страница не должна ни прокручиваться, ни иметь запас для прокрутки (иначе фокус/scrollIntoView сдвигают весь интерфейс вбок)
   const se = document.scrollingElement || document.documentElement;
   if (se.scrollLeft > 0 || se.scrollTop > 0) out.push('PAGE-SCROLLED x=' + se.scrollLeft + ' y=' + se.scrollTop);

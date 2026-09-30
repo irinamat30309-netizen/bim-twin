@@ -1,5 +1,6 @@
 /* BIM Twin — жизненный цикл инструментов и прогресс тяжёлых операций.
- *  • __lxProgress.begin(label) — модальная карточка прогресса (появляется, только если операция длится дольше ~200 мс);
+ *  • __lxProgress.begin(label) — модальная карточка прогресса (появляется, только если операция длится дольше ~0,4 с,
+ *    и после показа остаётся не меньше ~0,45 с — быстрые операции её не «мигают»);
  *  • мост к ToolManager: одновременно активен один инструмент; повторный клик по активной кнопке и Esc выключают его;
  *  • подключение прогресса к __pcTools и PlyToSplat.
  * Кнопки-инструменты помечает лента (атрибут data-mode-tool), поиска по тексту кнопок здесь нет. */
@@ -7,7 +8,7 @@
   'use strict';
   var W = window, D = document, R = D.documentElement;
   var $ = function (id) { return D.getElementById(id); };
-  var SHOW_DELAY = 200;
+  var SHOW_DELAY = 400, MIN_SHOW = 450;   // мс: не показывать карточку сразу и не убирать её раньше, чем она успела прочитаться
 
   function fmt(s) { s = Math.max(0, Math.round(s || 0)); var m = Math.floor(s / 60), r = s % 60; return m + ':' + (r < 10 ? '0' : '') + r; }
   function el(tag, cls) { var e = D.createElement(tag); if (cls) e.className = cls; return e; }
@@ -29,7 +30,7 @@
   function begin(label, opts) {
     opts = opts || {};
     var m = progressDom(), token = ++seq, start = performance.now();
-    var frac = 0, done = false, timer = 0, reveal = 0;
+    var frac = 0, done = false, timer = 0, reveal = 0, shownAt = 0;
     var q = function (s) { return m.querySelector(s); };
     var title = q('.lx-progress-title'), msg = q('.lx-progress-msg'), fill = q('.lx-progress-fill'), track = q('.lx-progress-track'),
       pct = q('.lx-progress-pct'), time = q('.lx-progress-time'), cancel = q('.lx-progress-cancel'), cancelLbl = cancel.querySelector('.lbl');
@@ -49,7 +50,12 @@
       if (done) return; done = true; clearInterval(timer); clearTimeout(reveal);
       if (active && active.token === token) active = null;
       R.classList.remove('lx-operation-busy');
-      if (m.classList.contains('open')) { m.classList.add('leaving'); setTimeout(function () { if (!active) m.classList.remove('open', 'leaving'); }, 180); }
+      var leave = function () {
+        if (active || !m.classList.contains('open')) return;
+        m.classList.add('leaving'); setTimeout(function () { if (!active) m.classList.remove('open', 'leaving'); }, 180);
+      };
+      var rest = shownAt ? MIN_SHOW - (performance.now() - shownAt) : 0;
+      if (rest > 0) setTimeout(leave, rest); else leave();
     };
     var stop = function () { frac = 1; paint(); setTimeout(close, 140); };
     stop.token = token;
@@ -62,7 +68,7 @@
     };
     cancel.onclick = stop.cancel;
     active = { token: token, stop: stop };
-    reveal = setTimeout(function () { if (!done) { m.classList.add('open'); try { cancel.focus({ preventScroll: true }); } catch (e) {} } }, SHOW_DELAY);
+    reveal = setTimeout(function () { if (!done) { shownAt = performance.now(); m.classList.add('open'); try { cancel.focus({ preventScroll: true }); } catch (e) {} } }, SHOW_DELAY);
     timer = setInterval(paint, 500); paint();
     return stop;
   }

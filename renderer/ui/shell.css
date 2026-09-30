@@ -56,7 +56,8 @@ body.lx-booting .titlebar, body.lx-booting .lx-tabs, body.lx-booting .lx-ribbon,
 .tb-cmd:hover { background: var(--bg-3); color: var(--txt-2); border-color: var(--line-strong); }
 .tb-cmd-t { flex: 1; text-align: left; white-space: nowrap; }
 .tb-cmd [data-ico] { width: 14px; height: 14px; }
-.tb-room { max-width: 240px; padding: 0 8px; overflow: hidden; color: var(--txt-2); font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
+/* Подпись открытого помещения: отделена от кнопок справа тонкой чертой */
+.tb-room { max-width: 240px; margin-right: 6px; padding: 0 12px 0 4px; overflow: hidden; border-right: 1px solid var(--line); color: var(--txt-2); font: 500 var(--fs-sm)/18px var(--font); text-overflow: ellipsis; white-space: nowrap; }
 .tb-room:empty { display: none; }
 .tb-winbtns { display: flex; align-self: stretch; margin-left: 6px; }
 .tb-wb {
@@ -156,6 +157,13 @@ html.lx-ribbon-collapsed .lx-ribbon { flex-basis: 0; height: 0; border-color: tr
   font: 600 10px/16px var(--font); text-align: center;
 }
 .lx-rb .lx-count:empty { display: none; }
+/* Кнопка, которая открывает меню (а не выполняет действие): маленькая стрелка; у открытого меню — подсвеченная кнопка и перевёрнутая стрелка */
+.lx-rb .lx-ico.lx-caret { position: absolute; width: 10px; height: 10px; color: var(--txt-3); opacity: 1; transform: none; pointer-events: none; transition: transform var(--t-fast) var(--ease), color var(--t-fast); }
+.lx-lg .lx-ico.lx-caret { top: 5px; right: 5px; }
+.lx-sm .lx-ico.lx-caret { position: static; margin: 0 -2px 0 -2px; }
+.lx-rb:hover .lx-ico.lx-caret { transform: none; color: var(--txt-2); }
+.lx-rb[aria-expanded="true"]:not(.on):not(.active):not(.lx-mode-active):not(.lx-dactive):not([aria-pressed="true"]) { background: var(--bg-3); color: var(--txt); border-color: var(--line); }
+.lx-rb[aria-expanded="true"] .lx-ico.lx-caret { transform: rotate(180deg); color: var(--txt); }
 .lx-rb .lx-sub { display: block; margin-top: -2px; color: var(--txt-3); font-size: 10px; font-weight: 400; white-space: nowrap; }
 .lx-rb.on .lx-sub, .lx-rb[aria-pressed="true"] .lx-sub { color: inherit; opacity: .8; }
 

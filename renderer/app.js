@@ -94,7 +94,7 @@
     return 'cloud-' + Date.now().toString(36) + '-' + cloudParseSequence.toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
   function createCloudParseProgress(label, onCancel) {
-    // Карточка прогресса — общая для всех тяжёлых операций (ui/modes.js): появляется, если импорт идёт дольше ~0,2 с
+    // Карточка прогресса — общая для всех тяжёлых операций (ui/modes.js): появляется, если импорт идёт дольше ~0,4 с
     const P = window.__lxProgress;
     const stop = P && P.begin ? P.begin('Импорт: ' + String(label || 'облако точек'), { onCancel }) : null;
     const phaseNames = {
@@ -277,7 +277,7 @@
   async function openRoom(id) {
     current = findRoom(id); selEl = null; if (!current) return;
     $('roomTitle').textContent = current.name + (current.number ? ' · ' + current.number : '');
-    const _tbr = $('tbRoom'); if (_tbr) _tbr.textContent = '— ' + current.name + (current.number ? ' · ' + current.number : '');
+    const _tbr = $('tbRoom'); if (_tbr) { const _rt = current.name + (current.number ? ' · ' + current.number : ''); _tbr.textContent = _rt; _tbr.title = _rt; }
     $('btnBackRoom').style.display = 'none';
     viewer.loadRoom(current);
     await maybeLoadModel(current);
@@ -766,7 +766,7 @@
     const rowStatic = (sec, label, value, onOpen) => {
       const row = mk('div', 'set-row'); row.appendChild(mk('label', 'set-lbl', esc(label)));
       const wrap = mk('div', 'set-static'); wrap.appendChild(mk('code', null, esc(value || '—')));
-      if (onOpen && value) { const b = mk('button', 'btn xs', ICON('external-link', 14)); b.onclick = onOpen; wrap.appendChild(b); }
+      if (onOpen && value) { const b = named(mk('button', 'btn xs', ICON('external-link', 14)), 'Открыть'); b.onclick = onOpen; wrap.appendChild(b); }
       row.appendChild(wrap); sec.appendChild(row); return row;
     };
 
@@ -1071,8 +1071,8 @@
     const wrap = mk('div', 'dxf-wrap');
     const bar = mk('div', 'dxf-bar');
     const btnFit = mk('button', 'btn xs', ICON('home', 14) + '<span class="lbl">По размеру</span>');
-    const btnIn = mk('button', 'btn xs', ICON('zoom-in', 14));
-    const btnOut = mk('button', 'btn xs', ICON('zoom-out', 14));
+    const btnIn = named(mk('button', 'btn xs', ICON('zoom-in', 14)), 'Приблизить');
+    const btnOut = named(mk('button', 'btn xs', ICON('zoom-out', 14)), 'Отдалить');
     const readout = mk('span', 'dxf-coord', 'X: —  Y: —');
     bar.append(btnFit, btnIn, btnOut, readout);
     const layRow = mk('div', 'dxf-layers');
@@ -4759,6 +4759,8 @@
   /** Содержимое кнопки: иконка + подпись (подпись в .lbl — её подменяет i18n) */
   function IB(name, text, size) { return (window.ICON ? window.ICON(name, size || 15) : '') + '<span class="lbl">' + esc(text) + '</span>'; }
   function mk(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  // Кнопка только с иконкой обязана иметь имя: подсказка и aria-label
+  function named(btn, text) { btn.title = text; btn.setAttribute('aria-label', text); return btn; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function syncTabs() { document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab)); renderTab(); }
 
@@ -5030,8 +5032,8 @@
       for (const u of USERS) {
         const row = mk('div', 'urow');
         row.innerHTML = '<div class="uinfo"><b>' + esc(u.name) + '</b><span class="urole">' + esc(u.role || '') + (u.email ? ' · ' + esc(u.email) : '') + '</span></div>';
-        const ed = mk('button', 'btn xs', ICON('pencil', 14)); ed.onclick = async () => { const v = await openForm('Изменить участника', userFields(u)); if (!v) return; Object.assign(u, { name: v.name, role: v.role, email: v.email }); if (API && API.updateUser) { try { await API.updateUser(u.id, { name: v.name, role: v.role, email: v.email }); } catch (e) {} } render(); };
-        const del = mk('button', 'btn xs danger', ICON('trash', 14)); del.onclick = async () => { if (!(await confirmBox('Удалить участника ' + u.name + '?'))) return; USERS = USERS.filter(x => x.id !== u.id); if (API && API.deleteUser) { try { await API.deleteUser(u.id); } catch (e) {} } render(); };
+        const ed = named(mk('button', 'btn xs', ICON('pencil', 14)), 'Изменить участника'); ed.onclick = async () => { const v = await openForm('Изменить участника', userFields(u)); if (!v) return; Object.assign(u, { name: v.name, role: v.role, email: v.email }); if (API && API.updateUser) { try { await API.updateUser(u.id, { name: v.name, role: v.role, email: v.email }); } catch (e) {} } render(); };
+        const del = named(mk('button', 'btn xs danger', ICON('trash', 14)), 'Удалить участника'); del.onclick = async () => { if (!(await confirmBox('Удалить участника ' + u.name + '?'))) return; USERS = USERS.filter(x => x.id !== u.id); if (API && API.deleteUser) { try { await API.deleteUser(u.id); } catch (e) {} } render(); };
         const acts = mk('div', 'uacts'); acts.append(ed, del); row.appendChild(acts);
         p.body.appendChild(row);
       }
@@ -5068,7 +5070,7 @@
       const acts = mk('div', 'dacts');
       const rep = mk('button', 'btn xs', IB('message-circle', 'Ответить', 14)); rep.onclick = () => replyDiscussionUI(d);
       const res = mk('button', 'btn xs', d.status === 'resolved' ? IB('rotate-ccw', 'Открыть', 14) : IB('check', 'Решить', 14)); res.onclick = () => toggleDiscussion(d);
-      const del = mk('button', 'btn xs danger', ICON('trash', 14)); del.onclick = async () => { if (await confirmBox('Удалить тему?')) removeDiscussion(d); };
+      const del = named(mk('button', 'btn xs danger', ICON('trash', 14)), 'Удалить тему'); del.onclick = async () => { if (await confirmBox('Удалить тему?')) removeDiscussion(d); };
       acts.append(rep, res, del); card.appendChild(acts);
       body.appendChild(card);
     }

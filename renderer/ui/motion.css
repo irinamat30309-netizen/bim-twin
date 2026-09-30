@@ -27,6 +27,8 @@
 .hud, .fpanel { animation: lx-pop var(--t-med) var(--ease); }
 .hud { animation-name: lx-hud-in; }
 .hud-readout { animation: lx-pop var(--t-fast) var(--ease); }
+/* Полоса фоновых операций появляется не сразу (быстрые операции её не «мигают») */
+.lx-topprogress:not([hidden]) { animation: lx-fade var(--t-med) linear 300ms both; }
 .sb-skeleton { transition: opacity var(--t-med); }
 .sb-skeleton.done { opacity: 0; pointer-events: none; }
 

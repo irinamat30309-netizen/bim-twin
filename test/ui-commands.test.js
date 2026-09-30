@@ -148,6 +148,25 @@ test('лента: доступность — роли, выбранная вкл
   assert.match(read('ui/base.css'), /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/s, 'видимый фокус с клавиатуры');
 });
 
+test('лента: кнопки, открывающие меню, помечены (menu) и получают стрелку и aria-haspopup', () => {
+  const withMenu = C.TABS.flatMap((t) => t.groups.flatMap((g) => g.items)).filter((i) => i.menu).map((i) => i.id).sort();
+  assert.deepEqual(withMenu, ['vtGeom', 'vtTools'], 'меню открывают «Чистка» и «Геометрия»');
+  assert.match(RIBBON, /if \(item\.menu\)[\s\S]{0,240}lx-caret[\s\S]{0,160}aria-haspopup/);
+  const shell = read('ui/shell.css');
+  assert.match(shell, /\.lx-ico\.lx-caret/, 'стрелка оформлена');
+  assert.match(shell, /\.lx-rb\[aria-expanded="true"\]/, 'открытое меню подсвечивает кнопку');
+  assert.match(APP, /const gb = \$\('vtGeom'\)/, 'меню «Геометрия» открывается из app.js');
+  assert.match(APP, /popover\(\{ anchor: tbTools/, 'меню «Чистка» открывается из app.js');
+});
+
+test('прогресс: карточка не мигает — показ с задержкой и минимальное время показа', () => {
+  assert.match(MODES, /SHOW_DELAY\s*=\s*400/);
+  assert.match(MODES, /MIN_SHOW\s*=\s*450/);
+  assert.match(MODES, /shownAt\s*=\s*performance\.now\(\)/, 'момент показа запоминается');
+  assert.match(MODES, /MIN_SHOW - \(performance\.now\(\) - shownAt\)/, 'закрытие ждёт остаток минимального времени');
+  assert.match(read('ui/motion.css'), /\.lx-topprogress:not\(\[hidden\]\)\s*\{[^}]*animation:[^}]*300ms/, 'верхняя полоса появляется не сразу');
+});
+
 test('режимы: отмена снимает только инструменты, а не посторонние переключатели', () => {
   assert.match(MODES, /epoch\+\+/);
   assert.match(MODES, /token === epoch/);

@@ -70,7 +70,7 @@
         I('vtQuality', 'palette', 'Вид облака', { sel: '#vtQuality', needs: 'cloud', tip: 'Цвет, яркость, размер точки, EDL и фотореализм' })
       ]),
       G('clean', 'Очистка', [
-        I('vtTools', 'brush-cleaning', 'Чистка', { sel: '#vtTools', needs: 'cloud', tip: 'Убрать шум, выбросы и «лучи», выделить мусор' }),
+        I('vtTools', 'brush-cleaning', 'Чистка', { sel: '#vtTools', menu: 1, needs: 'cloud', tip: 'Убрать шум, выбросы и «лучи», выделить мусор' }),
         I('vtEdit', 'lasso-select', 'Правка облака', { sel: '#vtEdit', needs: 'cloud', tip: 'Выделение лассо или рамкой и удаление точек' }),
         I('vtClean', 'sparkles', 'Очистить (Open3D)', { sel: '#vtClean', needs: 'cloud', tip: 'Шум, выбросы, «лучи»: Open3D, а без него быстрый NumPy-фильтр' })
       ]),
@@ -84,7 +84,7 @@
       ]),
       G('convert', 'Конвертация и геометрия', [
         I('vtConvert', 'repeat', 'Конвертация', { sel: '#vtConvert', tip: 'Окно конвертации: LAS/LAZ/E57 → PLY прямо с диска, облако → 3DGS, PLY → 3DGS' }),
-        I('vtGeom', 'triangle', 'Геометрия', { sel: '#vtGeom', needs: 'cloud', tip: 'Отклонения скан ↔ модель, ICP-совмещение, поверхность, PDAL' })
+        I('vtGeom', 'triangle', 'Геометрия', { sel: '#vtGeom', menu: 1, needs: 'cloud', tip: 'Отклонения скан ↔ модель, ICP-совмещение, поверхность, PDAL' })
       ]),
       G('terrain', 'Рельеф и грунт', [
         I('opDSM', 'mountain', 'DSM → GeoTIFF', { call: OPS_S + 'opDSM', needs: 'cloud', tip: 'Модель поверхности по максимуму высот' }),

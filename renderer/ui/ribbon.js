@@ -83,6 +83,10 @@
     b.appendChild(icon(item.ico, size === 'lg' ? 24 : 16));
     var l = el('span', 'lbl'); l.textContent = text; b.appendChild(l);
     if (item.special === 'autosave') b.appendChild(el('span', 'lx-sub'));
+    if (item.menu) {   // кнопка открывает меню: стрелка + aria-haspopup (меню, а не действие)
+      var cv = icon('chevron-down', 10); cv.classList.add('lx-caret'); cv.setAttribute('aria-hidden', 'true'); b.appendChild(cv);
+      b.setAttribute('aria-haspopup', 'menu');
+    }
     if (badge) { badge.className = 'lx-count'; b.appendChild(badge); }
     if (hadI18n && item.label != null) b.removeAttribute('data-i18n');
     b.setAttribute('data-cmd', item.id);
