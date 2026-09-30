@@ -298,7 +298,7 @@
   /* Плоскость по окрестности в 20 см ошибается по наклону на несколько тысячных: на расстоянии в 3 м это уже сантиметры.
    * Поэтому после захвата плоскость «растёт» по связной поверхности (пол, стена, откос): собираем все точки в пределах
    * допуска, уточняем плоскость, повторяем. Так меряют по всей стене, а не по клочку возле курсора. */
-  function collectPlanePoints(index, pl, foot, tau, cap, r0, sibs) {
+  function collectPlanePoints(index, pl, foot, tau, cap, r0, sibs, rmax) {
     var P = index.pos, dims = index.dims, dx = dims[0], dy = dims[1], dz = dims[2], cell = index.cell, mn = index.mn;
     var nx = pl.normal[0], ny = pl.normal[1], nz = pl.normal[2], d = pl.d;
     var nsib = sibs ? sibs.length : 0, gap = 0.25 * (index.spacing || cell / 4);
@@ -307,6 +307,7 @@
     var stamp = index._stamp, gen = ++index._gen;
     if (gen >= 4294967290) { stamp.fill(0); gen = index._gen = 1; }
     var out = [], queue = [], head = 0, inv = 1 / cell, reach = cell * 0.87 + tau;
+    var lim = rmax > 0 ? (rmax + cell) * (rmax + cell) : Infinity;   // рост ограничен окрестностью: пол/стена не идеально ровные, «плоскость на всё здание» ошибается на миллиметры
     // Ячейка принимается, если поверхность занимает большую её часть: узкие полосы, где плоскость лишь пересекает
     // пол, потолок или дальнюю стену, не имеют «обратной связи» и держат подгонку в том наклоне, с которого она начала.
     function scan(cid) {
@@ -341,8 +342,10 @@
         if (ax < 0 || ay < 0 || az < 0 || ax >= dx || ay >= dy || az >= dz) continue;
         var nid = (az * dy + ay) * dx + ax; if (stamp[nid] === gen) continue;
         stamp[nid] = gen;
-        var dv = nx * (mn[0] + (ax + 0.5) * cell) + ny * (mn[1] + (ay + 0.5) * cell) + nz * (mn[2] + (az + 0.5) * cell) + d;
+        var qx = mn[0] + (ax + 0.5) * cell, qy = mn[1] + (ay + 0.5) * cell, qz = mn[2] + (az + 0.5) * cell;
+        var dv = nx * qx + ny * qy + nz * qz + d;
         if (dv > reach || dv < -reach) continue;
+        if (lim !== Infinity) { var fx = qx - foot[0], fy = qy - foot[1], fz = qz - foot[2]; if (fx * fx + fy * fy + fz * fz > lim) continue; }
         if (scan(nid)) queue.push(nid);
       }
     }
@@ -357,9 +360,9 @@
     var sp = index.spacing || index.cell / 4, cap = opts.cap || 700000, P = index.pos;
     var tauCap = opts.tauMax || 1.6 * sp, sibs = opts.siblings && opts.siblings.length ? opts.siblings : null;
     var cur = { normal: pl.normal.slice(), d: pl.d, tau: clamp(pl.tau || 1.5 * sp, 0.5 * sp, tauCap) };
-    var foot = opts.foot || pl.centroid, r0 = opts.r0 || 6 * sp, last = 0, best = null, n0 = pl.normal, passes = opts.passes || 7;
+    var foot = opts.foot || pl.centroid, r0 = opts.r0 || 6 * sp, last = 0, best = null, n0 = pl.normal, passes = opts.passes || 7, rmax = opts.rmax || 110 * sp;
     for (var pass = 0; pass < passes; pass++) {
-      var ids = collectPlanePoints(index, cur, foot, cur.tau, cap, r0, sibs);
+      var ids = collectPlanePoints(index, cur, foot, cur.tau, cap, r0, sibs, rmax);
       if (ids.length < Math.max(24, (pl.count || 0) * 0.6)) break;
       var f = fitLSQ(P, ids, ids.length);
       var nrm = f.normal, dd = f.d, res = new Float64Array(ids.length), ss = 0;
@@ -388,6 +391,194 @@
     return rms * Math.sqrt(1 / n + ext);
   }
 
+  /* Ядро ребра/угла. У настоящих кромок поверхность скруглена или сколота на сантиметр-два (штукатурка, уголки, «мягкие» кромки скана):
+   * точки у самой кромки тянут плоскость набок, а иногда из них собирается целая «наклонная плоскость». Поэтому плоскости ищем заново
+   * по точкам, что дальше rho от всех кромок, а положение ребра/угла — по пересечению этих «чистых» плоскостей. */
+  function coreDetect(Q, m, w, sp, radius, snapDist, opts) {
+    var pl = w.planes, lines = [], i, j, k;
+    for (i = 0; i < pl.length; i++) for (j = i + 1; j < pl.length; j++) { var x2 = intersect2(pl[i], pl[j]); if (x2) lines.push(x2); }
+    if (!lines.length) return null;
+    var rho = clamp(0.3 * radius, 3 * sp, 0.5 * radius), rho2 = rho * rho, keep = new Int32Array(m), c = 0;
+    for (i = 0; i < m; i++) {
+      var ok = true, qx = Q[i * 3], qy = Q[i * 3 + 1], qz = Q[i * 3 + 2];
+      for (j = 0; j < lines.length; j++) {
+        var L = lines[j], rx = qx - L.point[0], ry = qy - L.point[1], rz = qz - L.point[2], t = rx * L.dir[0] + ry * L.dir[1] + rz * L.dir[2];
+        rx -= t * L.dir[0]; ry -= t * L.dir[1]; rz -= t * L.dir[2];
+        if (rx * rx + ry * ry + rz * rz < rho2) { ok = false; break; }
+      }
+      if (ok) keep[c++] = i;
+    }
+    if (c < 40) return null;
+    var Q2 = new Float64Array(c * 3);
+    for (k = 0; k < c; k++) { Q2[k * 3] = Q[keep[k] * 3]; Q2[k * 3 + 1] = Q[keep[k] * 3 + 1]; Q2[k * 3 + 2] = Q[keep[k] * 3 + 2]; }
+    var pl2 = detectPlanes(Q2, c, { spacing: sp, seed: (seedFor([Q2[0], Q2[1], Q2[2]], c) + 977) >>> 0, maxPlanes: 5, tauMax: opts.tauMax });
+    var mapped = [], used = {};
+    for (i = 0; i < pl.length; i++) {
+      var best = -1, bs = Math.cos(28 * DEG);
+      for (j = 0; j < pl2.length; j++) {
+        if (used[j] || pl2[j].span < 3 * sp || pl2[j].count < 14) continue;
+        var cs = Math.abs(dot(pl[i].normal, pl2[j].normal));
+        if (cs > bs) { bs = cs; best = j; }
+      }
+      if (best < 0) return null;
+      used[best] = 1; mapped.push(pl2[best]);
+    }
+    var np, dir = null, zero = [0, 0, 0];
+    if (w.kind === 'corner') { var x3 = intersect3(mapped[0], mapped[1], mapped[2]); if (!x3) return null; np = x3.point; }
+    else { var e2 = intersect2(mapped[0], mapped[1]); if (!e2) return null; var t2 = -dot(e2.point, e2.dir); np = add(e2.point, mul(e2.dir, t2)); dir = e2.dir; }
+    if (len(sub(np, w.point)) > 1.3 * snapDist) return null;
+    return { kind: w.kind, tier: w.tier, cost: len(sub(np, zero)) * (w.kind === 'corner' ? 0.5 : 0.8), point: np, dir: dir || w.dir, planes: mapped, cored: true };
+  }
+
+  /* Кромка поверхности: край проёма или другого разрыва в облаке. Дверь в стене без откосов не даёт ни ребра из двух плоскостей,
+   * ни угла — там есть только граница набора точек плоскости. Границу ищем по грубой сетке (направление), затем уточняем по самим точкам:
+   * крайние точки полосы вдоль кромки → прямая → сдвиг наружу на среднюю щель между точками (крайняя точка всегда лежит внутри кромки). */
+  function contourEdgeTau(index, pl, seed, snapDist, tauK) {
+    var sp = index.spacing || index.cell / 4, P = index.pos, n = pl.normal, tau = tauK * Math.max(pl.tau || 0, 0.5 * sp);   // у кромки поверхность обычно скруглена: допуск шире, чем у плоской части (tauK = 2,2; если так край не находится — 1)
+    var e0 = dot(n, seed) + pl.d, foot = sub(seed, mul(n, e0));
+    var Rw = clamp(5 * snapDist, 25 * sp, 70 * sp);
+    var ids = index.query(foot[0], foot[1], foot[2], Rw, 16000);
+    var ux = unit(cross(n, Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0])), vx = cross(n, ux);
+    var A = [], B = [], k, i;
+    for (k = 0; k < ids.length; k++) {
+      i = ids[k] * 3; var d = n[0] * P[i] + n[1] * P[i + 1] + n[2] * P[i + 2] + pl.d;
+      if (d > tau || d < -tau) continue;
+      var rx = P[i] - foot[0], ry = P[i + 1] - foot[1], rz = P[i + 2] - foot[2];
+      A.push(rx * ux[0] + ry * ux[1] + rz * ux[2]); B.push(rx * vx[0] + ry * vx[1] + rz * vx[2]);
+    }
+    var cnt = A.length; if (cnt < 80) return null;
+    // грубая сетка: ячейка ~ 4 шага, «заполнена», если в ней есть заметная доля типичной плотности
+    var h = 4 * sp, G, cells, counts, tries = 0, med = 0;
+    for (;;) {
+      G = Math.ceil(2 * Rw / h) + 1; counts = new Int32Array(G * G);
+      for (k = 0; k < cnt; k++) { var ca = Math.floor((A[k] + Rw) / h), cb = Math.floor((B[k] + Rw) / h); if (ca >= 0 && cb >= 0 && ca < G && cb < G) counts[cb * G + ca]++; }
+      var nz = []; for (k = 0; k < counts.length; k++) if (counts[k] > 0) nz.push(counts[k]);
+      nz.sort(function (x, y) { return x - y; }); med = nz.length ? nz[nz.length >> 1] : 0;
+      if (med >= 4 || tries >= 2) break; h *= 1.6; tries++;
+    }
+    var thr = Math.max(1, Math.round(0.25 * med));
+    function filled(ia, ib) { return counts[ib * G + ia] >= thr; }
+    function inside(ia, ib) { var ca = (ia + 0.5) * h - Rw, cb = (ib + 0.5) * h - Rw; return ia >= 0 && ib >= 0 && ia < G && ib < G && ca * ca + cb * cb <= (Rw - h) * (Rw - h); }
+    var bcells = [], nb4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (var ib = 0; ib < G; ib++) for (var ia = 0; ia < G; ia++) {
+      if (!inside(ia, ib) || !filled(ia, ib)) continue;
+      var ex = 0, ey = 0, ne = 0;
+      for (k = 0; k < 4; k++) { var ja = ia + nb4[k][0], jb = ib + nb4[k][1]; if (inside(ja, jb) && !filled(ja, jb)) { ex += nb4[k][0]; ey += nb4[k][1]; ne++; } }
+      if (ne) bcells.push({ a: (ia + 0.5) * h - Rw, b: (ib + 0.5) * h - Rw, ex: ex, ey: ey });
+    }
+    if (bcells.length < 3) return null;
+    // ближайшая к курсору граничная ячейка
+    var c0 = null, bd = Infinity;
+    for (k = 0; k < bcells.length; k++) { var dd = Math.hypot(bcells[k].a, bcells[k].b); if (dd < bd) { bd = dd; c0 = bcells[k]; } }
+    if (bd > snapDist + 1.2 * h) return null;
+    var dirT = null, loc = null;
+    for (var rr = 3.2; rr >= 2.0; rr -= 0.6) {
+      loc = bcells.filter(function (c) { return Math.hypot(c.a - c0.a, c.b - c0.b) <= rr * h; });
+      if (loc.length < 3) continue;
+      var ma = 0, mb = 0; loc.forEach(function (c) { ma += c.a; mb += c.b; }); ma /= loc.length; mb /= loc.length;
+      var saa = 0, sab = 0, sbb = 0; loc.forEach(function (c) { saa += (c.a - ma) * (c.a - ma); sab += (c.a - ma) * (c.b - mb); sbb += (c.b - mb) * (c.b - mb); });
+      var tr = saa + sbb, det = saa * sbb - sab * sab, disc = Math.sqrt(Math.max(tr * tr / 4 - det, 0)), l1 = tr / 2 + disc, l2 = Math.max(tr / 2 - disc, 1e-12);
+      if (Math.sqrt(l1 / l2) < 3) continue;   // не прямая: угол проёма или рваный край — кромкой не считаем
+      var ta = Math.abs(sab) > 1e-12 ? l1 - sbb : (saa >= sbb ? 1 : 0), tb = Math.abs(sab) > 1e-12 ? sab : (saa >= sbb ? 0 : 1), tl = Math.hypot(ta, tb) || 1;
+      dirT = { ta: ta / tl, tb: tb / tl, ma: ma, mb: mb }; break;
+    }
+    if (!dirT) return null;
+    var ta2 = dirT.ta, tb2 = dirT.tb, na2 = -tb2, nb2 = ta2;                 // нормаль к кромке в плоскости
+    var oe = 0; loc.forEach(function (c) { oe += (c.ex * na2 + c.ey * nb2); });
+    if (oe < 0) { na2 = -na2; nb2 = -nb2; }                                   // наружу — в сторону пустоты
+    // положение по крайним точкам полосы вдоль кромки (t = 0 — проекция курсора на кромку)
+    var mB = dirT.ma * na2 + dirT.mb * nb2, half = 3.2 * h, w = Math.max(2 * sp, 0.4 * h), nbins = Math.max(4, Math.floor(2 * half / w));
+    var tb0 = -half, best = new Float64Array(nbins).fill(-Infinity), cntBin = new Int32Array(nbins), inStrip = 0;
+    for (k = 0; k < cnt; k++) {
+      var tt = A[k] * ta2 + B[k] * tb2, mm = A[k] * na2 + B[k] * nb2;
+      if (tt < tb0 || tt >= half || mm < mB - 2.5 * h || mm > mB + 1.2 * h) continue;
+      var bi = Math.min(nbins - 1, Math.floor((tt - tb0) / w)); cntBin[bi]++; inStrip++;
+      if (mm > best[bi]) best[bi] = mm;
+    }
+    var xs = [], ys = [];
+    for (k = 0; k < nbins; k++) if (cntBin[k] >= 2 && best[k] > -Infinity) { xs.push(tb0 + (k + 0.5) * w); ys.push(best[k]); }
+    if (xs.length < 4) return null;
+    // робастная прямая m = a + b·t по максимумам полос (усечение по остаткам)
+    var keepX = xs.slice(), keepY = ys.slice(), a1 = 0, b1 = 0, rms = 0;
+    for (var pass = 0; pass < 3; pass++) {
+      var sx = 0, sy = 0, sxx = 0, sxy = 0, m1 = keepX.length;
+      for (k = 0; k < m1; k++) { sx += keepX[k]; sy += keepY[k]; sxx += keepX[k] * keepX[k]; sxy += keepX[k] * keepY[k]; }
+      var den = m1 * sxx - sx * sx; b1 = Math.abs(den) > 1e-18 ? (m1 * sxy - sx * sy) / den : 0; a1 = (sy - b1 * sx) / m1;
+      var res = keepX.map(function (x, q) { return keepY[q] - (a1 + b1 * x); }), ss = 0; res.forEach(function (r) { ss += r * r; });
+      rms = Math.sqrt(ss / m1);
+      var lim = Math.max(2.2 * rms, 0.8 * sp), nx2 = [], ny2 = [];
+      for (k = 0; k < m1; k++) if (Math.abs(res[k]) <= lim) { nx2.push(keepX[k]); ny2.push(keepY[k]); }
+      if (nx2.length < 4 || nx2.length === m1) { if (nx2.length >= 4) { keepX = nx2; keepY = ny2; } break; }
+      keepX = nx2; keepY = ny2;
+    }
+    if (keepX.length < 4) return null;
+    // Положение самой кромки — по порядковым статистикам: j-я от края точка лежит в среднем на j / (линейная плотность) внутри кромки.
+    // Плотность берём в полосе, заведомо лежащей внутри поверхности; от того, как легли крайние точки (сетка или случайно), оценка не зависит.
+    var skip = 1.5 * sp, wref = 6 * sp, nref = 0, top = [], JJ = 2;
+    for (k = 0; k < cnt; k++) {
+      var t3 = A[k] * ta2 + B[k] * tb2; if (t3 < tb0 || t3 >= half) continue;
+      var r3 = A[k] * na2 + B[k] * nb2 - (a1 + b1 * t3);
+      if (r3 <= -skip) { if (r3 > -skip - wref) nref++; }
+      else if (r3 <= 3 * sp) top.push(r3);
+    }
+    top.sort(function (x, y) { return y - x; });
+    var gapE, mass = false, sigMass = 0;
+    if (nref >= 24 && top.length >= JJ + 2) {
+      var rhoLine = nref / wref;
+      gapE = clamp(top[JJ - 1] + JJ / rhoLine, -0.5 * sp, 1.6 * sp); mass = true;
+      sigMass = Math.sqrt(JJ) / rhoLine;
+    } else {      // мало точек: крайняя точка полосы + средняя щель 1 / (плотность · ширина полосы)
+      var dens = 0, strip = 0;
+      for (k = 0; k < cnt; k++) { var t4 = A[k] * ta2 + B[k] * tb2, m4 = A[k] * na2 + B[k] * nb2; if (t4 >= tb0 && t4 < half) { var lineM = a1 + b1 * t4; if (m4 <= lineM + 0.2 * sp && m4 >= lineM - 3 * w) strip++; } }
+      dens = strip / (2 * half * 3 * w);
+      gapE = dens > 0 ? clamp(1 / (dens * w), 0.1 * sp, 1.0 * sp) : 0.5 * sp;
+    }
+    var mEdge = a1 + gapE;                                                    // на t = 0
+    var pa = mEdge * na2, pb = mEdge * nb2;                                   // (a,b) точки на кромке
+    var pt = add(add(foot, mul(ux, pa)), mul(vx, pb));
+    var d2 = unit([ta2 + b1 * na2, tb2 + b1 * nb2]), dir3 = unit(add(mul(ux, d2[0]), mul(vx, d2[1])));
+    var sig = Math.sqrt(Math.pow(rms / Math.sqrt(keepX.length), 2) + (mass ? sigMass * sigMass : Math.pow(0.5 * gapE, 2)) + 0.36 * sp * sp);   // 0,6·шаг — шероховатость и скругление кромки (по сверке с полными данными)
+    return { point: pt, dir: dir3, sigma: sig, rms: rms, count: inStrip, gap: gapE, cell: h, bins: keepX.length, mass: mass, nref: nref, top: top.slice(0, 4), a1: a1, dist: Math.hypot(pa, pb) };
+  }
+
+  function contourEdge(index, pl, seed, snapDist) {
+    var c = null;
+    try { c = contourEdgeTau(index, pl, seed, snapDist, 2.2); } catch (e) { c = null; }
+    if (!c) { try { c = contourEdgeTau(index, pl, seed, snapDist, 1); } catch (e2) { c = null; } }
+    return c;
+  }
+
+  /* Направление кромки по одному окну (±6 шагов) определено грубо: 0,5–1° дают 7–14 мм на метр. Поэтому кромку «протягиваем»:
+   * то же окно ставим на расстоянии step вдоль кромки в обе стороны, положения кромки в трёх окнах — одна прямая с базой около метра. */
+  function trackContour(index, pl, c0, snapDist) {
+    var sp = index.spacing || index.cell / 4, step = clamp(50 * sp, 6 * snapDist, 16 * snapDist), T = c0.dir, k, sgn, cand = [];
+    var tol = 0.02 * step + 2 * sp;
+    for (sgn = -1; sgn <= 1; sgn += 2) {
+      var c = null;
+      try { c = contourEdge(index, pl, add(c0.point, mul(T, sgn * step)), snapDist); } catch (e) { c = null; }
+      if (!c || c.dist > 0.6 * snapDist) continue;
+      var dv = sub(c.point, c0.point), al = dot(dv, T), pr = sub(dv, mul(T, al));
+      if (len(pr) > tol || Math.abs(al) < 0.5 * step) continue;    // не на той же прямой (угол проёма, арка, рваный край)
+      cand.push({ c: c, sgn: sgn });
+    }
+    // окно, в котором край «рваный» заметно сильнее остальных (угол проёма попал в окно), в протяжку не берём
+    var rmsAll = [c0.rms].concat(cand.map(function (q) { return q.c.rms; })).sort(function (x, y) { return x - y; }), med = rmsAll[rmsAll.length >> 1];
+    cand = cand.filter(function (q) { return q.c.rms <= 1.6 * med + 0.15 * sp; });
+    if (cand.length === 2) {       // три окна должны лежать на одной прямой
+      var chord = add(cand[0].c.point, mul(sub(cand[1].c.point, cand[0].c.point), 0.5)), dev = len(sub(chord, c0.point));
+      if (dev > 0.6 * sp + 2 * c0.sigma) cand = [cand[0].c.rms <= cand[1].c.rms ? cand[0] : cand[1]];
+    }
+    if (!cand.length) return null;
+    var pts = [c0.point];
+    if (cand.length === 2) pts = [cand[0].c.point, c0.point, cand[1].c.point]; else pts.push(cand[0].c.point);
+    var M = [0, 0, 0]; for (k = 0; k < pts.length; k++) M = add(M, pts[k]); M = mul(M, 1 / pts.length);
+    var D = pts.length === 3 ? unit(sub(pts[2], pts[0])) : unit(sub(pts[1], pts[0]));
+    if (dot(D, T) < 0) D = mul(D, -1);
+    var base = pts.length === 3 ? 2 * step : step, sAnchor = Math.max(c0.sigma || 0, 0.5 * sp);
+    var point = add(M, mul(D, dot(sub(c0.point, M), D)));
+    return { point: point, dir: D, dirSigma: sAnchor * Math.SQRT2 / base, anchors: pts.length - 1, step: step, shift: len(sub(point, c0.point)) };
+  }
+
   /* ---------- Захват ---------- */
   /* seed — точка под курсором (координаты облака). index — buildIndex(...).
    * opts.snapDist — насколько далеко от seed искать угол/ребро (в единицах облака);
@@ -413,15 +604,19 @@
     var planes = detectPlanes(Q, m, { spacing: sp, seed: seedFor(raw, index.n), maxPlanes: opts.maxPlanes || 4, tauMax: opts.tauMax });
     // допустимые плоскости: настоящая поверхность (достаточный размах) и проходит недалеко от курсора
     planes = refineJoint(Q, m, planes, sp, opts.tauMax);
-    var good = planes.filter(function (p) { return p.span >= 3.5 * sp && Math.abs(p.d) <= radius * 0.9; });
-    var cands = [], supportR = 3.5 * sp, a, b, c2;
+    // «плоскость» из полоски точек вдоль кромки (смешанные пиксели лазера) настоящей поверхностью не считаем: у неё нет ширины
+    var good = planes.filter(function (p) { return p.span >= 3.5 * sp && Math.abs(p.d) <= radius * 0.9 && (!p.lam || Math.sqrt(Math.max(p.lam[1], 0)) >= 1.5 * sp); });
+    // местный шаг точек: у откосов, кромок и на косых поверхностях облако реже, чем в среднем — опору для ребра/угла ищем с запасом
+    var lsp = clamp(Math.sqrt(Math.PI * radius * radius / m), sp, 3 * sp);
+    var cands = [], supportR = 3.5 * lsp, a, b, c2;
+    out.localSpacing = lsp;
     var zero = [0, 0, 0];
     // углы
     for (a = 0; a < good.length; a++) for (b = a + 1; b < good.length; b++) for (c2 = b + 1; c2 < good.length; c2++) {
       var x3 = intersect3(good[a], good[b], good[c2]); if (!x3) continue;
-      var dc = len(sub(x3.point, zero)); if (dc > snapDist * 0.85) continue;
+      var dc = len(sub(x3.point, zero)); if (dc > snapDist) continue;
       if (nearOnPlane(Q, good[a], x3.point, supportR * 1.3) < 3 || nearOnPlane(Q, good[b], x3.point, supportR * 1.3) < 3 || nearOnPlane(Q, good[c2], x3.point, supportR * 1.3) < 3) continue;
-      cands.push({ kind: 'corner', tier: dc <= 0.6 * snapDist ? 0 : 1, cost: dc * 0.5, point: x3.point, planes: [good[a], good[b], good[c2]] });
+      cands.push({ kind: 'corner', tier: 0, cost: dc * 0.5, point: x3.point, planes: [good[a], good[b], good[c2]] });
     }
     // рёбра
     for (a = 0; a < good.length; a++) for (b = a + 1; b < good.length; b++) {
@@ -447,6 +642,9 @@
     // (курсор всегда лежит на какой-то плоскости, её проекция всегда «ближе»)
     cands.sort(function (x, y) { return (x.tier || 0) - (y.tier || 0) || x.cost - y.cost; });
     var w = cands[0];
+    if (w.kind === 'edge' && opts.core !== false) { var cw = coreDetect(Q, m, w, sp, radius, snapDist, opts); if (cw) w = cw; }
+    if (opts.debug) out.debug = { planes: good.map(function (p) { return { n: p.normal.slice(), d: p.d, count: p.count, span: p.span }; }),
+      cands: cands.map(function (c) { return { kind: c.kind, tier: c.tier, cost: c.cost, n: c.planes.map(function (p) { return p.normal.map(function (v) { return +v.toFixed(2); }); }) }; }) };
     var abs = w.planes.map(function (p) {   // n·(seed + q) + d' = 0, где n·q + d = 0
       return { normal: p.normal.slice(), d: p.d - dot(p.normal, seed), centroid: add(p.centroid, seed), rms: p.rms, count: p.count,
                span: p.span, tau: p.tau, spread: Math.sqrt(Math.max(p.lam ? p.lam[2] : 0, 1e-12)), spreadMin: Math.sqrt(Math.max(p.lam ? p.lam[1] : 0, 1e-12)) };
@@ -469,6 +667,15 @@
       } else { np = sub(raw, mul(g[0].normal, dot(g[0].normal, raw) + g[0].d)); }
       if (np && len(sub(np, pt)) <= 1.6 * snapDist) { pt = np; abs = g; dir = dirG; }
     }
+    var contour = null;
+    if (opts.grow && w.kind === 'plane' && opts.contour !== false && abs[0] && abs[0].grown) {
+      try { contour = contourEdge(index, abs[0], raw, snapDist); } catch (e) { contour = null; }
+      if (contour && contour.dist > snapDist) contour = null;
+      if (contour && opts.track !== false) {
+        var tr = null; try { tr = trackContour(index, abs[0], contour, snapDist); } catch (e2) { tr = null; }
+        if (tr && tr.shift <= 1.5 * sp + contour.sigma) { contour.point = tr.point; contour.dir = tr.dir; contour.dirSigma = tr.dirSigma; contour.anchors = tr.anchors; }
+      }
+    }
     var rms = 0, cnt = Infinity, sig2 = 0;
     out.planes = abs.map(function (p) {
       var sg = planeSigmaAt(p, pt);
@@ -476,12 +683,15 @@
       return { normal: p.normal.slice(), d: p.d, centroid: p.centroid.slice(), rms: p.rms, count: p.count, span: p.span, sigma: sg, grown: !!p.grown,
                spread: p.spread, spreadMin: p.spreadMin, tau: p.tau };
     });
-    out.point = pt; out.kind = w.kind; out.refined = true; out.shift = len(sub(pt, raw));
+    out.point = pt; out.kind = w.kind; out.refined = true; out.shift = len(sub(pt, raw)); out.cored = !!w.cored;
+    if (contour) { out.point = contour.point; out.kind = 'edge'; out.contour = true; out.shift = len(sub(contour.point, raw)); dir = contour.dir; out.contourInfo = { anchors: contour.anchors || 0, dirSigma: contour.dirSigma, gap: contour.gap, cell: contour.cell, bins: contour.bins, rms: contour.rms, mass: contour.mass, nref: contour.nref, top: contour.top, a1: contour.a1 }; }
     out.grown = out.planes.some(function (p) { return p.grown; });
     out.rms = rms; out.count = cnt === Infinity ? 0 : cnt;
-    out.sigma = Math.sqrt(sig2) * (w.kind === 'plane' ? 1 : 1.25);
+    out.sigma = contour ? Math.sqrt(sig2 + contour.sigma * contour.sigma) : Math.sqrt(sig2) * (w.kind === 'plane' ? 1 : 1.25);
     if (dir) out.dir = dir;
+    if (contour) out.dirSigma = contour.dirSigma != null ? contour.dirSigma : 0.012;   // рад: грубое направление по одному окну
     out.quality = out.rms <= 0.55 * sp && out.count >= 60 ? 'high' : out.rms <= 1.1 * sp && out.count >= 25 ? 'medium' : 'low';
+    if (contour && out.quality === 'high') out.quality = 'medium';      // положение кромки — оценка по плотности точек, а не подгонка плоскостей
     return out;
   }
 
@@ -501,7 +711,8 @@
     }
     if (ua && ub && Math.abs(dot(ua, ub)) >= PARALLEL_COS) {
       var sg = dot(ua, ub) >= 0 ? 1 : -1, uu = unit(add(ua, mul(ub, sg))), along = dot(dv, uu), perp = sub(dv, mul(uu, along));
-      return { kind: 'edges', value: len(perp), along: Math.abs(along), dir: uu, uncertainty: unc() };
+      var ds = Math.hypot(a.dirSigma || 0, b.dirSigma || 0), ue = unc();   // неточность направления кромок сказывается на разнесённых по высоте точках
+      return { kind: 'edges', value: len(perp), along: Math.abs(along), dir: uu, uncertainty: Math.sqrt(ue * ue + Math.pow(Math.abs(along) * ds, 2)) };
     }
     if (na && !nb) return { kind: 'point-plane', value: Math.abs(dot(na, dv)), normal: na.slice(), uncertainty: unc() };
     if (nb && !na) return { kind: 'point-plane', value: Math.abs(dot(nb, dv)), normal: nb.slice(), uncertainty: unc() };
@@ -511,6 +722,7 @@
   return {
     buildIndex: buildIndex, snap: snap, pairGap: pairGap, detectPlanes: detectPlanes, fitLSQ: fitLSQ,
     growPlane: growPlane, collectPlanePoints: collectPlanePoints, planeSigmaAt: planeSigmaAt,
-    intersect2: intersect2, intersect3: intersect3, refineJoint: refineJoint, estimateSpacing: estimateSpacing, seedFor: seedFor
+    intersect2: intersect2, intersect3: intersect3, refineJoint: refineJoint, estimateSpacing: estimateSpacing, seedFor: seedFor,
+    contourEdge: contourEdge, trackContour: trackContour
   };
 });

@@ -183,3 +183,84 @@ test('быстро: захват без роста укладывается в �
   assert.ok(local < 60, 'без роста ' + local.toFixed(1) + ' мс');
   assert.ok(grown < 800, 'с ростом ' + grown.toFixed(1) + ' мс');
 });
+
+/* ---------- Кромка проёма без откосов (стена с дырой) ---------- */
+/* Проём в плоской стене без откосов: ни ребра из двух плоскостей, ни угла нет — есть только конец набора точек плоскости.
+ * Точность здесь ниже (по плотности точек), поэтому допуски в тестах — миллиметры, а не доли миллиметра. */
+function makeWallWithHole(seed, o) {
+  const opt = Object.assign({ sp: 0.013, sigma: 0.002, z0: 2.5, z1: 3.5, hd: 2.1, poisson: false }, o || {}), r = rng(seed), pts = [];
+  const { sp, sigma, z0, z1, hd } = opt, hole = (y, z) => z > z0 && z < z1 && y < hd;
+  if (opt.poisson) {
+    for (let q = 0, N = Math.round(18 / (sp * sp)); q < N; q++) { const y = r() * 3, z = r() * 6; if (!hole(y, z)) pts.push([gauss(r) * sigma, y, z]); }
+  } else {
+    for (let a = 0; a < 3; a += sp) for (let b = 0; b < 6; b += sp) {
+      const y = a + (r() - 0.5) * sp * 0.9, z = b + (r() - 0.5) * sp * 0.9;
+      if (y < 0 || z < 0 || y > 3 || z > 6 || hole(y, z)) continue;
+      pts.push([gauss(r) * sigma, y, z]);
+    }
+  }
+  for (let a = 0; a < 3; a += sp * 1.2) for (let b = 0; b < 6; b += sp * 1.2) pts.push([-a + (r() - 0.5) * sp, gauss(r) * sigma, b + (r() - 0.5) * sp]);   // пол (x < 0)
+  const pos = new Float32Array(pts.length * 3); pts.forEach((p, i) => { pos[i * 3] = p[0]; pos[i * 3 + 1] = p[1]; pos[i * 3 + 2] = p[2]; });
+  return { pos, opt, index: PS.buildIndex(pos) };
+}
+const HOLE = makeWallWithHole(7);
+const nearestW = (rm, t) => { const i = rm.index.nearest(t[0], t[1], t[2], 0.06); return i < 0 ? null : [rm.index.pos[i * 3], rm.index.pos[i * 3 + 1], rm.index.pos[i * 3 + 2]]; };
+
+test('кромка проёма без откосов: клик у края даёт линию края, а не точку на стене', () => {
+  const rnd = rng(3), errL = [], errT = [], dirs = [];
+  for (let k = 0; k < 14; k++) {
+    const a = nearestW(HOLE, [0, 0.8 + rnd() * 0.8, 2.5 + (rnd() - 0.5) * 0.03]);
+    const b = nearestW(HOLE, [0, 2.1 + (rnd() - 0.5) * 0.03, 2.8 + rnd() * 0.4]);
+    const sa = PS.snap(a, HOLE.index, { snapDist: 0.033, grow: true }), sb = PS.snap(b, HOLE.index, { snapDist: 0.033, grow: true });
+    assert.equal(sa.kind, 'edge'); assert.equal(sa.contour, true, 'вертикальная кромка: контур');
+    assert.equal(sb.kind, 'edge'); assert.equal(sb.contour, true, 'горизонтальная кромка: контур');
+    errL.push(sa.point[2] - 2.5); errT.push(sb.point[1] - 2.1);
+    dirs.push(Math.abs(sa.dir[1]), Math.abs(sb.dir[2]));
+    assert.ok(sa.sigma > 0.0008 && sa.sigma < 0.012, 'σ кромки ' + mm(sa.sigma));
+    assert.notEqual(sa.quality, 'high', 'кромка по плотности точек не может быть «высокого» качества');
+  }
+  const med = a => a.map(Math.abs).sort((x, y) => x - y)[a.length >> 1];
+  assert.ok(med(errL) < 0.002 && Math.max.apply(null, errL.map(Math.abs)) < 0.004, 'левая кромка: медиана ' + mm(med(errL)));
+  assert.ok(med(errT) < 0.002 && Math.max.apply(null, errT.map(Math.abs)) < 0.004, 'верх проёма: медиана ' + mm(med(errT)));
+  assert.ok(Math.min.apply(null, dirs) > 0.99, 'направление вдоль кромки');
+});
+
+test('кромка проёма: ширина по двум кромкам и высота «кромка — пол» совпадают с настоящими размерами', () => {
+  const rnd = rng(9), wErr = [], hErr = [], floorSeed = nearestW(HOLE, [-1.2, 0, 1.0]);
+  const fl = PS.snap(floorSeed, HOLE.index, { snapDist: 0.033, grow: true });
+  assert.equal(fl.kind, 'plane');
+  for (let k = 0; k < 10; k++) {
+    const a = nearestW(HOLE, [0, 0.8 + rnd() * 0.8, 2.5 + (rnd() - 0.5) * 0.03]), b = nearestW(HOLE, [0, 0.9 + rnd() * 0.8, 3.5 + (rnd() - 0.5) * 0.03]);
+    const t = nearestW(HOLE, [0, 2.1 + (rnd() - 0.5) * 0.03, 2.8 + rnd() * 0.4]);
+    const sa = PS.snap(a, HOLE.index, { snapDist: 0.033, grow: true }), sb = PS.snap(b, HOLE.index, { snapDist: 0.033, grow: true }), st = PS.snap(t, HOLE.index, { snapDist: 0.033, grow: true });
+    const w = PS.pairGap(sa, sb), h = PS.pairGap(st, fl);
+    assert.equal(w.kind, 'edges'); assert.equal(h.kind, 'point-plane');
+    wErr.push(Math.abs(w.value - 1.0)); hErr.push(Math.abs(h.value - 2.1));
+    assert.ok(w.uncertainty > 0.001 && w.uncertainty < 0.02, 'погрешность ширины ' + mm(w.uncertainty));
+  }
+  assert.ok(Math.max.apply(null, wErr) < 0.005, 'ширина проёма: максимум ' + mm(Math.max.apply(null, wErr)));
+  assert.ok(Math.max.apply(null, hErr) < 0.004, 'высота проёма: максимум ' + mm(Math.max.apply(null, hErr)));
+});
+
+test('кромка проёма: случайное (не сеточное) расположение точек тоже даёт край в пределах 4 мм', () => {
+  const pr = makeWallWithHole(5, { poisson: true, sp: 0.011 }), rnd = rng(21), errs = [];
+  for (let k = 0; k < 12; k++) {
+    const a = nearestW(pr, [0, 0.8 + rnd() * 0.8, 3.5 + (rnd() - 0.5) * 0.03]);
+    const s = PS.snap(a, pr.index, { snapDist: 0.033, grow: true });
+    if (s.kind === 'edge' && s.contour) errs.push(Math.abs(s.point[2] - 3.5));
+  }
+  assert.ok(errs.length >= 8, 'кромку нашли в ' + errs.length + ' из 12');
+  assert.ok(Math.max.apply(null, errs) < 0.004, 'максимум ' + mm(Math.max.apply(null, errs)));
+});
+
+test('кромку проёма можно отключить; сплошная стена кромкой не считается', () => {
+  const a = nearestW(HOLE, [0, 1.2, 2.5]);
+  const off = PS.snap(a, HOLE.index, { snapDist: 0.033, grow: true, contour: false });
+  assert.notEqual(off.contour, true); assert.equal(off.kind, 'plane');
+  const mid = nearestW(HOLE, [0, 1.2, 1.0]);
+  const s = PS.snap(mid, HOLE.index, { snapDist: 0.033, grow: true });
+  assert.equal(s.kind, 'plane'); assert.notEqual(s.contour, true);
+  const hi = nearestW(HOLE, [0, 2.8, 3.0]);   // над проёмом — сплошная стена
+  const t = PS.snap(hi, HOLE.index, { snapDist: 0.033, grow: true });
+  assert.equal(t.kind, 'plane'); assert.notEqual(t.contour, true);
+});
