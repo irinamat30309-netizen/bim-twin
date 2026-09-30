@@ -4271,6 +4271,21 @@
     renderMeasList(); persistMeasurements();
     return { ok: true, status: record.status, actualText: dcFmt(record.actual && record.actual.baseValue, record.expected.kind, record.expected.unit), deltaText: dcSigned(record.delta, record.expected.kind, record.expected.unit) };
   }
+  // Что у измерения можно сравнивать с размером: название, значение (в единицах облака, если они известны), подходит ли поле без ручного выбора
+  function dcFields(i) {
+    const m = __measurements[i], C = window.MeasurementDocCompare;
+    if (!m || !C) return [];
+    const ctx = m.measurementContext || {}, units = ctx.sourceUnits || dcDefaultUnits() || '', ui = units ? C.unitInfo(units) : null;
+    return C.measurementFields(m).map(f => {
+      const prof = C.measurementFieldDimensions(f, m);
+      let text = '';
+      if (f.kind === 'angle') text = f.value.toFixed(2) + ' °';
+      else if (f.kind === 'slope') text = f.value.toFixed(2) + ' %';
+      else if (f.kind === 'linear') text = ui && ui.kind === 'linear' ? (dcFmt(f.value * ui.factor, 'linear', ui.symbol) || '') : f.value.toFixed(4) + ' ед. облака';
+      else if (f.kind === 'area') text = f.value.toFixed(3);
+      return { key: f.key, label: f.label, kind: f.kind, text, auto: prof.auto !== false, dimension: prof.primary || 'unspecified' };
+    });
+  }
   window.__lxDocCheck = {
     meta: dcMeta, rows: () => __measurements.map(dcRow), row: i => (__measurements[i] ? dcRow(__measurements[i], i) : null),
     add: (res, extra) => (res && !res.error ? storeMeasurement(res, extra || {}) : -1),
@@ -4278,6 +4293,7 @@
     candidates: dcCandidates, accept: dcAccept, setDefaultUnits: dcSetDefaultUnits, setContext: dcSetContext, remove: dcRemove, requirements: dcRequirements,
     run: i => autoCompareMeasurementInBackground(i), runAll: computeAllComparisons, details: i => compareSavedMeasurement(i),
     openDocument: dcOpenDocument, exportCsv: dcExportCsv,
+    fields: dcFields,
     manual: { list: dcManualInfo, add: dcManualAdd, remove: dcManualRemove, compare: dcManualCompare, dims: DC_MANUAL_DIMS }
   };
   function compareSavedMeasurement(index) {

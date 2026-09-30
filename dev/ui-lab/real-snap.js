@@ -40,65 +40,73 @@ function plyBbox(file) {
   // сдвиг: viewer = исходные + shift, где shift = -(центр габарита файла)
   const bb = plyBbox(cloud), shift = [0, 1, 2].map((k) => -(bb.mn[k] + bb.mx[k]) / 2);
   console.log('точек в файле', bb.nv, '| сдвиг центрирования', shift.map((v) => v.toFixed(4)).join(', '));
-  const res = await page.evaluate(({ GT, shift }) => {
+  const OS = +(process.env.LAB_SPREAD || 0.55), PXS = (process.env.LAB_PX || '16,32').split(',').map(Number);
+  const res = await page.evaluate(({ GT, shift, OS, PXS }) => {
     const v = window.__viewer || window.__lxViewer, PS = window.PrecisionSnap;
     v.setMeasure(true); v.setMeasureMode && v.setMeasureMode('distance');
-    let t = performance.now(); const idx = v._psIndex(); const indexMs = v._psCache ? v._psCache.ms : performance.now() - t;
+    const idx = v._psIndex(), indexMs = v._psCache ? v._psCache.ms : 0;
     const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    const OFF = [[0, 0, 0], [0.02, 0.02, 0], [-0.02, 0.015, 0.01], [0.01, -0.03, -0.02], [-0.03, -0.01, 0.02], [0.025, 0, -0.025]];
+    // разброс кликов: как у человека, который целится курсором в ~1 см от нужной точки (OS — масштаб от ±3 см)
+    const OFF = [[0, 0, 0], [0.02, 0.02, 0], [-0.02, 0.015, 0.01], [0.01, -0.03, -0.02], [-0.03, -0.01, 0.02], [0.025, 0, -0.025]].map((o) => o.map((x) => x * OS));
     const near = (c) => { const j = idx.nearest(c[0], c[1], c[2], 0.15); return j < 0 ? null : [idx.pos[j * 3], idx.pos[j * 3 + 1], idx.pos[j * 3 + 2]]; };
     const toO = (p) => [p[0] - shift[0], p[1] - shift[1], p[2] - shift[2]];
-    const R = { indexMs, n: idx.n, spacing: idx.spacing, snaps: {}, pairs: [] };
-    for (const px of [16, 48]) {
-      for (const id of Object.keys(GT.snaps)) {
+    const R = { indexMs, n: idx.n, spacing: idx.spacing, snaps: {}, pairs: {}, ids: Object.keys(GT.snaps) };
+    // Камера как у пользователя при замере: 2 м до точки; радиус захвата в пикселях даёт метры через масштаб экрана
+    const snapAt = (seed, opt) => { v.target = seed.slice(); v.dist = 2; v._ortho = false; return v._precisionSnapAt(seed, opt); };
+    const errOf = (g, r) => {
+      const gp = (r.contour && g.gtC) ? g.gtC : g.gt, d = sub(toO(r.point), gp);
+      if (g.kind === 'plane') return Math.abs(dot(d, g.n));
+      if (g.kind === 'edge') { const al = dot(d, g.dir); return Math.hypot(d[0] - g.dir[0] * al, d[1] - g.dir[1] * al, d[2] - g.dir[2] * al); }
+      return Math.hypot(d[0], d[1], d[2]);
+    };
+    for (const px of PXS) {
+      const cache = {};
+      const get = (id, i) => {
+        const key = id + '#' + i; if (key in cache) return cache[key];
+        const g = GT.snaps[id], o = OFF[i % OFF.length], c = [g.ideal[0] + shift[0] + o[0], g.ideal[1] + shift[1] + o[1], g.ideal[2] + shift[2] + o[2]], seed = near(c);
+        if (!seed) return (cache[key] = null);
+        const a0 = snapAt(seed, { grow: false, px }), a1 = snapAt(seed, { grow: true, px });
+        return (cache[key] = a1 ? { r: a1, r0: a0, seed } : null);
+      };
+      for (const id of R.ids) {
         const g = GT.snaps[id], rows = [];
-        OFF.forEach((o) => {
-          const c = [g.ideal[0] + shift[0] + o[0], g.ideal[1] + shift[1] + o[1], g.ideal[2] + shift[2] + o[2]], seed = near(c); if (!seed) return;
-          const a0 = v._precisionSnapAt(seed, { grow: false, px }), a1 = v._precisionSnapAt(seed, { grow: true, px });
-          if (!a1) return;
-          const d = sub(toO(a1.point), g.gt); let e;
-          if (g.kind === 'plane') e = Math.abs(dot(d, g.n));
-          else if (g.kind === 'edge') { const al = dot(d, g.dir); e = Math.hypot(d[0] - g.dir[0] * al, d[1] - g.dir[1] * al, d[2] - g.dir[2] * al); }
-          else e = Math.hypot(d[0], d[1], d[2]);
-          const d0 = a0 ? sub(toO(a0.point), g.gt) : null; let e0 = null;
-          if (d0) { if (g.kind === 'plane') e0 = Math.abs(dot(d0, g.n)); else if (g.kind === 'edge') { const al = dot(d0, g.dir); e0 = Math.hypot(d0[0] - g.dir[0] * al, d0[1] - g.dir[1] * al, d0[2] - g.dir[2] * al); } else e0 = Math.hypot(d0[0], d0[1], d0[2]); }
-          rows.push({ kind: a1.kind, kind0: a0 && a0.kind, err: e, err0: e0, ms: a1.ms, ms0: a0 && a0.ms, sigma: a1.sigma, count: a1.count, rms: a1.rms, quality: a1.quality, grown: a1.grown });
-        });
+        for (let i = 0; i < OFF.length; i++) {
+          const q = get(id, i); if (!q) continue;
+          const a1 = q.r, a0 = q.r0;
+          rows.push({ kind: a1.kind, contour: !!a1.contour, kind0: a0 && a0.kind, err: errOf(g, a1), err0: a0 && a0.kind === g.kind ? errOf(g, a0) : null, ms: a1.ms, sigma: a1.sigma, count: a1.count, quality: a1.quality, grown: a1.grown });
+        }
         (R.snaps[px] = R.snaps[px] || {})[id] = { expect: g.kind, rows };
       }
       for (const pr of GT.pairs) {
-        const ga = GT.snaps[pr.a], gb = GT.snaps[pr.b], rows = [];
-        OFF.forEach((o, i) => {
-          const oa = OFF[i], ob = OFF[(i + 3) % OFF.length];
-          const ca = [ga.ideal[0] + shift[0] + oa[0], ga.ideal[1] + shift[1] + oa[1], ga.ideal[2] + shift[2] + oa[2]];
-          const cb = [gb.ideal[0] + shift[0] + ob[0], gb.ideal[1] + shift[1] + ob[1], gb.ideal[2] + shift[2] + ob[2]];
-          const sa = near(ca), sb = near(cb); if (!sa || !sb) return;
-          const ra = v._precisionSnapAt(sa, { grow: true, px }), rb = v._precisionSnapAt(sb, { grow: true, px });
-          const gp = PS.pairGap(ra, rb), raw = Math.hypot(sb[0] - sa[0], sb[1] - sa[1], sb[2] - sa[2]);
-          rows.push({ value: gp ? gp.value : null, kind: gp ? gp.kind : null, unc: gp ? gp.uncertainty : null, raw, ka: ra.kind, kb: rb.kind });
-        });
-        (R.pairs[px] = R.pairs[px] || {})[pr.name] = { gt: pr.gt, rows };
+        const rows = [];
+        for (let i = 0; i < OFF.length; i++) {
+          const qa = get(pr.a, i), qb = get(pr.b, (i + 3) % OFF.length); if (!qa || !qb) continue;
+          const ra = qa.r, rb = qb.r, gp = PS.pairGap(ra, rb), raw = Math.hypot(qb.seed[0] - qa.seed[0], qb.seed[1] - qa.seed[1], qb.seed[2] - qa.seed[2]);
+          const eu = Math.hypot(rb.point[0] - ra.point[0], rb.point[1] - ra.point[1], rb.point[2] - ra.point[2]);
+          rows.push({ value: gp ? gp.value : eu, how: gp ? gp.kind : 'точки', unc: gp ? gp.uncertainty : null, raw, ka: ra.kind, kb: rb.kind, ca: !!ra.contour, cb: !!rb.contour });
+        }
+        (R.pairs[px] = R.pairs[px] || {})[pr.name] = { gt: pr.gt, gtC: pr.gtC, rows };
       }
     }
     return R;
-  }, { GT, shift });
+  }, { GT, shift, OS, PXS });
   fs.writeFileSync(outFile, JSON.stringify({ loadSec, shift, res }, null, 1));
   // Сводка
   const mm = (x) => (x * 1000).toFixed(2).replace('.', ',');
-  console.log('индекс: ' + Math.round(res.indexMs) + ' мс, точек ' + res.n + ', шаг облака ' + mm(res.spacing) + ' мм');
-  for (const px of [16, 48]) {
+  console.log('индекс: ' + Math.round(res.indexMs) + ' мс, точек ' + res.n + ', шаг облака ' + mm(res.spacing) + ' мм, разброс кликов ×' + OS);
+  for (const px of PXS) {
     console.log('\n=== радиус захвата ' + px + ' px ===');
-    for (const id of Object.keys(res.snaps[px])) {
+    for (const id of res.ids) {
       const s = res.snaps[px][id], r = s.rows; if (!r.length) { console.log(id.padEnd(12), 'нет точек'); continue; }
-      const ok = r.filter((x) => x.kind === s.expect).length, es = r.map((x) => x.err), max = Math.max.apply(null, es), mean = es.reduce((a, b) => a + b, 0) / es.length;
-      const ms = r.map((x) => x.ms).reduce((a, b) => a + b, 0) / r.length;
-      console.log(id.padEnd(12), s.expect.padEnd(6), 'тип верный ' + ok + '/' + r.length, '| ошибка ср ' + mm(mean) + ' макс ' + mm(max) + ' мм | без роста ср ' + mm(r.filter((x) => x.err0 != null).reduce((a, x) => a + x.err0, 0) / Math.max(1, r.filter((x) => x.err0 != null).length)) + ' | σ ' + mm(r[0].sigma || 0) + ' мм, точек ' + r[0].count + ' | ' + Math.round(ms) + ' мс');
+      const good = r.filter((x) => x.kind === s.expect), es = good.map((x) => x.err), max = es.length ? Math.max.apply(null, es) : NaN, mean = es.length ? es.reduce((a, b) => a + b, 0) / es.length : NaN;
+      const g0 = r.filter((x) => x.err0 != null), ms = r.reduce((a, x) => a + (x.ms || 0), 0) / r.length;
+      console.log(id.padEnd(12), s.expect.padEnd(6), 'тип верный ' + good.length + '/' + r.length + (GT.snaps[id].contour ? ' (контур ' + r.filter((x) => x.contour).length + ')' : '') + ' | ошибка ср ' + mm(mean) + ' макс ' + mm(max) + ' мм | без роста ср ' + (g0.length ? mm(g0.reduce((a, x) => a + x.err0, 0) / g0.length) : '-') + ' | σ ' + mm(r[0].sigma || 0) + ' мм, точек ' + r[0].count + ' | ' + Math.round(ms) + ' мс | другие: ' + r.filter((x) => x.kind !== s.expect).map((x) => x.kind).join(','));
     }
     for (const name of Object.keys(res.pairs[px])) {
-      const p = res.pairs[px][name], vs = p.rows.filter((x) => x.value != null);
-      if (!vs.length) { console.log(name.padEnd(22), 'значение не получено', JSON.stringify(p.rows.map((x) => x.ka + '/' + x.kb))); continue; }
-      const e = vs.map((x) => Math.abs(x.value - p.gt)), raw = p.rows.map((x) => Math.abs(x.raw - p.gt));
-      console.log(name.padEnd(22), 'эталон ' + p.gt.toFixed(4) + ' м | получено ' + vs.map((x) => x.value.toFixed(4)).join(' ') + ' | ошибка ср ' + mm(e.reduce((a, b) => a + b, 0) / e.length) + ' макс ' + mm(Math.max.apply(null, e)) + ' мм | «грубо» по кликам ср ' + mm(raw.reduce((a, b) => a + b, 0) / raw.length) + ' мм');
+      const p = res.pairs[px][name], vs = p.rows; if (!vs.length) { console.log(name.padEnd(22), 'нет данных'); continue; }
+      const gtOf = (x) => (p.gtC != null && x.ca && x.cb) ? p.gtC : (p.gtC != null && x.ca !== x.cb ? (p.gt + p.gtC) / 2 : p.gt);
+      const e = vs.map((x) => Math.abs(x.value - gtOf(x))), raw = vs.map((x) => Math.abs(x.raw - gtOf(x)));
+      console.log(name.padEnd(22), 'эталон ' + p.gt.toFixed(4) + ' м | ошибка ср ' + mm(e.reduce((a, b) => a + b, 0) / e.length) + ' макс ' + mm(Math.max.apply(null, e)) + ' мм | способ ' + Array.from(new Set(vs.map((x) => x.how))).join('/') + ' | «грубо» по кликам ср ' + mm(raw.reduce((a, b) => a + b, 0) / raw.length) + ' мм' + (vs[0].unc != null ? ' | заявленная погрешность ±' + mm(vs[0].unc) + ' мм' : ''));
     }
   }
   console.log('\nошибок консоли:', errs.length); errs.slice(0, 8).forEach((e) => console.log(e));

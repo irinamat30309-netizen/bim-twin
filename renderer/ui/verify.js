@@ -46,14 +46,39 @@
   var HOW = { auto: 'найдено автоматически', user: 'подтверждено вами', manual: 'введено вручную', proposal: 'предложение, не подтверждено' };
   var HOW_SHORT = { auto: 'авто', user: 'вы подтвердили', manual: 'вручную', proposal: 'предложение' };
   var UNITS = [['м', 'метры'], ['мм', 'миллиметры'], ['см', 'сантиметры'], ['ft', 'футы'], ['in', 'дюймы']];
+  /* Свои размеры: единицы, причины отказа и тексты результата (чистые функции — проверяются тестами) */
+  var MAN_UNITS = [['мм', 'мм'], ['см', 'см'], ['м', 'м'], ['ft', 'ft'], ['in', 'in'], ['°', '°'], ['%', '%'], ['м²', 'м²']];
+  var MAN_REASONS = {
+    'no-label': 'Напишите название, чтобы потом найти размер в списке.',
+    'bad-size': 'Проверьте числа: значение должно быть больше нуля, допуск — числом (его можно оставить пустым).',
+    'no-field': 'У этого замера нет величины, которую можно сравнить с таким размером. Выберите другой замер или другой тип размера.',
+    'kind-mismatch': 'Единицы размера не подходят к замеру: длину нельзя сравнить с углом или площадью. Выберите другой замер или единицы.',
+    'units': 'Не заданы единицы облака точек. Выберите их в блоке «Уточнить»: без этого не понятно, в чём считает облако.',
+    'no-result': 'Не удалось посчитать отклонение. Проверьте размер и выбранный замер.',
+    'no-measurement': 'Измерение не найдено. Закройте и снова откройте окно.'
+  };
+  function manualReason(reason) { return MAN_REASONS[reason] || 'Не получилось. Проверьте введённые числа и попробуйте ещё раз.'; }
+  function compareMessage(res) {
+    if (!res || !res.ok) return manualReason(res && res.reason);
+    var head = res.status === 'within-tolerance' ? 'В допуске' : res.status === 'outside-tolerance' ? 'Отклонение' : res.status === 'tolerance-not-specified' ? 'Допуск не указан, разница посчитана' : statusInfo(res.status).short;
+    return head + ': замер ' + (res.actualText || '—') + (res.deltaText ? ', разница ' + res.deltaText : '');
+  }
+  function unitForKind(kind) { return kind === 'angle' ? '°' : kind === 'area' ? 'м²' : kind === 'slope' ? '%' : 'мм'; }
+  function newSize(dimension, unit) { return { dimension: dimension || 'width', value: '', unit: unit || 'мм', tolerance: '' }; }
+  function nextDimension(sizes) {
+    var used = {}; (sizes || []).forEach(function (s) { used[s.dimension] = 1; });
+    var order = ['width', 'height', 'thickness', 'length', 'gap', 'diameter'];
+    for (var i = 0; i < order.length; i++) if (!used[order[i]]) return order[i];
+    return 'unspecified';
+  }
 
-  var api = { statusInfo: statusInfo, bucketOf: bucketOf, countBuckets: countBuckets, filterRows: filterRows, rowTitle: rowTitle, canAcceptRow: canAcceptRow, acceptableRows: acceptableRows, KINDS: KINDS, STATUS: STATUS, HOW: HOW, open: function () {}, close: function () {} };
+  var api = { statusInfo: statusInfo, bucketOf: bucketOf, countBuckets: countBuckets, filterRows: filterRows, rowTitle: rowTitle, canAcceptRow: canAcceptRow, acceptableRows: acceptableRows, KINDS: KINDS, STATUS: STATUS, HOW: HOW, MAN_UNITS: MAN_UNITS, manualReason: manualReason, compareMessage: compareMessage, unitForKind: unitForKind, newSize: newSize, nextDimension: nextDimension, open: function () {}, close: function () {} };
   if (!W || typeof document === 'undefined') return api;
 
   /* ---------- Окно ---------- */
   var D = document;
   var modal = null, listEl = null, statsEl = null, tabsEl = null, subEl = null, bodyEl = null, prevFocus = null, roomSel = null;
-  var S = { filter: 'all', tab: 'rows', open: -1, cands: {}, busy: false, reqRoom: '', reqData: null, reqBusy: false, raf: 0, resetScroll: false };
+  var S = { filter: 'all', tab: 'rows', open: -1, cands: {}, busy: false, reqRoom: '', reqData: null, reqBusy: false, raf: 0, resetScroll: false, man: null, cmp: {} };
 
   function el(tag, cls, text) { var n = D.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
   function ic(name, size) { var s = el('span'); s.setAttribute('data-ico', name); s.setAttribute('data-ico-size', String(size || 16)); s.setAttribute('aria-hidden', 'true'); return s; }
@@ -137,10 +162,16 @@
     renderStats(counts);
     statsEl.hidden = S.tab !== 'rows';
     var keep = S.resetScroll ? 0 : bodyEl.scrollTop; S.resetScroll = false;
+    var ae = D.activeElement, fk = ae && ae.dataset && ae.dataset.fk && bodyEl.contains(ae) ? ae.dataset.fk : '';   // фокус в поле ввода переживает перерисовку (её запускают и фоновые события)
+    var caret = fk && typeof ae.selectionStart === 'number' ? [ae.selectionStart, ae.selectionEnd] : null;
     bodyEl.innerHTML = '';
     if (S.tab === 'rows') renderRows(rows, meta); else renderReqs(meta);
     hydrate(bodyEl);
     bodyEl.scrollTop = keep;
+    if (fk) {
+      var back = bodyEl.querySelector('[data-fk="' + fk + '"]');
+      if (back) { back.focus({ preventScroll: true }); if (caret && back.setSelectionRange) { try { back.setSelectionRange(caret[0], caret[1]); } catch (e) {} } }
+    }
     var run = modal.querySelector('#lxVfRun'); if (run) { run.disabled = S.busy || !rows.length; }
     var acc = modal.querySelector('#lxVfAcceptAll'), nAcc = acceptableRows(rows).length;
     if (acc) { acc.hidden = !nAcc || S.tab !== 'rows'; var al = acc.querySelector('.lbl'); if (al) al.textContent = 'Принять предложения (' + nAcc + ')'; }
@@ -250,6 +281,125 @@
     return s;
   }
 
+  function textInput(value, onInput, aria, placeholder, cls, key, onEnter) {
+    var i = el('input', cls || ''); i.type = 'text'; i.value = value || ''; i.setAttribute('aria-label', aria);
+    if (placeholder) i.placeholder = placeholder;
+    if (key) i.dataset.fk = key;
+    i.autocomplete = 'off'; i.spellcheck = false;
+    i.addEventListener('input', function () { onInput(i.value); });
+    if (onEnter) i.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); onEnter(); } });
+    return i;
+  }
+  function iconBtn(icon, label, onClick) {
+    var b = el('button', 'icon-btn'); b.type = 'button'; b.setAttribute('aria-label', label); b.setAttribute('data-tip', label); b.appendChild(ic(icon, 16)); b.onclick = onClick; return b;
+  }
+  /* Одна строка размера: что за размер, значение, единицы, допуск */
+  function sizeRow(sz, dims, o) {
+    var row = el('div', 'vf-size'); row.setAttribute('role', 'group'); row.setAttribute('aria-label', 'Размер');
+    var kp = o.key;
+    var dimSel = select(dims, sz.dimension, function (v) { sz.dimension = v; }, 'Что это за размер'); dimSel.dataset.fk = kp + '-dim'; row.appendChild(dimSel);
+    var val = textInput(sz.value, function (v) { sz.value = v; }, 'Значение размера', 'значение', 'vf-num', kp + '-value', o.onEnter); val.inputMode = 'decimal'; row.appendChild(val);
+    var un = select(MAN_UNITS, sz.unit, function (v) { sz.unit = v; }, 'Единицы размера'); un.dataset.fk = kp + '-unit'; row.appendChild(un);
+    row.appendChild(el('span', 'vf-pm', '\u00b1'));
+    var tol = textInput(sz.tolerance, function (v) { sz.tolerance = v; }, 'Допуск (плюс-минус)', 'допуск', 'vf-num', kp + '-tol', o.onEnter); tol.inputMode = 'decimal'; row.appendChild(tol);
+    if (o.onRemove) row.appendChild(iconBtn('x', 'Убрать этот размер', o.onRemove)); else row.appendChild(el('span', 'vf-size-gap'));
+    return row;
+  }
+  function focusKey(key) { var n = bodyEl && bodyEl.querySelector('[data-fk="' + key + '"]'); if (n) n.focus({ preventScroll: true }); }
+
+  /* ---------- Свои размеры (вкладка «Найдено в документах») ---------- */
+  function freshMan() { return { label: '', sizes: [newSize('width')], msg: '', tone: '', busy: false }; }
+  function manualNode() {
+    var d = dc(), M = d && d.manual;
+    var box = el('section', 'vf-own vf-man'); box.setAttribute('aria-labelledby', 'lxVfManT');
+    var h = el('h4', 'lx-win-h'); h.id = 'lxVfManT'; h.appendChild(ic('pencil-ruler', 16)); h.appendChild(el('span', '', 'Свои размеры')); box.appendChild(h);
+    box.appendChild(el('p', 'vf-s vf-wrap', 'Номинал и допуск с чертежа, из договора или паспорта изделия. Впишите их сами, и замеры будут сверяться с этими числами так же, как с документами помещения.'));
+    if (!M) return box;
+    if (!S.man) S.man = freshMan();
+    var st = S.man;
+    function add() {
+      if (st.busy) return;
+      st.busy = true; st.msg = ''; render();
+      M.add({ label: st.label, sizes: st.sizes }).then(function (res) {
+        if (res && res.ok) {
+          var name = String(st.label).trim();
+          S.man = freshMan(); S.man.msg = 'Добавлено: ' + name; S.man.tone = 'ok'; S.cands = {};
+          toast('Размер добавлен: ' + name, { tone: 'ok' });
+        } else { st.busy = false; st.msg = manualReason(res && res.reason); st.tone = 'warn'; }
+        render();
+        if (!(res && res.ok)) focusKey(res && res.reason === 'no-label' ? 'man-label' : 'man-0-value');
+      }, function () { st.busy = false; st.msg = manualReason(''); st.tone = 'warn'; render(); });
+    }
+    box.appendChild(field('Название', textInput(st.label, function (v) { st.label = v; }, 'Название объекта', 'Например: Дверной проём Д-1', '', 'man-label', add)));
+    var sizes = el('div', 'vf-sizes');
+    st.sizes.forEach(function (sz, idx) {
+      sizes.appendChild(sizeRow(sz, M.dims, { key: 'man-' + idx, onEnter: add, onRemove: st.sizes.length > 1 ? function () { st.sizes.splice(idx, 1); render(); } : null }));
+    });
+    box.appendChild(sizes);
+    var acts = el('div', 'vf-own-acts');
+    var more = btn('Добавить размер', 'plus', '', 'Ещё один размер этого же объекта: например, высота проёма'); more.disabled = st.busy || st.sizes.length >= 6;
+    more.onclick = function () { st.sizes.push(newSize(nextDimension(st.sizes))); render(); focusKey('man-' + (st.sizes.length - 1) + '-value'); };
+    var save = btn(st.busy ? 'Сохраняю…' : 'Добавить в список', 'list-plus', 'primary'); save.id = 'lxVfManAdd'; save.disabled = st.busy; save.onclick = add;
+    acts.appendChild(more); acts.appendChild(save);
+    var msg = el('span', 'vf-own-msg ' + (st.tone || ''), st.msg || ''); msg.setAttribute('role', 'status'); msg.setAttribute('aria-live', 'polite'); acts.appendChild(msg);
+    box.appendChild(acts);
+    var saved = M.list();
+    if (saved.length) {
+      var wrap = el('div', 'vf-man-list'); wrap.setAttribute('role', 'list'); wrap.setAttribute('aria-label', 'Ваши размеры');
+      wrap.appendChild(el('h5', 'vf-sub', 'Ваши размеры (' + saved.length + ')'));
+      saved.forEach(function (it) {
+        var row = el('div', 'vf-req vf-man-item'); row.setAttribute('role', 'listitem');
+        var m = el('div', 'vf-alt-main'); m.appendChild(el('span', 'vf-t', it.label)); m.appendChild(el('span', 'vf-s vf-wrap', it.sizes.join(' · '))); row.appendChild(m);
+        if (!it.valid) row.appendChild(chip({ tone: 'warn', short: 'Проверьте числа' }));
+        row.appendChild(iconBtn('trash-2', 'Удалить размер «' + it.label + '»', function () { M.remove(it.id).then(function () { S.cands = {}; render(); }); }));
+        wrap.appendChild(row);
+      });
+      box.appendChild(wrap);
+    }
+    return box;
+  }
+
+  /* ---------- Сравнить замер со своим размером (раскрытая строка) ---------- */
+  function compareNode(r) {
+    var d = dc(), M = d && d.manual;
+    if (!M || typeof d.fields !== 'function') return null;
+    var fields = d.fields(r.index) || [];
+    var st = S.cmp[r.index];
+    if (!st) {
+      var f0 = fields.filter(function (f) { return f.auto; })[0] || fields[0] || null;
+      st = S.cmp[r.index] = { dimension: f0 && f0.dimension && M.dims.some(function (x) { return x[0] === f0.dimension; }) ? f0.dimension : 'unspecified', value: '', unit: f0 ? unitForKind(f0.kind) : 'мм', tolerance: '', fieldKey: '', remember: false, busy: false, msg: '', tone: '' };
+    }
+    var box = el('section', 'vf-own vf-cmp'); box.setAttribute('aria-label', 'Сравнить со своим размером');
+    var h = el('h4', 'lx-win-h'); h.appendChild(ic('scale', 16)); h.appendChild(el('span', '', 'Сравнить со своим размером')); box.appendChild(h);
+    box.appendChild(el('p', 'vf-s vf-wrap', 'Впишите номинал и допуск (например, ширина проёма 1010 мм ±10). Приложение посчитает, насколько замер отличается от этого числа, и покажет итог в таблице.'));
+    var key = 'cmp-' + r.index;
+    function go() {
+      if (st.busy) return;
+      st.busy = true; st.msg = ''; render();
+      M.compare(r.index, { label: rowTitle(r), dimension: st.dimension, value: st.value, unit: st.unit, tolerance: st.tolerance, fieldKey: st.fieldKey, remember: st.remember }).then(function (res) {
+        st.busy = false; st.msg = compareMessage(res);
+        st.tone = res && res.ok ? (res.status === 'within-tolerance' ? 'ok' : res.status === 'outside-tolerance' ? 'err' : 'warn') : 'warn';
+        if (res && res.ok) { S.cands[r.index] = null; toast(st.msg, { tone: st.tone === 'err' ? 'warn' : st.tone === 'ok' ? 'ok' : 'info' }); if (st.remember) st.remember = false; }
+        render();
+        if (!(res && res.ok)) focusKey(key + '-value');
+      }, function () { st.busy = false; st.msg = manualReason(''); st.tone = 'warn'; render(); });
+    }
+    box.appendChild(sizeRow(st, M.dims, { key: key, onEnter: go }));
+    var line = el('div', 'vf-cmp-line');
+    var fo = [['', 'Подобрать по типу размера']].concat(fields.map(function (f) { return [f.key, f.label + (f.text ? ' · ' + f.text : '') + (f.auto ? '' : ' (вручную)')]; }));
+    var fs = select(fo, st.fieldKey, function (v) { st.fieldKey = v; }, 'С каким замером сравнить'); fs.dataset.fk = key + '-field';
+    line.appendChild(field('С каким замером сравнить', fs));
+    var rem = el('label', 'vf-remember'); var cb = el('input', 'lx-switch'); cb.type = 'checkbox'; cb.checked = !!st.remember; cb.dataset.fk = key + '-rem'; cb.setAttribute('aria-label', 'Запомнить размер в списке');
+    cb.onchange = function () { st.remember = cb.checked; };
+    rem.appendChild(cb); rem.appendChild(el('span', '', 'Запомнить в списке «Свои размеры»')); line.appendChild(rem);
+    var cmpB = btn(st.busy ? 'Считаю…' : 'Сравнить', 'scale', 'primary'); cmpB.id = 'lxVfCmpGo'; cmpB.disabled = st.busy || !fields.length; cmpB.onclick = go;
+    line.appendChild(cmpB);
+    box.appendChild(line);
+    var msg = el('p', 'vf-own-msg ' + (st.tone || ''), st.msg || (fields.length ? '' : 'У этого измерения нет величин для сравнения.')); msg.setAttribute('role', 'status'); msg.setAttribute('aria-live', 'polite');
+    box.appendChild(msg);
+    return box;
+  }
+
   function detailNode(r, meta) {
     var d = dc();
     var box = el('div', 'vf-detail');
@@ -258,7 +408,7 @@
     if (r.source && (r.source.excerpt || r.source.documentName)) {
       var q = el('blockquote', 'vf-quote', r.source.excerpt || 'Фрагмент не сохранён.'); left.appendChild(q);
       left.appendChild(el('p', 'vf-s', (r.source.documentName || 'Документ') + (r.source.location ? ' · ' + r.source.location : '') + (r.source.ocr ? ' · текст распознан OCR, сверьте с оригиналом' : '')));
-      var open = btn('Открыть документ', 'external-link', ''); open.onclick = function () { if (d) d.openDocument(r.index); }; left.appendChild(open);
+      if (r.source.documentId !== 'manual') { var open = btn('Открыть документ', 'external-link', ''); open.onclick = function () { if (d) d.openDocument(r.index); }; left.appendChild(open); }
     } else {
       left.appendChild(el('p', 'vf-s', r.status === 'analyzing' ? 'Документы помещения читаются…' : r.roomId ? 'В документах помещения нет пункта, который подходит к этому измерению. Проверьте тип объекта справа или добавьте документы во вкладке «Документы».' : 'У измерения не указано помещение — без него непонятно, какие документы читать.'));
     }
@@ -290,6 +440,7 @@
     right.appendChild(acts);
 
     box.appendChild(left); box.appendChild(right);
+    var own = compareNode(r); if (own) box.appendChild(own);
     var alt = el('div', 'vf-alts');
     alt.appendChild(el('h4', 'lx-win-h', 'Другие подходящие пункты'));
     if (!c) { alt.appendChild(el('div', 'lx-skel vf-skel')); alt.appendChild(el('div', 'lx-skel vf-skel')); }
@@ -329,6 +480,7 @@
     var rescan = btn('Перечитать документы', 'refresh-cw', '', 'Сбросить кэш и заново разобрать файлы'); rescan.onclick = function () { loadReqs(true); };
     head.appendChild(rescan);
     bodyEl.appendChild(head);
+    bodyEl.appendChild(manualNode());
     var data = S.reqData;
     if (S.reqBusy || !data) {
       var sk = el('div', 'vf-reqlist'); for (var k = 0; k < 4; k++) sk.appendChild(el('div', 'lx-skel vf-skel'));

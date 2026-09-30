@@ -388,7 +388,7 @@
     var rms = pl.rms || 0, dvec = sub(pt, pl.centroid), off = dot(dvec, pl.normal), inpl = sub(dvec, mul(pl.normal, off));
     var sd = pl.spreadMin || pl.spread || 0;
     var ext = sd > 1e-9 ? dot(inpl, inpl) / (n * sd * sd) : 0;
-    return rms * Math.sqrt(1 / n + ext);
+    return rms * Math.sqrt(1 / n + ext + 0.01);   // 0,01·rms² — запас на неровность поверхности: настоящая стена не идеальная плоскость (по сверке на реальном облаке ≈0,1 от шума)
   }
 
   /* Ядро ребра/угла. У настоящих кромок поверхность скруглена или сколота на сантиметр-два (штукатурка, уголки, «мягкие» кромки скана):
@@ -688,9 +688,12 @@
     out.grown = out.planes.some(function (p) { return p.grown; });
     out.rms = rms; out.count = cnt === Infinity ? 0 : cnt;
     out.sigma = contour ? Math.sqrt(sig2 + contour.sigma * contour.sigma) : Math.sqrt(sig2) * (w.kind === 'plane' ? 1 : 1.25);
+    // запас на скругления и фаски: по сверке на реальном облаке ребро/угол ошибаются заметно сильнее, чем говорит статистика по точкам
+    if (!contour && w.kind !== 'plane') { var fk = (w.kind === 'corner' ? 0.25 : out.cored ? 0.25 : 0.12) * sp; out.sigma = Math.sqrt(out.sigma * out.sigma + fk * fk); }
     if (dir) out.dir = dir;
     if (contour) out.dirSigma = contour.dirSigma != null ? contour.dirSigma : 0.012;   // рад: грубое направление по одному окну
     out.quality = out.rms <= 0.55 * sp && out.count >= 60 ? 'high' : out.rms <= 1.1 * sp && out.count >= 25 ? 'medium' : 'low';
+    if (out.cored && out.quality === 'high') out.quality = 'medium';          // края скруглены или сколоты: плоскости пришлось искать заново вдали от кромки
     if (contour && out.quality === 'high') out.quality = 'medium';      // положение кромки — оценка по плотности точек, а не подгонка плоскостей
     return out;
   }
@@ -714,8 +717,10 @@
       var ds = Math.hypot(a.dirSigma || 0, b.dirSigma || 0), ue = unc();   // неточность направления кромок сказывается на разнесённых по высоте точках
       return { kind: 'edges', value: len(perp), along: Math.abs(along), dir: uu, uncertainty: Math.sqrt(ue * ue + Math.pow(Math.abs(along) * ds, 2)) };
     }
-    if (na && !nb) return { kind: 'point-plane', value: Math.abs(dot(na, dv)), normal: na.slice(), uncertainty: unc() };
-    if (nb && !na) return { kind: 'point-plane', value: Math.abs(dot(nb, dv)), normal: nb.slice(), uncertainty: unc() };
+    // кромка лежит в этой же плоскости (край проёма и сама стена): расстояние «точка — плоскость» ≈ 0 и смысла не имеет — пусть считается 3D
+    var inPlane = function (n0, u0, v0) { return u0 && Math.abs(dot(n0, u0)) < 0.05 && v0 < 3 * unc(); };
+    if (na && !nb) { var vA = Math.abs(dot(na, dv)); return inPlane(na, ub, vA) ? null : { kind: 'point-plane', value: vA, normal: na.slice(), uncertainty: unc() }; }
+    if (nb && !na) { var vB = Math.abs(dot(nb, dv)); return inPlane(nb, ua, vB) ? null : { kind: 'point-plane', value: vB, normal: nb.slice(), uncertainty: unc() }; }
     return null;
   }
 

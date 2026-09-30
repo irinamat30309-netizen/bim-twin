@@ -128,3 +128,34 @@ button.vf-chip:hover { filter: brightness(1.12); }
 .vf-banner-acts { display: flex; flex: none; align-items: center; gap: 8px; }
 .vf-banner-acts select { width: 150px; }
 @media (max-width: 1000px) { .vf-banner { flex-wrap: wrap; } }
+
+/* ---------- Свои размеры и сравнение замера с введённым размером ---------- */
+.vf-own { display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); animation: lx-fade var(--t-med) var(--ease); }
+.vf-detail .vf-own { grid-column: 1 / -1; margin: 0; background: var(--bg-1); }
+.vf-own .lx-win-h { display: flex; align-items: center; gap: 8px; margin: 0; }
+.vf-own .lx-win-h [data-ico] { flex: none; color: var(--accent); }
+.vf-own .vf-s, .vf-wrap { white-space: normal; }
+.vf-own .lx-field { margin: 0; }
+.vf-own .lx-field input, .vf-own .lx-field select { width: 100%; }
+.vf-sizes { display: flex; flex-direction: column; gap: 6px; }
+.vf-size { display: grid; grid-template-columns: minmax(130px, 1.3fr) minmax(90px, 1fr) minmax(70px, .6fr) 14px minmax(80px, .8fr) 32px; gap: 8px; align-items: center; }
+.vf-size select, .vf-size input { width: 100%; min-width: 0; }
+.vf-size .icon-btn, .vf-size-gap { justify-self: end; }
+.vf-pm { color: var(--txt-3); text-align: center; font-weight: 600; }
+.vf-num { text-align: right; font-variant-numeric: tabular-nums; }
+.vf-own-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vf-own-msg { margin: 0; color: var(--txt-2); font-size: var(--fs-sm); line-height: 1.45; overflow-wrap: anywhere; }
+.vf-own-msg:empty { display: none; }
+.vf-own-msg.ok { color: var(--ok); }
+.vf-own-msg.warn { color: var(--warn); }
+.vf-own-msg.err { color: var(--err); }
+.vf-man-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.vf-sub { margin: 4px 0 0; color: var(--txt-3); font: 600 var(--fs-xs)/1.2 var(--font); letter-spacing: .05em; text-transform: uppercase; }
+.vf-man-item { background: var(--bg-1); }
+.vf-cmp-line { display: grid; grid-template-columns: minmax(0, 1.4fr) auto auto; gap: 8px 14px; align-items: end; }
+.vf-remember { display: inline-flex; align-items: center; gap: 8px; height: 34px; color: var(--txt-2); font-size: var(--fs-sm); cursor: pointer; }
+@media (max-width: 1000px) {
+  .vf-size { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(64px, .6fr) 14px minmax(0, .8fr) 32px; }
+  .vf-cmp-line { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+}
+@media (prefers-reduced-motion: reduce) { .vf-own { animation: none; } }
