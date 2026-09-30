@@ -42,12 +42,12 @@
     sync();
   }
   function closeTopModal() {
-    const modals = Array.from(document.querySelectorAll('.modal.open,.lx-modal-back')).filter(visible);
+    const modals = Array.from(document.querySelectorAll('.modal.open,.lx-modal-back,.lx-win-back')).filter(visible);
     if (!modals.length) return false;
     const m = modals.sort((a, b) => (+getComputedStyle(a).zIndex || 0) - (+getComputedStyle(b).zIndex || 0)).pop();
     if (m.id === 'formModal') click(visible($('formCancel')) ? 'formCancel' : 'formOk');
     else if (m.id === 'cmpModal') click('cmpClose');
-    else { const close = m.querySelector('.modal-head .x,.lx-modal-a .btn:not(.primary)'); if (close) close.click(); else return false; }
+    else { const close = m.querySelector('.modal-head .x,.lx-modal-a .btn:not(.primary),.lx-win-head .icon-btn:last-child'); if (close) close.click(); else return false; }
     return true;
   }
   function menusClose() {

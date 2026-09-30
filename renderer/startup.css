@@ -66,7 +66,7 @@ body.st-leaving .st-shell { opacity: 0; transform: scale(.994); pointer-events: 
 /* ---------- Карточки проектов ---------- */
 .st-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 14px; }
 .st-card {
-  position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr); align-content: start; column-gap: 12px; row-gap: 16px; min-height: 140px; padding: 16px;
+  position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr); align-content: start; column-gap: 12px; row-gap: 16px; min-height: 112px; padding: 16px;
   border: 1px solid var(--line); border-radius: var(--r-3); background: var(--bg-1); color: var(--txt); font: inherit; text-align: left; cursor: pointer;
   transition: border-color var(--t-fast), background var(--t-fast), box-shadow var(--t-med) var(--ease), transform var(--t-med) var(--ease);
   animation: lx-rise .42s var(--ease) both; animation-delay: calc(var(--i, 0) * 50ms);
@@ -99,7 +99,7 @@ body.st-leaving .st-shell { opacity: 0; transform: scale(.994); pointer-events: 
 .st-new:hover .st-card-ico { background: var(--accent-soft); color: var(--accent); }
 .st-new b { font-weight: 600; }
 
-.st-skel { display: grid; align-content: start; gap: 12px; min-height: 140px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-3); background: var(--bg-1); }
+.st-skel { display: grid; align-content: start; gap: 12px; min-height: 112px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-3); background: var(--bg-1); }
 .st-skel .lx-skel { display: block; height: 12px; border-radius: 6px; }
 .st-skel .lx-skel:nth-child(1) { width: 40px; height: 40px; border-radius: 10px; }
 .st-skel .lx-skel:nth-child(2) { width: 62%; }

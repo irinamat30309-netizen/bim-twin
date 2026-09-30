@@ -28,8 +28,11 @@
 .btn.busy { position: relative; color: transparent !important; pointer-events: none; }
 .btn.busy::after {
   content: ""; position: absolute; inset: 50% auto auto 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
-  border: 2px solid var(--txt-3); border-top-color: var(--txt); animation: lx-spin .7s linear infinite;
+  border: 2px solid color-mix(in srgb, var(--busy-fg, var(--txt)) 28%, transparent); border-top-color: var(--busy-fg, var(--txt)); animation: lx-spin .7s linear infinite;
 }
+.btn.primary { --busy-fg: var(--on-accent); }
+.btn.danger, .btn-sm.danger, .btn.ghost.danger { --busy-fg: var(--err); }
+.btn.ok, .btn.xs.ok { --busy-fg: var(--ok); }
 
 .icon-btn, .tb-btn, .nav-btn {
   display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: var(--r-1);

@@ -91,7 +91,7 @@
     });
     if (!any && list[0]) list[0].tabIndex = 0;
     var p = projects.filter(function (x) { return x.id === id; })[0], sel = $('selection');
-    sel.textContent = '';
+    sel.textContent = ''; sel.title = p ? (p.name || 'Без названия') : '';
     if (p) { sel.appendChild(D.createTextNode('Выбран: ')); sel.appendChild(el('b', null, p.name || 'Без названия')); } else sel.textContent = 'Проект не выбран';
     if (!opening) $('openProject').disabled = !p;
   }

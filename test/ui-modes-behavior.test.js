@@ -125,3 +125,13 @@ test('кнопки разметки не бывают «мёртвыми»: у �
   }
   assert.deepEqual(dead, [], 'кнопки без обработчика: ' + dead.join(', '));
 });
+
+test('Esc закрывает окна инструментов (.lx-win-back): «Инспектор объекта» не остаётся открытым', () => {
+  const ws = read('lixel-workspace.js');
+  assert.match(ws, /querySelectorAll\('\.modal\.open,\.lx-modal-back,\.lx-win-back'\)/, 'closeTopModal не знает про окна .lx-win-back');
+  assert.match(ws, /\.lx-win-head \.icon-btn:last-child/, 'нет кнопки закрытия окна инструмента');
+  const ins = read('lixel-object-inspector.js');
+  assert.match(ins, /modal\.id = 'lxInsModal'/);
+  assert.match(ins, /el\('div', 'lx-win-back'\)/, 'окно инспектора должно использовать общий контейнер .lx-win-back');
+  assert.match(ins, /head\.appendChild\(titleEl\); head\.appendChild\(closeB\)/, 'кнопка закрытия должна быть последней в шапке окна');
+});

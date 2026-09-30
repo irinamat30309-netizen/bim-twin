@@ -68,6 +68,13 @@ select {
 select option { background: var(--bg-2); color: var(--txt); }
 input[type="checkbox"], input[type="radio"] { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; cursor: pointer; }
 input[type="file"] { height: auto; padding: 6px; }
+/* Кнопка очистки в поле поиска: тонкий серый крестик вместо системного синего */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none; appearance: none; width: 14px; height: 14px; margin: 0 0 0 6px; cursor: pointer; background: var(--txt-3); opacity: .8;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M18 6 6 18M6 6l12 12'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: background var(--t-fast), opacity var(--t-fast);
+}
+input[type="search"]::-webkit-search-cancel-button:hover { background: var(--txt); opacity: 1; }
 input[type="color"] { height: 32px; padding: 3px; }
 
 /* Ползунки: трек залит акцентом до бегунка. Долю --f (0…1) проставляет ui/kit.js (initRanges). */
