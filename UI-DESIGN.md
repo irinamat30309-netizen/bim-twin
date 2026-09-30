@@ -169,7 +169,7 @@ validate: v => v === '' ? 'Введите число' : null });` — `null` о�
   source-level и `vm`, без браузера). `node scripts/check-syntax.mjs` — синтаксис всех JS/MJS/CJS.
 * `dev/ui-lab` — визуальный стенд (Playwright + Chromium, заглушка `bimAPI`): обход вкладок, панелей, меню, диалогов,
   тостов, прогресса, стартового экрана в тёмной и светлой темах при 1024–1920 px. Функция `audit` в `lab.js` после
-  каждого сценария ищет дефекты раскладки: `MISSING-ICON`, `CLIPPED-TEXT`, `CLIPPED-CONTROL`, `OFFSCREEN`, `SIDE-OVERFLOW` (содержимое боковой колонки шире неё), `OVERLAP`,
+  каждого сценария ищет дефекты раскладки: `MISSING-ICON`, `CLIPPED-TEXT`, `CLIPPED-CONTROL`, `OFFSCREEN`, `SIDE-OVERFLOW` (содержимое боковой колонки шире неё), `SMALL-TARGET` (цель меньше 24×24 px и задевает соседнюю, WCAG 2.5.8), `OVERLAP`,
   `DEFAULT-STYLE` (системная рамка вместо стиля дизайн-системы), `NO-NAME` (кнопка без подписи), `PAGE-SCROLLED`, `PAGE-OVERFLOW`.
   Описание запуска — `dev/ui-lab/README.md`.
 
