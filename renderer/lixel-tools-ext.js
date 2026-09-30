@@ -12,6 +12,8 @@
   function T() { return window.__pcTools || null; }
   function toast(m) { var k = window.__lxKit, t = T(); if (k && k.toast) k.toast(m); else if (t && t.toast) t.toast(m); else try { console.log('[tools-ext]', m); } catch (e) {} }
   function pcedit() { return window.PCEdit || null; }
+  /* Вопрос оператору во встроенном диалоге (window.prompt в Electron не поддерживается, window.confirm не вписывается в интерфейс) */
+  function askKit(o) { var k = window.__lxKit; return k && k.ask ? k.ask(o) : Promise.resolve(o.input ? null : false); }
 
   function getCloud() {
     var t = T(); if (!t) return null;
@@ -76,7 +78,7 @@
       if(crsStatus!=='same'||!hasTransforms){
         var why=crsStatus==='unknown'?'CRS отсутствует или не удалось однозначно сопоставить WKT':'не удалось подтвердить общий source-transform';
         var question='Сопоставимость координат не подтверждена ('+why+'). Продолжайте только если оба облака уже находятся в одной системе координат и совпадающем datum. Выполнить операцию?';
-        if(typeof window.confirm!=='function'||!window.confirm(question)){toast('Операция отменена: сначала подтвердите общую систему координат или выполните геопривязку');return null;}
+        if(!(await askKit({title:'Координаты не подтверждены',message:question,okLabel:'Продолжить',danger:true}))){toast('Операция отменена: сначала подтвердите общую систему координат или выполните геопривязку');return null;}
         confirmedUnknown=true;
       }
     }
@@ -94,18 +96,22 @@
   }
 
   // ---------- Инструмент ----------
-  function opResample() { return run('Ресэмплирование…', async function (setPct) {
-    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+  function opResample() {
+    var c0 = needCloud(); if (!c0) return Promise.resolve(); if (!pcedit()) return Promise.resolve();
     var vv=T().viewer&&T().viewer(), spacing=(vv&&vv.base&&vv.base[0]&&vv.base[0]._spacing)||0.01; var def = Math.max(0.005, Math.min(0.03, spacing * 2));
-    var raw = window.prompt('Размер вокселя (м). Точки в одном вокселе будут объединены:', def.toFixed(3));
-    if (raw === null) return;
-    var voxel = Number(String(raw).replace(',', '.'));
-    if (!(voxel > 0 && isFinite(voxel))) { toast('Введите положительный размер вокселя в метрах'); return; }
-    setPct(0.3, 'Понижение плотности…'); await yieldFrame();
-    var r = P.voxelDownsample(c, { voxel: voxel }); setPct(0.8, 'Загрузка результата…'); await yieldFrame();
-    T().loadCloud({ pos: r.pos, col: r.col, count: r.kept }, 'resample', { operation: 'cloud.resample', parameters: { voxel: r.voxel, removed: r.removed, kept: r.kept } }); setPct(1, 'Готово');
-    toast('Ресэмплирование: ' + nfmt(r.kept) + ' точек (удалено ' + nfmt(r.removed) + ', воксель ' + r.voxel.toFixed(3) + ' м)');
-  }); }
+    return askKit({ title: 'Ресэмплинг облака', message: 'Размер вокселя (м). Точки в одном вокселе будут объединены.', input: true, type: 'number', step: '0.001', min: '0.001', value: def.toFixed(3), okLabel: 'Применить' }).then(function (raw) {
+      if (raw === null) return;
+      var voxel = Number(String(raw).replace(',', '.'));
+      if (!(voxel > 0 && isFinite(voxel))) { toast('Введите положительный размер вокселя в метрах'); return; }
+      return run('Ресэмплирование…', async function (setPct) {
+        var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+        setPct(0.3, 'Понижение плотности…'); await yieldFrame();
+        var r = P.voxelDownsample(c, { voxel: voxel }); setPct(0.8, 'Загрузка результата…'); await yieldFrame();
+        T().loadCloud({ pos: r.pos, col: r.col, count: r.kept }, 'resample', { operation: 'cloud.resample', parameters: { voxel: r.voxel, removed: r.removed, kept: r.kept } }); setPct(1, 'Готово');
+        toast('Ресэмплирование: ' + nfmt(r.kept) + ' точек (удалено ' + nfmt(r.removed) + ', воксель ' + r.voxel.toFixed(3) + ' м)');
+      });
+    });
+  }
 
   function opSmooth() { return run('Сглаживание…', async function (setPct) {
     var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;

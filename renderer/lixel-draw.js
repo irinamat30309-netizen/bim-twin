@@ -534,7 +534,7 @@
   }
 
   // —— импорт DXF ——
-  function importText(text, name) {
+  function importText(text, name, frameOk) {
     var s = session(); if (!s) return 0;
     if (!window.DXFParse) { toast('DXF-парсер не загружен'); return 0; }
     var parsed;
@@ -548,8 +548,13 @@
       return 0;
     }
     var importSource = wantsSource && !!tr && mode === 'top';
-    if (importSource && !dxfFrameSelectTouched && typeof window.confirm === 'function' &&
-        !window.confirm('Импортировать DXF как координаты активного облака? Продолжайте только если чертёж в той же системе координат; иначе сначала выберите «Локальные».')) {
+    if (importSource && !dxfFrameSelectTouched && !frameOk) {
+      // window.confirm не вписывается в интерфейс и блокирует окно: спрашиваем во встроенном диалоге и повторяем импорт
+      var kit = window.__lxKit;
+      if (kit && kit.ask) {
+        kit.ask({ title: 'Координаты DXF', message: 'Импортировать DXF как координаты активного облака? Продолжайте только если чертёж в той же системе координат; иначе сначала выберите «Локальные».', okLabel: 'Импортировать', danger: true })
+          .then(function (ok) { if (ok) importText(text, name, true); });
+      }
       return 0;
     }
     if (importSource) {

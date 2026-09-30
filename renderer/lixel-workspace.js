@@ -14,6 +14,8 @@
     if (k && k.toast) { k.toast(text, opts); return; }
     const e = $('toast'); if (e) { e.textContent = text; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 3000); }
   }
+  // Вопрос оператору во встроенном диалоге вместо window.confirm
+  function ask(o) { const k = window.__lxKit; return k && k.ask ? k.ask(o) : Promise.resolve(false); }
   function click(id) { const b = $(id); if (b) b.click(); }
   function hide(id) { const e = $(id); if (e) e.style.display = 'none'; }
   function off(ids) { ids.forEach(id => { const e = $(id); if (e) { e.classList.remove('on'); e.setAttribute('aria-pressed', 'false'); } }); }
@@ -423,7 +425,7 @@
         try{
           const key=draft.name.normalize('NFKC').toLocaleLowerCase('ru-RU');
           const old=savedPresets.find(item=>String(item.name||'').normalize('NFKC').toLocaleLowerCase('ru-RU')===key);
-          if(old&&!window.confirm('Набор «'+old.name+'» уже существует в этом проекте. Обновить его текущими параметрами?'))return;
+          if(old&&!(await ask({title:'Набор уже существует',message:'Набор «'+old.name+'» уже существует в этом проекте. Обновить его текущими параметрами?',okLabel:'Обновить'})))return;
           savePreset.disabled=true;
           const result=await api.saveSectionPreset(draft);
           if(!result||!result.ok||!result.preset)throw new Error('Не удалось сохранить набор сечения');
@@ -433,10 +435,10 @@
         }catch(err){presetMessage('Ошибка сохранения: '+(err&&err.message||String(err)),true);}
         finally{savePreset.disabled=false;}
       });
-      applyPreset.addEventListener('click',()=>{
+      applyPreset.addEventListener('click',async()=>{
         const item=selectedPreset();if(!item)return;
         const mismatch=sourceMismatch(item.source,sourceSnapshot());
-        if(mismatch.length&&!window.confirm('Набор был создан для другого или изменённого облака ('+mismatch.join(', ')+'). Применить только параметры сечения к текущему облаку?'))return;
+        if(mismatch.length&&!(await ask({title:'Другое облако',message:'Набор был создан для другого или изменённого облака ('+mismatch.join(', ')+'). Применить только параметры сечения к текущему облаку?',okLabel:'Применить',danger:true})))return;
         try{
           const p=item.params;
           axis.value=p.axis;
@@ -460,7 +462,7 @@
       });
       deletePreset.addEventListener('click',async()=>{
         const item=selectedPreset(),api=presetApi();if(!item||!api)return;
-        if(!window.confirm('Удалить набор сечения «'+item.name+'» из текущего проекта?'))return;
+        if(!(await ask({title:'Удалить набор',message:'Удалить набор сечения «'+item.name+'» из текущего проекта?',okLabel:'Удалить',danger:true})))return;
         deletePreset.disabled=true;
         try{
           const result=await api.deleteSectionPreset(item.id);

@@ -17,6 +17,9 @@
     try { console.log('[LX-DRAW-EXT]', m); } catch (e) {}
   }
 
+  /* Вопрос оператору во встроенном диалоге (window.prompt в Electron не поддерживается) */
+  function askKit(o) { var k = window.__lxKit; return k && k.ask ? k.ask(o) : Promise.resolve(o && o.input ? null : false); }
+
   function sess() { var u = ui(); return u && u.session ? u.session() : null; }
   function redraw() { var u = ui(); if (u) { if (u.refreshLayers) u.refreshLayers(); if (u.draw) u.draw(); } }
   function mode(s) { return (s && s.projection) || 'top'; }
@@ -48,10 +51,11 @@
     redraw(); toast('Дуга: R=' + (Math.round(arc.radius * 1000) / 1000) + ' м, 48 сегм.');
   }
 
-  function doText() {
-    var s = sess(); if (!s) return; var m = mode(s);
-    var txt = null; try { txt = window.prompt('Текст аннотации:', ''); } catch (e) {}
-    if (txt == null || txt === '') return;
+  async function doText() {
+    var s = sess(); if (!s) return;
+    var txt = await askKit({ title: 'Текст аннотации', message: 'Подпись появится у последней точки чертежа или в его центре.', input: true, placeholder: 'Например: Серверная, 12 м²', okLabel: 'Добавить' });
+    if (txt == null) return; txt = String(txt).trim(); if (!txt) return;
+    s = sess(); if (!s) return;
     // точка размещения: последняя вершина черновика или центр bbox чертежа
     var p = null;
     if (s.draft && s.draft.length) p = s.draft[s.draft.length - 1].slice();

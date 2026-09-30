@@ -70,7 +70,9 @@ test('buildContours: skips cells containing invalid raster samples', () => {
 test('contour UI: cache-busted modules, editable interval, and no false empty-file success', () => {
   assert.match(rendererHtml, /terrain\.js\?v=1223/);
   assert.match(rendererHtml, /lixel-sprints-ext\.js\?v=1224/);
-  assert.match(sprintUi, /window\.prompt\('Шаг горизонталей в метрах/);
+  // Electron не поддерживает window.prompt: шаг спрашиваем во встроенном диалоге (числовое поле с подсказкой)
+  assert.doesNotMatch(sprintUi, /window\.prompt\(/);
+  assert.match(sprintUi, /askKit\(\{ title: 'Горизонтали'[\s\S]{0,200}Шаг горизонталей в метрах[\s\S]{0,160}input: true, type: 'number'/);
   assert.match(sprintUi, /пустой DXF не сохранён/);
   assert.match(sprintUi, /if \(!download\('contours-/);
 });

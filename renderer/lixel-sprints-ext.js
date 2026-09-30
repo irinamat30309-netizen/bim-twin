@@ -12,6 +12,8 @@
 
   function T() { return window.__pcTools || null; }
   function toast(m) { var k = window.__lxKit, t = T(); if (k && k.toast) k.toast(m); else if (t && t.toast) t.toast(m); else try { console.log('[sprints-ext]', m); } catch (e) {} }
+  /* Вопрос оператору во встроенном диалоге (window.prompt в Electron не поддерживается, window.confirm не вписывается в интерфейс) */
+  function askKit(o) { var k = window.__lxKit; return k && k.ask ? k.ask(o) : Promise.resolve(o.input ? null : false); }
   function viewer() { var t = T(); var v = (t && t.viewer) ? t.viewer() : null; return v || (typeof window !== 'undefined' ? window.__viewer : null) || null; }
 
   function getCloud() {
@@ -195,14 +197,18 @@
     var pct=dtm.grid.length?Math.round(100*dtm.interpolatedCells/dtm.grid.length):0;
     toast('ЦМР (DTM): '+dtm.nx+'×'+dtm.nz+' @'+dtm.cell.toFixed(2)+' м; '+nfmt(dtm.validCount)+' ground points, интерполяция ячеек '+pct+'% — GeoTIFF сохранён');
   }); }
-  function opContours() { return run('Горизонтали…', async function (setPct) {
+  function opContours() {
+    var c0 = needCloud(); if (!c0) return Promise.resolve();
+    if (!window.Terrain) { toast('Модуль рельефа недоступен'); return Promise.resolve(); }
+    return askKit({ title: 'Горизонтали', message: 'Шаг горизонталей в метрах (например, 0.50).', input: true, type: 'number', step: '0.05', min: '0.01', value: '0.50', okLabel: 'Построить' }).then(function (intervalText) {
+      if (intervalText === null) { toast('Построение горизонталей отменено'); return; }
+      var interval = Number(String(intervalText).trim().replace(',', '.'));
+      if (!isFinite(interval) || interval <= 0) { toast('Укажите положительный числовой шаг горизонталей'); return; }
+      return runContours(interval);
+    });
+  }
+  function runContours(interval) { return run('Горизонтали…', async function (setPct) {
     var c = needCloud(); if (!c) return; if (!window.Terrain) { toast('Модуль рельефа недоступен'); return; }
-    var intervalText = typeof window.prompt === 'function'
-      ? window.prompt('Шаг горизонталей в метрах (например, 0.50):', '0.50')
-      : '0.50';
-    if (intervalText === null) { toast('Построение горизонталей отменено'); return; }
-    var interval = Number(String(intervalText).trim().replace(',', '.'));
-    if (!isFinite(interval) || interval <= 0) { toast('Укажите положительный числовой шаг горизонталей'); return; }
     setPct(0.4, 'Построение ЦМП…'); await yieldFrame();
     var clipped=trimVolumeOutliers(c),dsm = window.Terrain.buildDSM(clipped.cloud.pos, clipped.cloud.count, { cell: 0.5 });
     setPct(0.7, 'Трассировка горизонталей…'); await yieldFrame();
@@ -253,10 +259,27 @@
   }); }
 
   // ---- Спринт 5: Геопривязка по GCP (Гельмерт 3D) ------------------------
-  function opGeoref() { return run('Геопривязка…', async function (setPct) {
+  function opGeoref() {
+    var c0 = needCloud(); if (!c0) return Promise.resolve();
+    if (!window.Georef) { toast('Модуль геопривязки недоступен'); return Promise.resolve(); }
+    return askKit({
+      title: 'Геопривязка по GCP', multiline: true, rows: 8, okLabel: 'Далее', placeholder: 'P1,0,0,0,100,200,10,1,control',
+      message: 'Контрольные точки в формате CSV: name,srcX,srcY,srcZ,dstX,dstY,dstZ,weight,role. Координаты источника → целевые XYZ (Z вверх); минимум 3 неколлинеарных control.',
+      hint: 'role=check — независимая проверка, в подгонке не участвует. weight — относительный вес (обычно 1/σ²).'
+    }).then(function (txt) {
+      if (!txt || !String(txt).trim()) { toast('Геопривязка отменена'); return; }
+      return askKit({
+        title: 'Целевая система координат', multiline: true, rows: 4, wide: true, value: '', okLabel: 'Применить',
+        message: 'WKT целевой системы координат.',
+        hint: 'Пустое значение снимет прежнюю CRS, чтобы не приписывать её новым координатам.'
+      }).then(function (dstCrs) {
+        if (dstCrs === null) { toast('Геопривязка отменена'); return; }
+        return runGeoref(String(txt), String(dstCrs).trim());
+      });
+    });
+  }
+  function runGeoref(txt, dstCrs) { return run('Геопривязка…', async function (setPct) {
     var c = needCloud(); if (!c) return; var G = window.Georef; if (!G) { toast('Модуль геопривязки недоступен'); return; }
-    var txt = (typeof window.prompt === 'function') ? window.prompt('GCP (CSV): name,srcX,srcY,srcZ,dstX,dstY,dstZ,weight,role. Координаты источника → целевые XYZ (Z вверх); минимум 3 неколлинеарных control. role=check — независимая проверка, она не участвует в подгонке. weight — относительный вес (обычно 1/σ²):', '') : null;
-    if (!txt) { toast('Геопривязка отменена'); return; }
     var mgr = new G.GCPManager();
     var parsed = G.parseGcpCsv ? G.parseGcpCsv(txt) : null;
     if (!parsed) { toast('Парсер GCP CSV недоступен'); return; }
@@ -272,17 +295,17 @@
     var sol = mgr.solve({ robust: true });
     if(!sol){toast('Геопривязка: точки GCP должны быть конечными и не лежать на одной прямой');return;}
     var independentError = sol.checkRms == null ? null : sol.checkRms;
-    if ((sol.maxControlResidual > 0.05 || (independentError != null && independentError > 0.05)) &&
-        typeof window.confirm === 'function' &&
-        !window.confirm('Большая ошибка GCP: control RMS ' + sol.controlRms.toFixed(4) + ' м, максимум control ' + sol.maxControlResidual.toFixed(4) + ' м' +
+    if (sol.maxControlResidual > 0.05 || (independentError != null && independentError > 0.05)) {
+      var goOn = await askKit({
+        title: 'Большая ошибка GCP', okLabel: 'Всё равно применить', danger: true,
+        message: 'Control RMS ' + sol.controlRms.toFixed(4) + ' м, максимум control ' + sol.maxControlResidual.toFixed(4) + ' м' +
           (independentError == null ? '' : ', независимый check RMS ' + independentError.toFixed(4) + ' м') +
-          '. Проверьте единицы, точки и CRS. Всё равно применить преобразование?')) {
-      toast('Геопривязка отменена: ошибка превышает 5 см'); return;
+          '. Проверьте единицы, точки и CRS. Применить преобразование?'
+      });
+      if (!goOn) { toast('Геопривязка отменена: ошибка превышает 5 см'); return; }
     }
     var source=T().getSourceCloud?T().getSourceCloud():c;
     if(!source||!source.pos||source.pos.length!==c.pos.length){toast('Не удалось получить координаты исходного облака');return;}
-    var dstCrs=window.prompt('WKT целевой системы координат. Пустое значение снимет прежнюю CRS, чтобы не приписывать её новым координатам:', '');
-    if(dstCrs===null){toast('Геопривязка отменена');return;}
     var world=G.applyTransform(source.pos,c.count,sol);
     var result=G.toViewerCloud(world,source.col||c.col,{crsWkt:dstCrs,
       intensity:source.intensity||c.intensity||null,classification:source.classification||c.classification||null});

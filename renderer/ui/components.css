@@ -137,6 +137,7 @@ input[type="checkbox"].lx-switch:disabled, input[type="checkbox"].set-ctl-chk:di
   animation: lx-pop var(--t-med) var(--ease);
 }
 .modal-card.sm { width: min(440px, 100%); }
+.modal-card.md { width: min(600px, 100%); }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 8px 10px 8px 18px; border-bottom: 1px solid var(--line); font-weight: 600; font-size: var(--fs-lg); }
 .modal-head .x { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: var(--r-1); background: transparent; color: var(--txt-2); font-size: 16px; cursor: pointer; transition: background var(--t-fast), color var(--t-fast); }
 .modal-head .x > svg.ic { width: 17px; height: 17px; }

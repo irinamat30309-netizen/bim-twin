@@ -1654,8 +1654,6 @@
     const title = supported ? 'LOD: уменьшить детализацию полигональной модели' : 'LOD доступен только для полигональных моделей; для облаков точек режим пока не реализован';
     const btn = $('btnLOD');
     if (btn) { btn.disabled = !supported; btn.setAttribute('aria-disabled', String(!supported)); btn.setAttribute('aria-pressed', String(active)); btn.classList.toggle('on', active); btn.title = title; }
-    const dock = document.querySelector('#lxLtbar [data-tool="grid"]');
-    if (dock) { dock.disabled = !supported; dock.setAttribute('aria-disabled', String(!supported)); dock.setAttribute('aria-pressed', String(active)); dock.classList.toggle('active', active); dock.title = title; }
   }
   // v0.9.29: ViewCube (стандартные виды), плавающая панель инструментов, режим прогулки
   function wireViewerExtras() {
@@ -2166,15 +2164,17 @@
     }
     const geomCloudReady = () => { if (!API) { toast('Функция доступна в десктоп-версии'); return false; } const p = curCloudPath(); if (!p || !/\.(ply|las|laz|e57|pcd|xyz|pts|xyzrgb)$/i.test(p)) { toast('Сначала выберите помещение с сохранённым облаком (или откройте облако)'); return false; } return true; };
     const mmv = v => (Number(v || 0) * 1000).toFixed(1);
-    function confirmGeometryFrame(action, r) {
+    async function confirmGeometryFrame(action, r) {
       if (!(r && r.needFrameConfirmation)) return true;
       const fc = r.frameCheck || {};
       const reason = fc.crsStatus !== 'same'
         ? 'CRS отсутствует или не удалось однозначно сопоставить WKT'
         : 'не удалось подтвердить source-transform обоих облаков';
       const question = action + ' продолжится в локальных координатах точек. ' + reason +
-        '. Выполняйте операцию только если облака уже приведены к одному datum и координаты сопоставимы. Продолжить?';
-      return typeof window.confirm === 'function' && window.confirm(question);
+        '. Выполняйте операцию только если облака уже приведены к одному datum и координаты сопоставимы.';
+      const kit = window.__lxKit;
+      if (!kit || !kit.ask) return false;
+      return !!(await kit.ask({ title: 'Координаты не подтверждены', message: question, okLabel: 'Продолжить', danger: true }));
     }
     async function geomDeviation() {
       if (!geomCloudReady() || !API.deviation) return;
@@ -2186,7 +2186,7 @@
         const payload = { compared: curCloudPath(), reference: f.path };
         let r = await API.deviation(payload);
         if (r && r.needFrameConfirmation) {
-          if (!confirmGeometryFrame('Сравнение', r)) { toast('Сравнение отменено: сначала подтвердите совместимость координат'); return; }
+          if (!(await confirmGeometryFrame('Сравнение', r))) { toast('Сравнение отменено: сначала подтвердите совместимость координат'); return; }
           r = await API.deviation(Object.assign({}, payload, { confirmFrame: true }));
         }
         if (r && r.ok) {
@@ -2208,7 +2208,7 @@
         const source = curCloudPath();
         let r = await API.registerClouds({ source: source, target: f.path });
         if (r && r.needFrameConfirmation) {
-          if (!confirmGeometryFrame('Совмещение ICP', r)) {
+          if (!(await confirmGeometryFrame('Совмещение ICP', r))) {
             toast('Совмещение отменено: сначала подтвердите совместимость систем координат');
             return;
           }
@@ -2652,12 +2652,12 @@
           [MI('feather', 'Фильтр шума по поверхности (noise filter)'), 'Убирает точки, выступающие над локальной плоскостью стен/пола — сглаживает «толщину» поверхности (как Noise filter в CloudCompare). Ctrl+Z — отмена', () => { if (!viewer || !viewer.noiseFilterInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.noiseFilterInApp({ stdRatio: (cleanParams && cleanParams.stdRatio) || 1.0, k: (cleanParams && cleanParams.k) || 16 }); if (rem > 0) toast('Сглажено (удалено шумовых точек): ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Шумовых выступов над поверхностью не найдено'); }],
           { head: 'Защита и разметка' },
           [MI('shield', 'Защита конструктива (лассо не режет пол, стены, потолок)'), 'ВКЛ по умолчанию при ручном лассо: пол, стены и потолок (RANSAC) не удаляются — режется только объект. Здесь можно включить/выключить и увидеть, сколько плоскостей распознано', () => { if (!viewer || !viewer.setPlaneProtect) { toast('Недоступно в этом режиме'); return; } const cur = viewer.getPlaneProtect ? viewer.getPlaneProtect() : true; const nv = !cur; viewer.setPlaneProtect(nv); const np = (viewer._planes && viewer._planes.length) || 0; const eP = document.getElementById('edProtect'); if (eP) { eP.classList.toggle('on', nv); } toast(nv ? ('Защита конструктива ВКЛ · распознано плоскостей: ' + np + (np ? '' : ' — мало данных в кадре, отдалите камеру и повторите')) : 'Защита ВЫКЛ — лассо удаляет всё внутри контура'); }],
-          [MI('tag', 'Назначить LAS-класс выделенным точкам'), 'Вручную назначает выбранным точкам код ASPRS LAS 0–255 (например, 2 — грунт, 6 — здание). Ctrl+Z отменяет и восстанавливает метки проекта', () => {
+          [MI('tag', 'Назначить LAS-класс выделенным точкам'), 'Вручную назначает выбранным точкам код ASPRS LAS 0–255 (например, 2 — грунт, 6 — здание). Ctrl+Z отменяет и восстанавливает метки проекта', async () => {
             if (!viewer || !viewer.assignClassificationInApp) { toast('Недоступно в этом режиме'); return; }
             if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; }
             if (!viewer.selectionCount || !viewer.selectionCount()) { toast('Сначала выделите точки лассо или рамкой'); return; }
-            if (typeof window.prompt !== 'function') { toast('Ввод кода класса недоступен в этом режиме'); return; }
-            const answer = window.prompt('Код класса ASPRS LAS (целое число 0–255). Примеры: 2 — грунт, 6 — здание', '6');
+            if (!window.__lxKit || !window.__lxKit.ask) { toast('Ввод кода класса недоступен в этом режиме'); return; }
+            const answer = await window.__lxKit.ask({ title: 'Класс LAS', message: 'Код класса ASPRS LAS — целое число от 0 до 255. Например: 2 — грунт, 6 — здание.', input: true, type: 'number', min: 0, max: 255, step: 1, value: '6', okLabel: 'Назначить' });
             if (answer == null) return;
             const text = String(answer).trim();
             if (!/^[0-9]{1,3}$/.test(text) || Number(text) > 255) { toast('Введите целый код класса от 0 до 255'); return; }

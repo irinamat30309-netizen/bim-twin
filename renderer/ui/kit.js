@@ -278,15 +278,16 @@
   }
 
   /* ---------- Диалог вопроса вместо window.prompt / window.confirm (в Electron prompt() не поддерживается) ----------
-   * ask({ title, message, input:true, value, placeholder, type, okLabel, cancelLabel, danger }) → Promise:
-   *   с полем ввода: строка или null при отмене; без поля: true / false. Esc и клик по фону — отмена, Enter — подтверждение. */
+   * ask({ title, message, hint, input:true, multiline, wide, value, placeholder, type, okLabel, cancelLabel, danger }) → Promise:
+   *   с полем ввода: строка или null при отмене; без поля: true / false. Esc и клик по фону — отмена, Enter — подтверждение
+   *   (в многострочном поле — Ctrl+Enter). */
   var askSeq = 0;
   function ask(o) {
     o = o || {};
     return new Promise(function (resolve) {
       var prev = D.activeElement, done = false, tid = 'lxAskT' + (++askSeq);
       var back = D.createElement('div'); back.className = 'modal lx-ask';
-      var card = D.createElement('div'); card.className = 'modal-card sm';
+      var card = D.createElement('div'); card.className = 'modal-card ' + (o.wide || o.multiline ? 'md' : 'sm');
       card.setAttribute('role', o.input ? 'dialog' : 'alertdialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-labelledby', tid);
       var head = D.createElement('div'); head.className = 'modal-head';
       head.innerHTML = '<span id="' + tid + '">' + esc(o.title || (o.input ? 'Введите значение' : 'Подтвердите действие')) + '</span><button type="button" class="x" data-ico="x" aria-label="Закрыть"></button>';
@@ -294,15 +295,18 @@
       if (o.message) { var m = D.createElement('p'); m.className = 'lx-ask-msg'; m.textContent = o.message; body.appendChild(m); }
       var inp = null;
       if (o.input) {
-        inp = D.createElement('input'); inp.type = o.type || 'text'; inp.value = o.value == null ? '' : String(o.value);
+        if (o.multiline) { inp = D.createElement('textarea'); inp.rows = o.rows || 7; inp.value = o.value == null ? '' : String(o.value); }
+        else { inp = D.createElement('input'); inp.type = o.type || 'text'; inp.value = o.value == null ? '' : String(o.value); }
         if (o.placeholder) inp.placeholder = o.placeholder;
         if (o.step) inp.step = o.step; if (o.min != null) inp.min = o.min; if (o.max != null) inp.max = o.max;
         inp.setAttribute('aria-label', o.label || o.message || o.title || 'Значение'); inp.autocomplete = 'off'; inp.spellcheck = false;
         body.appendChild(inp);
       }
+      if (o.hint) { var hn = D.createElement('p'); hn.className = 'lx-ask-hint'; hn.textContent = o.hint; body.appendChild(hn); }
       var act = D.createElement('div'); act.className = 'form-actions';
       var cancel = D.createElement('button'); cancel.type = 'button'; cancel.className = 'btn sm'; cancel.textContent = o.cancelLabel || 'Отмена';
       var ok = D.createElement('button'); ok.type = 'button'; ok.className = 'btn sm ' + (o.danger ? 'danger' : 'primary'); ok.textContent = o.okLabel || 'OK';
+      if (o.multiline) { var keys = D.createElement('span'); keys.className = 'lx-ask-keys'; keys.innerHTML = '<kbd>Ctrl</kbd> + <kbd>Enter</kbd> — применить'; act.appendChild(keys); }
       act.appendChild(cancel); act.appendChild(ok);
       card.appendChild(head); card.appendChild(body); card.appendChild(act); back.appendChild(card);
       function finish(v) {
@@ -317,9 +321,12 @@
       function onKey(e) {
         if (!back.parentNode) return;
         if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); no(); return; }
-        if (e.key === 'Enter' && (e.target === inp || e.target === ok || e.target === card || e.target === D.body)) { e.preventDefault(); e.stopPropagation(); yes(); return; }
+        if (e.key === 'Enter' && (e.target === inp || e.target === ok || e.target === card || e.target === D.body)) {
+          if (inp && inp.tagName === 'TEXTAREA' && e.target === inp && !(e.ctrlKey || e.metaKey)) return;
+          e.preventDefault(); e.stopPropagation(); yes(); return;
+        }
         if (e.key === 'Tab') {
-          var f = [].slice.call(card.querySelectorAll('input,button:not([disabled])')), i = f.indexOf(D.activeElement);
+          var f = [].slice.call(card.querySelectorAll('input,textarea,button:not([disabled])')), i = f.indexOf(D.activeElement);
           if (!f.length) return;
           e.preventDefault(); f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
         }

@@ -20,7 +20,7 @@ async function reset(page) {
   for (let i = 0; i < 3; i++) { await page.keyboard.press('Escape'); await page.waitForTimeout(120); }
   await page.evaluate(() => {
     try { window.__lxModes && window.__lxModes.cancelAll && window.__lxModes.cancelAll(); } catch (e) {}
-    document.querySelectorAll('.lx-modal-back, .lx-win-back').forEach((n) => n.remove());
+    document.querySelectorAll('.lx-modal-back').forEach((n) => n.remove());
     document.querySelectorAll('[data-close]').forEach((b) => { if (b.offsetParent) b.click(); });
   });
   await page.waitForTimeout(250);
@@ -77,8 +77,8 @@ const scenarios = {
   async toasts(page) { await page.evaluate(() => { const k = window.__lxKit; k.toast('Облако загружено: 296 063 точек', { tone: 'ok' }); k.toast('Проверьте единицы измерения', { tone: 'warn' }); k.toast('Не удалось сохранить проект', { tone: 'err' }); k.toast('Обычное уведомление'); k.toast('Обычное уведомление'); }); await page.waitForTimeout(1400); },
   async more(page) { await page.evaluate(() => { const b = document.querySelector('[data-cell="more"] button, .lx-more'); if (b) b.click(); }); await page.waitForTimeout(400); },
   async tree(page) { await page.evaluate(() => { document.querySelectorAll('.lx-node .lx-cloud-eye').forEach(() => {}); }); },
-  async drawer(page) { await page.click('#tbSide'); await page.waitForTimeout(600); },
-  async inspectordrawer(page) { await page.click('#tbInspector'); await page.waitForTimeout(600); }
+  async drawer(page) { if (!(await page.isVisible('#tbSide'))) { console.log('     (выдвижные панели включаются на ширине ≤1100 px — пропуск)'); return; } await page.click('#tbSide'); await page.waitForTimeout(600); },
+  async inspectordrawer(page) { if (!(await page.isVisible('#tbInspector'))) return; await page.click('#tbInspector'); await page.waitForTimeout(600); }
 };
 (async () => {
   const { browser, page, errs } = await launch({ w: +W, h: +H, theme: THEME });

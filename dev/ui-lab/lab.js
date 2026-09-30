@@ -33,6 +33,17 @@ exports.openCloud = async (page) => { await page.setInputFiles('#modelInput', CL
 exports.audit = (page) => page.evaluate(() => {
   const out = [];
   const vis = (e) => { const r = e.getBoundingClientRect(), cs = getComputedStyle(e); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && +cs.opacity > 0.01; };
+  // Видимая часть блока: обрезаем по предкам со скрытым/прокручиваемым переполнением (иначе длинный список «перекрывает» HUD, хотя визуально он обрезан)
+  const visRect = (e) => {
+    const r = e.getBoundingClientRect(); let l = r.left, t = r.top, rt = r.right, b = r.bottom;
+    for (let p = e.parentElement; p && p !== document.body; p = p.parentElement) {
+      const cs = getComputedStyle(p); if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+      const q = p.getBoundingClientRect();
+      if (cs.overflowX !== 'visible') { l = Math.max(l, q.left); rt = Math.min(rt, q.right); }
+      if (cs.overflowY !== 'visible') { t = Math.max(t, q.top); b = Math.min(b, q.bottom); }
+    }
+    return { left: l, top: t, right: rt, bottom: b };
+  };
   const nm = (e) => (e.id ? '#' + e.id : '') + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\s+/).slice(0, 2).join('.') : '') || e.tagName.toLowerCase();
   document.querySelectorAll('svg[data-icon-missing]').forEach((s) => out.push('MISSING-ICON ' + s.getAttribute('data-icon-missing') + ' in ' + nm(s.parentElement)));
   document.querySelectorAll('body *').forEach((e) => {
@@ -58,7 +69,7 @@ exports.audit = (page) => page.evaluate(() => {
   const fl = [...document.querySelectorAll('.fpanel,.hud,.hud-readout,.nav-rail,.viewcube,.ttitle,.elbar,.lx-toast')].filter(vis);
   for (let i = 0; i < fl.length; i++) for (let j = i + 1; j < fl.length; j++) {
     const a = fl[i], b = fl[j]; if (a.contains(b) || b.contains(a)) continue;
-    const p = a.getBoundingClientRect(), q = b.getBoundingClientRect();
+    const p = visRect(a), q = visRect(b);
     const w = Math.min(p.right, q.right) - Math.max(p.left, q.left), h = Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top);
     if (w > 2 && h > 2) out.push('OVERLAP ' + nm(a) + ' × ' + nm(b) + ' (' + Math.round(w) + '×' + Math.round(h) + ')');
   }
