@@ -674,6 +674,7 @@
     const add = (key, label, value, kind) => { if (num(value)) fields.push({ key, label, value, kind }); };
     switch (m.mode) {
       case 'distance':
+        add('perp', m.perpKind === 'edges' ? 'Расстояние между рёбрами (⊥)' : m.perpKind === 'point-plane' ? 'Расстояние до плоскости (⊥)' : 'Расстояние между плоскостями (⊥)', m.perp, 'linear');
         add('distance3d', 'Полная длина (3D)', m.d3, 'linear');
         add('horizontal', 'Горизонтальная проекция', m.horizontal, 'linear');
         add('vertical', 'Перепад высоты', m.vertical, 'linear');
@@ -713,10 +714,10 @@
     fields = Array.isArray(fields) ? fields : [];
     const d = requirement && requirement.dimension;
     const byKey = key => fields.find(f => f.key === key);
-    if (d === 'width') return byKey('width') || byKey('horizontal') || byKey('distance3d') || fields.find(f => f.kind === (requirement && requirement.kind));
-    if (d === 'height') return byKey('vertical') || byKey('height') || byKey('length') || fields.find(f => f.kind === (requirement && requirement.kind));
-    if (d === 'length') return byKey('length') || byKey('distance3d') || byKey('perimeter') || fields.find(f => f.kind === (requirement && requirement.kind));
-    if (d === 'thickness' || d === 'diameter' || d === 'gap') return byKey('gap') || byKey('distance3d') || fields.find(f => f.kind === (requirement && requirement.kind));
+    if (d === 'width') return byKey('width') || byKey('perp') || byKey('horizontal') || byKey('distance3d') || fields.find(f => f.kind === (requirement && requirement.kind));
+    if (d === 'height') return byKey('perp') && byKey('vertical') ? byKey('perp') : byKey('vertical') || byKey('height') || byKey('length') || fields.find(f => f.kind === (requirement && requirement.kind));
+    if (d === 'length') return byKey('length') || byKey('perp') || byKey('distance3d') || byKey('perimeter') || fields.find(f => f.kind === (requirement && requirement.kind));
+    if (d === 'thickness' || d === 'diameter' || d === 'gap') return byKey('gap') || byKey('perp') || byKey('distance3d') || fields.find(f => f.kind === (requirement && requirement.kind));
     if (d === 'angle') return byKey('angle');
     if (d === 'area') return byKey('area');
     if (d === 'slope') return byKey('slope');
@@ -724,16 +725,33 @@
     return fields.find(f => f.kind === (requirement && requirement.kind)) || fields[0] || null;
   }
 
+  /* Какому размеру из документа отвечает поле измерения.
+   * Ось «вверх» в приложении — Y, поэтому ΔY — это высота, а ΔX и ΔZ — горизонтальные проекции; они годятся только для
+   * ручного выбора (auto:false), иначе горизонтальный замер «по ΔY = 0» подходил бы под любое требование.
+   * Вертикальный замер — это высота, горизонтальный — ширина или длина, наклонный — длина. */
+  function measurementOrientation(measurement) {
+    if (!measurement || measurement.mode !== 'distance') return 'diagonal';
+    const d3 = Number(measurement.d3), h = Number(measurement.horizontal), v = Math.abs(Number(measurement.dy));
+    if (!(d3 > 0)) return 'diagonal';
+    if (h / d3 <= 0.2) return 'vertical';
+    if (v / d3 <= 0.2) return 'horizontal';
+    return 'diagonal';
+  }
   function measurementFieldDimensions(field, measurement) {
     const key = field && field.key;
     const mode = measurement && measurement.mode;
+    const orient = measurementOrientation(measurement);
+    const vert = orient === 'vertical', hor = orient === 'horizontal';
     const map = {
-      distance3d: { primary: 'length', compatible: ['width', 'height', 'thickness', 'diameter', 'gap'] },
-      horizontal: { primary: 'width', compatible: ['length', 'diameter', 'gap'] },
-      vertical: { primary: 'height', compatible: ['length', 'gap'] },
-      deltaX: { primary: 'width', compatible: ['length', 'thickness', 'diameter', 'gap'] },
-      deltaY: { primary: 'length', compatible: ['width', 'thickness', 'diameter', 'gap'] },
-      deltaZ: { primary: 'height', compatible: ['length', 'gap'] },
+      perp: vert ? { primary: 'height', compatible: ['length', 'gap', 'thickness'] } : { primary: ['width', 'length', 'thickness'], compatible: ['gap', 'diameter'] },
+      distance3d: vert ? { primary: 'height', compatible: ['length', 'gap', 'thickness'] }
+        : hor ? { primary: ['width', 'length'], compatible: ['thickness', 'diameter', 'gap'] }
+          : { primary: 'length', compatible: ['width', 'height', 'thickness', 'diameter', 'gap'] },
+      horizontal: { primary: ['width', 'length'], compatible: ['diameter', 'gap', 'thickness'] },
+      vertical: { primary: 'height', compatible: ['length', 'gap', 'thickness'] },
+      deltaX: { primary: ['width', 'length'], compatible: ['thickness', 'diameter', 'gap'], auto: false },
+      deltaY: { primary: 'height', compatible: ['length', 'gap', 'thickness'], auto: false },
+      deltaZ: { primary: ['width', 'length'], compatible: ['thickness', 'diameter', 'gap'], auto: false },
       length: { primary: 'length', compatible: mode === 'plane' ? ['height'] : ['width', 'height'] },
       width: { primary: 'width', compatible: ['thickness', 'diameter', 'gap'] },
       area: { primary: 'area', compatible: [] },
@@ -742,10 +760,12 @@
       slope: { primary: 'slope', compatible: [] },
       gap: { primary: 'gap', compatible: ['thickness', 'diameter'] }
     };
-    return map[key] || {
+    const prof = map[key] || {
       primary: field && field.kind === 'area' ? 'area' : field && field.kind === 'angle' ? 'angle' : field && field.kind === 'slope' ? 'slope' : 'unspecified',
       compatible: []
     };
+    const primaries = [].concat(prof.primary);
+    return { primary: primaries[0], primaries: primaries, compatible: prof.compatible, auto: prof.auto !== false, orientation: orient };
   }
 
   function suggestMeasurementUnit(sourceUnits, kind) {
@@ -819,7 +839,7 @@
     if (!dimension || dimension === 'unspecified' || dimension === 'first' || dimension === 'second') {
       return { tier: 'ambiguous', points: 3, exact: false, profile: profile };
     }
-    if (dimension === profile.primary) return { tier: 'exact', points: 24, exact: true, profile: profile };
+    if (profile.primaries.includes(dimension)) return { tier: 'exact', points: 24, exact: true, profile: profile };
     if (profile.compatible.includes(dimension)) return { tier: 'compatible', points: 13, exact: false, profile: profile };
     return { tier: 'conflict', points: -22, exact: false, profile: profile };
   }
@@ -877,6 +897,7 @@
         const selectedRequirement = part.requirement;
         for (const field of fields) {
           if (!field || field.kind !== selectedRequirement.kind) continue;
+          if (!args.allFields && measurementFieldDimensions(field, measurement).auto === false) continue;
           const unitSuggestion = suggestMeasurementUnit(args.sourceUnits != null ? args.sourceUnits : context.sourceUnits, field.kind);
           const dimension = dimensionCompatibility(selectedRequirement.dimension, field, measurement);
           let score = 8 + dimension.points;
@@ -1132,7 +1153,7 @@
   return {
     unitInfo, findUnit, parseNumber, parseDelimitedText, dimensionHint,
     normalizeSemanticText, tokenizeSemanticText, detectObjectCategories,
-    extractRequirements, measurementFields, measurementFieldDimensions, suggestField,
+    extractRequirements, measurementFields, measurementFieldDimensions, measurementOrientation, suggestField,
     suggestMeasurementUnit, rankRequirementMatches, compareMeasurement, formatBaseValue
   };
 });

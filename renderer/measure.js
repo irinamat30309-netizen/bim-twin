@@ -518,7 +518,7 @@
     const L = fmtLen, A = fmtArea, n = x => (x == null ? '' : (+x).toFixed(3));
     switch (r.mode) {
       case 'point': return 'X ' + n(r.point[0]) + ', Y ' + n(r.point[1]) + ', Z ' + n(r.point[2]) + ' м';
-      case 'distance': return L(r.d3) + ' (гор. ' + L(r.horizontal) + ', верт. ' + L(r.vertical) + ')';
+      case 'distance': return L(r.d3) + ' (гор. ' + L(r.horizontal) + ', верт. ' + L(r.vertical) + ')' + (r.perp != null ? ', ⊥ ' + L(r.perp) + (r.perpKind === 'edges' ? ' между рёбрами' : r.perpKind === 'planes' ? ' между плоскостями' : ' до плоскости') : '');
       case 'polyline': return L(r.total) + ' (точек ' + r.count + ')';
       case 'angle': return (r.deg != null ? r.deg.toFixed(2) : '') + '°';
       case 'area': return A(r.area) + ' (периметр ' + L(r.perimeter) + ')';

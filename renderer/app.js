@@ -3293,7 +3293,14 @@
     const Me = window.Measure, L = m => Me ? Me.fmtLen(m) : (m.toFixed(3) + ' м'), A = m => Me ? Me.fmtArea(m) : (m.toFixed(3) + ' м²');
     switch (res.mode) {
       case 'point': return 'X ' + res.point[0].toFixed(3) + ' · Y ' + res.point[1].toFixed(3) + ' · Z ' + res.point[2].toFixed(3) + ' м';
-      case 'distance': return '<b>' + L(res.d3) + '</b> · гориз. ' + L(res.horizontal) + ' · верт. ' + L(res.vertical) + ' · ΔX ' + L(Math.abs(res.dx)) + ' ΔY ' + L(Math.abs(res.dy)) + ' ΔZ ' + L(Math.abs(res.dz));
+      case 'distance': {
+        const SN = { corner: 'угол', edge: 'ребро', plane: 'плоскость', point: 'точка', raw: 'без привязки' };
+        const sn = res.snap ? ' · ' + (SN[res.snap.a.kind] || '') + ' → ' + (SN[res.snap.b.kind] || '') : '';
+        const acc = res.sigma != null && res.sigma > 0 && res.snap && res.snap.a.grown && res.snap.b.grown ? ' · ±' + (Math.max(res.sigma, 0.0001) * 1000).toFixed(1).replace('.', ',') + ' мм' : '';
+        if (res.perp != null && res.perpKind === 'planes') return '<b>' + L(res.perp) + '</b> между плоскостями (по нормали)' + sn + acc + ' · сдвиг вдоль плоскостей ' + L(Math.sqrt(Math.max(0, res.d3 * res.d3 - res.perp * res.perp)));
+        if (res.perp != null && res.perpKind === 'edges') return '<b>' + L(res.perp) + '</b> между рёбрами (по перпендикуляру)' + sn + acc + (res.along != null ? ' · вдоль ребра ' + L(res.along) : '');
+        return '<b>' + L(res.d3) + '</b> · гориз. ' + L(res.horizontal) + ' · верт. ' + L(res.vertical) + ' · ΔX ' + L(Math.abs(res.dx)) + ' ΔY ' + L(Math.abs(res.dy)) + ' ΔZ ' + L(Math.abs(res.dz)) + sn + acc + (res.perp != null ? ' · до плоскости ⊥ ' + L(res.perp) : '');
+      }
       case 'polyline': return 'Длина <b>' + L(res.total) + '</b> · точек: ' + res.count + ' · сегментов: ' + (res.count - 1);
       case 'angle': return 'Угол <b>' + res.deg.toFixed(2) + '°</b> · стороны ' + L(res.lenA) + ' и ' + L(res.lenC);
       case 'area': return 'Площадь <b>' + A(res.area) + '</b> · периметр ' + L(res.perimeter) + ' · вершин: ' + res.count;
@@ -3567,7 +3574,17 @@
       if (String(key).startsWith(prefix)) __measurementRoomRequirementCache.delete(key);
     }
   }
+  // Требования: документы помещения + «свои размеры», введённые вручную (они не привязаны к файлам и кэшу документов)
   async function scanRoomRequirements(room, options) {
+    const base = await scanRoomRequirementsDocs(room, options);
+    const manual = dcManualEntries();
+    return manual.length ? Object.assign({}, base, { entries: (base.entries || []).concat(manual), manualCount: manual.length }) : base;
+  }
+  function dcManualScan() {
+    const entries = dcManualEntries();
+    return { entries, docs: [], readCount: 0, ocrCount: 0, skippedCount: 0, nativeCadSkipped: false, errors: [], ocrFailures: [], manualCount: entries.length };
+  }
+  async function scanRoomRequirementsDocs(room, options) {
     options = options || {};
     const autoOcr = options.autoOcr !== false;
     const docs = roomDocs(room).filter(d => d && d.file);
@@ -3835,7 +3852,7 @@
     const measurement = __measurements[index];
     if (!measurement || !window.MeasurementDocCompare) return;
     const room = measurementRoom(measurement);
-    if (!room) {
+    if (!room && !dcManualEntries().length) {
       setAutomaticProposal(measurement, null, null, 'needs-review', 'Укажите помещение');
       renderMeasList(); persistMeasurements();
       return;
@@ -3844,7 +3861,7 @@
     setAutomaticProposal(measurement, room, null, 'analyzing');
     renderMeasList();
     try {
-      const scan = await scanRoomRequirements(room, { autoOcr: true });
+      const scan = room ? await scanRoomRequirements(room, { autoOcr: true }) : dcManualScan();
       // A manual result saved while background analysis was running wins.
       if ((measurement.docComparisons || []).length > historyCount) return;
       const outcome = applyAutomaticComparison(measurement, room, scan);
@@ -3914,13 +3931,14 @@
       const measurement = __measurements[i];
       const room = measurementRoom(measurement);
       if (onProgress) onProgress({ current: i + 1, total: __measurements.length });
-      if (!room) {
+      if (!room && !dcManualEntries().length) {
         setAutomaticProposal(measurement, null, null, 'needs-review', 'Укажите помещение');
         counts.review++;
         continue;
       }
-      if (!scans.has(room.id)) scans.set(room.id, await scanRoomRequirements(room, { autoOcr: true }));
-      const outcome = applyAutomaticComparison(measurement, room, scans.get(room.id));
+      const scanKey = room ? room.id : '__manual__';
+      if (!scans.has(scanKey)) scans.set(scanKey, room ? await scanRoomRequirements(room, { autoOcr: true }) : dcManualScan());
+      const outcome = applyAutomaticComparison(measurement, room, scans.get(scanKey));
       if (outcome.comparison) {
         counts.confirmed++;
         if (outcome.comparison.status === 'within-tolerance') counts.within++;
@@ -4022,14 +4040,14 @@
   }
   function dcMeta() {
     const missing = __measurements.filter(m => !(m.measurementContext && m.measurementContext.sourceUnits)).length;
-    return { count: __measurements.length, currentRoomId: current && current.id || null, currentRoomName: current && current.name || '', rooms: dcRoomsInfo(), missingUnits: missing, defaultUnits: dcDefaultUnits() };
+    return { count: __measurements.length, currentRoomId: current && current.id || null, currentRoomName: current && current.name || '', rooms: dcRoomsInfo(), missingUnits: missing, defaultUnits: dcDefaultUnits(), manualCount: dcManualLoad().length };
   }
   async function dcCandidates(i) {
     const m = __measurements[i];
     if (!m) return { ok: false, reason: 'no-measurement', list: [] };
     const room = measurementRoom(m);
-    if (!room) return { ok: false, reason: 'no-room', list: [] };
-    const scan = await scanRoomRequirements(room, { autoOcr: true });
+    if (!room && !dcManualEntries().length) return { ok: false, reason: 'no-room', list: [] };
+    const scan = room ? await scanRoomRequirements(room, { autoOcr: true }) : dcManualScan();
     const ranking = rankMeasurementAgainstEntries(m, scan.entries);
     const list = [];
     ranking.matches.slice(0, 6).forEach((mt, key) => {
@@ -4045,8 +4063,8 @@
   async function dcAccept(i, key) {
     const m = __measurements[i];
     const room = m && measurementRoom(m);
-    if (!m || !room) { toast('Укажите помещение измерения'); return { ok: false, reason: 'no-room' }; }
-    const scan = await scanRoomRequirements(room, { autoOcr: true });
+    if (!m || (!room && !dcManualEntries().length)) { toast('Укажите помещение измерения'); return { ok: false, reason: 'no-room' }; }
+    const scan = room ? await scanRoomRequirements(room, { autoOcr: true }) : dcManualScan();
     const ranking = rankMeasurementAgainstEntries(m, scan.entries);
     const ranked = ranking.matches[Number(key)];
     if (!ranked) { toast('Вариант устарел: обновите список'); return { ok: false, reason: 'stale' }; }
@@ -4099,7 +4117,7 @@
     opts = opts || {};
     const rooms = Array.isArray(DB && DB.rooms) ? DB.rooms : [];
     const room = rooms.find(r => r.id === roomId) || current || null;
-    if (!room) return { ok: false, reason: 'no-room', docs: [], items: [] };
+    if (!room) return { ok: false, reason: 'no-room', docs: [], items: [], manual: dcManualInfo() };
     const scan = await scanRoomRequirements(room, { autoOcr: true, force: !!opts.force, onProgress: opts.onProgress });
     const counts = new Map();
     scan.entries.forEach(e => { const k = String(e.doc && e.doc.id || ''); counts.set(k, (counts.get(k) || 0) + 1); });
@@ -4109,11 +4127,11 @@
       const readable = comparisonSupportedExt(ext) || comparisonOcrExt(ext);
       return { id: d.id, name: comparisonDocName(d), ext, found, state: found ? 'ok' : readable ? 'empty' : 'skipped' };
     });
-    const items = scan.entries.map(e => ({
+    const items = scan.entries.filter(e => !(e.doc && e.doc.type === 'manual')).map(e => ({
       id: e.id, label: comparisonRequirementLabel(e), dimension: comparisonDimensionLabel(e.requirement && e.requirement.dimension),
       confidence: e.requirement && e.requirement.confidence || '', source: dcSourceOf({ source: e.requirement && e.requirement.source })
     }));
-    return { ok: true, roomId: room.id, roomName: room.name || '', docs, items, errors: scan.errors, ocrCount: scan.ocrCount, nativeCadSkipped: scan.nativeCadSkipped };
+    return { ok: true, roomId: room.id, roomName: room.name || '', docs, items, errors: scan.errors, ocrCount: scan.ocrCount, nativeCadSkipped: scan.nativeCadSkipped, manual: dcManualInfo() };
   }
   function dcOpenDocument(i) {
     const m = __measurements[i]; const cmp = m && latestDocComparison(m);
@@ -4137,13 +4155,130 @@
     toast('Отчёт сверки сохранён (' + __measurements.length + ' строк)');
     return true;
   }
+  // ── Свои размеры: номинал и допуск вводит сам пользователь (чертёж, договор, паспорт изделия) ──
+  const DC_MANUAL_KEY = 'bim.docCheck.manual';
+  const DC_MANUAL_DIMS = [['width', 'Ширина'], ['height', 'Высота'], ['length', 'Длина'], ['thickness', 'Толщина'], ['diameter', 'Диаметр'], ['gap', 'Зазор'], ['angle', 'Угол'], ['unspecified', 'Размер']];
+  let __manualCache = null;
+  function dcManualLoad() {
+    if (__manualCache) return __manualCache;
+    let list = [];
+    try {
+      const ps = window.BimProjectState, snap = ps && ps.snapshot && ps.snapshot(), md = snap && snap.metadata;
+      if (md && md.docCheck && Array.isArray(md.docCheck.manual)) list = md.docCheck.manual;
+    } catch (_) {}
+    if (!list.length) { try { const raw = localStorage.getItem(DC_MANUAL_KEY); const arr = raw ? JSON.parse(raw) : []; if (Array.isArray(arr)) list = arr; } catch (_) {} }
+    __manualCache = list.filter(r => r && r.id && Array.isArray(r.sizes)).slice(0, 200);
+    return __manualCache;
+  }
+  function dcManualSave(list) {
+    __manualCache = list.slice(0, 200);
+    try { localStorage.setItem(DC_MANUAL_KEY, JSON.stringify(__manualCache)); } catch (_) {}
+    try {
+      const ps = window.BimProjectState;
+      if (ps && ps.update && ps.snapshot) {
+        const md = Object.assign({}, ps.snapshot().metadata || {});
+        md.docCheck = Object.assign({}, md.docCheck || {}, { manual: __manualCache });
+        ps.update({ metadata: md }).catch(e => { try { console.warn('[docCheck] manual sizes save failed', e); } catch (_) {} });
+      }
+    } catch (_) {}
+  }
+  function dcManualRequirement(label, size, recId, idx) {
+    const C = window.MeasurementDocCompare; if (!C || !size) return null;
+    const unit = C.unitInfo(size.unit), value = C.parseNumber(String(size.value == null ? '' : size.value));
+    const tol = size.tolerance === '' || size.tolerance == null ? null : C.parseNumber(String(size.tolerance));
+    if (!unit || value == null || !(value > 0 || size.dimension === 'angle') || (tol != null && !(tol >= 0))) return null;
+    const dim = DC_MANUAL_DIMS.some(d => d[0] === size.dimension) ? size.dimension : 'unspecified';
+    const tolText = tol != null ? ' ±' + tol + ' ' + unit.symbol : '';
+    return {
+      id: 'manual_' + recId + '_' + idx, kind: unit.kind, dimension: dim, value, unit: unit.symbol, baseValue: value * unit.factor,
+      tolerance: tol == null ? null : tol * unit.factor, toleranceValue: tol, toleranceUnit: tol == null ? null : unit.symbol,
+      toleranceMode: tol == null ? null : 'symmetric', confidence: 'high', needsConfirmation: false, assumptions: [], unitKindMismatch: false,
+      source: { documentId: 'manual', documentName: 'Введено вручную', sheet: null, row: null, line: null, page: null, ocr: false, truncated: false,
+        excerpt: (String(label || '').trim() + ': ' + comparisonDimensionLabel(dim) + ' ' + value + ' ' + unit.symbol + tolText).slice(0, 300) }
+    };
+  }
+  function dcManualEntries() {
+    const out = [];
+    dcManualLoad().forEach(rec => {
+      (rec.sizes || []).forEach((sz, idx) => {
+        const req = dcManualRequirement(rec.label, sz, rec.id, idx);
+        if (req) out.push({ id: 'manual:' + rec.id + ':' + idx, requirement: req, doc: { id: 'manual', name: 'Введено вручную', type: 'manual' } });
+      });
+    });
+    return out;
+  }
+  function dcManualInfo() {
+    const dimName = Object.fromEntries(DC_MANUAL_DIMS);
+    return dcManualLoad().map(rec => ({
+      id: rec.id, label: rec.label || 'Без названия',
+      sizes: (rec.sizes || []).map(sz => (dimName[sz.dimension] || 'Размер') + ' ' + sz.value + ' ' + sz.unit + (sz.tolerance !== '' && sz.tolerance != null ? ' ±' + sz.tolerance : '')),
+      valid: (rec.sizes || []).every((sz, idx) => !!dcManualRequirement(rec.label, sz, rec.id, idx))
+    }));
+  }
+  async function dcManualAdd(spec) {
+    spec = spec || {};
+    const label = String(spec.label || '').trim().slice(0, 120);
+    const sizes = (Array.isArray(spec.sizes) ? spec.sizes : []).slice(0, 6).map(sz => ({
+      dimension: String(sz.dimension || 'unspecified'), value: String(sz.value == null ? '' : sz.value).trim(), unit: String(sz.unit || 'мм'),
+      tolerance: sz.tolerance === '' || sz.tolerance == null ? '' : String(sz.tolerance).trim()
+    }));
+    const id = 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    if (!label) return { ok: false, reason: 'no-label' };
+    if (!sizes.length || !sizes.every((sz, idx) => dcManualRequirement(label, sz, id, idx))) return { ok: false, reason: 'bad-size' };
+    dcManualSave(dcManualLoad().concat([{ id, label, sizes, createdAt: new Date().toISOString() }]));
+    const counts = __measurements.length ? await computeAllComparisons() : null;
+    return { ok: true, id, counts };
+  }
+  async function dcManualRemove(id) {
+    const list = dcManualLoad(), next = list.filter(r => r.id !== id);
+    if (next.length === list.length) return { ok: false };
+    dcManualSave(next);
+    const counts = __measurements.length ? await computeAllComparisons() : null;
+    return { ok: true, counts };
+  }
+  // Быстрая проверка одного измерения по размеру, который пользователь ввёл сам (запоминать в списке не обязательно)
+  async function dcManualCompare(i, spec) {
+    const m = __measurements[i], C = window.MeasurementDocCompare;
+    spec = spec || {};
+    if (!m || !C) return { ok: false, reason: 'no-measurement' };
+    const label = String(spec.label || m.label || 'Свой размер').trim();
+    const req = dcManualRequirement(label, { dimension: spec.dimension, value: spec.value, unit: spec.unit, tolerance: spec.tolerance }, 'q' + Date.now().toString(36), 0);
+    if (!req) return { ok: false, reason: 'bad-size' };
+    const fields = C.measurementFields(m);
+    const field = fields.find(f => f.key === spec.fieldKey) || C.suggestField(req, fields);
+    if (!field) return { ok: false, reason: 'no-field' };
+    if (field.kind !== req.kind) return { ok: false, reason: 'kind-mismatch' };
+    const context = m.measurementContext || {};
+    const units = spec.cloudUnits || context.sourceUnits || dcDefaultUnits() || '';
+    const ranking = C.rankRequirementMatches({
+      measurement: m, context, sourceUnits: units, fields: [field], allFields: true,
+      candidates: [{ id: 'manual:quick', requirement: req, doc: { id: 'manual', name: 'Введено вручную', type: 'manual' } }]
+    });
+    const ranked = ranking.matches[0];
+    if (!ranked) return { ok: false, reason: 'no-result' };
+    if (!ranked.unit) return { ok: false, reason: 'units' };
+    const record = buildAutomaticComparisonRecord(m, measurementRoom(m), ranked, ranking);
+    if (!record) return { ok: false, reason: 'no-result' };
+    record.automation.mode = 'user-entered';
+    record.confirmations.autoConfirmed = false;
+    record.confirmations.method = 'user-entered-size';
+    record.confirmations.acceptedAt = new Date().toISOString();
+    appendMeasurementComparison(m, record);
+    if (spec.remember) {
+      const list = dcManualLoad(), id = 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+      dcManualSave(list.concat([{ id, label, sizes: [{ dimension: req.dimension, value: String(spec.value), unit: String(spec.unit || 'мм'), tolerance: spec.tolerance === '' || spec.tolerance == null ? '' : String(spec.tolerance) }], createdAt: new Date().toISOString() }]));
+    }
+    renderMeasList(); persistMeasurements();
+    return { ok: true, status: record.status, actualText: dcFmt(record.actual && record.actual.baseValue, record.expected.kind, record.expected.unit), deltaText: dcSigned(record.delta, record.expected.kind, record.expected.unit) };
+  }
   window.__lxDocCheck = {
     meta: dcMeta, rows: () => __measurements.map(dcRow), row: i => (__measurements[i] ? dcRow(__measurements[i], i) : null),
     add: (res, extra) => (res && !res.error ? storeMeasurement(res, extra || {}) : -1),
     update: (i, res) => { const m = __measurements[i]; if (!m || !res || res.error) return false; const keep = { measurementContext: m.measurementContext, label: m.label, docComparisons: m.docComparisons, docComparison: m.docComparison, autoComparisonProposal: m.autoComparisonProposal }; Object.keys(m).forEach(k => delete m[k]); Object.assign(m, JSON.parse(JSON.stringify(res)), keep); renderMeasList(); persistMeasurements(); autoCompareMeasurementInBackground(i); return true; },
     candidates: dcCandidates, accept: dcAccept, setDefaultUnits: dcSetDefaultUnits, setContext: dcSetContext, remove: dcRemove, requirements: dcRequirements,
     run: i => autoCompareMeasurementInBackground(i), runAll: computeAllComparisons, details: i => compareSavedMeasurement(i),
-    openDocument: dcOpenDocument, exportCsv: dcExportCsv
+    openDocument: dcOpenDocument, exportCsv: dcExportCsv,
+    manual: { list: dcManualInfo, add: dcManualAdd, remove: dcManualRemove, compare: dcManualCompare, dims: DC_MANUAL_DIMS }
   };
   function compareSavedMeasurement(index) {
     const measurement = __measurements[index];
