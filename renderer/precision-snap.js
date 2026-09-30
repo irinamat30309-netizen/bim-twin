@@ -562,9 +562,8 @@
 
   /* Направление кромки по одному окну (±6 шагов) определено грубо: 0,5–1° дают 7–14 мм на метр. Поэтому кромку «протягиваем»:
    * то же окно ставим на расстоянии step вдоль кромки в обе стороны, положения кромки в трёх окнах — одна прямая с базой около метра. */
-  function trackContour(index, pl, c0, snapDist) {
-    var sp = index.spacing || index.cell / 4, step = clamp(50 * sp, 6 * snapDist, 16 * snapDist), T = c0.dir, k, sgn, cand = [];
-    var tol = 0.02 * step + 2 * sp;
+  function trackPass(index, pl, c0, T, step, snapDist, sp) {
+    var k, sgn, cand = [], tol = 0.02 * step + 2 * sp;
     for (sgn = -1; sgn <= 1; sgn += 2) {
       var c = null;
       try { c = contourEdge(index, pl, add(c0.point, mul(T, sgn * step)), snapDist); } catch (e) { c = null; }
@@ -589,6 +588,17 @@
     var base = pts.length === 3 ? 2 * step : step, sAnchor = Math.max(c0.sigma || 0, 0.5 * sp);
     var point = add(M, mul(D, dot(sub(c0.point, M), D)));
     return { point: point, dir: D, dirSigma: sAnchor * Math.SQRT2 / base, anchors: pts.length - 1, step: step, shift: len(sub(point, c0.point)) };
+  }
+  function trackContour(index, pl, c0, snapDist) {
+    var sp = index.spacing || index.cell / 4, full = clamp(50 * sp, 6 * snapDist, 16 * snapDist);
+    var r = trackPass(index, pl, c0, c0.dir, full, snapDist, sp);
+    if (r) return r;
+    // Направление по одному окну шумит на несколько градусов (у рваной кромки — до 9°): на полном шаге окна «уезжают» от кромки дальше допуска
+    // и отбрасываются, кромка остаётся с грубым направлением. Короткий шаг даёт грубую прямую, по ней — полный шаг.
+    var r1 = trackPass(index, pl, c0, c0.dir, Math.max(0.35 * full, 2 * snapDist), snapDist, sp);
+    if (!r1) return null;
+    var r2 = trackPass(index, pl, c0, r1.dir, full, snapDist, sp);
+    return r2 || r1;
   }
 
   /* ---------- Захват ---------- */
@@ -710,7 +720,7 @@
     // угол по «плоскости» из пары десятков точек (полоска откоса, скругление): положение плавает на сантиметры — не выдаём его за точное
     if (w.kind === 'corner' && out.count < 64) { var wk = 2.5 * sp; out.sigma = Math.sqrt(out.sigma * out.sigma + wk * wk); out.weak = true; }
     if (dir) out.dir = dir;
-    if (contour) out.dirSigma = contour.dirSigma != null ? contour.dirSigma : 0.012;   // рад: грубое направление по одному окну
+    if (contour) out.dirSigma = contour.dirSigma != null ? contour.dirSigma : 0.05;   // рад: направление по одному окну шумит на 2–5° (на реальном проёме 0,04–0,15 рад)
     out.quality = out.rms <= 0.55 * sp && out.count >= 60 ? 'high' : out.rms <= 1.1 * sp && out.count >= 25 ? 'medium' : 'low';
     if (out.cored && out.quality === 'high') out.quality = 'medium';          // края скруглены или сколоты: плоскости пришлось искать заново вдали от кромки
     if (out.weak) out.quality = 'low';

@@ -186,6 +186,21 @@ test('ребро при пропуске строк скана: откос бе�
   }
 });
 
+test('кромка проёма: направление по одному окну бывает неверным на несколько градусов — протяжка коротким шагом возвращает прямую', () => {
+  const snapDist = 0.033, a = nearestW(HOLE, [0, 1.2, 2.5]);
+  const pl = PS.snap(a, HOLE.index, { snapDist, grow: true, contour: false }).planes[0];
+  const c0 = PS.contourEdge(HOLE.index, pl, a, snapDist);
+  assert.ok(c0 && Math.abs(c0.dir[1]) > 0.99, 'окно нашло вертикальную кромку');
+  const n = pl.normal, d = c0.dir, nxd = [n[1] * d[2] - n[2] * d[1], n[2] * d[0] - n[0] * d[2], n[0] * d[1] - n[1] * d[0]];
+  for (const deg of [0, 3, -5, 6]) {
+    const th = deg * Math.PI / 180, bad = [0, 1, 2].map(i => d[i] * Math.cos(th) + nxd[i] * Math.sin(th));   // поворот направления в плоскости стены
+    const tr = PS.trackContour(HOLE.index, pl, Object.assign({}, c0, { dir: bad }), snapDist);
+    assert.ok(tr && tr.anchors >= 1, 'протяжка при ошибке направления ' + deg + '°: ' + (tr && tr.anchors));
+    assert.ok(Math.abs(tr.dir[1]) > 0.9995, 'после протяжки кромка вертикальна (ошибка ' + deg + '° → ' + Math.acos(Math.min(1, Math.abs(tr.dir[1]))) * 180 / Math.PI + '°)');
+    assert.ok(tr.dirSigma > 0 && tr.dirSigma < 0.03, 'оценка направления ' + tr.dirSigma);
+  }
+});
+
 test('детерминизм: одинаковый клик — побитово одинаковый результат', () => {
   const seed = nearestTo(ROOM, [0.01, 0.01, 0.01]);
   const a = PS.snap(seed, ROOM.index, { snapDist: 0.06, grow: true }), b = PS.snap(seed, ROOM.index, { snapDist: 0.06, grow: true });
