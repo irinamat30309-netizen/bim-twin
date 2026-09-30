@@ -92,7 +92,8 @@
       }
     } catch (e) {}
     try { if (W.__lxObjectExtract && W.__lxObjectExtract.close) W.__lxObjectExtract.close(); } catch (e) {}
-    try { var oi = W.__lxObjectInspector; if (oi) { if (oi.stopPick) oi.stopPick(); if (oi.close) oi.close(); } } catch (e) {}
+    try { if (W.__lxObjectInspector && W.__lxObjectInspector.stopPick) W.__lxObjectInspector.stopPick(); } catch (e) {}
+    try { if (W.__lxObjectInspector && W.__lxObjectInspector.close) W.__lxObjectInspector.close(); } catch (e) {}
     try { if (W.__lxDraw && W.__lxDraw.active && W.__lxDrawUI && W.__lxDrawUI.deactivate) W.__lxDrawUI.deactivate(true); } catch (e) {}
     clearMarks();
     ['measureBar', 'measureListPanel', 'measureReadout', 'editBar', 'tourBar', 'sectionPanel', 'sectionRange', 'qualityBar', 'lxSectionControls'].forEach(function (id) { var e = $(id); if (e) e.style.display = 'none'; });
