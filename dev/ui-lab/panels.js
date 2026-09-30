@@ -66,6 +66,35 @@ const scenarios = {
     await page.mouse.click(c.x + c.width * 0.35, c.y + c.height * 0.55); await page.waitForTimeout(500);
     await page.mouse.click(c.x + c.width * 0.65, c.y + c.height * 0.5); await page.waitForTimeout(900);
   },
+  async verifyins(page) {   // измерения внутри окна «Инспектор объекта»: тип объекта, автосохранение, статус сверки
+    await scenarios.objwin(page);
+    await page.click('#lxInsKinds [data-kind="стена"]'); await page.waitForTimeout(200);
+    await page.click('#lxInsModes [data-mode="distance"]'); await page.waitForTimeout(300);
+    const c = await page.locator('#lxInsCanvas').boundingBox();
+    for (const [a, b, d, e] of [[0.3, 0.5, 0.7, 0.5], [0.4, 0.3, 0.4, 0.75]]) {
+      await page.mouse.click(c.x + c.width * a, c.y + c.height * b); await page.waitForTimeout(400);
+      await page.mouse.click(c.x + c.width * d, c.y + c.height * e); await page.waitForTimeout(700);
+    }
+    await page.waitForTimeout(1200);
+  },
+  async verify(page) {      // окно «Сверка с документацией» после измерений в инспекторе
+    await scenarios.verifyins(page);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+    await page.evaluate(() => window.__lxVerify.open({})); await page.waitForTimeout(900);
+    const first = page.locator('.vf-main').first();
+    if (await first.count()) { await first.click(); await page.waitForTimeout(900); }
+  },
+  async verifyall(page) {
+    await scenarios.verifyins(page);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+    await page.evaluate(() => window.__lxVerify.open({})); await page.waitForTimeout(700);
+  },
+  async verifyreqs(page) {
+    await page.evaluate(() => window.__lxVerify.open({ tab: 'reqs' })); await page.waitForTimeout(1500);
+  },
+  async verifyempty(page) {
+    await page.evaluate(() => window.__lxVerify.open({})); await page.waitForTimeout(700);
+  },
   async objesc(page) {   // Esc должен закрывать окно «Инспектор объекта» (в подсказке кнопки написано «Закрыть · Esc»)
     await scenarios.objwin(page);
     await page.keyboard.press('Escape'); await page.waitForTimeout(500);

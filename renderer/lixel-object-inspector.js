@@ -11,7 +11,7 @@
 (function () {
   'use strict';
   var modal = null, iv = null, ivCanvas = null, launchBtn = null;
-  var state = { mode: 'distance', pick: false, hist: [], n: 0, lastCloud: null };
+  var state = { mode: 'distance', pick: false, hist: [], n: 0, lastCloud: null, kind: '', live: null };
   var disp = { mode: 'rgb', edl: false, size: 1 };
   var bandEl = null, prevFocus = null;
 
@@ -34,6 +34,10 @@
 
   var MODES = [['distance', 'Расстояние', 'ruler'], ['point', 'Координата', 'crosshair'], ['polyline', 'Полилиния', 'polyline'], ['angle', 'Угол', 'angle'], ['area', 'Площадь', 'vector-square'], ['plane', 'Плоскость', 'brick-wall'], ['deviation', 'Зазор', 'arrow-up-down'], ['corner', 'Ребро/угол', 'cuboid']];
   var MNAME = { distance: 'Расст.', point: 'Точка', polyline: 'Полилиния', angle: 'Угол', area: 'Площадь', plane: 'Плоскость', deviation: 'Зазор', corner: 'Ребро/угол' };
+
+  /* Тип объекта: по нему приложение выбирает, какое требование искать в документах (стена, труба, проём…). */
+  var KINDS = [['', 'Авто'], ['стена', 'Стена'], ['колонна', 'Колонна'], ['балка', 'Балка'], ['перекрытие', 'Перекрытие'], ['пол', 'Пол'], ['потолок', 'Потолок'], ['проём', 'Проём'], ['дверь', 'Дверь'], ['окно', 'Окно'], ['труба', 'Труба'], ['воздуховод', 'Воздуховод'], ['оборудование', 'Оборудование']];
+  function docCheck() { return window.__lxDocCheck || null; }
 
   function buildModal() {
     if (modal) return modal;
@@ -80,17 +84,31 @@
     });
     tools.appendChild(mgrid);
     var actions = el('div', 'lx-win-actions');
-    var finB = button('Завершить', 'check', 'ok'); finB.onclick = function () { if (iv) iv.finishMeasure(); };
-    var clrB = button('Очистить', 'eraser', 'danger'); clrB.onclick = function () { if (iv) iv.setMeasureMode(state.mode); refreshReadout(null); };
+    var finB = button('Завершить', 'check', 'ok'); finB.onclick = function () { if (iv) iv.finishMeasure(); state.live = null; };
+    var clrB = button('Очистить', 'eraser', 'danger'); clrB.onclick = function () { state.live = null; if (iv) iv.setMeasureMode(state.mode); refreshReadout(null); };
     actions.appendChild(finB); actions.appendChild(clrB); tools.appendChild(actions);
     tools.appendChild(el('p', 'lx-win-hint', 'Клик по облаку добавляет точку. Колёсико — зум, ЛКМ — вращение, Shift+ЛКМ — панорама.'));
     side.appendChild(tools);
 
+    var kindSec = el('section', 'lx-win-sec');
+    kindSec.appendChild(el('h4', 'lx-win-h', 'Что вы измеряете'));
+    var kinds = el('div', 'lx-win-kinds'); kinds.id = 'lxInsKinds'; kinds.setAttribute('role', 'group'); kinds.setAttribute('aria-label', 'Тип объекта');
+    KINDS.forEach(function (k) {
+      var b = el('button', 'chip', k[1]); b.type = 'button'; b.dataset.kind = k[0]; setOn(b, k[0] === state.kind); b.classList.toggle('sel', k[0] === state.kind);
+      b.onclick = function () { setKind(k[0]); }; kinds.appendChild(b);
+    });
+    kindSec.appendChild(kinds);
+    kindSec.appendChild(el('p', 'lx-win-hint', 'Тип помогает найти нужное требование в документации помещения. Каждое измерение попадает в список проекта и сверяется автоматически.'));
+    side.appendChild(kindSec);
+
     var read = el('section', 'lx-win-sec grow');
     read.appendChild(el('h4', 'lx-win-h', 'Результат'));
     var cur = el('div', 'lx-win-cur', '—'); cur.id = 'lxInsCur'; read.appendChild(cur);
-    read.appendChild(el('h4', 'lx-win-h', 'История измерений'));
+    read.appendChild(el('h4', 'lx-win-h', 'Измерения и сверка'));
     var hist = el('div', 'lx-win-hist'); hist.id = 'lxInsHist'; read.appendChild(hist);
+    var openV = button('Открыть сверку', 'clipboard-check', '', 'Таблица измерений и требований из документации'); openV.id = 'lxInsOpenVerify'; openV.style.marginTop = '10px';
+    openV.onclick = function () { if (window.__lxVerify) window.__lxVerify.open({}); };
+    read.appendChild(openV);
     side.appendChild(read);
     body.appendChild(side);
 
@@ -112,10 +130,21 @@
   }
 
   function setMode(m) {
-    state.mode = m;
+    state.mode = m; state.live = null;
     if (iv) { iv.setMeasureMode(m); iv.setMeasure(true); }
     var g = modal && modal.querySelector('#lxInsModes');
     if (g) Array.prototype.forEach.call(g.children, function (c) { setOn(c, c.dataset.mode === m); });
+  }
+
+  function setKind(k) {
+    state.kind = k || '';
+    var g = modal && modal.querySelector('#lxInsKinds');
+    if (g) Array.prototype.forEach.call(g.children, function (c) { var on = c.dataset.kind === state.kind; setOn(c, on); c.classList.toggle('sel', on); });
+    var dc = docCheck();
+    if (dc && state.hist.length && state.hist[0].idx != null) {
+      // Смена типа относится к последнему измерению: оно сразу пересверяется.
+      dc.setContext(state.hist[0].idx, { objectType: state.kind });
+    }
   }
 
   function setPreset(p) {
@@ -144,6 +173,22 @@
   function setSize(d) { disp.size = Math.max(0.4, Math.min(4, (disp.size || 1) + d * 0.3)); if (iv && iv.setPointSizeScale) { try { iv.setPointSizeScale(disp.size); } catch (e) {} } }
   function applyDisp() { if (!iv) return; try { if (iv.setColorMode) iv.setColorMode(disp.mode === 'elev' ? 'elev' : 'rgb'); } catch (e) {} try { if (iv.setEDL) iv.setEDL(disp.edl); } catch (e) {} try { if (iv.setPointSizeScale) iv.setPointSizeScale(disp.size); } catch (e) {} }
 
+  function hasNumbers(res) {
+    try { return !!(window.MeasurementDocCompare && window.MeasurementDocCompare.measurementFields(res).length); } catch (e) { return false; }
+  }
+  /** Результат идёт в общий список проекта: polyline/area обновляют одну запись, пока измерение не завершено. */
+  function saveToProject(res) {
+    var dc = docCheck(); if (!dc || !hasNumbers(res)) return null;
+    var liveMode = res.mode === 'polyline' || res.mode === 'area';
+    var meta = { objectType: state.kind || null, objectName: state.title || null, origin: 'inspector' };
+    try {
+      if (liveMode && state.live && state.live.mode === res.mode && dc.row(state.live.idx)) { dc.update(state.live.idx, res); return { idx: state.live.idx, fresh: false }; }
+      var idx = dc.add(res, meta);
+      state.live = liveMode ? { mode: res.mode, idx: idx } : null;
+      return idx >= 0 ? { idx: idx, fresh: true } : null;
+    } catch (e) { return null; }
+  }
+
   function refreshReadout(res) {
     var cur = modal && modal.querySelector('#lxInsCur'); if (!cur) return;
     cur.classList.remove('err');
@@ -152,20 +197,45 @@
     var txt = '';
     try { txt = (window.Measure && window.Measure.measureValueText) ? window.Measure.measureValueText(res) : ''; } catch (e) {}
     cur.textContent = txt || '—';
-    if (txt) { state.hist.unshift({ mode: res.mode, txt: txt }); state.hist = state.hist.slice(0, 12); renderHist(); }
+    if (!txt) return;
+    var saved = saveToProject(res);
+    if (saved && !saved.fresh) {
+      for (var i = 0; i < state.hist.length; i++) if (state.hist[i].idx === saved.idx) { state.hist[i].txt = txt; state.hist[i].mode = res.mode; break; }
+    } else {
+      state.hist.unshift({ mode: res.mode, txt: txt, idx: saved ? saved.idx : null });
+      state.hist = state.hist.slice(0, 12);
+    }
+    renderHist();
+  }
+
+  function statusChip(idx) {
+    var dc = docCheck(); var V = window.__lxVerify;
+    if (!dc || idx == null || !V) return null;
+    var row = dc.row(idx); if (!row) return null;
+    var info = V.statusInfo(row.status, row.how);
+    var b = el('button', 'vf-chip ' + info.tone, (info.busy ? '<span class="vf-spin" aria-hidden="true"></span>' : '') + '<span class="lbl"></span>');
+    b.querySelector('.lbl').textContent = info.short; b.type = 'button';
+    b.setAttribute('data-tip', row.expectedText ? 'Требование: ' + row.expectedText + (row.deltaText ? ' · отклонение ' + row.deltaText : '') : info.hint);
+    b.setAttribute('aria-label', 'Сверка: ' + info.label + '. Открыть таблицу сверки');
+    b.onclick = function () { V.open({ focus: idx }); };
+    return b;
   }
 
   function renderHist() {
     var h = modal && modal.querySelector('#lxInsHist'); if (!h) return;
     h.innerHTML = '';
-    if (!state.hist.length) { h.appendChild(el('div', 'lx-win-empty', 'Пока пусто')); return; }
+    if (!state.hist.length) { h.appendChild(el('div', 'lx-win-empty', 'Пока пусто. Поставьте точки на объекте: результат сохранится в проект и сверится с документами.')); return; }
     state.hist.forEach(function (it) {
       var row = el('div', 'lx-win-hrow');
       row.appendChild(el('div', '', MNAME[it.mode] || it.mode));
-      row.appendChild(el('div', '', it.txt));
+      var val = el('div', 'lx-win-hval'); val.appendChild(el('div', '', '')); val.firstChild.textContent = it.txt;
+      var chip = statusChip(it.idx); if (chip) val.appendChild(chip);
+      row.appendChild(val);
       h.appendChild(row);
     });
+    if (window.__lxKit) window.__lxKit.hydrate(h);
   }
+  window.addEventListener('lx-measurements-changed', function () { if (modal && !modal.hidden) renderHist(); });
 
   function _strideDown(c, target) { var n = c.pos.length / 3; if (n <= target) return c; var step = Math.ceil(n / target); var m = Math.floor(n / step) + 1; var p = new Float32Array(m * 3); var col = c.col ? new c.col.constructor(m * 3) : null; var w = 0; for (var i = 0; i < n && w < m; i += step) { p[w * 3] = c.pos[i * 3]; p[w * 3 + 1] = c.pos[i * 3 + 1]; p[w * 3 + 2] = c.pos[i * 3 + 2]; if (col) { col[w * 3] = c.col[i * 3]; col[w * 3 + 1] = c.col[i * 3 + 1]; col[w * 3 + 2] = c.col[i * 3 + 2]; } w++; } return { pos: p.subarray(0, w * 3), col: col ? col.subarray(0, w * 3) : null, count: w }; }
 
@@ -175,7 +245,7 @@
     prevFocus = document.activeElement;
     modal.hidden = false;
     var v = ensureViewer(); if (!v) { modal.hidden = true; return false; }
-    state.lastCloud = cloud;
+    state.lastCloud = cloud; state.title = title || 'Объект'; state.live = null;
     var t = modal.querySelector('#lxInsTitle'); if (t) t.textContent = (title || 'Объект') + ' · ' + nfmt(cloud.count || cloud.pos.length / 3) + ' т.';
     state.hist = []; renderHist(); refreshReadout(null);
     try { var _cl = cloud, _cnt = cloud.count || cloud.pos.length / 3; if (_cnt > 900000) { _cl = _strideDown(cloud, 900000); } v.loadCloud({ pos: _cl.pos, col: _cl.col || null, count: _cl.pos.length / 3 }); } catch (e) { toast('Ошибка загрузки объекта', { tone: 'err' }); }

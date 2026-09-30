@@ -11,7 +11,7 @@ const ROOT = path.join(__dirname, '..');
 const R = path.join(ROOT, 'renderer');
 const read = (p) => fs.readFileSync(path.join(R, p), 'utf8');
 const HTML = read('index.html');
-const CSS_ORDER = ['ui/fonts.css', 'ui/tokens.css', 'ui/base.css', 'ui/components.css', 'ui/shell.css', 'ui/panels.css', 'ui/tools.css', 'ui/viewers.css', 'ui/motion.css'];
+const CSS_ORDER = ['ui/fonts.css', 'ui/tokens.css', 'ui/base.css', 'ui/components.css', 'ui/shell.css', 'ui/panels.css', 'ui/tools.css', 'ui/verify.css', 'ui/viewers.css', 'ui/motion.css'];
 const OLD_UI = ['lixel-ui', 'lixel-ribbon', 'lixel-shell', 'lixel-toolbar', 'lixel-tool-dock', 'ui-v1208', 'ui-v1213',
   'lixel-draw.css', 'lixel-workspace.css', 'lixel-cloud-ui.css', 'lixel-polish', 'lixel-menu-unify'];
 

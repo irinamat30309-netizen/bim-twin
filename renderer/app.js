@@ -3365,7 +3365,7 @@
     const body = $('measureListBody'); const btn = $('mmList');
     const cnt = $('mmListCount'); if (cnt) { cnt.textContent = String(__measurements.length); cnt.hidden = !__measurements.length; }
     if (!body) return;
-    if (!__measurements.length) { body.innerHTML = '<div class="empty">Пока пусто. Сделайте измерение и нажмите «В список».</div>'; return; }
+    if (!__measurements.length) { body.innerHTML = '<div class="empty">Пока пусто. Сделайте измерение и нажмите «В список».</div>'; notifyMeasurementsChanged(); return; }
     body.innerHTML = __measurements.map((m, i) => {
       const lbl = m.label ? '<span class="meas-label">' + esc(m.label) + '</span>' : '';
       const comparison = latestDocComparison(m);
@@ -3377,6 +3377,10 @@
     Array.prototype.forEach.call(body.querySelectorAll('[data-mdel]'), b => b.addEventListener('click', () => { __measurements.splice(Number(b.getAttribute('data-mdel')), 1); renderMeasList(); persistMeasurements(); }));
     Array.prototype.forEach.call(body.querySelectorAll('[data-mren]'), b => b.addEventListener('click', () => renameMeasurement(Number(b.getAttribute('data-mren')))));
     Array.prototype.forEach.call(body.querySelectorAll('[data-mcmp]'), b => b.addEventListener('click', () => compareSavedMeasurement(Number(b.getAttribute('data-mcmp')))));
+    notifyMeasurementsChanged();
+  }
+  function notifyMeasurementsChanged() {
+    try { window.dispatchEvent(new CustomEvent('lx-measurements-changed', { detail: { count: __measurements.length } })); } catch (_) {}
   }
   // Переименование/подпись сохранённого измерения через инлайн-поле (prompt может быть недоступен в Electron).
   function renameMeasurement(idx) {
@@ -3407,20 +3411,32 @@
   function saveMeasurement() {
     const res = viewer && viewer._measResult;
     if (!res || res.error || (res.mode === 'deviation' && res.signed === undefined)) { toast('Нет готового измерения для сохранения'); return; }
+    storeMeasurement(res, {});
+    toast('Сохранено измерений: ' + __measurements.length);
+  }
+  // Общая точка сохранения: основной вьюер и окно «Инспектор объекта» кладут измерения в один список.
+  // extra: { objectType, objectName, origin, label, silent } — тип объекта помогает подобрать требование в документах.
+  function storeMeasurement(res, extra) {
+    extra = extra || {};
     const saved = JSON.parse(JSON.stringify(res));
     const cloud = viewer && viewer._cloudRecord || {};
     const sourcePath = String(cloud.sourceName || lastCloudPath || '');
-    const inferredObjectType = !selEl && res.mode === 'plane'
+    const inferredObjectType = !selEl && !extra.objectType && res.mode === 'plane'
       ? (/стен/iu.test(res.kind || '') ? 'стена' : /пол|потол/iu.test(res.kind || '') ? 'пол/потолок' : /наклон/iu.test(res.kind || '') ? 'наклонная поверхность' : null)
       : null;
+    const chosenType = extra.objectType || null;
+    if (extra.label && !saved.label) saved.label = String(extra.label).slice(0, 120);
     saved.measurementContext = {
       roomId: current && current.id || null,
       roomName: current && current.name || null,
       elementId: selEl && selEl.id || null,
-      elementName: selEl && selEl.name || inferredObjectType,
-      elementType: selEl && selEl.type || inferredObjectType,
+      elementName: chosenType ? chosenType : (selEl && selEl.name || inferredObjectType),
+      elementType: chosenType ? chosenType : (selEl && selEl.type || inferredObjectType),
       elementGuid: selEl && selEl.ifc_guid || null,
-      inferredFromGeometry: !!inferredObjectType,
+      inferredFromGeometry: !chosenType && !!inferredObjectType,
+      objectTypeChosenByUser: !!chosenType,
+      objectName: extra.objectName || null,
+      origin: extra.origin || 'viewer',
       cloudName: sourcePath.split(/[\\/]/).pop() || null,
       sourceUnits: viewer && viewer._srcUnits || null,
       hasCrs: !!(viewer && viewer._srcCrs)
@@ -3429,8 +3445,8 @@
     __measurements.push(saved);
     renderMeasList();
     persistMeasurements();
-    toast('Сохранено измерений: ' + __measurements.length);
     autoCompareMeasurementInBackground(__measurements.length - 1);
+    return __measurements.length - 1;
   }
   var __measurementDocCompareCache = new Map();
   function comparisonDocCacheKey(d) {
@@ -3770,6 +3786,7 @@
         unit: best.unit,
         score: best.score
       } : null,
+      preview: best ? dcSummarize(best) : null,
       automation: {
         state: state,
         algorithmVersion: '1.0.0',
@@ -3887,37 +3904,231 @@
     const close = mk('button', 'btn sm primary', 'Готово'); close.type = 'button'; close.onclick = () => modal.close();
     summary.appendChild(close); modal.body.appendChild(summary);
   }
+  async function computeAllComparisons(onProgress) {
+    const counts = { total: __measurements.length, confirmed: 0, within: 0, outside: 0, noTolerance: 0, review: 0, noMatch: 0 };
+    const scans = new Map();
+    for (let i = 0; i < __measurements.length; i++) {
+      const measurement = __measurements[i];
+      const room = measurementRoom(measurement);
+      if (onProgress) onProgress({ current: i + 1, total: __measurements.length });
+      if (!room) {
+        setAutomaticProposal(measurement, null, null, 'needs-review', 'Укажите помещение');
+        counts.review++;
+        continue;
+      }
+      if (!scans.has(room.id)) scans.set(room.id, await scanRoomRequirements(room, { autoOcr: true }));
+      const outcome = applyAutomaticComparison(measurement, room, scans.get(room.id));
+      if (outcome.comparison) {
+        counts.confirmed++;
+        if (outcome.comparison.status === 'within-tolerance') counts.within++;
+        else if (outcome.comparison.status === 'outside-tolerance') counts.outside++;
+        else counts.noTolerance++;
+      } else if (outcome.state === 'no-match') counts.noMatch++;
+      else counts.review++;
+    }
+    renderMeasList(); persistMeasurements();
+    return counts;
+  }
   async function autoCompareAllMeasurements() {
     if (!__measurements.length) { toast('Список измерений пуст'); return; }
     const button = $('mlAutoCompare');
     if (button) { button.disabled = true; setLbl(button, 'Анализ…'); }
-    const counts = { total: __measurements.length, confirmed: 0, within: 0, outside: 0, noTolerance: 0, review: 0, noMatch: 0 };
-    const scans = new Map();
     try {
-      for (let i = 0; i < __measurements.length; i++) {
-        const measurement = __measurements[i];
-        const room = measurementRoom(measurement);
-        if (!room) {
-          setAutomaticProposal(measurement, null, null, 'needs-review', 'Укажите помещение');
-          counts.review++;
-          continue;
-        }
-        if (!scans.has(room.id)) scans.set(room.id, await scanRoomRequirements(room, { autoOcr: true }));
-        const outcome = applyAutomaticComparison(measurement, room, scans.get(room.id));
-        if (outcome.comparison) {
-          counts.confirmed++;
-          if (outcome.comparison.status === 'within-tolerance') counts.within++;
-          else if (outcome.comparison.status === 'outside-tolerance') counts.outside++;
-          else counts.noTolerance++;
-        } else if (outcome.state === 'no-match') counts.noMatch++;
-        else counts.review++;
-      }
-      renderMeasList(); persistMeasurements();
-      showAutomaticComparisonSummary(counts);
+      showAutomaticComparisonSummary(await computeAllComparisons());
     } finally {
       if (button) { button.disabled = false; setLbl(button, 'Сверить всё'); }
     }
   }
+  // ---------- Мост для окна «Сверка с документацией» (ui/verify.js) и окна «Инспектор объекта» ----------
+  // Логика сверки остаётся здесь и в measurement-doc-compare.js; окна только показывают строки и вызывают эти методы.
+  function dcFmt(value, kind, unit) {
+    const C = window.MeasurementDocCompare;
+    return C && Number.isFinite(value) ? C.formatBaseValue(value, kind, unit) : null;
+  }
+  function dcSigned(value, kind, unit) {
+    if (!Number.isFinite(value)) return null;
+    const text = dcFmt(Math.abs(value), kind, unit);
+    if (!text) return null;
+    return (value > 0 ? '+' : value < 0 ? '\u2212' : '') + text;
+  }
+  function dcExpectedText(ex) {
+    if (!ex || ex.value == null) return '';
+    const base = ex.value + ' ' + (ex.unit || '');
+    if (ex.toleranceMode === 'symmetric' && Number.isFinite(ex.toleranceValue)) return base + ' \u00b1 ' + ex.toleranceValue + ' ' + (ex.toleranceUnit || ex.unit || '');
+    if (ex.toleranceMode === 'max' && Number.isFinite(ex.bound)) return '\u2264 ' + (dcFmt(ex.bound, ex.kind, ex.unit) || base);
+    if (ex.toleranceMode === 'min' && Number.isFinite(ex.bound)) return '\u2265 ' + (dcFmt(ex.bound, ex.kind, ex.unit) || base);
+    return base;
+  }
+  function dcSummarize(ranked) {
+    const r = ranked && (ranked.selectedRequirement || ranked.requirement) || {};
+    const pv = ranked && ranked.preview || {};
+    return {
+      expectedText: dcExpectedText({ value: r.value, unit: r.unit, kind: r.kind, toleranceMode: r.toleranceMode, toleranceValue: r.toleranceValue, toleranceUnit: r.toleranceUnit, bound: r.bound }),
+      actualText: dcFmt(pv.actual, r.kind, r.unit),
+      deltaText: dcSigned(pv.delta, r.kind, r.unit),
+      previewStatus: pv.status || null,
+      fieldLabel: ranked && ranked.field && ranked.field.label || ''
+    };
+  }
+  function dcPlainValue(m) {
+    try { return window.Measure && window.Measure.measureValueText ? window.Measure.measureValueText(m) : ''; } catch (_) { return ''; }
+  }
+  function dcSourceOf(cmp) {
+    const s = cmp && cmp.source || {};
+    const loc = [];
+    if (s.sheet) loc.push('лист ' + s.sheet);
+    if (s.row) loc.push('строка ' + s.row);
+    if (s.page) loc.push('стр. ' + s.page);
+    else if (s.line) loc.push('строка текста ' + s.line);
+    return { documentId: s.documentId || null, documentName: s.documentName || '', location: loc.join(', '), excerpt: s.excerpt || '', ocr: !!s.ocr, truncated: !!s.truncated };
+  }
+  function dcRow(m, i) {
+    const cmp = latestDocComparison(m);
+    const ctx = m.measurementContext || {};
+    const saved = !!(cmp && cmp.expected);
+    const status = cmp ? String(cmp.status || 'needs-review') : 'not-checked';
+    const auto = cmp && cmp.automation || {};
+    const row = {
+      index: i, label: m.label || '', mode: m.mode, valueText: dcPlainValue(m),
+      roomId: ctx.roomId || null, roomName: ctx.roomName || '', objectType: ctx.elementType || '', objectByUser: !!ctx.objectTypeChosenByUser,
+      origin: ctx.origin || 'viewer', units: ctx.sourceUnits || '', unitsByUser: !!ctx.unitsConfirmedByUser,
+      status, statusLabel: cmp ? (cmp.statusLabel || docComparisonStatusLabel(status)) : 'Не сверено',
+      confirmed: saved,
+      how: !cmp ? '' : !saved ? 'proposal' : cmp.confirmations && cmp.confirmations.method === 'user-accepted-suggestion' ? 'user' : auto.mode === 'automatic' ? 'auto' : 'manual',
+      expectedText: '', actualText: '', deltaText: '', fieldLabel: '', source: null,
+      score: auto.score || 0, confidence: auto.confidence || '', reasons: auto.reasons || [], warnings: auto.warnings || []
+    };
+    if (saved) {
+      const ex = cmp.expected;
+      row.expectedText = dcExpectedText(ex);
+      row.actualText = dcFmt(cmp.actual && cmp.actual.baseValue, ex.kind, ex.unit) || '';
+      row.deltaText = dcSigned(cmp.delta, ex.kind, ex.unit) || '';
+      row.fieldLabel = cmp.field && cmp.field.label || '';
+      row.source = dcSourceOf(cmp);
+    } else if (cmp && cmp.candidate) {
+      const pv = cmp.preview || {};
+      row.expectedText = pv.expectedText || ''; row.actualText = pv.actualText || ''; row.deltaText = pv.deltaText || '';
+      row.fieldLabel = pv.fieldLabel || ''; row.previewStatus = pv.previewStatus || null;
+      row.source = cmp.source ? dcSourceOf({ source: cmp.source }) : null;
+    }
+    return row;
+  }
+  function dcRoomsInfo() {
+    const rooms = Array.isArray(DB && DB.rooms) ? DB.rooms : [];
+    return rooms.map(r => ({ id: r.id, name: r.name || 'Без названия', docs: roomDocs(r).filter(d => d && d.file).length }));
+  }
+  function dcMeta() {
+    return { count: __measurements.length, currentRoomId: current && current.id || null, currentRoomName: current && current.name || '', rooms: dcRoomsInfo() };
+  }
+  async function dcCandidates(i) {
+    const m = __measurements[i];
+    if (!m) return { ok: false, reason: 'no-measurement', list: [] };
+    const room = measurementRoom(m);
+    if (!room) return { ok: false, reason: 'no-room', list: [] };
+    const scan = await scanRoomRequirements(room, { autoOcr: true });
+    const ranking = rankMeasurementAgainstEntries(m, scan.entries);
+    const list = [];
+    ranking.matches.slice(0, 6).forEach((mt, key) => {
+      const source = dcSourceOf({ source: (mt.requirement && mt.requirement.source) || {} });
+      list.push(Object.assign({
+        key, score: mt.score, confidence: mt.confidence, reasons: mt.reasons || [], warnings: mt.warnings || [],
+        label: comparisonRequirementLabel(mt.entry), canConfirm: !!(mt.preview && ['within-tolerance', 'outside-tolerance', 'tolerance-not-specified'].includes(mt.preview.status)),
+        needsUnits: !mt.unit, source
+      }, dcSummarize(mt)));
+    });
+    return { ok: true, list, decision: ranking.decision, docs: scan.docs.length, readCount: scan.readCount, ocrCount: scan.ocrCount, errors: scan.errors };
+  }
+  async function dcAccept(i, key) {
+    const m = __measurements[i];
+    const room = m && measurementRoom(m);
+    if (!m || !room) { toast('Укажите помещение измерения'); return { ok: false, reason: 'no-room' }; }
+    const scan = await scanRoomRequirements(room, { autoOcr: true });
+    const ranking = rankMeasurementAgainstEntries(m, scan.entries);
+    const ranked = ranking.matches[Number(key)];
+    if (!ranked) { toast('Вариант устарел: обновите список'); return { ok: false, reason: 'stale' }; }
+    if (!ranked.unit) { toast('Сначала укажите единицы измерения облака'); return { ok: false, reason: 'units' }; }
+    const record = buildAutomaticComparisonRecord(m, room, ranked, ranking);
+    if (!record) { toast('Для этого варианта нельзя посчитать отклонение'); return { ok: false, reason: 'no-result' }; }
+    record.automation.mode = 'user-accepted';
+    record.confirmations.autoConfirmed = false;
+    record.confirmations.method = 'user-accepted-suggestion';
+    record.confirmations.acceptedAt = new Date().toISOString();
+    appendMeasurementComparison(m, record);
+    renderMeasList(); persistMeasurements();
+    return { ok: true, status: record.status };
+  }
+  function dcSetContext(i, patch) {
+    const m = __measurements[i]; if (!m) return false;
+    const ctx = m.measurementContext = m.measurementContext || {};
+    patch = patch || {};
+    if (Object.prototype.hasOwnProperty.call(patch, 'objectType')) {
+      const t = String(patch.objectType || '').trim();
+      ctx.elementType = t || null; ctx.elementName = t || null;
+      ctx.objectTypeChosenByUser = !!t; ctx.inferredFromGeometry = false;
+    }
+    if (patch.roomId) {
+      const room = Array.isArray(DB && DB.rooms) ? DB.rooms.find(r => r.id === patch.roomId) : null;
+      if (room) { ctx.roomId = room.id; ctx.roomName = room.name || null; }
+    }
+    if (patch.units) { ctx.sourceUnits = String(patch.units); ctx.unitsConfirmedByUser = true; }
+    renderMeasList(); persistMeasurements();
+    autoCompareMeasurementInBackground(i);
+    return true;
+  }
+  function dcRemove(i) {
+    if (!__measurements[i]) return false;
+    __measurements.splice(i, 1); renderMeasList(); persistMeasurements(); return true;
+  }
+  async function dcRequirements(roomId, opts) {
+    opts = opts || {};
+    const rooms = Array.isArray(DB && DB.rooms) ? DB.rooms : [];
+    const room = rooms.find(r => r.id === roomId) || current || null;
+    if (!room) return { ok: false, reason: 'no-room', docs: [], items: [] };
+    const scan = await scanRoomRequirements(room, { autoOcr: true, force: !!opts.force, onProgress: opts.onProgress });
+    const counts = new Map();
+    scan.entries.forEach(e => { const k = String(e.doc && e.doc.id || ''); counts.set(k, (counts.get(k) || 0) + 1); });
+    const docs = scan.docs.map(d => {
+      const ext = comparisonFileExt(d);
+      const found = counts.get(String(d.id || '')) || 0;
+      const readable = comparisonSupportedExt(ext) || comparisonOcrExt(ext);
+      return { id: d.id, name: comparisonDocName(d), ext, found, state: found ? 'ok' : readable ? 'empty' : 'skipped' };
+    });
+    const items = scan.entries.map(e => ({
+      id: e.id, label: comparisonRequirementLabel(e), dimension: comparisonDimensionLabel(e.requirement && e.requirement.dimension),
+      confidence: e.requirement && e.requirement.confidence || '', source: dcSourceOf({ source: e.requirement && e.requirement.source })
+    }));
+    return { ok: true, roomId: room.id, roomName: room.name || '', docs, items, errors: scan.errors, ocrCount: scan.ocrCount, nativeCadSkipped: scan.nativeCadSkipped };
+  }
+  function dcOpenDocument(i) {
+    const m = __measurements[i]; const cmp = m && latestDocComparison(m);
+    const id = cmp && cmp.source && cmp.source.documentId;
+    const room = m && measurementRoom(m);
+    const doc = id && room ? roomDocs(room).find(d => d.id === id) : null;
+    if (!doc) { toast('Документ-источник не найден в помещении'); return false; }
+    openDoc(doc); return true;
+  }
+  function dcExportCsv() {
+    if (!__measurements.length) { toast('Список измерений пуст'); return false; }
+    const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""').replace(/\r?\n/g, ' ') + '"';
+    const head = ['№', 'Название', 'Тип объекта', 'Помещение', 'Измерение', 'Сравниваемое значение', 'Факт', 'Требование документа', 'Отклонение', 'Статус', 'Как сопоставлено', 'Документ', 'Место в документе', 'Фрагмент', 'Уверенность (0-100)'];
+    const how = { auto: 'автоматически', user: 'подтверждено вручную', manual: 'введено вручную', proposal: 'предложение, не подтверждено' };
+    const lines = [head.map(q).join(';')];
+    __measurements.forEach((m, i) => {
+      const r = dcRow(m, i);
+      lines.push([i + 1, r.label, r.objectType, r.roomName, r.valueText, r.fieldLabel, r.actualText, r.expectedText, r.deltaText, r.statusLabel, how[r.how] || '', r.source && r.source.documentName, r.source && r.source.location, r.source && r.source.excerpt, r.score || ''].map(q).join(';'));
+    });
+    downloadBlob('\ufeff' + lines.join('\r\n'), 'doc-check-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.csv', 'text/csv;charset=utf-8');
+    toast('Отчёт сверки сохранён (' + __measurements.length + ' строк)');
+    return true;
+  }
+  window.__lxDocCheck = {
+    meta: dcMeta, rows: () => __measurements.map(dcRow), row: i => (__measurements[i] ? dcRow(__measurements[i], i) : null),
+    add: (res, extra) => (res && !res.error ? storeMeasurement(res, extra || {}) : -1),
+    update: (i, res) => { const m = __measurements[i]; if (!m || !res || res.error) return false; const keep = { measurementContext: m.measurementContext, label: m.label, docComparisons: m.docComparisons, docComparison: m.docComparison, autoComparisonProposal: m.autoComparisonProposal }; Object.keys(m).forEach(k => delete m[k]); Object.assign(m, JSON.parse(JSON.stringify(res)), keep); renderMeasList(); persistMeasurements(); autoCompareMeasurementInBackground(i); return true; },
+    candidates: dcCandidates, accept: dcAccept, setContext: dcSetContext, remove: dcRemove, requirements: dcRequirements,
+    run: i => autoCompareMeasurementInBackground(i), runAll: computeAllComparisons, details: i => compareSavedMeasurement(i),
+    openDocument: dcOpenDocument, exportCsv: dcExportCsv
+  };
   function compareSavedMeasurement(index) {
     const measurement = __measurements[index];
     const C = window.MeasurementDocCompare;
@@ -4617,6 +4828,7 @@
     bind('mmQaReport', () => exportMeasQaReport());
     bind('mmNotion', () => exportMeasNotion());
     bind('mlAutoCompare', () => autoCompareAllMeasurements());
+    bind('mlOpenVerify', () => { if (window.__lxVerify) window.__lxVerify.open({}); });
     bind('mlCsv', () => exportMeasCsv());
     bind('mlNotion', () => exportMeasNotion());
     bind('mlClearAll', () => { __measurements = []; renderMeasList(); persistMeasurements(); });

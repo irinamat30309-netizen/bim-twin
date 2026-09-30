@@ -32,6 +32,13 @@ module.exports = function makeStub() {
         { savedAt: Date.now() - 20 * 60e3, points: 296063, bytes: 4738000, sha256: 'a3f91c0d7be2451100aa', latest: true },
         { savedAt: Date.now() - 3 * 3600e3, points: 295870, bytes: 4734000, sha256: '9be2107733ad05aa11cc' }] } : { ok: true, exists: false, revisions: [] },
       autosaveCloud: () => ({ ok: true }), autosaveClear: () => ({ ok: true }),
+      // Тексты документов помещения: нужны, чтобы окно «Сверка с документацией» показывало реальные требования.
+      readDocument: (id) => ({ ok: true, ext: 'pdf', kind: 'pdf', text: ({
+        d1: 'Схема вентиляции К-1. Стена: длина 6,0 м ± 0,05 м. Стена: высота 2,8 м ± 0,03 м.\nВоздуховод: длина 4,2 м ± 0,05 м. Вентиляционный короб: ширина 600 мм ± 10 мм.',
+        d3: 'Паспорт ПУ-1. Оборудование: высота 1,9 м ± 0,02 м. Оборудование: ширина 1,2 м.',
+        d3b: 'Сертификат огнестойкости. Дверь: ширина проёма 900 мм ± 10 мм. Дверь: высота 2100 мм.'
+      })[id] || '' }),
+      ocrDocument: () => ({ ok: false, reason: 'OCR недоступен в стенде' }),
       listProjectRevisions: () => [],
       listProjectOperations: () => [],
       getProjectState: () => null,

@@ -119,6 +119,8 @@ jobs:
             'renderer/ui/tools.css',
             'renderer/ui/viewers.css',
             'renderer/ui/motion.css',
+            'renderer/ui/verify.css',
+            'renderer/ui/verify.js',
             'renderer/ui/kit.js',
             'renderer/ui/commands.js',
             'renderer/ui/ribbon.js',

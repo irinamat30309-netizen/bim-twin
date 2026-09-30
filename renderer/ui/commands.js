@@ -143,6 +143,9 @@
         S('mmQaReport', 'file-json', 'QA JSON', { sel: '#mmQaReport' }),
         S('mmNotion', 'notebook-text', 'Notion', { sel: '#mmNotion' })
       ]),
+      G('verify', 'Сверка', [
+        I('vfOpen', 'clipboard-check', 'Сверка с докум.', { call: '__lxVerify.open', args: [{}], tip: 'Сравнить измерения с требованиями из документов помещения: значения, допуски, отклонения' })
+      ]),
       G('object', 'Объект', [
         I('lxObjInspectBtn', 'scan-search', 'Измерить объект', { sel: '#lxObjInspectBtn', toggle: 1, tip: 'Обведите объект на облаке: откроется окно инспектора с расстоянием, углом и площадью' })
       ])
@@ -241,7 +244,8 @@
         I('btnVerify', 'shield-check', null, { sel: '#btnVerify', primary: 1 })
       ]),
       G('compare', 'Сравнение', [
-        I('btnCompare', 'columns-2', null, { sel: '#btnCompare' })
+        I('btnCompare', 'columns-2', null, { sel: '#btnCompare' }),
+        I('vfOpenQa', 'clipboard-check', 'Замеры и докум.', { call: '__lxVerify.open', args: [{}], tip: 'Измерения против требований из документов помещения' })
       ]),
       G('calc', 'Расчёты', [
         I('opVolume', 'cylinder', 'Объём', { call: OPS_T + 'opVolume', needs: 'cloud', tip: 'Объём над базовой плоскостью' }),

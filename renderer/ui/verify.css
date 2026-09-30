@@ -1,0 +1,121 @@
+/* BIM Twin — окно «Сверка с документацией» и статусы сверки в окне «Инспектор объекта».
+ * Только токены из tokens.css; обе темы. */
+
+/* ---------- Статус-чип (общий) ---------- */
+.vf-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 22px; padding: 0 9px 0 8px; border: 1px solid var(--line-strong); border-radius: 999px;
+  background: var(--bg-3); color: var(--txt-2); font: 600 var(--fs-xs)/1 var(--font); white-space: nowrap; cursor: default;
+}
+button.vf-chip { cursor: pointer; transition: filter var(--t-fast), border-color var(--t-fast); }
+button.vf-chip:hover { filter: brightness(1.12); }
+.vf-chip .lbl { overflow: hidden; text-overflow: ellipsis; }
+.vf-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.vf-chip.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: var(--ok-soft); color: var(--ok); }
+.vf-chip.err { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); background: var(--err-soft); color: var(--err); }
+.vf-chip.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: var(--warn-soft); color: var(--warn); }
+.vf-chip.accent { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+.vf-chip.muted { border-style: dashed; background: transparent; color: var(--txt-3); }
+.vf-spin { flex: none; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: lx-spin .8s linear infinite; }
+
+/* ---------- Инспектор объекта: тип объекта и строки измерений ---------- */
+.lx-win-kinds { display: flex; flex-wrap: wrap; gap: 6px; }
+.lx-win-kinds .chip { height: 24px; padding: 0 9px; }
+.lx-win-hrow .lx-win-hval { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
+
+/* ---------- Окно ---------- */
+.vf-win { width: min(1140px, 100%); height: min(780px, 100%); }
+.vf-bar { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 18px 0; }
+.vf-actions { display: flex; gap: 8px; }
+.vf-actions .btn.busy { pointer-events: none; }
+.vf-stats { display: grid; flex: none; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 12px 18px; }
+.vf-stat {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); color: var(--txt-2);
+  font: 500 var(--fs-sm)/1.2 var(--font); text-align: left; cursor: pointer; transition: background var(--t-fast), border-color var(--t-fast);
+}
+.vf-stat:hover { background: var(--bg-3); }
+.vf-stat-n { font-size: var(--fs-xl, 20px); font-weight: 650; font-variant-numeric: tabular-nums; color: var(--txt); }
+.vf-stat-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vf-stat.ok .vf-stat-n { color: var(--ok); }
+.vf-stat.err .vf-stat-n { color: var(--err); }
+.vf-stat.warn .vf-stat-n { color: var(--warn); }
+.vf-stat.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--txt); }
+.vf-body { flex: 1; min-height: 0; padding: 0 18px 12px; overflow: auto; }
+.vf-foot { flex: none; padding: 10px 18px 12px; border-top: 1px solid var(--line); }
+.vf-note { margin: 0; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.5; }
+
+/* Таблица */
+.vf-table { display: flex; flex-direction: column; }
+.vf-row { display: grid; grid-template-columns: 58px minmax(0, 1.5fr) minmax(0, 1.3fr) minmax(0, .9fr) 92px 132px; gap: 12px; align-items: center; width: 100%; }
+.vf-hd { position: sticky; top: 0; z-index: 1; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg-1); color: var(--txt-3); font: 600 var(--fs-xs)/1 var(--font); letter-spacing: .05em; text-transform: uppercase; }
+.vf-item { border-bottom: 1px solid var(--line); animation: lx-fade var(--t-med) var(--ease); }
+.vf-main {
+  padding: 11px 12px; border: 0; border-left: 3px solid transparent; background: transparent; color: var(--txt); font: inherit; text-align: left; cursor: pointer; transition: background var(--t-fast);
+}
+.vf-main:hover, .vf-item.open .vf-main { background: var(--bg-2); }
+.vf-main.ok { border-left-color: var(--ok); }
+.vf-main.err { border-left-color: var(--err); }
+.vf-main.warn { border-left-color: var(--warn); }
+.vf-main.proposal { border-left-style: dashed; }
+.vf-c { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.vf-c.c0 { flex-direction: row; align-items: center; gap: 6px; color: var(--txt-3); font-variant-numeric: tabular-nums; }
+.vf-c.c0 [data-ico] { transition: transform var(--t-med) var(--ease); }
+.vf-item.open .vf-c.c0 [data-ico] { transform: rotate(90deg); }
+.vf-c.c5 { align-items: flex-start; }
+.vf-t { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.vf-t.muted { color: var(--txt-3); font-weight: 500; }
+.vf-s { overflow: hidden; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.vf-delta { font-variant-numeric: tabular-nums; }
+.vf-delta.ok { color: var(--ok); }
+.vf-delta.err { color: var(--err); }
+.vf-delta.warn { color: var(--warn); }
+.vf-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.vf-tag { padding: 1px 7px; border-radius: 999px; background: var(--bg-3); color: var(--txt-2); font-size: var(--fs-xs); }
+.vf-tag.none { background: transparent; color: var(--txt-3); border: 1px dashed var(--line-strong); }
+.vf-none { padding: 24px 12px; color: var(--txt-3); text-align: center; }
+
+/* Раскрытая строка */
+.vf-detail { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 18px 24px; padding: 6px 14px 16px 24px; background: var(--bg-2); animation: lx-fade var(--t-med) var(--ease); }
+.vf-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.vf-col .lx-win-h { margin: 8px 0 0; }
+.vf-col .lx-win-h:first-child { margin-top: 6px; }
+.vf-col .btn { align-self: flex-start; }
+.vf-quote { margin: 0; padding: 10px 12px; border-left: 3px solid var(--accent-line); border-radius: 0 var(--r-1) var(--r-1) 0; background: var(--bg-1); color: var(--txt-2); font-size: var(--fs-sm); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 132px; overflow: auto; }
+.vf-list { margin: 0; padding-left: 18px; color: var(--txt-2); font-size: var(--fs-sm); line-height: 1.55; }
+.vf-list.warn { color: var(--warn); }
+.vf-detail-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.vf-alts { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; }
+.vf-alts .lx-win-h { margin: 0 0 2px; }
+.vf-alt, .vf-req { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-1); }
+.vf-alt-main { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.vf-alt-main .vf-t, .vf-alt-main .vf-s { white-space: normal; }
+.vf-ex { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; }
+.vf-score { flex: none; font: 600 var(--fs-xs)/1 var(--font); font-variant-numeric: tabular-nums; }
+.vf-score.ok { color: var(--ok); }
+.vf-score.warn { color: var(--warn); }
+.vf-score.muted { color: var(--txt-3); }
+.vf-skel { height: 40px; margin-bottom: 6px; border-radius: var(--r-2); }
+
+/* Вкладка «Найдено в документах» */
+.vf-reqhead { display: flex; align-items: flex-end; gap: 12px; padding: 4px 0 12px; }
+.vf-reqhead .lx-field { flex: 1; max-width: 420px; margin: 0; }
+.vf-docs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.vf-doc { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); color: var(--txt-3); }
+.vf-doc-n { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; color: var(--txt); }
+.vf-reqlist { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+
+/* Пустое состояние */
+.vf-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 420px; margin: 56px auto; text-align: center; color: var(--txt-3); }
+.vf-empty [data-ico] { color: var(--accent); }
+.vf-empty strong { color: var(--txt); font-size: var(--fs-lg); }
+.vf-empty p { margin: 0 0 8px; line-height: 1.55; }
+
+@media (max-width: 1000px) {
+  .vf-row { grid-template-columns: 50px minmax(0, 1.4fr) minmax(0, 1.2fr) 84px 118px; }
+  .vf-row .c3 { display: none; }
+  .vf-detail { grid-template-columns: minmax(0, 1fr); }
+  .vf-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vf-spin { animation-duration: 2s; }
+  .vf-item, .vf-detail { animation: none; }
+}
