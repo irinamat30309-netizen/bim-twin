@@ -38,7 +38,7 @@ function code(src) {
 
 test('в коде интерфейса нет вызовов prompt/confirm/alert', () => {
   const bad = [];
-  for (const f of fs.readdirSync(R).filter((n) => n.endsWith('.js') && n !== 'startup.js')) {
+  for (const f of fs.readdirSync(R).filter((n) => n.endsWith('.js'))) {
     const src = code(read(f));
     const m = src.match(/(?:window\.)?\b(?:prompt|confirm|alert)\s*\(/g);
     if (m) bad.push(f + ': ' + [...new Set(m)].join(', '));
@@ -48,6 +48,7 @@ test('в коде интерфейса нет вызовов prompt/confirm/aler
 
 test('ask(): многострочный ввод, подсказка, Ctrl+Enter и слой выше окна прогресса', () => {
   const kit = read('ui/kit.js'), css = read('ui/viewers.css') + read('ui/components.css');
+  assert.match(kit, /o\.multiline && !o\.input\) o = Object\.assign\(\{\}, o, \{ input: true \}\)/);   // multiline без input всё равно даёт поле
   assert.match(kit, /o\.multiline/);
   assert.match(kit, /lx-ask-hint/);
   assert.match(kit, /e\.ctrlKey \|\| e\.metaKey/);

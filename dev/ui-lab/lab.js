@@ -63,7 +63,7 @@ exports.audit = (page) => page.evaluate(() => {
     });
   });
   document.querySelectorAll('.fpanel,.hud,.hud-readout,.lx-pop,.modal-card,.lx-win,.lx-tip').forEach((e) => {
-    if (!vis(e)) return; const r = e.getBoundingClientRect();
+    if (!vis(e)) return; const r = visRect(e);
     if (r.left < -1 || r.top < -1 || r.right > innerWidth + 1 || r.bottom > innerHeight + 1) out.push('OFFSCREEN ' + nm(e) + ' [' + [r.left, r.top, r.right, r.bottom].map(Math.round) + ']');
   });
   const fl = [...document.querySelectorAll('.fpanel,.hud,.hud-readout,.nav-rail,.viewcube,.ttitle,.elbar,.lx-toast')].filter(vis);
@@ -83,6 +83,9 @@ exports.audit = (page) => page.evaluate(() => {
     const t = (b.getAttribute('aria-label') || b.textContent || b.getAttribute('data-tip') || b.getAttribute('title') || '').trim();
     if (!t) out.push('NO-NAME ' + nm(b));
   });
-  if (document.documentElement.scrollWidth > innerWidth + 1) out.push('H-SCROLL page ' + document.documentElement.scrollWidth);
+  // Страница не должна ни прокручиваться, ни иметь запас для прокрутки (иначе фокус/scrollIntoView сдвигают весь интерфейс вбок)
+  const se = document.scrollingElement || document.documentElement;
+  if (se.scrollLeft > 0 || se.scrollTop > 0) out.push('PAGE-SCROLLED x=' + se.scrollLeft + ' y=' + se.scrollTop);
+  if (se.scrollWidth > innerWidth + 1 || se.scrollHeight > innerHeight + 1) out.push('PAGE-OVERFLOW ' + se.scrollWidth + '×' + se.scrollHeight);
   return [...new Set(out)];
 });

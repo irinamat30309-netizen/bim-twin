@@ -200,7 +200,7 @@
   function opContours() {
     var c0 = needCloud(); if (!c0) return Promise.resolve();
     if (!window.Terrain) { toast('Модуль рельефа недоступен'); return Promise.resolve(); }
-    return askKit({ title: 'Горизонтали', message: 'Шаг горизонталей в метрах (например, 0.50).', input: true, type: 'number', step: '0.05', min: '0.01', value: '0.50', okLabel: 'Построить' }).then(function (intervalText) {
+    return askKit({ title: 'Горизонтали', message: 'Шаг горизонталей в метрах (например, 0.50).', input: true, type: 'number', step: '0.05', min: '0.01', value: '0.50', okLabel: 'Построить', validate: function (v) { var n = Number(String(v).trim().replace(',', '.')); return n > 0 && isFinite(n) ? null : 'Укажите положительный шаг горизонталей'; } }).then(function (intervalText) {
       if (intervalText === null) { toast('Построение горизонталей отменено'); return; }
       var interval = Number(String(intervalText).trim().replace(',', '.'));
       if (!isFinite(interval) || interval <= 0) { toast('Укажите положительный числовой шаг горизонталей'); return; }

@@ -66,7 +66,8 @@
     return 'info';
   }
   /* Стек уведомлений: несколько сообщений подряд не теряются, одинаковые склеиваются в «×N», пауза по наведению, закрытие крестиком */
-  var toastHost = null, TOAST_MAX = 4;
+  var toastHost = null;
+  function toastMax() { return W.innerHeight < 800 ? 3 : 4; }   // в невысоких окнах стопка не должна дотягиваться до кнопок навигации сцены
   function toastRoot() {
     if (toastHost && toastHost.parentNode) return toastHost;
     toastHost = D.createElement('div'); toastHost.id = 'lxToasts'; toastHost.className = 'lx-toasts';
@@ -113,7 +114,7 @@
     el.addEventListener('mouseleave', function () { if (el._gone) return; el.classList.remove('paused'); el._from = Date.now(); el._t = setTimeout(function () { dismissToast(el); }, el._left); });
     root.appendChild(el);
     var live = []; for (var j = 0; j < root.children.length; j++) if (!root.children[j]._gone) live.push(root.children[j]);
-    while (live.length > TOAST_MAX) dismissToast(live.shift());
+    while (live.length > toastMax()) dismissToast(live.shift());
     armToast(el, ms);
   }
 
@@ -284,6 +285,7 @@
   var askSeq = 0;
   function ask(o) {
     o = o || {};
+    if (o.multiline && !o.input) o = Object.assign({}, o, { input: true });   // многострочный диалог всегда с полем ввода
     return new Promise(function (resolve) {
       var prev = D.activeElement, done = false, tid = 'lxAskT' + (++askSeq);
       var back = D.createElement('div'); back.className = 'modal lx-ask';
@@ -302,6 +304,11 @@
         inp.setAttribute('aria-label', o.label || o.message || o.title || 'Значение'); inp.autocomplete = 'off'; inp.spellcheck = false;
         body.appendChild(inp);
       }
+      var errEl = null;
+      if (inp && typeof o.validate === 'function') {
+        errEl = D.createElement('p'); errEl.className = 'lx-ask-err'; errEl.setAttribute('role', 'alert'); errEl.hidden = true; body.appendChild(errEl);
+        inp.addEventListener('input', function () { if (errEl.hidden) return; errEl.hidden = true; inp.classList.remove('invalid'); inp.removeAttribute('aria-invalid'); });
+      }
       if (o.hint) { var hn = D.createElement('p'); hn.className = 'lx-ask-hint'; hn.textContent = o.hint; body.appendChild(hn); }
       var act = D.createElement('div'); act.className = 'form-actions';
       var cancel = D.createElement('button'); cancel.type = 'button'; cancel.className = 'btn sm'; cancel.textContent = o.cancelLabel || 'Отмена';
@@ -317,7 +324,13 @@
         resolve(v);
       }
       function no() { finish(o.input ? null : false); }
-      function yes() { finish(o.input ? inp.value : true); }
+      function yes() {
+        if (errEl) {
+          var bad = o.validate(inp.value);
+          if (bad) { errEl.textContent = String(bad); errEl.hidden = false; inp.classList.add('invalid'); inp.setAttribute('aria-invalid', 'true'); try { inp.focus(); } catch (e) {} return; }
+        }
+        finish(o.input ? inp.value : true);
+      }
       function onKey(e) {
         if (!back.parentNode) return;
         if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); no(); return; }

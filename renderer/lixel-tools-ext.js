@@ -99,7 +99,7 @@
   function opResample() {
     var c0 = needCloud(); if (!c0) return Promise.resolve(); if (!pcedit()) return Promise.resolve();
     var vv=T().viewer&&T().viewer(), spacing=(vv&&vv.base&&vv.base[0]&&vv.base[0]._spacing)||0.01; var def = Math.max(0.005, Math.min(0.03, spacing * 2));
-    return askKit({ title: 'Ресэмплинг облака', message: 'Размер вокселя (м). Точки в одном вокселе будут объединены.', input: true, type: 'number', step: '0.001', min: '0.001', value: def.toFixed(3), okLabel: 'Применить' }).then(function (raw) {
+    return askKit({ title: 'Ресэмплинг облака', message: 'Размер вокселя (м). Точки в одном вокселе будут объединены.', input: true, type: 'number', step: '0.001', min: '0.001', value: def.toFixed(3), okLabel: 'Применить', validate: function (v) { var n = Number(String(v).replace(',', '.')); return n > 0 && isFinite(n) ? null : 'Введите положительный размер вокселя в метрах'; } }).then(function (raw) {
       if (raw === null) return;
       var voxel = Number(String(raw).replace(',', '.'));
       if (!(voxel > 0 && isFinite(voxel))) { toast('Введите положительный размер вокселя в метрах'); return; }

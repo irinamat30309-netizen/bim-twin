@@ -39,7 +39,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .92em; }
 /* Фокус только с клавиатуры */
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-1); }
-input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offset: 0; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; }   /* у полей фокус виден по рамке и мягкому кольцу (input:focus ниже) — двойная обводка не нужна */
 
 /* Иконки */
 svg.ic { display: block; flex: none; width: 1em; height: 1em; }

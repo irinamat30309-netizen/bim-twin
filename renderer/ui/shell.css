@@ -166,6 +166,7 @@ html.lx-ribbon-collapsed .lx-ribbon { flex-basis: 0; height: 0; border-color: tr
 /* ---------- Рабочая область ---------- */
 .app {
   position: relative; flex: 1 1 auto; display: grid; grid-template-columns: var(--w-side) minmax(0, 1fr) var(--w-insp); min-height: 0; min-width: 0;
+  overflow: clip;   /* закрытые выдвижные панели (сдвинуты за край) не должны расширять страницу: иначе фокус или scrollIntoView сдвигают весь интерфейс вбок */
   transition: grid-template-columns var(--t-slow) var(--ease), opacity .32s var(--ease);
 }
 html.lx-side-closed .app { grid-template-columns: 0 minmax(0, 1fr) var(--w-insp); }

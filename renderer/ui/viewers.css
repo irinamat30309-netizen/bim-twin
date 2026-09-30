@@ -109,13 +109,3 @@
   .cv-card:last-child { border-bottom: 0; }
 }
 
-/* ---------- Диалог вопроса (вместо prompt / confirm) ---------- */
-.modal.lx-ask { z-index: calc(var(--z-modal) + 50); }
-.lx-ask-body { display: flex; flex-direction: column; gap: 10px; }
-.lx-ask-msg { color: var(--txt-2); font-size: var(--fs-md); line-height: 1.5; white-space: pre-wrap; }
-.lx-ask-body input, .lx-ask-body textarea { width: 100%; }
-.lx-ask-body textarea { min-height: 150px; resize: vertical; font: 500 var(--fs-sm)/1.5 var(--mono); }
-.lx-ask-hint { margin: -2px 0 0; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.45; }
-.form-actions .lx-ask-keys { margin-right: auto; color: var(--txt-3); font-size: var(--fs-xs); }
-.modal.closing { opacity: 0; transition: opacity var(--t-fast) var(--ease); pointer-events: none; }
-.modal.closing .modal-card { transform: scale(.98); transition: transform var(--t-fast) var(--ease); }

@@ -151,7 +151,7 @@
     var last = -1;
     function measure() {
       var h = dock.offsetHeight, v = h > 0 ? h + 24 : 0;
-      if (v !== last) { last = v; stage.style.setProperty('--dock-h', v + 'px'); }
+      if (v !== last) { last = v; stage.style.setProperty('--dock-h', v + 'px'); R.style.setProperty('--dock-h', v + 'px'); }   // на корне — чтобы поднимались и тосты
     }
     if (W.ResizeObserver) new ResizeObserver(measure).observe(dock);
     if (W.MutationObserver) new MutationObserver(function () { raf(measure); }).observe(dock, { attributes: true, attributeFilter: ['style', 'hidden'], subtree: true });

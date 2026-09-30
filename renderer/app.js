@@ -2657,7 +2657,7 @@
             if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; }
             if (!viewer.selectionCount || !viewer.selectionCount()) { toast('Сначала выделите точки лассо или рамкой'); return; }
             if (!window.__lxKit || !window.__lxKit.ask) { toast('Ввод кода класса недоступен в этом режиме'); return; }
-            const answer = await window.__lxKit.ask({ title: 'Класс LAS', message: 'Код класса ASPRS LAS — целое число от 0 до 255. Например: 2 — грунт, 6 — здание.', input: true, type: 'number', min: 0, max: 255, step: 1, value: '6', okLabel: 'Назначить' });
+            const answer = await window.__lxKit.ask({ title: 'Класс LAS', message: 'Код класса ASPRS LAS — целое число от 0 до 255. Например: 2 — грунт, 6 — здание.', input: true, type: 'number', min: 0, max: 255, step: 1, value: '6', okLabel: 'Назначить', validate: v => (/^[0-9]{1,3}$/.test(String(v).trim()) && Number(v) <= 255) ? null : 'Введите целый код класса от 0 до 255' });
             if (answer == null) return;
             const text = String(answer).trim();
             if (!/^[0-9]{1,3}$/.test(text) || Number(text) > 255) { toast('Введите целый код класса от 0 до 255'); return; }
