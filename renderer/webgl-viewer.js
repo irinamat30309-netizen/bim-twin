@@ -1184,7 +1184,9 @@
       const e = this._eye(), d = Math.hypot(pt[0] - e[0], pt[1] - e[1], pt[2] - e[2]);
       return 2 * Math.max(d, 1e-3) * Math.tan(fov / 2) / h;
     }
-    // Захват вокруг точки pt: радиус — около 16 пикселей на экране, но не мельче 2,5 шага облака и не крупнее 40 шагов
+    // Захват вокруг точки pt: радиус — около 16 пикселей на экране, но не мельче 2,5 шага облака и не крупнее 40 шагов.
+    // Окно для подгонки плоскостей — не менее 17 шагов облака: на близком плане (16 px = 3–6 шагов) в 2,4 радиуса попадает
+    // лишь 140–230 точек (у откосов строки скана редкие), и ребро откоса то находилось, то нет (перепись на реальном облаке)
     _precisionSnapAt(pt, o) {
       o = o || {};
       const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null, idx = this._psIndex();
@@ -1196,7 +1198,7 @@
       for (let i = 0; i < cache.length; i++) if (cache[i].key === key) return cache[i].res;
       const t0 = this._psNow();
       let res = null;
-      try { res = PS.snap(pt, idx, { snapDist: snapDist, grow: !!o.grow }); } catch (e) { res = null; }
+      try { res = PS.snap(pt, idx, { snapDist: snapDist, radius: Math.max(2.4 * snapDist, 17 * sp), grow: !!o.grow }); } catch (e) { res = null; }
       if (!res) return null;
       res.ms = this._psNow() - t0; res.seed = pt.slice(); res.wpp = wpp; res.px = px;
       cache.push({ key: key, res: res }); if (cache.length > 8) cache.shift();

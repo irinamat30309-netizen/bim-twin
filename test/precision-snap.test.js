@@ -348,3 +348,22 @@ test('непараллельность доходит до пользовате�
   assert.match(app, /не параллельны на /);
   assert.match(app, /значение зависит от места/);
 });
+
+test('близкий план: окно плоскостей в просмотре не меньше 17 шагов облака (иначе рёбра откосов нестабильны)', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'webgl-viewer.js'), 'utf8');
+  assert.match(src, /PS\.snap\(pt, idx, \{ snapDist: snapDist, radius: Math\.max\(2\.4 \* snapDist, 17 \* sp\), grow: !!o\.grow \}\)/);
+  // окно задано явно и не выходит за пределы, принятые в модуле: [10, 60] шагов
+  const r = PS.snap([0.01, 0.01, 0.01], PS.buildIndex(new Float32Array([0, 0, 0, 0.02, 0, 0, 0, 0.02, 0, 0, 0, 0.02, 0.02, 0.02, 0, 0.02, 0, 0.02, 0, 0.02, 0.02, 0.02, 0.02, 0.02])), { snapDist: 0.05, radius: 17 * 0.02 });
+  assert.ok(r.radius >= 10 * r.spacing - 1e-12 && r.radius <= 60 * r.spacing + 1e-12, 'окно ' + r.radius);
+});
+
+test('обе точки на одной кромке: «расстояние между рёбрами» не выдаётся нулём, размер — обычное расстояние между точками', () => {
+  const ed = (y) => ({ kind: 'edge', point: [0, 2.2, y], dir: [0, 0, 1], sigma: 0.0015, rms: 0.002, dirSigma: 0.001 });
+  assert.equal(PS.pairGap(ed(0.2), ed(1.21)), null, 'две точки одной перемычки');
+  const mk = (x) => ({ kind: 'edge', point: [x, 0, 0], dir: [0, 1, 0], sigma: 0.0015, rms: 0.002, dirSigma: 0.001 });
+  const g = PS.pairGap(mk(0), mk(1.01));
+  assert.equal(g.kind, 'edges'); assert.ok(Math.abs(g.value - 1.01) < 1e-9, 'два откоса на метре: ' + g.value);
+  const app = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  assert.match(app, /const partial = k => k === 'edge' \|\| k === 'plane';/);
+  assert.match(app, /\(res\.perp != null \|\| !\(partial\(res\.snap\.a\.kind\) \|\| partial\(res\.snap\.b\.kind\)\)\)/);
+});
