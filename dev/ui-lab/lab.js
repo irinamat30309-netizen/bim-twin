@@ -28,3 +28,34 @@ exports.launch = async function launch({ w = 1440, h = 900, scale = 1, theme = '
 };
 exports.shot = (page, name, opts) => page.screenshot({ path: path.join(SHOTS, name + '.png'), ...(opts || {}) });
 exports.openCloud = async (page) => { await page.setInputFiles('#modelInput', CLOUD); await page.waitForTimeout(3500); };
+
+/* Автопроверка вёрстки текущего экрана: иконки-заглушки, обрезанный текст, выход за окно, наложение плавающих блоков, кнопки без имени. */
+exports.audit = (page) => page.evaluate(() => {
+  const out = [];
+  const vis = (e) => { const r = e.getBoundingClientRect(), cs = getComputedStyle(e); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && +cs.opacity > 0.01; };
+  const nm = (e) => (e.id ? '#' + e.id : '') + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\s+/).slice(0, 2).join('.') : '') || e.tagName.toLowerCase();
+  document.querySelectorAll('svg[data-icon-missing]').forEach((s) => out.push('MISSING-ICON ' + s.getAttribute('data-icon-missing') + ' in ' + nm(s.parentElement)));
+  document.querySelectorAll('body *').forEach((e) => {
+    if (!vis(e)) return;
+    const cs = getComputedStyle(e);
+    if (cs.textOverflow === 'ellipsis' && e.scrollWidth > e.clientWidth + 1 && !e.closest('[data-tip],[title]')) out.push('CLIPPED-TEXT ' + nm(e) + ' "' + e.textContent.trim().slice(0, 36) + '"');
+  });
+  document.querySelectorAll('.fpanel,.hud,.hud-readout,.lx-pop,.modal-card,.lx-win,.lx-tip').forEach((e) => {
+    if (!vis(e)) return; const r = e.getBoundingClientRect();
+    if (r.left < -1 || r.top < -1 || r.right > innerWidth + 1 || r.bottom > innerHeight + 1) out.push('OFFSCREEN ' + nm(e) + ' [' + [r.left, r.top, r.right, r.bottom].map(Math.round) + ']');
+  });
+  const fl = [...document.querySelectorAll('.fpanel,.hud,.hud-readout,.nav-rail,.viewcube,.ttitle,.elbar,.lx-toast')].filter(vis);
+  for (let i = 0; i < fl.length; i++) for (let j = i + 1; j < fl.length; j++) {
+    const a = fl[i], b = fl[j]; if (a.contains(b) || b.contains(a)) continue;
+    const p = a.getBoundingClientRect(), q = b.getBoundingClientRect();
+    const w = Math.min(p.right, q.right) - Math.max(p.left, q.left), h = Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top);
+    if (w > 2 && h > 2) out.push('OVERLAP ' + nm(a) + ' × ' + nm(b) + ' (' + Math.round(w) + '×' + Math.round(h) + ')');
+  }
+  document.querySelectorAll('button, [role="button"]').forEach((b) => {
+    if (!vis(b)) return;
+    const t = (b.getAttribute('aria-label') || b.textContent || b.getAttribute('data-tip') || b.getAttribute('title') || '').trim();
+    if (!t) out.push('NO-NAME ' + nm(b));
+  });
+  if (document.documentElement.scrollWidth > innerWidth + 1) out.push('H-SCROLL page ' + document.documentElement.scrollWidth);
+  return [...new Set(out)];
+});

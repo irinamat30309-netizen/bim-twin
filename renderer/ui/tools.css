@@ -4,23 +4,30 @@
 .stage-side { position: absolute; z-index: var(--z-panel); display: flex; flex-direction: column; gap: 10px; overflow-y: auto; overflow-x: hidden; pointer-events: none; scrollbar-width: none; }
 .stage-side::-webkit-scrollbar { display: none; }
 .stage-side > * { flex: none; pointer-events: auto; }
-.stage-side-l { top: 52px; left: 12px; width: 312px; max-height: calc(100% - 52px - 88px - var(--dc-h, 0px)); padding-bottom: 2px; }
-.stage-side-r { top: 12px; right: 116px; width: 328px; max-height: calc(100% - 24px - var(--dc-h, 0px)); padding-bottom: 2px; }
+.stage-side-l { top: 52px; left: 12px; width: 312px; max-height: calc(100% - 52px - 12px - var(--dock-h, 0px) - var(--dc-h, 0px)); padding-bottom: 2px; }
+.stage-side-r { top: 12px; right: 116px; width: 328px; max-height: calc(100% - 12px - 12px - var(--dock-h, 0px) - var(--dc-h, 0px)); padding-bottom: 2px; }
 .stage-side .fpanel { position: static; width: auto; max-width: none; max-height: none; overflow: visible; }
 .stage-side .fpanel-body { max-height: min(56vh, 460px); overflow: auto; }
 
 /* ---------- HUD-панели инструментов ---------- */
+/* Нижняя док-зона: подсказка и панель активного инструмента складываются в столбик и не перекрывают друг друга */
+.hud-dock {
+  position: absolute; left: 12px; right: 12px; bottom: calc(var(--dc-h, 0px) + 16px); z-index: var(--z-hud); display: flex; flex-direction: column; align-items: center; gap: 8px;
+  container: hud / inline-size; pointer-events: none;
+}
+.hud-dock > * { pointer-events: auto; max-width: 100%; }
+.hud-dock > .hud-readout { pointer-events: none; }
 .hud {
-  position: absolute; left: 50%; bottom: calc(var(--dc-h, 0px) + 16px); z-index: var(--z-hud); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px);
+  position: relative; display: flex; align-items: center; gap: 8px; max-width: 100%;
   padding: 5px 6px 5px 12px; border: 1px solid var(--glass-line); border-radius: var(--r-3); background: var(--glass); box-shadow: var(--shadow-2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3); transform: translateX(-50%);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
 }
 .hud-title { display: flex; flex: none; align-items: center; gap: 8px; min-width: 0; height: 30px; margin-right: 2px; padding-right: 12px; border-right: 1px solid var(--line); }
 .hud-ico { display: inline-flex; flex: none; width: 16px; height: 16px; color: var(--accent); }
 .hud-name { font-weight: 600; white-space: nowrap; }
 .hud-hint { min-width: 0; max-width: 340px; overflow: hidden; color: var(--txt-3); font-size: var(--fs-xs); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .hud-count { height: 18px; padding: 0 7px; border-radius: 9px; background: var(--bg-4); color: var(--txt-2); font: 600 var(--fs-xs)/18px var(--font); }
-.hud-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.hud-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 2px; min-width: 0; }
 .hud-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }
 .hud-edit { flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 8px 8px 12px; }
 .hud-edit .hud-title { height: auto; margin: 0; padding: 0; border-right: 0; }
@@ -40,11 +47,18 @@
 .hbtn:disabled, .hbtn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
 .hbtn kbd { margin-left: 2px; }
 
+/* Узкая сцена: у HUD остаются иконки (подписи — во всплывающих подсказках) */
+@container hud (max-width: 760px) {
+  .hud .hbtn .lbl:not(.keep) { display: none; }
+  .hud .hbtn { padding: 0 8px; }
+  .hud .hbtn kbd { display: none; }
+}
+
 /* Подсказка и результат измерений */
 .hud-readout {
-  position: absolute; left: 50%; bottom: calc(var(--dc-h, 0px) + 72px); z-index: var(--z-hud); display: flex; align-items: center; gap: 10px; max-width: calc(100% - 24px);
+  position: relative; z-index: var(--z-hud); display: flex; align-items: center; gap: 10px; max-width: 100%;
   padding: 8px 14px; border: 1px solid var(--glass-line); border-radius: var(--r-2); background: var(--glass); box-shadow: var(--shadow-2); color: var(--txt);
-  font-size: var(--fs-md); line-height: 1.4; transform: translateX(-50%); pointer-events: none;
+  font-size: var(--fs-md); line-height: 1.4; pointer-events: none;
   -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
 }
 .hud-readout:empty { display: none; }
@@ -59,8 +73,8 @@
 .q-row { display: grid; grid-template-columns: 104px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 30px; color: var(--txt-2); font-size: var(--fs-sm); }
 .q-row .btn { justify-self: start; }
 .q-lbl { color: var(--txt-2); }
-.q-toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
-.q-toggles .tgl { min-width: 0; padding: 0 6px 0 4px; }
+.q-toggles { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.q-toggles .tgl { width: 100%; min-width: 0; min-height: 32px; flex-direction: row-reverse; justify-content: space-between; padding: 0 4px 0 8px; }
 .q-toggles .tgl .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- Секущий бокс и контур сечения ---------- */
@@ -315,7 +329,7 @@ html.lx-operation-busy, html.lx-operation-busy body { cursor: progress; }
   paint-order: stroke; stroke: var(--draw-halo); stroke-width: 3px; stroke-linejoin: round;
 }
 .lx-drawsvg .lx-snapmark { fill: none; stroke: var(--draw-draft); stroke-width: 1.6; }
-.hud-readout.lx-drawhint { bottom: calc(var(--dc-h, 0px) + 20px); color: var(--txt-2); }
+.hud-readout.lx-drawhint { color: var(--txt-2); }
 .lx-lyrpanel .fpanel-body { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px 10px; }
 .lx-lyrrow { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--txt); font-size: var(--fs-sm); cursor: pointer; }
 .lx-lyrrow input { accent-color: var(--accent); cursor: pointer; }

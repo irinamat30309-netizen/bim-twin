@@ -2067,7 +2067,7 @@
     const nfmt = n => (n || 0).toLocaleString('ru-RU');
     const refreshEdCount = n => { if (edCount) edCount.textContent = n > 0 ? ('Выбрано точек: ' + nfmt(n)) : 'Выделите точки рамкой (ЛКМ). Shift/ПКМ — вращение'; };
     if (viewer) { viewer.onEditSelect = n => refreshEdCount(n); viewer.onBrushRadius = r => toast('Размер кисти: ' + r + ' px'); viewer.onEditChange = n => { toast('Точек в облаке: ' + nfmt(n)); if (!viewer._pendingProjectOperation) viewer._pendingProjectOperation = { operation: 'cloud.point-edit', parameters: { pointCountAfter: Number(n) || 0 } }; try { if (window.__pcAutosave) window.__pcAutosave.onEdit(n); } catch (e) {} }; }
-    if (eb) eb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setEditSelect) { toast('Редактирование доступно в 3D-режиме (WebGL)'); return; } const v = !eb.classList.contains('on'); eb.classList.toggle('on', v); viewer.setEditSelect(v); if (editBar) editBar.style.display = v ? '' : 'none'; if (v) { selMode = 'lasso'; selDepthMode = 1; if (viewer.setSelectMode) viewer.setSelectMode('lasso'); if (viewer.setSmartClean) { try { viewer.setSmartClean(true); } catch (e) {} } else if (viewer.setSelectDepthMode) { viewer.setSelectDepthMode(1); } if (edModeBtn) setEdModeLbl('Лассо'); if (edThroughBtn) { edThroughBtn.classList.remove('on'); } if (edProtectBtn) { edProtectBtn.classList.add('on'); } refreshEdCount(0); if (wb) wb.classList.remove('on'); if (tb) tb.classList.remove('on'); toast('Умная чистка ВКЛ (v1045): обведите человека/мебель лассо (ЛКМ) → «Удалить». Берётся только ближняя поверхность объекта, пол/стены под ним защищаются локально (RANSAC), дыры залатываются. Мелкие островки — пункт меню «Чистка». Камера — ПКМ/колесо, Alt — снять, Esc — сброс, Ctrl+Z — отмена'); } });
+    if (eb) eb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setEditSelect) { toast('Редактирование доступно в 3D-режиме (WebGL)'); return; } const v = !eb.classList.contains('on'); eb.classList.toggle('on', v); viewer.setEditSelect(v); if (editBar) editBar.style.display = v ? '' : 'none'; if (v) { selMode = 'lasso'; selDepthMode = 1; if (viewer.setSelectMode) viewer.setSelectMode('lasso'); if (viewer.setSmartClean) { try { viewer.setSmartClean(true); } catch (e) {} } else if (viewer.setSelectDepthMode) { viewer.setSelectDepthMode(1); } if (edModeBtn) setEdModeLbl('Лассо'); if (edThroughBtn) { edThroughBtn.classList.remove('on'); } if (edProtectBtn) { edProtectBtn.classList.add('on'); } refreshEdCount(0); if (wb) wb.classList.remove('on'); if (tb) tb.classList.remove('on'); toast('Лассо включено: обведите мусор (ЛКМ) и нажмите «Удалить». Пол и стены под объектом защищены. ПКМ и колесо — камера · Alt — снять · Esc — сброс · Ctrl+Z — отмена'); } });
     // Пункт 4: disk-octree подгружает видимые узлы по frustum+budget; построение индекса пока in-memory и ограничено защитным пределом.
     const mb = $('vtMem');
     if (mb) mb.addEventListener('click', () => { const on = !mb.classList.contains('on'); mb.classList.toggle('on', on); applyPerfProfile(on); toast(on ? 'Профиль «Максимум памяти/качество»: предзагрузка всех облаков проекта, увеличенный кеш octree, детализация при движении до 12 млн точек' : 'Сбалансированный профиль: экономия памяти'); });
@@ -2398,18 +2398,18 @@
     const gb = $('vtGeom');
     if (gb) gb.addEventListener('click', () => {
       if (document.getElementById('geomMenu')) { window.__lxKit.closePopover(); return; }
-      const G = (ico, label, fn) => ({ ico, label, onClick: fn });
+      const GI = (ico, label, fn) => ({ ico, label, onClick: fn });
       window.__lxKit.menu(gb, [
-        G('chart-column', 'Отклонения (скан ↔ модель)', () => withBusy(gb, 'Расчёт отклонений…', geomDeviation)),
-        G('git-compare', 'Совмещение сканов (ICP)', () => withBusy(gb, 'Совмещение (ICP)…', geomRegister)),
-        G('shapes', 'Построить поверхность (mesh)', () => withBusy(gb, 'Построение поверхности…', geomMesh)),
+        GI('chart-column', 'Отклонения (скан ↔ модель)', () => withBusy(gb, 'Расчёт отклонений…', geomDeviation)),
+        GI('git-compare', 'Совмещение сканов (ICP)', () => withBusy(gb, 'Совмещение (ICP)…', geomRegister)),
+        GI('shapes', 'Построить поверхность (mesh)', () => withBusy(gb, 'Построение поверхности…', geomMesh)),
         { sep: true },
-        G('sparkles', 'Облако → 3DGS (настройки + тур)', () => openSplatConvertDialog()),
-        G('save', 'Сохранить 3DGS (.ply)', () => saveConvertedSplat()),
-        G('landmark', 'Облако → меш (в туре)', () => withBusy(gb, 'Меш для тура…', cloudToMeshTour)),
+        GI('sparkles', 'Облако → 3DGS (настройки + тур)', () => openSplatConvertDialog()),
+        GI('save', 'Сохранить 3DGS (.ply)', () => saveConvertedSplat()),
+        GI('landmark', 'Облако → меш (в туре)', () => withBusy(gb, 'Меш для тура…', cloudToMeshTour)),
         { sep: true },
-        G('workflow', 'PDAL-пайплайн (.json)', () => withBusy(gb, 'PDAL…', geomPdal)),
-        G('download', 'Установить Open3D + SciPy', geomInstall)
+        GI('workflow', 'PDAL-пайплайн (.json)', () => withBusy(gb, 'PDAL…', geomPdal)),
+        GI('download', 'Установить Open3D + SciPy', geomInstall)
       ], { id: 'geomMenu', title: 'Геометрия облака', minWidth: 300 });
     });
 
@@ -2607,6 +2607,7 @@
         const engBadge = document.createElement('div'); engBadge.id = 'cleanEngine'; engBadge.className = 'lx-pop-eng'; engBadge.innerHTML = '<i></i><span>Движок очистки: проверяю…</span>'; menu.appendChild(engBadge);
         var cleanParams = (window.cleanParams = window.cleanParams || { k:16, stdRatio:1.0, minNeighbors:4, voxelFactor:2, protectWidth:60, protectSens:50, smartProtect:true });
         const items = [
+          { head: 'Ручная правка' },
           [MI('pencil-ruler', 'Редактировать в CloudCompare (готовый редактор)'), 'Открывает облако в CloudCompare (вырезание, сегментация, SOR/шум). Сохраните поверх файла (Ctrl+S → PLY) и закройте — результат переимпортируется', async () => {
             try {
               if (!(typeof API !== 'undefined' && API && API.editInCloudCompare)) { toast('Доступно в десктоп-версии'); return; }
@@ -2644,10 +2645,12 @@
             } catch (e) { toast('Ошибка запуска CloudCompare'); }
           }],
           [on ? MI('check', 'Ручное лассо — выключить') : MI('lasso-select', 'Ручное лассо — удалить лишнее'), on ? 'Режим включён. Обведите мусор мышью → Enter или «Удалить». Нажмите, чтобы выйти' : 'Обведите мусор мышью → Enter или «Удалить». Люди и мебель на полу убираются только так', () => { const e2 = $('vtEdit'); if (e2) e2.click(); setTimeout(() => { try { tbTools.classList.toggle('on', edOn()); } catch (e) {} }, 0); }],
+          { head: 'Автоматическая очистка' },
           [MI('sparkles', 'Авто-очистка: шум + мусор'), 'Быстро убирает шум и отсоединённые кластеры. Нажимайте повторно = сильнее', () => { const c = $('vtClean'); if (c) c.click(); }],
           [MI('puzzle', 'Убрать мелкие островки точек'), 'Убирает отдельные сгустки И одиночные висящие точки-«мушки», не связанные с основной геометрией (Connected Components + тесный radius). Поверхности сохраняются. Ctrl+Z — отмена', () => { if (!viewer || !viewer.cleanIslandsInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.cleanIslandsInApp({}); if (rem > 0) toast('Убрано мелких островков: ' + nfmt(rem) + ' точек · Ctrl+Z — отмена'); else toast('Отдельных мелких кластеров не найдено — всё связано с основной геометрией'); }],
           [MI('cloud-fog', 'Убрать редкие «мушки» (radius outlier)'), 'Удаляет точки, у которых мало соседей в заданном радиусе — редкий шум, который пропускает SOR (как remove_radius_outlier в Open3D). Ctrl+Z — отмена', () => { if (!viewer || !viewer.cleanRadiusInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.cleanRadiusInApp({ minNeighbors: (cleanParams && cleanParams.minNeighbors) || 4 }); if (rem > 0) toast('Удалено редких точек: ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Редких изолированных точек не найдено'); }],
           [MI('feather', 'Фильтр шума по поверхности (noise filter)'), 'Убирает точки, выступающие над локальной плоскостью стен/пола — сглаживает «толщину» поверхности (как Noise filter в CloudCompare). Ctrl+Z — отмена', () => { if (!viewer || !viewer.noiseFilterInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const rem = viewer.noiseFilterInApp({ stdRatio: (cleanParams && cleanParams.stdRatio) || 1.0, k: (cleanParams && cleanParams.k) || 16 }); if (rem > 0) toast('Сглажено (удалено шумовых точек): ' + nfmt(rem) + ' · Ctrl+Z — отмена'); else toast('Шумовых выступов над поверхностью не найдено'); }],
+          { head: 'Защита и разметка' },
           [MI('shield', 'Защита конструктива (лассо не режет пол, стены, потолок)'), 'ВКЛ по умолчанию при ручном лассо: пол, стены и потолок (RANSAC) не удаляются — режется только объект. Здесь можно включить/выключить и увидеть, сколько плоскостей распознано', () => { if (!viewer || !viewer.setPlaneProtect) { toast('Недоступно в этом режиме'); return; } const cur = viewer.getPlaneProtect ? viewer.getPlaneProtect() : true; const nv = !cur; viewer.setPlaneProtect(nv); const np = (viewer._planes && viewer._planes.length) || 0; const eP = document.getElementById('edProtect'); if (eP) { eP.classList.toggle('on', nv); } toast(nv ? ('Защита конструктива ВКЛ · распознано плоскостей: ' + np + (np ? '' : ' — мало данных в кадре, отдалите камеру и повторите')) : 'Защита ВЫКЛ — лассо удаляет всё внутри контура'); }],
           [MI('tag', 'Назначить LAS-класс выделенным точкам'), 'Вручную назначает выбранным точкам код ASPRS LAS 0–255 (например, 2 — грунт, 6 — здание). Ctrl+Z отменяет и восстанавливает метки проекта', () => {
             if (!viewer || !viewer.assignClassificationInApp) { toast('Недоступно в этом режиме'); return; }
@@ -2677,11 +2680,15 @@
             });
           }],
           [MI('layout-grid', 'Разметить конструктив (пол, стены, потолок)'), 'RANSAC определяет пол, стены и потолок и выделяет всё остальное (мебель/люди/шум) для проверки перед удалением. Затем «Удалить» или Ctrl+Z', () => { if (!viewer || !viewer.classifyInApp) { toast('Недоступно в этом режиме'); return; } if (typeof geomBusy !== 'undefined' && geomBusy) { toast('Идёт обработка — дождитесь завершения'); return; } const ec = (viewer.getEditedCloud && viewer.getEditedCloud()); if (!ec || !ec.pos || !ec.pos.length) { toast(pointCloudArrayUnavailableMessage()); return; } const c = viewer.classifyInApp({ selectClass: 0 }); if (!c) { toast('Не удалось классифицировать'); return; } toast('Пол ' + nfmt(c.floor) + ' · стены ' + nfmt(c.wall) + ' · потолок ' + nfmt(c.ceiling) + ' · прочее ' + nfmt(c.other) + ' (выделено «прочее» — проверьте)'); if (viewer._lastClassificationPromise) viewer._lastClassificationPromise.then(r => { if (r && r.ok) toast('Метки классификации сохранены в проекте'); else toast('Метки рассчитаны, но не сохранены: ' + ((r && (r.message || r.error)) || 'ошибка')); }); }],
-          [MI('square', 'Обводка точек чёрным: ' + ((viewer && viewer._edl) ? 'вкл' : 'выкл')), 'Возвращает тонкую чёрную обводку вокруг точек (эффект EDL) — помогает различать отдельные точки и грани при редактировании. По умолчанию выкл. Нажмите, чтобы переключить', () => { if (!viewer || !viewer.setEDL) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = !viewer._edl; const ok = viewer.setEDL(on); if (on && !ok) { toast('Обводка (EDL) недоступна на этом GPU'); return; } const qE = $('qEDL'); if (qE) { qE.classList.toggle('on', on); } toast(on ? 'Чёрная обводка точек включена' : 'Чёрная обводка точек выключена'); }],
+          { head: 'Вид и файл' },
+          [MI('frame', 'Обводка точек чёрным: ' + ((viewer && viewer._edl) ? 'вкл' : 'выкл')), 'Возвращает тонкую чёрную обводку вокруг точек (эффект EDL) — помогает различать отдельные точки и грани при редактировании. По умолчанию выкл. Нажмите, чтобы переключить', () => { if (!viewer || !viewer.setEDL) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = !viewer._edl; const ok = viewer.setEDL(on); if (on && !ok) { toast('Обводка (EDL) недоступна на этом GPU'); return; } const qE = $('qEDL'); if (qE) { qE.classList.toggle('on', on); } toast(on ? 'Чёрная обводка точек включена' : 'Чёрная обводка точек выключена'); }],
           [MI('save', 'Сохранить облако (.ply)'), 'Сохранить результат правки в файл', () => { const s = $('edSave'); if (s) s.click(); else toast('Сначала включите «Ручное лассо»'); }],
           [MI('undo-2', 'Отменить (Ctrl+Z)'), 'Отменить последнее удаление', () => { const u = $('edUndo'); if (u && u.offsetParent !== null) u.click(); else if (viewer && viewer.undoEdit) viewer.undoEdit(); }],
         ];
-        items.forEach(row => { menu.appendChild(window.__lxKit.menuItem({ ico: row[0].ico, label: row[0].text, sub: row[1], onClick: row[2] })); });
+        items.forEach(row => {
+          if (row.head) { const h2 = document.createElement('div'); h2.className = 'lx-pop-title'; h2.textContent = row.head; menu.appendChild(h2); return; }
+          menu.appendChild(window.__lxKit.menuItem({ ico: row[0].ico, label: row[0].text, sub: row[1], onClick: row[2] }));
+        });
         // v1046: параметры фильтров (k, std-ratio, соседи, воксель, защита плоскостей).
         (function () {
           const wrap = document.createElement('div'); wrap.className = 'lx-pop-params';
@@ -4865,7 +4872,11 @@
     // v0.9.19: одноразовый переход на новую светлую тему claude.ai (сбрасывает старую тёмную один раз)
     try { if (localStorage.getItem('bim.theme.v1089') !== '1') { SETTINGS.theme = 'dark'; localStorage.setItem('bim.theme.v1089', '1'); persistSettings({ theme: 'dark' }); } } catch (e) {}
     applyTheme(SETTINGS.theme || 'light');
-    $('modeLabel').textContent = 'режим: ' + (CAN_PERSIST ? (await API.getMode()) : 'демо (без сохранения)');
+    { // компактная плашка режима; полная формулировка — в подсказке
+      const modeName = CAN_PERSIST ? String(await API.getMode()) : 'демо (без сохранения)', ml = $('modeLabel');
+      ml.textContent = CAN_PERSIST ? ({ sqlite: 'SQLite', json: 'JSON' }[modeName] || modeName) : 'Демо'; ml.classList.toggle('demo', !CAN_PERSIST);
+      ml.setAttribute('data-tip', 'Режим: ' + modeName + (CAN_PERSIST ? '' : ' — данные не записываются на диск'));
+    }
 
     $('btnAI').addEventListener('click', e => { const on = !e.currentTarget.classList.contains('on'); e.currentTarget.classList.toggle('on', on); viewer.setAIHighlight(on); });
     $('btnVerify').addEventListener('click', () => runVerify());

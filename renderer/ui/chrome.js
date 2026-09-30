@@ -145,6 +145,71 @@
     });
   }
 
+  /* ---------- Нижняя док-зона: её высота нужна колонкам панелей, чтобы не перекрывать HUD ---------- */
+  function initDock() {
+    var dock = $('hudDock'), stage = $('stage'); if (!dock || !stage) return;
+    var last = -1;
+    function measure() {
+      var h = dock.offsetHeight, v = h > 0 ? h + 24 : 0;
+      if (v !== last) { last = v; stage.style.setProperty('--dock-h', v + 'px'); }
+    }
+    if (W.ResizeObserver) new ResizeObserver(measure).observe(dock);
+    if (W.MutationObserver) new MutationObserver(function () { raf(measure); }).observe(dock, { attributes: true, attributeFilter: ['style', 'hidden'], subtree: true });
+    measure();
+  }
+
+  /* ---------- Плавающие панели: сворачиваются по шапке; когда места не хватает, старые сворачиваются сами ---------- */
+  function initFloatPanels() {
+    var cols = [$('stageSideL'), $('stageSideR')].filter(Boolean); if (!cols.length) return;
+    var reduce = !!(W.matchMedia && W.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    var pending = false;
+    function panelsOf(col) { return [].slice.call(col.children).filter(function (n) { return n.classList && n.classList.contains('fpanel'); }); }
+    function shown(p) { return p.style.display !== 'none' && !p.hidden && p.offsetParent !== null; }
+    function setFolded(p, on, animate) {
+      if (p.classList.contains('folded') === on) return;
+      var from = p.offsetHeight;
+      p.classList.toggle('folded', on);
+      var b = p.querySelector('.fp-fold');
+      if (b) { b.setAttribute('aria-expanded', String(!on)); b.setAttribute('aria-label', on ? 'Развернуть панель' : 'Свернуть панель'); }
+      if (!animate || reduce || !p.animate) return;
+      var to = p.offsetHeight; if (from === to) return;
+      p.style.overflow = 'hidden';
+      var a = p.animate([{ height: from + 'px' }, { height: to + 'px' }], { duration: 200, easing: 'cubic-bezier(.2,.7,.2,1)' });
+      a.onfinish = a.oncancel = function () { p.style.overflow = ''; };
+    }
+    function decorate(p) {
+      if (p.__lxFold) return;
+      var head = p.querySelector('.fpanel-head'), acts = head && head.querySelector('.fpanel-actions');
+      if (!acts) return;
+      p.__lxFold = true;
+      var b = D.createElement('button'); b.type = 'button'; b.className = 'icon-btn fp-fold'; b.setAttribute('data-ico', 'chevron-up'); b.setAttribute('data-ico-size', '16');
+      b.setAttribute('aria-label', 'Свернуть панель'); b.setAttribute('aria-expanded', 'true'); b.setAttribute('data-tip', 'Свернуть / развернуть');
+      var close = acts.querySelector('[data-close], [data-panel-close]');
+      acts.insertBefore(b, close || null);
+      b.addEventListener('click', function (e) { e.stopPropagation(); setFolded(p, !p.classList.contains('folded'), true); });
+      head.addEventListener('dblclick', function (e) { if (!e.target.closest('button')) setFolded(p, !p.classList.contains('folded'), true); });
+      if (K()) K().hydrate(b);
+      if (W.MutationObserver) new MutationObserver(schedule).observe(p, { attributes: true, attributeFilter: ['style', 'hidden'] });
+    }
+    function arrange(col) {
+      var all = panelsOf(col); all.forEach(decorate);
+      var list = all.filter(shown), fresh = list.filter(function (p) { return !p.__lxSeen; });
+      all.forEach(function (p) { p.__lxSeen = shown(p); });
+      if (!fresh.length) return;
+      fresh.forEach(function (p) { if (p.classList.contains('folded')) setFolded(p, false, true); });
+      for (var guard = 0; guard < 8 && col.scrollHeight - col.clientHeight > 2; guard++) {
+        var old = list.filter(function (p) { return fresh.indexOf(p) < 0 && !p.classList.contains('folded'); })[0];
+        if (!old) break;
+        setFolded(old, true, false);
+      }
+    }
+    function run() { pending = false; cols.forEach(arrange); }
+    function schedule() { if (!pending) { pending = true; raf(run); } }
+    cols.forEach(function (c) { if (W.MutationObserver) new MutationObserver(schedule).observe(c, { childList: true }); });
+    W.addEventListener('lx-cloud-loaded', schedule);
+    run();
+  }
+
   /* ---------- aria-pressed повторяет состояние «включено» (.on / .lx-mode-active) ---------- */
   function initPressedMirror() {
     var sync = function (el) {
@@ -393,7 +458,7 @@
   }
 
   function init() {
-    initTheme(); initPanels(); initPane(); initSkeleton(); initFullscreen(); initStatus(); initPalette(); initCloudFit(); initClose(); initPressedMirror(); labelTabs();
+    initTheme(); initPanels(); initPane(); initSkeleton(); initFullscreen(); initStatus(); initPalette(); initCloudFit(); initClose(); initDock(); initFloatPanels(); initPressedMirror(); labelTabs();
     W.addEventListener('bim-language-change', function () { setTimeout(labelTabs, 0); });
     if (K()) K().hydrate(D);
   }

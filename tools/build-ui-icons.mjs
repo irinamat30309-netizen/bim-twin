@@ -73,7 +73,7 @@ function scanNames() {
     }
   };
   walk(path.join(ROOT, 'renderer'), true);
-  const re = /(?:data-ico=\\?["']|\bico:\s*["']|\b(?:ICON|ic|icon|ico|iconBtn|hudBtn|toolBtn|setBtn)\(\s*["']|\bminiBtn\(\s*["'](?!id["']|data-)|\bminiBtn\(\s*["'](?:id|data-[a-z]+)["']\s*,\s*[^,]+,\s*["']|\bmkBtn\(\s*["'][^"']*["']\s*,\s*["']|\bsetBtn\(\s*\w+\s*,\s*["'])([a-z0-9][a-z0-9-]*)["']/g;
+  const re = /(?:data-ico=\\?["']|\bico:\s*["']|\b(?:ICON|ic|icon|ico|iconBtn|hudBtn|toolBtn|setBtn|MI|GI)\(\s*["']|\bminiBtn\(\s*["'](?!id["']|data-)|\bminiBtn\(\s*["'](?:id|data-[a-z]+)["']\s*,\s*[^,]+,\s*["']|\bmkBtn\(\s*["'][^"']*["']\s*,\s*["']|\bactBtn\(\s*(?:"[^"]*"|'[^']*')\s*,\s*["']|\bsetBtn\(\s*\w+\s*,\s*["'])([a-z0-9][a-z0-9-]*)["']/g;
   for (const f of files) {
     const src = fs.readFileSync(f, 'utf8');
     if (src.length > 3_000_000) continue;
@@ -132,12 +132,18 @@ ${body}
     return '<svg class="ic' + (cls ? ' ' + cls : '') + '" data-icon="' + n + '"' + miss + ' viewBox="0 0 24 24" width="' + (size || 18) + '" height="' + (size || 18) +
       '" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + P[n] + '</svg>';
   }
+  /* Элемент с data-ico: пустой — получает иконку; с подписью («Извлечь объект») — иконка встаёт слева, текст сохраняется. */
   function hydrate(scope) {
     var list = (scope || document).querySelectorAll('[data-ico]');
     for (var i = 0; i < list.length; i++) {
-      var el = list[i], name = el.getAttribute('data-ico');
-      if (el.getAttribute('data-ico-done') === name) continue;
-      el.innerHTML = svg(name, el.getAttribute('data-ico-size') || 18);
+      var el = list[i], name = el.getAttribute('data-ico'), first = el.firstElementChild;
+      var lit = !!first && first.nodeName.toLowerCase() === 'svg';
+      if (lit && el.getAttribute('data-ico-done') === name) continue;
+      var size = el.getAttribute('data-ico-size'), labeled = !!(el.textContent || '').trim();
+      if (labeled) el.classList.add('ico-lead'); // подпись есть: иконка фиксированного размера слева, а не на всю ширину
+      if (labeled && lit) first.outerHTML = svg(name, size || 16);
+      else if (labeled) el.insertAdjacentHTML('afterbegin', svg(name, size || 16));
+      else el.innerHTML = svg(name, size || 18);
       el.setAttribute('data-ico-done', name);
     }
   }

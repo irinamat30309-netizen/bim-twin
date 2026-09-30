@@ -80,6 +80,11 @@
       if (window.__lxModes && window.__lxModes.cancelAll) window.__lxModes.cancelAll('escape'); else exitTools();
       return true;
     }
+    // Ничего другого не осталось: Esc закрывает последнюю открытую плавающую панель, даже если фокус на ленте (в поле ввода — нет).
+    const openPanels = [...document.querySelectorAll('.fpanel[data-esc]')].filter(visible), lastPanel = openPanels[openPanels.length - 1];
+    if (lastPanel && !/INPUT|TEXTAREA|SELECT/.test((document.activeElement && document.activeElement.tagName) || '')) {
+      const x = lastPanel.querySelector('[data-panel-close]'); if (x) { x.click(); return true; }
+    }
     return false;
   }
   document.addEventListener('keydown', e => {

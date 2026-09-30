@@ -33,13 +33,19 @@
         if (!n.isConnected) continue;
         if (n.matches && n.matches('[data-ico-lead]')) leadIcons(n.parentNode || D);
         hydrate(n);
+        fadeAll(n);
         if (n.matches && n.matches('[data-ico]')) W.__lxIcons.hydrate(n.parentNode || D);
       }
     }
     new MutationObserver(function (muts) {
       for (var i = 0; i < muts.length; i++) {
         var a = muts[i].addedNodes;
-        for (var j = 0; j < a.length; j++) if (a[j].nodeType === 1) queue.push(a[j]);
+        for (var j = 0; j < a.length; j++) {
+          var nd = a[j];
+          if (nd.nodeType === 1) queue.push(nd);
+          // код, который перезаписал textContent у кнопки с иконкой, не должен оставлять её без иконки
+          else if (nd.nodeType === 3 && nd.parentNode && nd.parentNode.nodeType === 1 && nd.parentNode.hasAttribute('data-ico')) queue.push(nd.parentNode);
+        }
       }
       if (queue.length && !pending) { pending = true; raf(flush); }
     }).observe(D.documentElement, { childList: true, subtree: true });
@@ -109,6 +115,13 @@
     var t = tip, r = host.getBoundingClientRect(), vw = W.innerWidth, vh = W.innerHeight;
     t.style.left = '0px'; t.style.top = '0px';
     var w = t.offsetWidth, h = t.offsetHeight, gap = 8;
+    var pop = host.closest && host.closest('.lx-pop');
+    if (pop) { // описание пункта меню — сбоку от меню, чтобы не закрывать соседние пункты
+      var pr = pop.getBoundingClientRect(), lx = pr.right + gap;
+      if (lx + w > vw - 8) lx = Math.max(8, pr.left - w - gap);
+      t.style.left = Math.round(lx) + 'px'; t.style.top = Math.round(Math.max(8, Math.min(r.top, vh - h - 8))) + 'px';
+      return;
+    }
     var left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, vw - w - 8));
     var top = r.bottom + gap;
     if (top + h > vh - 8) top = Math.max(8, r.top - h - gap);
@@ -130,7 +143,7 @@
       if (e.pointerType === 'touch') return;
       var host = tipHost(e.target);
       if (!host || host === tipEl) return;
-      if (host.closest('#viewer, .lx-pop, .lx-palette, .docview-body, .dxf-wrap')) return;
+      if (host.closest('#viewer, .lx-palette, .docview-body, .dxf-wrap') || (host.closest('.lx-pop') && !host.matches('.lx-pop-item'))) return;
       hideTip();
       var delay = Date.now() - lastTipAt < 500 ? 60 : 420;
       tipTimer = setTimeout(function () { if (host.isConnected) showTip(host); }, delay);
@@ -171,10 +184,12 @@
     closePopover();
     var el = D.createElement('div'); el.className = 'lx-pop' + (o.className ? ' ' + o.className : ''); if (o.id) el.id = o.id;
     el.setAttribute('role', o.role || 'menu'); if (o.label) el.setAttribute('aria-label', o.label);
-    if (typeof o.content === 'string') el.innerHTML = o.content; else if (o.content) el.appendChild(o.content);
+    var body = D.createElement('div'); body.className = 'lx-pop-scroll'; el.appendChild(body);
+    if (typeof o.content === 'string') body.innerHTML = o.content; else if (o.content) body.appendChild(o.content);
     if (o.minWidth) el.style.minWidth = o.minWidth + 'px';
     D.body.appendChild(el);
     hydrate(el);
+    fade(body, 'y');
     place(el, o.anchor, o);
     var p = { el: el, anchor: o.anchor, onClose: o.onClose };
     p.onDown = function (e) { if (el.contains(e.target) || (o.anchor && o.anchor.contains(e.target))) return; closePopover(); };
@@ -196,7 +211,8 @@
   /** Пункт меню: { label, sub, ico, tip, danger, disabled, onClick }; по клику меню закрывается. */
   function menuItem(it) {
     var b = D.createElement('button'); b.type = 'button'; b.className = 'lx-pop-item' + (it.danger ? ' danger' : ''); b.setAttribute('role', 'menuitem'); if (it.id) b.id = it.id;
-    if (it.tip) b.setAttribute('data-tip', it.tip);
+    var full = it.tip || (it.sub && plain(it.sub).length > 68 ? plain(it.sub) : '');
+    if (full) { b.setAttribute('data-tip', full); b.setAttribute('data-tip-title', plain(it.label)); }
     b.innerHTML = (it.ico ? '<span data-ico="' + it.ico + '"></span>' : '') + '<span class="lx-pop-t">' + esc(plain(it.label)) + (it.sub ? '<small>' + esc(plain(it.sub)) + '</small>' : '') + '</span>';
     if (it.disabled) b.disabled = true;
     b.addEventListener('click', function () { closePopover(); if (it.onClick) it.onClick(); });
@@ -305,12 +321,69 @@
   /* Кнопка «занято»: класс .busy + блокировка */
   function busy(btn, on) { if (!btn) return; btn.classList.toggle('busy', !!on); if (on) btn.setAttribute('aria-busy', 'true'); else btn.removeAttribute('aria-busy'); }
 
+  /* ---------- Ползунки: доля заливки трека (--f) ---------- */
+  function paintRange(el) {
+    var mn = parseFloat(el.min), mx = parseFloat(el.max), v = parseFloat(el.value);
+    if (isNaN(mn)) mn = 0; if (isNaN(mx)) mx = 100; if (isNaN(v)) v = mn;
+    el.style.setProperty('--f', String(mx > mn ? Math.max(0, Math.min(1, (v - mn) / (mx - mn))) : 0));
+  }
+  function initRanges() {
+    var proto = W.HTMLInputElement && W.HTMLInputElement.prototype, d = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+    // программная запись value (app.js выставляет ползунки сам) тоже перекрашивает трек
+    if (d && d.set && d.configurable) {
+      try {
+        Object.defineProperty(proto, 'value', { configurable: true, enumerable: d.enumerable, get: function () { return d.get.call(this); },
+          set: function (v) { d.set.call(this, v); if (this.type === 'range') paintRange(this); } });
+      } catch (e) {}
+    }
+    var onEvt = function (e) { var t = e.target; if (t && t.type === 'range') paintRange(t); };
+    D.addEventListener('input', onEvt, true); D.addEventListener('change', onEvt, true);
+    var all = function (scope) { var l = scope.querySelectorAll ? scope.querySelectorAll('input[type="range"]') : []; for (var i = 0; i < l.length; i++) paintRange(l[i]); if (scope.matches && scope.matches('input[type="range"]')) paintRange(scope); };
+    all(D);
+    if (W.MutationObserver) new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var m = muts[i];
+        if (m.type === 'attributes') { if (m.target.type === 'range') paintRange(m.target); continue; }
+        for (var j = 0; j < m.addedNodes.length; j++) if (m.addedNodes[j].nodeType === 1) all(m.addedNodes[j]);
+      }
+    }).observe(D.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['min', 'max', 'value'] });
+  }
+
+  /* ---------- Затухание края у прокручиваемых областей ---------- */
+  function fade(el, axis) {
+    if (!el || el.__lxFade) return el;
+    el.__lxFade = 1;
+    var y = axis !== 'x', attr = y ? 'data-fade-y' : 'data-fade-x';
+    function upd() {
+      var pos = y ? el.scrollTop : el.scrollLeft, size = y ? el.clientHeight : el.clientWidth, full = y ? el.scrollHeight : el.scrollWidth;
+      var s = pos > 2, e = full - size - pos > 2, v = s && e ? 'both' : e ? 'end' : s ? 'start' : '';
+      if (v) { if (el.getAttribute(attr) !== v) el.setAttribute(attr, v); } else if (el.hasAttribute(attr)) el.removeAttribute(attr);
+    }
+    el.addEventListener('scroll', upd, { passive: true });
+    if (W.ResizeObserver) new ResizeObserver(upd).observe(el);
+    if (W.MutationObserver) new MutationObserver(function () { raf(upd); }).observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+    raf(upd);
+    return el;
+  }
+  var FADE_SEL = [['.stage-side', 'y'], ['.stage-side .fpanel-body', 'y'], ['.elbar', 'x'], ['.tree', 'y'], ['.insp-pane', 'y'], ['.tabbody', 'y'], ['.form-body', 'y'],
+    ['.lx-win-sec.grow', 'y'], ['.lx-palette-list', 'y'], ['.lx-edit-list', 'y'], ['.sv-panel', 'y'], ['[data-fade]', '']];
+  function fadeAll(scope) {
+    if (!scope || !scope.querySelectorAll) return;
+    for (var k = 0; k < FADE_SEL.length; k++) {
+      var q = FADE_SEL[k][0], l = scope.querySelectorAll(q), i;
+      for (i = 0; i < l.length; i++) fade(l[i], FADE_SEL[k][1] || l[i].getAttribute('data-fade'));
+      if (scope.matches && scope.matches(q)) fade(scope, FADE_SEL[k][1] || scope.getAttribute('data-fade'));
+    }
+  }
+
   function init() {
     hydrate(D);
     watchIcons();
     wireTips();
+    initRanges();
+    fadeAll(D);
   }
-  W.__lxKit = { ic: ic, hydrate: hydrate, toast: toast, popover: popover, menu: menu, menuItem: menuItem, pointAnchor: pointAnchor, ask: ask, plain: plain, closePopover: closePopover, activity: activity, busy: busy, hideTip: hideTip, esc: esc,
+  W.__lxKit = { ic: ic, hydrate: hydrate, fade: fade, toast: toast, popover: popover, menu: menu, menuItem: menuItem, pointAnchor: pointAnchor, ask: ask, plain: plain, closePopover: closePopover, activity: activity, busy: busy, hideTip: hideTip, esc: esc,
     get popoverOpen() { return !!openPop; } };
   if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', init); else init();
 })();

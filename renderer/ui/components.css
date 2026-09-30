@@ -62,14 +62,14 @@
   background: transparent; color: var(--txt-2); font: 500 var(--fs-sm)/1.2 var(--font); text-align: left; cursor: pointer; transition: background var(--t-fast), color var(--t-fast);
 }
 .tgl:hover { background: var(--bg-3); color: var(--txt); }
-.tgl-sw { position: relative; flex: none; width: 26px; height: 15px; border-radius: 15px; background: var(--bg-4); transition: background var(--t-med) var(--ease); }
+.tgl-sw { position: relative; flex: none; width: 28px; height: 16px; border-radius: 16px; background: var(--track); transition: background var(--t-med) var(--ease); }
 .tgl-sw::after {
-  content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--txt-2);
+  content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--knob-off); box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
   transition: transform var(--t-med) var(--ease), background var(--t-med);
 }
 .tgl.on, .tgl[aria-pressed="true"] { color: var(--txt); }
 .tgl.on .tgl-sw, .tgl[aria-pressed="true"] .tgl-sw { background: var(--accent-fill); }
-.tgl.on .tgl-sw::after, .tgl[aria-pressed="true"] .tgl-sw::after { transform: translateX(11px); background: #fff; }
+.tgl.on .tgl-sw::after, .tgl[aria-pressed="true"] .tgl-sw::after { transform: translateX(12px); background: #fff; }
 
 /* Бейджи */
 .badge {
@@ -104,6 +104,10 @@
 .fpanel-actions { display: flex; align-items: center; gap: 4px; }
 .fpanel-body { padding: 12px 14px 14px; font-size: var(--fs-sm); line-height: 1.5; }
 .fpanel-count { color: var(--txt-3); font-size: var(--fs-sm); }
+.fp-fold svg { transition: transform var(--t-med) var(--ease); }
+.fpanel.folded .fp-fold svg { transform: rotate(180deg); }
+.fpanel.folded .fpanel-head { border-bottom-color: transparent; }
+.fpanel.folded .fpanel-body, .fpanel.folded .fpanel-inner > :not(.fpanel-head), .fpanel.folded > :not(.fpanel-head):not(.fpanel-inner) { display: none; }
 
 /* ---------- Модальные окна ---------- */
 .modal {
@@ -137,17 +141,18 @@
 .lx-tip-hint { color: var(--warn) !important; }
 
 .lx-pop {
-  position: fixed; z-index: var(--z-pop); min-width: 200px; max-width: 360px; max-height: min(70vh, 560px); overflow: auto; padding: 6px;
+  position: fixed; z-index: var(--z-pop); display: flex; flex-direction: column; min-width: 200px; max-width: 380px; max-height: min(72vh, 600px); overflow: hidden;
   border: 1px solid var(--line-strong); border-radius: var(--r-2); background: var(--bg-1); box-shadow: var(--shadow-3);
   transform-origin: var(--ox, 50%) var(--oy, 0); animation: lx-pop var(--t-fast) var(--ease);
 }
+.lx-pop-scroll { flex: 1 1 auto; min-height: 0; padding: 6px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--scroll) transparent; }
 .lx-pop-item {
   display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 6px 10px; border: 0; border-radius: var(--r-1);
   background: transparent; color: var(--txt); font: 500 var(--fs-md)/1.25 var(--font); text-align: left; cursor: pointer; transition: background var(--t-fast);
 }
 .lx-pop-item:hover, .lx-pop-item:focus-visible { background: var(--bg-3); outline: none; }
 .lx-pop-item [data-ico] { width: 16px; height: 16px; color: var(--txt-2); }
-.lx-pop-item small { display: block; margin-top: 2px; color: var(--txt-3); font-size: var(--fs-xs); font-weight: 400; }
+.lx-pop-item small { display: -webkit-box; margin-top: 2px; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--txt-3); font-size: var(--fs-xs); font-weight: 400; line-height: 1.35; }
 .lx-pop-item .lx-pop-t { flex: 1; min-width: 0; }
 .lx-pop-item.danger { color: var(--err); }
 .lx-pop-sep { height: 1px; margin: 5px 4px; background: var(--line); }
@@ -165,17 +170,20 @@
 
 /* ---------- Тосты ---------- */
 .toast {
-  position: fixed; left: 50%; bottom: calc(var(--h-status) + 18px); z-index: var(--z-toast); display: flex; align-items: center; gap: 10px;
-  max-width: min(560px, calc(100vw - 32px)); padding: 10px 14px 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-2);
+  position: fixed; right: 12px; bottom: calc(var(--h-status) + 12px); z-index: var(--z-toast); display: flex; align-items: flex-start; gap: 10px;
+  width: max-content; max-width: min(calc(var(--w-insp) - 24px), calc(100vw - 24px)); padding: 11px 14px 11px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-2);
   background: var(--bg-1); color: var(--txt); box-shadow: var(--shadow-3); font-size: var(--fs-md); line-height: 1.4;
-  opacity: 0; pointer-events: none; transform: translate(-50%, 10px); transition: opacity var(--t-med) var(--ease), transform var(--t-med) var(--ease);
+  opacity: 0; pointer-events: none; transform: translateY(10px); transition: opacity var(--t-med) var(--ease), transform var(--t-med) var(--ease);
 }
-.toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.toast.show { opacity: 1; transform: none; pointer-events: auto; }
+/* Правая колонка закрыта — тост может быть шире, на сцену он всё равно не заходит */
+html.lx-insp-closed .toast { max-width: min(380px, calc(100vw - 24px)); }
+.toast .t-ico { margin-top: 1px; }
 .toast .t-ico { display: inline-flex; flex: none; width: 18px; height: 18px; color: var(--accent); }
 .toast[data-tone="ok"] .t-ico { color: var(--ok); }
 .toast[data-tone="warn"] .t-ico { color: var(--warn); }
 .toast[data-tone="err"] .t-ico { color: var(--err); }
-.toast .t-msg { min-width: 0; overflow-wrap: anywhere; }
+.toast .t-msg { display: -webkit-box; min-width: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow-wrap: anywhere; }
 
 /* ---------- Скелетоны и индикаторы ---------- */
 .lx-skel, .sb-skeleton i {

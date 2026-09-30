@@ -31,7 +31,9 @@ html[data-theme="dark"],
   --warn-soft: rgba(245, 181, 68, .14);
   --err-soft: rgba(240, 97, 109, .14);
   --overlay: rgba(6, 8, 11, .62);
-  --glass: rgba(20, 23, 28, .86);
+  --glass: rgba(20, 23, 28, .95);
+  --track: #3d4658;
+  --knob-off: #aeb8c8;
   --glass-line: rgba(255, 255, 255, .08);
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
   --shadow-2: 0 8px 24px rgba(0, 0, 0, .42), 0 1px 0 rgba(255, 255, 255, .03) inset;
@@ -78,7 +80,9 @@ html[data-theme="light"] {
   --warn-soft: rgba(154, 91, 0, .1);
   --err-soft: rgba(198, 47, 67, .09);
   --overlay: rgba(20, 26, 36, .38);
-  --glass: rgba(255, 255, 255, .9);
+  --glass: rgba(255, 255, 255, .96);
+  --track: #bcc6d4;
+  --knob-off: #ffffff;
   --glass-line: rgba(20, 26, 36, .08);
   --shadow-1: 0 1px 2px rgba(20, 26, 36, .08);
   --shadow-2: 0 8px 24px rgba(20, 26, 36, .14), 0 1px 0 rgba(255, 255, 255, .6) inset;

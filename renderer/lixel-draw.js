@@ -268,7 +268,7 @@
     if (!hintEl && stageEl) {
       hintEl = document.createElement('div'); hintEl.className = 'hud-readout lx-drawhint'; hintEl.setAttribute('role', 'status');
       hintEl.innerHTML = '<span class="ro-ico" data-ico="pencil-ruler"></span><span class="ro-t"></span>';
-      stageEl.appendChild(hintEl);
+      (document.getElementById('hudDock') || stageEl).appendChild(hintEl);
       if (window.__lxKit) window.__lxKit.hydrate(hintEl);
     }
     if (hintEl) { hintEl.querySelector('.ro-t').textContent = txt; hintEl.hidden = false; }

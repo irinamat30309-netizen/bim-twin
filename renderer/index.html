@@ -113,18 +113,7 @@
           </svg>
         </div>
 
-        <!-- Контекстный HUD измерений -->
-        <div id="measureReadout" class="hud-readout" role="status" aria-live="polite"></div>
-        <section id="measureBar" class="hud hud-measure" aria-label="Измерение">
-          <div class="hud-title"><span class="hud-ico" id="hudMeasureIco" data-ico="ruler"></span><span class="hud-name" id="hudMeasureName">Расстояние</span></div>
-          <div class="hud-actions">
-            <button id="mmFinish" class="hbtn" type="button" title="Завершить текущую полилинию или площадь и начать новую"><span data-ico="check"></span><span class="lbl">Завершить</span></button>
-            <button id="mmSave" class="hbtn" type="button" title="Сохранить текущее измерение в список"><span data-ico="list-plus"></span><span class="lbl">В список</span></button>
-            <button id="mmClear" class="hbtn" type="button" title="Очистить текущее измерение"><span data-ico="rotate-ccw"></span><span class="lbl">Сбросить</span></button>
-            <button id="mmExit" class="hbtn hbtn-quiet" type="button" title="Выключить измерение (Esc)"><span data-ico="x"></span><span class="lbl">Выйти</span><kbd>Esc</kbd></button>
-          </div>
-        </section>
-        <div class="stage-side stage-side-r" id="stageSideR">
+                        <div class="stage-side stage-side-r" id="stageSideR">
           <section id="measureListPanel" class="fpanel fp-right" aria-label="Сохранённые измерения">
           <header class="fpanel-head">
               <span class="fpanel-ico" data-ico="list"></span><h3>Измерения</h3>
@@ -138,43 +127,55 @@
         </section>
         </div>
 
-        <!-- Правка облака -->
-        <section id="editBar" class="hud hud-edit" aria-label="Правка облака">
-          <div class="hud-title"><span class="hud-ico" data-ico="lasso-select"></span><span class="hud-name">Правка облака</span><span id="editCount" class="hud-hint">Обведите мусор мышью, затем «Удалить». Камера — ПКМ и колесо</span></div>
-          <div class="hud-tools">
-            <div class="seg-group" role="group" aria-label="Выделение">
-              <button id="edMode" class="hbtn" type="button" title="Лассо — обвести произвольный контур; рамка — прямоугольная область"><span data-ico="lasso-select"></span><span class="lbl">Лассо</span></button>
-              <button id="edThrough" class="hbtn" type="button" title="Насквозь — удаляет все точки внутри контура по всей глубине. Только спереди — лишь видимая поверхность"><span data-ico="layers-2"></span><span class="lbl">Насквозь</span></button>
-              <button id="edProtect" class="hbtn" type="button" title="Защита пола и стен: RANSAC-плоскости не удаляются"><span data-ico="shield"></span><span class="lbl">Защита пола и стен</span></button>
-              <button id="edWand" class="hbtn" type="button" title="Волшебная палочка: клик по мусору"><span data-ico="wand-sparkles"></span><span class="lbl">Палочка</span></button>
-              <button id="edDrop" class="hbtn" type="button" title="Пипетка: клик по цвету"><span data-ico="pipette"></span><span class="lbl">Пипетка</span></button>
-              <button id="edSOR" class="hbtn" type="button" title="Statistical Outlier Removal — убрать шум"><span data-ico="brush-cleaning"></span><span class="lbl">SOR-шум</span></button>
+        
+        
+        <!-- Нижняя док-зона сцены: подсказка и панель активного инструмента; блоки не накладываются друг на друга -->
+        <div class="hud-dock" id="hudDock">
+          <div id="measureReadout" class="hud-readout" role="status" aria-live="polite"></div>
+          <section id="measureBar" class="hud hud-measure" aria-label="Измерение">
+            <div class="hud-title"><span class="hud-ico" id="hudMeasureIco" data-ico="ruler"></span><span class="hud-name" id="hudMeasureName">Расстояние</span></div>
+            <div class="hud-actions">
+              <button id="mmFinish" class="hbtn" type="button" title="Завершить текущую полилинию или площадь и начать новую"><span data-ico="check"></span><span class="lbl">Завершить</span></button>
+              <button id="mmSave" class="hbtn" type="button" title="Сохранить текущее измерение в список"><span data-ico="list-plus"></span><span class="lbl">В список</span></button>
+              <button id="mmClear" class="hbtn" type="button" title="Очистить текущее измерение"><span data-ico="rotate-ccw"></span><span class="lbl">Сбросить</span></button>
+              <button id="mmExit" class="hbtn hbtn-quiet" type="button" title="Выключить измерение (Esc)"><span data-ico="x"></span><span class="lbl">Выйти</span><kbd>Esc</kbd></button>
             </div>
-            <div class="seg-group" role="group" aria-label="Действия с выделением">
-              <button id="edClear" class="hbtn" type="button" title="Очистить текущее выделение (Esc)"><span data-ico="circle-slash"></span><span class="lbl">Сбросить выбор</span></button>
-              <button id="edInvert" class="hbtn" type="button" title="Инвертировать выделение"><span data-ico="contrast"></span><span class="lbl">Инвертировать</span></button>
-              <button id="edCrop" class="hbtn" type="button" title="Оставить только выделенное"><span data-ico="crop"></span><span class="lbl">Оставить</span></button>
-              <button id="edDelete" class="hbtn danger" type="button" title="Удалить выделенные точки"><span data-ico="trash-2"></span><span class="lbl">Удалить</span></button>
-              <button id="edForceDelete" class="hbtn danger" type="button" title="Обрезка без защит: удаляет ВСЕ выделенные точки принудительно — без защиты пола и стен и без латания дыр"><span data-ico="scissors"></span><span class="lbl">Без защит</span></button>
+          </section>
+          <section id="editBar" class="hud hud-edit" aria-label="Правка облака">
+            <div class="hud-title"><span class="hud-ico" data-ico="lasso-select"></span><span class="hud-name">Правка облака</span><span id="editCount" class="hud-hint">Обведите мусор мышью, затем «Удалить». Камера — ПКМ и колесо</span></div>
+            <div class="hud-tools">
+              <div class="seg-group" role="group" aria-label="Выделение">
+                <button id="edMode" class="hbtn" type="button" title="Лассо — обвести произвольный контур; рамка — прямоугольная область"><span data-ico="lasso-select"></span><span class="lbl">Лассо</span></button>
+                <button id="edThrough" class="hbtn" type="button" title="Насквозь — удаляет все точки внутри контура по всей глубине. Только спереди — лишь видимая поверхность"><span data-ico="layers-2"></span><span class="lbl">Насквозь</span></button>
+                <button id="edProtect" class="hbtn" type="button" title="Защита пола и стен: RANSAC-плоскости не удаляются"><span data-ico="shield"></span><span class="lbl">Защита пола и стен</span></button>
+                <button id="edWand" class="hbtn" type="button" title="Волшебная палочка: клик по мусору"><span data-ico="wand-sparkles"></span><span class="lbl">Палочка</span></button>
+                <button id="edDrop" class="hbtn" type="button" title="Пипетка: клик по цвету"><span data-ico="pipette"></span><span class="lbl">Пипетка</span></button>
+                <button id="edSOR" class="hbtn" type="button" title="Statistical Outlier Removal — убрать шум"><span data-ico="brush-cleaning"></span><span class="lbl">SOR-шум</span></button>
+              </div>
+              <div class="seg-group" role="group" aria-label="Действия с выделением">
+                <button id="edClear" class="hbtn" type="button" title="Очистить текущее выделение (Esc)"><span data-ico="circle-slash"></span><span class="lbl">Сбросить выбор</span></button>
+                <button id="edInvert" class="hbtn" type="button" title="Инвертировать выделение"><span data-ico="contrast"></span><span class="lbl">Инвертировать</span></button>
+                <button id="edCrop" class="hbtn" type="button" title="Оставить только выделенное"><span data-ico="crop"></span><span class="lbl">Оставить</span></button>
+                <button id="edDelete" class="hbtn danger" type="button" title="Удалить выделенные точки"><span data-ico="trash-2"></span><span class="lbl">Удалить</span></button>
+                <button id="edForceDelete" class="hbtn danger" type="button" title="Обрезка без защит: удаляет ВСЕ выделенные точки принудительно — без защиты пола и стен и без латания дыр"><span data-ico="scissors"></span><span class="lbl">Без защит</span></button>
+              </div>
+              <div class="seg-group" role="group" aria-label="История и сохранение">
+                <button id="edUndo" class="hbtn" type="button" title="Отменить последнее удаление"><span data-ico="undo-2"></span><span class="lbl">Отменить</span></button>
+                <button id="edSave" class="hbtn" type="button" title="Сохранить облако в PLY"><span data-ico="save"></span><span class="lbl">Сохранить .ply</span></button>
+              </div>
             </div>
-            <div class="seg-group" role="group" aria-label="История и сохранение">
-              <button id="edUndo" class="hbtn" type="button" title="Отменить последнее удаление"><span data-ico="undo-2"></span><span class="lbl">Отменить</span></button>
-              <button id="edSave" class="hbtn" type="button" title="Сохранить облако в PLY"><span data-ico="save"></span><span class="lbl">Сохранить .ply</span></button>
+          </section>
+          <section id="tourBar" class="hud hud-tour" aria-label="Экскурсия по станциям">
+            <div class="hud-title"><span class="hud-ico" data-ico="route"></span><span class="hud-name">Станции</span><span id="tsCount" class="hud-count">0 ст.</span></div>
+            <div class="hud-actions">
+              <button id="tsImport" class="hbtn" type="button" title="Импорт станций сканера из E57 или JSON"><span data-ico="file-up"></span><span class="lbl">Импорт</span></button>
+              <button id="tsAdd" class="hbtn" type="button" title="Расставить станции кликом по сцене"><span data-ico="plus"></span><span class="lbl">Станция</span></button>
+              <button id="tsDel" class="hbtn" type="button" title="Удалять станции кликом"><span data-ico="minus"></span><span class="lbl">Станция</span></button>
+              <button id="tsReset" class="hbtn" type="button" title="Пересоздать станции автоматически"><span data-ico="wand-sparkles"></span><span class="lbl">Авто</span></button>
+              <button id="tsExport" class="hbtn" type="button" title="Экспорт станций в JSON"><span data-ico="file-down"></span><span class="lbl">Экспорт</span></button>
             </div>
-          </div>
-        </section>
-
-        <!-- Экскурсия по станциям -->
-        <section id="tourBar" class="hud hud-tour" aria-label="Экскурсия по станциям">
-          <div class="hud-title"><span class="hud-ico" data-ico="route"></span><span class="hud-name">Станции</span><span id="tsCount" class="hud-count">0 ст.</span></div>
-          <div class="hud-actions">
-            <button id="tsImport" class="hbtn" type="button" title="Импорт станций сканера из E57 или JSON"><span data-ico="file-up"></span><span class="lbl">Импорт</span></button>
-            <button id="tsAdd" class="hbtn" type="button" title="Расставить станции кликом по сцене"><span data-ico="plus"></span><span class="lbl">Станция</span></button>
-            <button id="tsDel" class="hbtn" type="button" title="Удалять станции кликом"><span data-ico="minus"></span><span class="lbl">Станция</span></button>
-            <button id="tsReset" class="hbtn" type="button" title="Пересоздать станции автоматически"><span data-ico="wand-sparkles"></span><span class="lbl">Авто</span></button>
-            <button id="tsExport" class="hbtn" type="button" title="Экспорт станций в JSON"><span data-ico="file-down"></span><span class="lbl">Экспорт</span></button>
-          </div>
-        </section>
+          </section>
+        </div>
 
         <!-- Панели слева: вид облака, секущий бокс (создаётся скриптом), свойства элемента -->
         <div class="stage-side stage-side-l" id="stageSideL">

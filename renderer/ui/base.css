@@ -45,6 +45,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offs
 svg.ic { display: block; flex: none; width: 1em; height: 1em; }
 [data-ico] { display: inline-flex; align-items: center; justify-content: center; flex: none; }
 [data-ico] > svg.ic { width: 100%; height: 100%; }
+.ico-lead { gap: 7px; }
+.ico-lead > svg.ic { flex: none; width: 16px; height: 16px; }
+.btn.xs.ico-lead > svg.ic { width: 14px; height: 14px; }
 
 /* Поля ввода */
 input, select, textarea, button { font: inherit; color: inherit; letter-spacing: inherit; }
@@ -67,23 +70,25 @@ input[type="checkbox"], input[type="radio"] { width: 15px; height: 15px; accent-
 input[type="file"] { height: auto; padding: 6px; }
 input[type="color"] { height: 32px; padding: 3px; }
 
-/* Ползунки */
+/* Ползунки: трек залит акцентом до бегунка. Долю --f (0…1) проставляет ui/kit.js (initRanges). */
 input[type="range"] {
-  -webkit-appearance: none; appearance: none; height: 18px; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: pointer;
+  --f: .5;
+  -webkit-appearance: none; appearance: none; height: 20px; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: pointer;
 }
 input[type="range"]:focus { background: transparent; box-shadow: none; }
 input[type="range"]::-webkit-slider-runnable-track {
-  height: 4px; border-radius: 4px; background: var(--bg-4);
+  height: 4px; border-radius: 4px;
+  background: linear-gradient(to right, var(--accent) calc(7px + (100% - 14px) * var(--f)), var(--track) calc(7px + (100% - 14px) * var(--f)));
 }
 input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; border: 2px solid var(--accent);
-  background: var(--bg-1); box-shadow: 0 1px 3px rgba(0, 0, 0, .4); transition: transform var(--t-fast) var(--ease);
+  -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 0; border-radius: 50%; background: #fff;
+  box-shadow: 0 0 0 1px rgba(10, 14, 22, .3), 0 1px 4px rgba(0, 0, 0, .45); transition: transform var(--t-fast) var(--ease), box-shadow var(--t-fast);
 }
-input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.12); }
-input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.2); }
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.14); }
+input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.22); }
 input[type="range"]:focus-visible { outline: none; }
-input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--accent-soft); }
-input[type="range"]:disabled { opacity: .4; }
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 1px rgba(10, 14, 22, .3), 0 0 0 4px var(--accent-soft), 0 1px 4px rgba(0, 0, 0, .45); }
+input[type="range"]:disabled { opacity: .4; cursor: not-allowed; }
 
 progress {
   -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border: 0; border-radius: 6px; overflow: hidden; background: var(--bg-4);
@@ -95,3 +100,11 @@ table { border-collapse: collapse; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
 .muted { color: var(--txt-2); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Затухание края у прокручиваемых областей: data-fade-y / data-fade-x выставляет __lxKit.fade(el, "y"|"x") только когда есть что прокручивать */
+[data-fade-y="end"] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent); }
+[data-fade-y="start"] { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 26px); mask-image: linear-gradient(to bottom, transparent, #000 26px); }
+[data-fade-y="both"] { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 26px, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(to bottom, transparent, #000 26px, #000 calc(100% - 26px), transparent); }
+[data-fade-x="end"] { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent); }
+[data-fade-x="start"] { -webkit-mask-image: linear-gradient(to right, transparent, #000 30px); mask-image: linear-gradient(to right, transparent, #000 30px); }
+[data-fade-x="both"] { -webkit-mask-image: linear-gradient(to right, transparent, #000 30px, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(to right, transparent, #000 30px, #000 calc(100% - 30px), transparent); }

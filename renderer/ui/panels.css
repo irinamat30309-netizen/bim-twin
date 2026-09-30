@@ -3,7 +3,9 @@
 /* ---------- Левая панель: структура ---------- */
 .sb-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 40px; padding: 0 14px; }
 .sb-title { color: var(--txt-3); font: 600 11px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; }
-.mode { max-width: 62%; overflow: hidden; color: var(--txt-3); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+.sb-head .mode { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; max-width: 62%; height: 20px; padding: 0 9px 0 8px; overflow: hidden; border-radius: 999px; background: var(--bg-3); color: var(--txt-2); font: 600 var(--fs-xs)/1 var(--font); text-overflow: ellipsis; white-space: nowrap; }
+.sb-head .mode::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.sb-head .mode.demo::before { background: var(--warn); }
 .sb-search { position: relative; display: block; flex: none; margin: 0 12px 8px; }
 .sb-search > [data-ico] { position: absolute; top: 50%; left: 10px; width: 15px; height: 15px; color: var(--txt-3); transform: translateY(-50%); pointer-events: none; }
 .sb-search .search { width: 100%; padding-left: 32px; }
@@ -57,7 +59,9 @@ body.editing .row-actions { display: inline-flex; }
 .tree-empty:hover { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
 
 /* Элементы помещения над сценой */
-.elbar { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.elbar { display: flex; flex: 1 1 0; flex-wrap: nowrap; gap: 6px; min-width: 0; padding: 0 0 6px; margin-bottom: -6px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.elbar::-webkit-scrollbar { display: none; }
+.elbar > * { flex: none; }
 .elpill {
   display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px; border: 1px solid var(--glass-line); border-radius: var(--r-2); background: var(--glass);
   box-shadow: var(--shadow-1); color: var(--txt-2); font-size: var(--fs-sm); font-weight: 500; cursor: pointer; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
