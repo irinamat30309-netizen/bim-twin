@@ -826,7 +826,7 @@
 
     // About
     const secAbout = section(T('settings.about'));
-    let ver = '1.2.0-rc.2';
+    let ver = '1.2.0-rc.3';
     if (CAN_PERSIST && API && API.getVersion) { try { ver = await API.getVersion(); } catch (e) {} }
     rowStatic(secAbout, 'BIM Twin', 'v' + ver + (CAN_PERSIST ? '' : ' · демо'));
     const updRow = mk('div', 'set-row');

@@ -103,8 +103,29 @@ jobs:
             'main.js',
             'preload.js',
             'renderer/app.js',
+            'renderer/index.html',
+            'renderer/startup.html',
+            'renderer/startup.js',
+            'renderer/startup.css',
+            'renderer/icons.js',
             'renderer/pointcloud-edit.js',
             'renderer/tool-manager.js',
+            'renderer/ui/tokens.css',
+            'renderer/ui/fonts.css',
+            'renderer/ui/base.css',
+            'renderer/ui/components.css',
+            'renderer/ui/shell.css',
+            'renderer/ui/panels.css',
+            'renderer/ui/tools.css',
+            'renderer/ui/viewers.css',
+            'renderer/ui/motion.css',
+            'renderer/ui/kit.js',
+            'renderer/ui/commands.js',
+            'renderer/ui/ribbon.js',
+            'renderer/ui/chrome.js',
+            'renderer/ui/modes.js',
+            'renderer/ui/LICENSE-lucide.txt',
+            'renderer/ui/LICENSE-inter-OFL.txt',
             'pointcloud-ply-io.js',
             'sync-bundle.js',
             'security/file-access.js',
@@ -120,7 +141,7 @@ jobs:
           }
           Write-Host "Installer: $($installer.Name) ($($installer.Length) bytes)"
           Write-Host "ASAR: $($asar.FullName) ($($asar.Length) bytes)"
-          Write-Host 'Required Electron, PLY, and geometry files are present in app.asar.'
+          Write-Host 'Required Electron, UI (startup, ribbon, design system), PLY, and geometry files are present in app.asar.'
 
       - name: Upload Windows QA artifacts
         if: always()

@@ -59,6 +59,12 @@ const scenarios = {
     await page.mouse.click(c.x + c.width * 0.35, c.y + c.height * 0.55); await page.waitForTimeout(500);
     await page.mouse.click(c.x + c.width * 0.65, c.y + c.height * 0.5); await page.waitForTimeout(900);
   },
+  async objesc(page) {   // Esc должен закрывать окно «Инспектор объекта» (в подсказке кнопки написано «Закрыть · Esc»)
+    await scenarios.objwin(page);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(500);
+    const hidden = await page.evaluate(() => { const m = document.getElementById('lxInsModal'); return !m || m.hidden; });
+    if (!hidden) throw new Error('Esc не закрыл окно «Инспектор объекта»');
+  },
   async s2b(page) { await cmd(page, 'lxScan2BimBtn', 900); },
   async s2bai(page) { await cmd(page, 'lxScan2BimAiBtn', 900); },
   async flooradd(page) { await cmd(page, 'floorAdd', 700); },

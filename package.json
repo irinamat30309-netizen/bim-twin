@@ -1,6 +1,6 @@
 {
   "name": "bim-twin",
-  "version": "1.2.0-rc.2",
+  "version": "1.2.0-rc.3",
   "description": "BIM Twin — desktop 3D + документация помещений с АИ-проверкой (offline-first)",
   "main": "main.js",
   "author": "bobuy",

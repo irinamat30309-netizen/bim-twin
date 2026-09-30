@@ -2,7 +2,7 @@
 
 ## Что содержит этот архив
 
-Это исходники release candidate `1.2.0-rc.2`. В Linux-среде проверяются AppImage/ASAR и production dependency audit. GitHub-hosted Windows workflow для коммита `341a8f1` прошёл полный regression suite, собрал NSIS installer и ASAR, сгенерировал SBOM и проверил обязательные ASAR entries; установка на чистой Windows-машине, подпись и SmartScreen остаются внешними gates. Подробности, локальные хеши и ограничения: `RELEASE-1.2.0-rc.2.md`.
+Это исходники release candidate `1.2.0-rc.3` — переработанный интерфейс (`RELEASE-1.2.0-rc.3.md`, `UI-DESIGN.md`). В Linux-среде проверяются AppImage/ASAR и production dependency audit. Предыдущий кандидат `1.2.0-rc.2`: GitHub-hosted Windows workflow для коммита `341a8f1` прошёл полный regression suite, собрал NSIS installer и ASAR, сгенерировал SBOM и проверил обязательные ASAR entries. Для `1.2.0-rc.3` установщик собирается тем же workflow (`windows-package-qa`, артефакт с `.exe`, `app.asar` и SBOM), список обязательных ASAR-файлов расширен файлами нового интерфейса (`renderer/ui/*`, `renderer/startup.*`). Установка на чистой Windows-машине, подпись и SmartScreen остаются внешними gates. Подробности, локальные хеши и ограничения: `RELEASE-1.2.0-rc.3.md` и `RELEASE-1.2.0-rc.2.md`.
 
 ## Требования
 
