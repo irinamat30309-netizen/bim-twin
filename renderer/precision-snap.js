@@ -747,6 +747,9 @@
     if (ua && ub && Math.abs(dot(ua, ub)) >= PARALLEL_COS) {
       var sg = dot(ua, ub) >= 0 ? 1 : -1, uu = unit(add(ua, mul(ub, sg))), along = dot(dv, uu), perp = sub(dv, mul(uu, along));
       var ds = Math.hypot(a.dirSigma || 0, b.dirSigma || 0), ue = unc();   // неточность направления кромок сказывается на разнесённых по высоте точках
+      // обе точки на одной кромке (верхние углы двери → обе нашли перемычку): «расстояние между рёбрами» ≈ 0 ничего не значит,
+      // настоящий размер — вдоль кромки, то есть обычное расстояние между точками
+      if (len(perp) < 2 * ue) return null;
       return { kind: 'edges', value: len(perp), along: Math.abs(along), dir: uu, uncertainty: Math.sqrt(ue * ue + Math.pow(Math.abs(along) * ds, 2)) };
     }
     // кромка лежит в этой же плоскости (край проёма и сама стена): расстояние «точка — плоскость» ≈ 0 и смысла не имеет — пусть считается 3D

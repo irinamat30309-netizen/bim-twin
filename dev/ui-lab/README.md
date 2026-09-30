@@ -35,6 +35,7 @@ python3 sheet.py out.png shots/a.png shots/b.png   # склейка снимко
 | `real-load.js` | загрузка реального облака (`LAB_CLOUD`) в приложение: время, число точек в просмотре, снимок |
 | `real-snap.js` | точный захват на реальном облаке против эталона (`LAB_GT`): тип привязки, ошибка, покрытие заявленной погрешности ±σ |
 | `real-e2e.js` | сквозной прогон на реальном облаке: настоящие движения и клики мыши по холсту (с промахом 3–6 px), подсказка захвата, панель результата, сохранение замера, окно сверки и сравнение со «своим размером» |
+| `real-node.js` | то же без браузера (Node): захват и расстояния на выборке просмотра «1 из 6», радиусы захвата `SDS`, промах кликов `OS`, порог окна плоскостей `FLOORSP`; за минуту даёт покрытие ±σ по всем привязкам и парам |
 | `gt-eval.js` | эталон пары в местах щелчков (у наклонных откосов расстояние зависит от места): `node gt-eval.js результаты.json gt-targets.json` |
 | `ply-bbox.js` | габарит PLY по файлу (общий код `real-*.js`) |
 
@@ -54,6 +55,7 @@ LAB_CLOUD=/путь/скан.ply node real-load.js
 LAB_CLOUD=/путь/скан.ply LAB_GT=/путь/gt-targets.json LAB_OUT=/tmp/real-snap.json node real-snap.js
 # 3. сквозной прогон: настоящая мышь, подсказка, панель, сохранение, окно сверки (≈3–5 мин на пару × повторы; в SwiftShader выбор точки идёт секундами)
 LAB_CLOUD=/путь/скан.ply LAB_GT=/путь/gt-targets.json LAB_OUT=/tmp/real-e2e.json LAB_PAIRS=door2_width_edges,room_height LAB_TRIALS=2 LAB_DEMO=door2_width_planes node real-e2e.js
+LAB_CLOUD=/путь/скан.ply LAB_GT=/путь/gt-targets.json SDS=0.02,0.033,0.052,0.07 node real-node.js    # без браузера: привязки и размеры при разных радиусах захвата
 node gt-eval.js /tmp/real-e2e.json /путь/gt-targets.json    # ошибка относительно эталона в идеальной точке и в местах щелчков
 ```
 

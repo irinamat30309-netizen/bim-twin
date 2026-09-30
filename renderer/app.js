@@ -3296,7 +3296,10 @@
       case 'distance': {
         const SN = { corner: 'угол', edge: 'ребро', plane: 'плоскость', point: 'точка', raw: 'без привязки' };
         const sn = res.snap ? ' · ' + (SN[res.snap.a.kind] || '') + ' → ' + (SN[res.snap.b.kind] || '') : '';
-        const acc = res.sigma != null && res.sigma > 0 && res.snap && res.snap.a.grown && res.snap.b.grown ? ' · ±' + (Math.max(res.sigma, 0.0001) * 1000).toFixed(1).replace('.', ',') + ' мм' : '';
+        // ±σ — точность привязок; у ребра и плоскости она только поперёк, а расстояние между точками зависит ещё и от места клика вдоль ребра (плоскости) —
+        // поэтому для обычного 3D-расстояния ± пишем, когда точки определены полностью (угол, точка облака)
+        const partial = k => k === 'edge' || k === 'plane';
+        const acc = res.sigma != null && res.sigma > 0 && res.snap && res.snap.a.grown && res.snap.b.grown && (res.perp != null || !(partial(res.snap.a.kind) || partial(res.snap.b.kind))) ? ' · ±' + (Math.max(res.sigma, 0.0001) * 1000).toFixed(1).replace('.', ',') + ' мм' : '';
         // плоскости не параллельны (откосы, перекрытия): расстояние зависит от места замера — говорим об этом, а не выдаём одно число за «ширину вообще»
         const tiltNote = res.tilt != null && res.tilt >= 0.0052 ? ' · не параллельны на ' + (res.tilt * 180 / Math.PI).toFixed(1).replace('.', ',') + '°: значение зависит от места (' + (Math.tan(res.tilt) * 100).toFixed(1).replace('.', ',') + ' мм на 10 см)' : '';
         if (res.perp != null && res.perpKind === 'planes') return '<b>' + L(res.perp) + '</b> между плоскостями (по нормали)' + sn + acc + ' · сдвиг вдоль плоскостей ' + L(Math.sqrt(Math.max(0, res.d3 * res.d3 - res.perp * res.perp))) + tiltNote;
