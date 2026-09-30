@@ -100,6 +100,51 @@ const scenarios = {
     await scenarios.verifyfill(page);
     await page.click('.vf-banner .btn.primary'); await page.waitForTimeout(2200);
   },
+  async verifymanual(page) {  // «Свои размеры»: номинал и допуск вводит человек; сравнение замера с ним; проверки прямо в сценарии
+    await scenarios.verifyfilled(page);
+    const must = (ok, msg) => { if (!ok) throw new Error('verifymanual: ' + msg); };
+    await page.click('#lxVfModal [data-tab="reqs"]'); await page.waitForTimeout(900);
+    must(await page.locator('.vf-man').count() === 1, 'нет блока «Свои размеры»');
+    // пустое название не принимается и возвращает фокус в поле названия
+    await page.fill('[data-fk="man-0-value"]', '905');
+    await page.click('#lxVfManAdd'); await page.waitForTimeout(500);
+    must((await page.locator('.vf-man .vf-own-msg').first().textContent()).includes('название'), 'нет подсказки про название');
+    must(await page.evaluate(() => document.activeElement && document.activeElement.dataset.fk === 'man-label'), 'фокус не вернулся в поле названия');
+    // ввод с клавиатуры не теряет фокус при перерисовке окна (фоновые события обновляют таблицу)
+    await page.fill('[data-fk="man-label"]', 'Дверной проём Д-1');
+    await page.focus('[data-fk="man-0-tol"]'); await page.keyboard.type('10');
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('lx-measurements-changed'))); await page.waitForTimeout(300);
+    must(await page.evaluate(() => document.activeElement && document.activeElement.dataset.fk === 'man-0-tol'), 'фокус потерян при перерисовке');
+    must(await page.inputValue('[data-fk="man-0-tol"]') === '10', 'допуск потерян при перерисовке');
+    await page.click('.vf-man .vf-own-acts button:not(.primary)'); await page.waitForTimeout(250);
+    await page.fill('[data-fk="man-1-value"]', '2100'); await page.fill('[data-fk="man-1-tol"]', '10');
+    await page.selectOption('[data-fk="man-1-dim"]', 'height');
+    await page.click('#lxVfManAdd'); await page.waitForTimeout(1500);
+    must(await page.locator('.vf-man-item').count() === 1, 'размер не попал в список «Ваши размеры»');
+    must((await page.locator('.vf-man-item').first().textContent()).includes('905'), 'в списке нет номинала');
+    await shot(page, 'p-' + THEME + '-' + W + '-verifymanual-list').catch(() => {});
+    // вкладка измерений: у строки «плоскость/дверь» — сравнение со своим размером
+    await page.click('#lxVfModal [data-tab="rows"]'); await page.waitForTimeout(700);
+    const target = page.locator('.vf-main', { hasText: 'Плоскость' }).first();
+    must(await target.count() === 1, 'не нашлась строка плоскости');
+    await target.click(); await page.waitForTimeout(1000);
+    must(await page.locator('.vf-cmp').count() === 1, 'нет блока «Сравнить со своим размером»');
+    const idx = await page.evaluate(() => document.querySelector('.vf-cmp [data-fk$="-value"]').dataset.fk.replace(/^cmp-(\d+)-value$/, '$1'));
+    await page.selectOption('[data-fk="cmp-' + idx + '-dim"]', 'width');
+    await page.fill('[data-fk="cmp-' + idx + '-value"]', '905'); await page.fill('[data-fk="cmp-' + idx + '-tol"]', '10');
+    const opts = await page.locator('[data-fk="cmp-' + idx + '-field"] option').allTextContents();
+    console.log('     замеры для сравнения:', JSON.stringify(opts));
+    await page.click('#lxVfCmpGo'); await page.waitForTimeout(1500);
+    const msg = await page.locator('.vf-cmp .vf-own-msg').first().textContent();
+    console.log('     итог сравнения:', msg);
+    must(/В допуске|Отклонение|Допуск не указан/.test(msg), 'нет результата сравнения: ' + msg);
+    // неподходящие единицы дают понятный отказ, а не молчание
+    await page.fill('[data-fk="cmp-' + idx + '-value"]', '0'); await page.click('#lxVfCmpGo'); await page.waitForTimeout(700);
+    const bad = await page.locator('.vf-cmp .vf-own-msg').first().textContent();
+    must(/Проверьте числа/.test(bad), 'нет отказа при нулевом значении: ' + bad);
+    await page.fill('[data-fk="cmp-' + idx + '-value"]', '905'); await page.click('#lxVfCmpGo'); await page.waitForTimeout(900);
+    await page.waitForTimeout(400);
+  },
   async verifyopen(page) {  // раскрытая строка с отклонением и вариантами
     await scenarios.verifyfilled(page);
     const row = page.locator('.vf-main.proposal, .vf-main.warn').first();

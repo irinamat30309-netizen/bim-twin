@@ -4185,8 +4185,9 @@
   function dcManualRequirement(label, size, recId, idx) {
     const C = window.MeasurementDocCompare; if (!C || !size) return null;
     const unit = C.unitInfo(size.unit), value = C.parseNumber(String(size.value == null ? '' : size.value));
-    const tol = size.tolerance === '' || size.tolerance == null ? null : C.parseNumber(String(size.tolerance));
-    if (!unit || value == null || !(value > 0 || size.dimension === 'angle') || (tol != null && !(tol >= 0))) return null;
+    const tolGiven = !(size.tolerance === '' || size.tolerance == null), tol = tolGiven ? C.parseNumber(String(size.tolerance)) : null;
+    // допуск можно не указывать, но если он написан, то обязан быть числом не меньше нуля: «abc» не превращается в «допуск не задан»
+    if (!unit || value == null || !(value > 0 || size.dimension === 'angle') || (tolGiven && (tol == null || !(tol >= 0)))) return null;
     const dim = DC_MANUAL_DIMS.some(d => d[0] === size.dimension) ? size.dimension : 'unspecified';
     const tolText = tol != null ? ' ±' + tol + ' ' + unit.symbol : '';
     return {

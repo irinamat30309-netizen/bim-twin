@@ -70,7 +70,7 @@ test('типы объектов: список в окне сверки и в и�
 test('мост app.js: окно сверки и инспектор получают всё нужное через window.__lxDocCheck', () => {
   const bridge = APP.match(/window\.__lxDocCheck = \{([\s\S]*?)\n  \};/);
   assert.ok(bridge, 'мост объявлен');
-  for (const k of ['meta', 'rows', 'row', 'add', 'update', 'candidates', 'accept', 'setDefaultUnits', 'setContext', 'remove', 'requirements', 'run', 'runAll', 'details', 'openDocument', 'exportCsv']) {
+  for (const k of ['meta', 'rows', 'row', 'add', 'update', 'candidates', 'accept', 'setDefaultUnits', 'setContext', 'remove', 'requirements', 'run', 'runAll', 'details', 'openDocument', 'exportCsv', 'fields', 'manual']) {
     assert.match(bridge[1], new RegExp('\\b' + k + '\\s*:'), 'метод моста: ' + k);
   }
   assert.match(APP, /lx-measurements-changed/, 'событие обновления списка измерений');
@@ -107,4 +107,119 @@ test('окно сверки: доступность и правила интер
   assert.match(css, /prefers-reduced-motion/, 'учтено «уменьшить анимацию»');
   assert.doesNotMatch(js, /\.onclick\s*=\s*[^;]*innerHTML/, 'нет динамической разметки из текста документов');
   assert.doesNotMatch(js, /\binnerHTML\s*=(?!\s*['"])/, 'innerHTML только для очистки');
+});
+
+/* ---------- Свои размеры и «Сравнить со своим размером» ---------- */
+const C = require('../renderer/measurement-doc-compare.js');
+const vm = require('node:vm');
+
+test('свои размеры: единицы, причины отказа и тексты результата', () => {
+  assert.deepEqual(V.MAN_UNITS.map((u) => u[0]), ['мм', 'см', 'м', 'ft', 'in', '\u00b0', '%', 'м\u00b2']);
+  for (const reason of ['no-label', 'bad-size', 'no-field', 'kind-mismatch', 'units', 'no-result', 'no-measurement']) {
+    const t = V.manualReason(reason);
+    assert.ok(/[а-я]/i.test(t) && t.length > 25, 'у причины «' + reason + '» есть понятный текст');
+    assert.match(APP, new RegExp("reason: '" + reason + "'"), 'app.js отдаёт причину «' + reason + '», а окно её объясняет');
+  }
+  assert.match(V.manualReason('что-то-новое'), /^Не получилось/);
+  assert.equal(V.compareMessage({ ok: true, status: 'within-tolerance', actualText: '905.0 мм', deltaText: '0.0 мм' }), 'В допуске: замер 905.0 мм, разница 0.0 мм');
+  assert.equal(V.compareMessage({ ok: true, status: 'outside-tolerance', actualText: '915 мм', deltaText: '+10 мм' }), 'Отклонение: замер 915 мм, разница +10 мм');
+  assert.match(V.compareMessage({ ok: true, status: 'tolerance-not-specified', actualText: '905 мм', deltaText: '+5 мм' }), /^Допуск не указан, разница посчитана: замер 905 мм/);
+  assert.equal(V.compareMessage({ ok: true, status: 'within-tolerance' }), 'В допуске: замер —', 'нет чисел — не выдумываем их');
+  assert.equal(V.compareMessage({ ok: false, reason: 'units' }), V.manualReason('units'));
+  assert.equal(V.compareMessage(null), V.manualReason(''));
+});
+
+test('свои размеры: единицы по виду величины и следующий тип размера в форме', () => {
+  assert.equal(V.unitForKind('linear'), 'мм');
+  assert.equal(V.unitForKind('angle'), '\u00b0');
+  assert.equal(V.unitForKind('area'), 'м\u00b2');
+  assert.equal(V.unitForKind('slope'), '%');
+  assert.equal(V.unitForKind(undefined), 'мм');
+  assert.deepEqual(V.newSize('height'), { dimension: 'height', value: '', unit: 'мм', tolerance: '' });
+  assert.deepEqual(V.newSize('angle', '\u00b0'), { dimension: 'angle', value: '', unit: '\u00b0', tolerance: '' });
+  assert.deepEqual(V.newSize(), { dimension: 'width', value: '', unit: 'мм', tolerance: '' });
+  assert.equal(V.nextDimension([]), 'width');
+  assert.equal(V.nextDimension([{ dimension: 'width' }]), 'height');
+  assert.equal(V.nextDimension([{ dimension: 'height' }, { dimension: 'width' }]), 'thickness');
+  assert.equal(V.nextDimension(['width', 'height', 'thickness', 'length', 'gap', 'diameter'].map((d) => ({ dimension: d }))), 'unspecified');
+});
+
+/* Настоящая dcManualRequirement из app.js + настоящий сравниватель: проверяем числа, а не пересказ кода */
+function manualEnv() {
+  const a = APP.indexOf('  const DC_MANUAL_DIMS'), dims = APP.slice(a, APP.indexOf('\n', a));
+  const f0 = APP.indexOf('  function dcManualRequirement('), f1 = APP.indexOf('  function dcManualEntries()');
+  assert.ok(a > 0 && f0 > 0 && f1 > f0, 'функции ручных размеров найдены в app.js');
+  const sb = { window: { MeasurementDocCompare: C }, comparisonDimensionLabel: (d) => d };
+  sb.globalThis = sb; vm.createContext(sb);
+  vm.runInContext(dims + '\n' + APP.slice(f0, f1) + '\n;globalThis.__req = dcManualRequirement;', sb);
+  return sb.__req;
+}
+const PLANE = { mode: 'plane', length: 2.1, width: 0.905, rectArea: 1.9, kind: 'стена', dip: 89.6 };
+function manualCompare(req, m) {
+  const fields = C.measurementFields(m), f = C.suggestField(req, fields), u = C.suggestMeasurementUnit('м', f.kind);
+  return { field: f, res: C.compareMeasurement({ measurement: m, requirement: req, fields, fieldKey: f.key, unit: u.unit, requirementConfirmed: true, unitConfirmed: true }) };
+}
+
+test('свои размеры: номинал и допуск становятся требованием и сравниваются так же, как числа из документов', () => {
+  const mk = manualEnv();
+  const req = mk('Дверной проём Д-1', { dimension: 'width', value: '905', unit: 'мм', tolerance: '10' }, 'x', 0);
+  assert.equal(req.kind, 'linear'); assert.equal(req.dimension, 'width');
+  assert.equal(req.baseValue, 0.905); assert.equal(req.tolerance, 0.01); assert.equal(req.toleranceMode, 'symmetric');
+  assert.equal(req.source.documentId, 'manual'); assert.match(req.source.excerpt, /Дверной проём Д-1/);
+  assert.equal(req.needsConfirmation, false, 'человек сам ввёл число: подтверждать нечего');
+  const ok = manualCompare(req, PLANE);
+  assert.equal(ok.field.key, 'width', 'ширина проёма подбирается к короткой стороне плоскости');
+  assert.equal(ok.res.status, 'within-tolerance');
+  for (const [v, t, status] of [['915', '10', 'within-tolerance'], ['895', '10', 'within-tolerance'], ['920', '10', 'outside-tolerance'], ['906', '0.5', 'outside-tolerance'], ['905.5', '0.5', 'within-tolerance']]) {
+    const r = manualCompare(mk('x', { dimension: 'width', value: v, unit: 'мм', tolerance: t }, 'x', 0), PLANE).res;
+    assert.equal(r.status, status, v + ' ± ' + t + ' (граница допуска включена)');
+  }
+  assert.equal(manualCompare(mk('x', { dimension: 'width', value: '905', unit: 'мм', tolerance: '' }, 'x', 0), PLANE).res.status, 'tolerance-not-specified', 'без допуска вердикта нет');
+  assert.equal(mk('x', { dimension: 'width', value: '0.905', unit: 'м', tolerance: '0,01' }, 'x', 0).baseValue, 0.905, 'метры и запятая вместо точки');
+  assert.equal(mk('x', { dimension: 'width', value: '905,5', unit: 'мм', tolerance: '1' }, 'x', 0).baseValue, 0.9055);
+  assert.equal(mk('x', { dimension: 'width', value: '90.5', unit: 'см', tolerance: '1' }, 'x', 0).baseValue, 0.905, 'сантиметры');
+});
+
+test('свои размеры: бессмысленные числа отвергаются, а не превращаются в вердикт', () => {
+  const mk = manualEnv();
+  for (const [v, u, t] of [['0', 'мм', '1'], ['-5', 'мм', '1'], ['abc', 'мм', '1'], ['', 'мм', ''], ['905', 'мм', '-1'], ['905', 'мм', 'abc'], ['905', 'мм', '1 мм'], ['905', 'кг', '']]) {
+    assert.equal(mk('x', { dimension: 'width', value: v, unit: u, tolerance: t }, 'x', 0), null, JSON.stringify([v, u, t]));
+  }
+  assert.ok(mk('x', { dimension: 'angle', value: '0', unit: '\u00b0', tolerance: '1' }, 'x', 0), 'угол 0° допустим');
+  assert.equal(mk('x', { dimension: 'width', value: '905', unit: 'мм', tolerance: '' }, 'x', 0).tolerance, null);
+  assert.equal(mk('x', { dimension: 'нет-такого', value: '905', unit: 'мм', tolerance: '' }, 'x', 0).dimension, 'unspecified', 'неизвестный тип размера — «Размер»');
+  const angle = mk('x', { dimension: 'angle', value: '90', unit: '\u00b0', tolerance: '1' }, 'x', 0);
+  assert.equal(angle.kind, 'angle');
+  const widthReq = mk('x', { dimension: 'width', value: '905', unit: 'мм', tolerance: '10' }, 'x', 0);
+  assert.ok(!C.suggestField(widthReq, C.measurementFields({ mode: 'angle', deg: 91.4 })), 'у угла нет ширины: причина «no-field», а не вердикт');
+  assert.ok(!C.suggestField(angle, C.measurementFields({ mode: 'distance', d3: 6.02, horizontal: 6.02, vertical: 0.01 })), 'угол нельзя сравнить с длиной');
+});
+
+test('свои размеры: окно сверки — блок «Свои размеры», «Сравнить со своим размером», фокус и доступность', () => {
+  const js = read('ui/verify.js'), css = read('ui/verify.css');
+  assert.match(js, /bodyEl\.appendChild\(manualNode\(\)\)/, 'блок «Свои размеры» на вкладке «Найдено в документах»');
+  assert.match(js, /var own = compareNode\(r\); if \(own\) box\.appendChild\(own\)/, 'в раскрытой строке есть «Сравнить со своим размером»');
+  assert.match(js, /id = 'lxVfManAdd'/); assert.match(js, /id = 'lxVfCmpGo'/);
+  assert.match(js, /documentId !== 'manual'/, 'у введённого вручную нет документа, который можно открыть');
+  assert.match(js, /dataset\.fk = key/, 'поля ввода помечены ключом фокуса');
+  assert.match(js, /ae\.dataset\.fk[\s\S]{0,1500}back\.focus\(/, 'фокус и позиция курсора переживают перерисовку окна');
+  assert.match(js, /setAttribute\('role', 'status'\)[\s\S]{0,80}aria-live/, 'результат объявляется скринридеру');
+  assert.match(js, /setAttribute\('aria-label', aria\)/, 'у полей ввода есть подписи');
+  assert.match(js, /e\.key === 'Enter'[\s\S]{0,80}onEnter\(\)/, 'Enter в поле отправляет форму');
+  assert.match(js, /st\.sizes\.length >= 6/, 'не больше шести размеров у одного объекта');
+  assert.match(css, /\.vf-size\b/); assert.match(css, /\.vf-own\b/); assert.match(css, /\.vf-own-msg\.ok/);
+  for (const ico of ['pencil-ruler', 'plus', 'list-plus', 'trash-2', 'scale']) assert.match(js, new RegExp("'" + ico + "'"), 'иконка ' + ico);
+});
+
+test('свои размеры (app.js): сохраняются в проект, читаются и без помещения, результат помечен как введённый человеком', () => {
+  assert.match(APP, /md\.docCheck = Object\.assign\(\{\}, md\.docCheck \|\| \{\}, \{ manual: __manualCache \}\)/, 'в метаданные проекта');
+  assert.match(APP, /localStorage\.setItem\(DC_MANUAL_KEY/, 'запасной вариант — localStorage');
+  assert.match(APP, /function dcManualScan\(\)/, 'сверка работает и без документов помещения');
+  assert.match(APP, /record\.automation\.mode = 'user-entered'/);
+  assert.match(APP, /record\.confirmations\.autoConfirmed = false/, 'вручную введённый размер не выдаётся за автоподтверждённый');
+  assert.match(APP, /record\.confirmations\.method = 'user-entered-size'/);
+  assert.match(APP, /field\.kind !== req\.kind\) return \{ ok: false, reason: 'kind-mismatch'/, 'длину нельзя сравнить с углом');
+  assert.match(APP, /if \(!ranked\.unit\) return \{ ok: false, reason: 'units'/, 'без единиц облака вердикта нет');
+  assert.match(APP, /slice\(0, 6\)\.map\(sz =>/, 'не больше шести размеров в записи');
+  assert.match(APP, /\.slice\(0, 200\)/, 'не больше двухсот записей');
 });
