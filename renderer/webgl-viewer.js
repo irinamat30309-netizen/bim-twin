@@ -1228,7 +1228,7 @@
       const el = this._snapTipEl(), f = v => (v * 1000).toFixed(v * 1000 < 10 ? 1 : 0).replace('.', ',');
       const kind = snap.kind || 'raw', name = SNAP_RU[kind] || kind;
       let l2 = '';
-      if (kind === 'corner') l2 = '3 плоскости';
+      if (kind === 'corner') l2 = snap.weak ? '3 плоскости · оценка грубая' : '3 плоскости';   // weak: третья плоскость держится на нескольких точках (полоска откоса, скругление)
       else if (kind === 'edge') l2 = '2 плоскости';
       else if (kind === 'plane') l2 = 'вписана плоскость';
       else if (kind === 'point') l2 = 'ближайшая точка облака';

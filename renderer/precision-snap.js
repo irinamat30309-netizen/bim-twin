@@ -388,7 +388,7 @@
     var rms = pl.rms || 0, dvec = sub(pt, pl.centroid), off = dot(dvec, pl.normal), inpl = sub(dvec, mul(pl.normal, off));
     var sd = pl.spreadMin || pl.spread || 0;
     var ext = sd > 1e-9 ? dot(inpl, inpl) / (n * sd * sd) : 0;
-    return rms * Math.sqrt(1 / n + ext + 0.01);   // 0,01·rms² — запас на неровность поверхности: настоящая стена не идеальная плоскость (по сверке на реальном облаке ≈0,1 от шума)
+    return rms * Math.sqrt(1 / n + ext + 0.08);   // 0,08·rms² — запас на неровность поверхности: настоящая стена не идеальная плоскость; по сверке на реальном облаке (66 размеров, 154 привязки) это даёт покрытие ±1σ/±2σ/±3σ ≈ 68/94/98 %
   }
 
   /* Ядро ребра/угла. У настоящих кромок поверхность скруглена или сколота на сантиметр-два (штукатурка, уголки, «мягкие» кромки скана):
@@ -689,11 +689,14 @@
     out.rms = rms; out.count = cnt === Infinity ? 0 : cnt;
     out.sigma = contour ? Math.sqrt(sig2 + contour.sigma * contour.sigma) : Math.sqrt(sig2) * (w.kind === 'plane' ? 1 : 1.25);
     // запас на скругления и фаски: по сверке на реальном облаке ребро/угол ошибаются заметно сильнее, чем говорит статистика по точкам
-    if (!contour && w.kind !== 'plane') { var fk = (w.kind === 'corner' ? 0.25 : out.cored ? 0.25 : 0.12) * sp; out.sigma = Math.sqrt(out.sigma * out.sigma + fk * fk); }
+    if (!contour && w.kind !== 'plane') { var fk = (w.kind === 'corner' ? 0.75 : out.cored ? 0.25 : 0.12) * sp; out.sigma = Math.sqrt(out.sigma * out.sigma + fk * fk); }
+    // угол по «плоскости» из пары десятков точек (полоска откоса, скругление): положение плавает на сантиметры — не выдаём его за точное
+    if (w.kind === 'corner' && out.count < 64) { var wk = 2.5 * sp; out.sigma = Math.sqrt(out.sigma * out.sigma + wk * wk); out.weak = true; }
     if (dir) out.dir = dir;
     if (contour) out.dirSigma = contour.dirSigma != null ? contour.dirSigma : 0.012;   // рад: грубое направление по одному окну
     out.quality = out.rms <= 0.55 * sp && out.count >= 60 ? 'high' : out.rms <= 1.1 * sp && out.count >= 25 ? 'medium' : 'low';
     if (out.cored && out.quality === 'high') out.quality = 'medium';          // края скруглены или сколоты: плоскости пришлось искать заново вдали от кромки
+    if (out.weak) out.quality = 'low';
     if (contour && out.quality === 'high') out.quality = 'medium';      // положение кромки — оценка по плотности точек, а не подгонка плоскостей
     return out;
   }

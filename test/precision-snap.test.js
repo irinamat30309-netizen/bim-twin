@@ -130,8 +130,32 @@ test('стена–стена и пол–потолок: расстояние �
     const h = PS.pairGap(PS.snap(c, ROOM.index, { snapDist: 0.03, grow: true }), PS.snap(d, ROOM.index, { snapDist: 0.03, grow: true }));
     assert.equal(h.kind, 'planes');
     assert.ok(Math.abs(h.value - H) < 0.0006, 'высота ' + mm(Math.abs(h.value - H)));
-    assert.ok(g.uncertainty >= 0 && g.uncertainty < 0.001);
+    // заявленная погрешность включает запас на неровность стены (0,08·rms² на плоскость): при шуме 3 мм это около 1 мм на пару, при реальных 1–1,5 мм — 0,3–0,6 мм
+    assert.ok(g.uncertainty >= 0.0002 && g.uncertainty < 0.002, 'погрешность пары ' + mm(g.uncertainty));
+    assert.ok(Math.abs(g.value - W) <= 2 * g.uncertainty, 'ошибка внутри заявленных ±2σ');
   }
+});
+
+test('слабый угол: третья плоскость из нескольких десятков точек помечается «low» и получает большую погрешность', () => {
+  function corner(lu, lv) {
+    const r = rng(5), pts = [], sp = 0.02, sg = 0.003;
+    const add = (org, u, v, a1, b1, n) => { for (let a = 0; a < a1; a += sp) for (let b = 0; b < b1; b += sp) {
+      const aa = a + (r() - 0.5) * sp * 0.9, bb = b + (r() - 0.5) * sp * 0.9; if (aa < 0 || bb < 0 || aa > a1 || bb > b1) continue;
+      const g = gauss(r) * sg; pts.push([0, 1, 2].map(k => org[k] + u[k] * aa + v[k] * bb + n[k] * g)); } };
+    add([0, 0, 0], [1, 0, 0], [0, 0, 1], 2.4, 3.6, [0, 1, 0]);      // пол
+    add([0, 0, 0], [0, 1, 0], [0, 0, 1], 2.6, 3.6, [1, 0, 0]);      // стена
+    add([0, 0, 0], [1, 0, 0], [0, 1, 0], lu, lv, [0, 0, 1]);        // торец: маленькая плоскость
+    const pos = new Float32Array(pts.length * 3); pts.forEach((p, i) => { pos[i * 3] = p[0]; pos[i * 3 + 1] = p[1]; pos[i * 3 + 2] = p[2]; });
+    const index = PS.buildIndex(pos), ni = index.nearest(0.01, 0.01, 0.01, 0.06);
+    return PS.snap([pos[ni * 3], pos[ni * 3 + 1], pos[ni * 3 + 2]], index, { snapDist: 0.06, grow: true });
+  }
+  const weak = corner(0.3, 0.3), strong = corner(0.6, 0.6);
+  assert.equal(weak.kind, 'corner'); assert.equal(strong.kind, 'corner');
+  assert.ok(weak.count < 64, 'опора третьей плоскости: ' + weak.count);
+  assert.equal(weak.weak, true); assert.equal(weak.quality, 'low');
+  assert.ok(weak.sigma > 0.03, 'слабый угол: ±' + mm(weak.sigma));
+  assert.ok(!strong.weak && strong.quality === 'high', 'полноценный угол: ' + strong.quality);
+  assert.ok(strong.sigma < weak.sigma / 2, 'полноценный ±' + mm(strong.sigma) + ' против слабого ±' + mm(weak.sigma));
 });
 
 test('проём: ширина между откосами измеряется по двум рёбрам с точностью около 0,5 мм', () => {
@@ -263,4 +287,11 @@ test('кромку проёма можно отключить; сплошная 
   const hi = nearestW(HOLE, [0, 2.8, 3.0]);   // над проёмом — сплошная стена
   const t = PS.snap(hi, HOLE.index, { snapDist: 0.033, grow: true });
   assert.equal(t.kind, 'plane'); assert.notEqual(t.contour, true);
+});
+
+test('подсказка у курсора: слабый угол подписан «оценка грубая», а не выдан за точный', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'webgl-viewer.js'), 'utf8');
+  assert.match(src, /kind === 'corner'\) l2 = snap\.weak \? '3 плоскости · оценка грубая' : '3 плоскости'/);
+  const css = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'ui', 'viewers.css'), 'utf8');
+  assert.match(css, /\.meas-snap-tip\.q-low span:last-child \{ color: var\(--err\)/);
 });
