@@ -27,6 +27,11 @@ module.exports = function makeStub() {
       listUsers: () => [{ id: 'u1', name: 'Ирина', role: 'admin' }],
       listDiscussions: () => [],
       listSectionPresets: () => [],
+      // Автосохранение: список версий отдаётся только по запросу истории (includeCleared), иначе при открытии облака всплыл бы диалог восстановления
+      autosaveLoad: (p) => (p && p.includeCleared) ? { ok: true, exists: true, path: '/tmp/bim/autosave.ply', revisions: [
+        { savedAt: Date.now() - 20 * 60e3, points: 296063, bytes: 4738000, sha256: 'a3f91c0d7be2451100aa', latest: true },
+        { savedAt: Date.now() - 3 * 3600e3, points: 295870, bytes: 4734000, sha256: '9be2107733ad05aa11cc' }] } : { ok: true, exists: false, revisions: [] },
+      autosaveCloud: () => ({ ok: true }), autosaveClear: () => ({ ok: true }),
       listProjectRevisions: () => [],
       listProjectOperations: () => [],
       getProjectState: () => null,

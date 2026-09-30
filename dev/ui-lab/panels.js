@@ -27,6 +27,11 @@ async function reset(page) {
   });
   await page.waitForTimeout(250);
 }
+// В узких окнах правая колонка — выдвижная панель: если переключателя «Сцена/Документы» не видно, открываем её кнопкой заголовка
+async function showInspector(page) {
+  const seen = () => page.evaluate(() => { const r = document.getElementById('segDocs').getBoundingClientRect(); return r.width > 0 && r.left >= 0 && r.right <= innerWidth + 1; });
+  if (!(await seen())) { await page.click('#tbInspector'); await page.waitForTimeout(600); }
+}
 const scenarios = {
   async base(page) {},
   async quality(page) { await cmd(page, 'vtQuality'); },
@@ -87,9 +92,9 @@ const scenarios = {
   async toasts(page) { await page.evaluate(() => { const k = window.__lxKit; k.toast('Облако загружено: 296 063 точек', { tone: 'ok' }); k.toast('Проверьте единицы измерения', { tone: 'warn' }); k.toast('Не удалось сохранить проект', { tone: 'err' }); k.toast('Обычное уведомление'); k.toast('Обычное уведомление'); }); await page.waitForTimeout(1400); },
   async more(page) { await page.evaluate(() => { const b = document.querySelector('[data-cell="more"] button, .lx-more'); if (b) b.click(); }); await page.waitForTimeout(400); },
   async tree(page) { await page.evaluate(() => { document.querySelectorAll('.lx-node .lx-cloud-eye').forEach(() => {}); }); },
-  async docs(page) { await page.click('#segDocs'); await page.waitForTimeout(800); },   // правая колонка: вкладка «Документы»
+  async docs(page) { await showInspector(page); await page.click('#segDocs'); await page.waitForTimeout(800); },   // правая колонка: вкладка «Документы»
   async room(page) { await page.evaluate(() => { const r = document.querySelectorAll('#tree .room')[1]; if (r) r.click(); }); await page.waitForTimeout(1000); },
-  async roomdocs(page) { await scenarios.room(page); await page.click('#segDocs'); await page.waitForTimeout(900); },
+  async roomdocs(page) { await scenarios.room(page); await showInspector(page); await page.click('#segDocs'); await page.waitForTimeout(900); },
   async drawer(page) { if ((await page.evaluate(() => innerWidth)) > 1100) { console.log('     (выдвижные панели включаются на ширине ≤1100 px — пропуск)'); return; } await page.click('#tbSide'); await page.waitForTimeout(600); },
   async inspectordrawer(page) { if ((await page.evaluate(() => innerWidth)) > 1100) return; await page.click('#tbInspector'); await page.waitForTimeout(600); }
 };

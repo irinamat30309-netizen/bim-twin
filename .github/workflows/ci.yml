@@ -31,7 +31,10 @@ jobs:
       - name: Check all JavaScript files
         run: node scripts/check-syntax.mjs
       - name: Unit tests
-        run: node --test
+        # При падении имена упавших тестов выводятся аннотациями (лог задачи виден только авторизованным пользователям)
+        run: |
+          node --test > unit.log 2>&1 || { grep -E "✖|not ok" unit.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done; tail -80 unit.log; exit 1; }
+          tail -8 unit.log
       - name: Project storage regression
         run: npm run test:store
 
