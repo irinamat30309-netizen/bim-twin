@@ -1,5 +1,5 @@
 /* BIM Twin — окно «Сверка с документацией».
- * Таблица: измерение → требование из документов помещения → факт → отклонение → статус.
+ * Таблица: измерение, требование из документов помещения, факт, отклонение, статус.
  * Логика сверки живёт в app.js (window.__lxDocCheck) и measurement-doc-compare.js; здесь только показ и действия.
  * Глобал: window.__lxVerify. Чистые функции (statusInfo, bucketOf, countBuckets, filterRows) экспортируются для тестов. */
 (function (root, factory) {
@@ -19,7 +19,7 @@
     'unit-mismatch': { tone: 'warn', bucket: 'review', label: 'Несовместимые величины', short: 'Не сходится', hint: 'Длина сравнивается с площадью или углом' },
     'needs-review': { tone: 'warn', bucket: 'review', label: 'Нужна проверка', short: 'Проверить', hint: 'Найден похожий пункт, но нужна ваша проверка' },
     'analyzing': { tone: 'accent', bucket: 'busy', label: 'Читаю документы', short: 'Анализ', hint: 'Идёт разбор документов помещения', busy: true },
-    'no-match': { tone: 'muted', bucket: 'none', label: 'В документах не найдено', short: 'Нет в доках', hint: 'Подходящего требования в документах нет' },
+    'no-match': { tone: 'muted', bucket: 'none', label: 'В документах не найдено', short: 'Не найдено', hint: 'Подходящего требования в документах нет' },
     'not-checked': { tone: 'muted', bucket: 'none', label: 'Не сверено', short: 'Не сверено', hint: 'Сверка ещё не запускалась' }
   };
   function statusInfo(status, how) {
@@ -36,19 +36,24 @@
     if (!key || key === 'all') return (rows || []).slice();
     return (rows || []).filter(function (r) { var b = bucketOf(r.status); return key === 'review' ? (b === 'review' || b === 'busy') : b === key; });
   }
+  var ACCEPTABLE = { 'within-tolerance': 1, 'outside-tolerance': 1, 'tolerance-not-specified': 1 };
+  /* Предложение можно принять одним нажатием, если по нему уже посчитан результат. */
+  function canAcceptRow(r) { return !!r && r.how === 'proposal' && !r.confirmed && !!ACCEPTABLE[r.previewStatus]; }
+  function acceptableRows(rows) { return (rows || []).filter(canAcceptRow); }
   var MODE_NAMES = { distance: 'Расстояние', point: 'Координата', polyline: 'Полилиния', angle: 'Угол', area: 'Площадь', plane: 'Плоскость', deviation: 'Зазор', corner: 'Ребро / угол' };
   function rowTitle(r) { return r && r.label ? r.label : (MODE_NAMES[r && r.mode] || 'Измерение') + ' ' + ((r ? r.index : 0) + 1); }
   var KINDS = ['стена', 'колонна', 'балка', 'перекрытие', 'пол', 'потолок', 'проём', 'дверь', 'окно', 'труба', 'воздуховод', 'оборудование'];
   var HOW = { auto: 'найдено автоматически', user: 'подтверждено вами', manual: 'введено вручную', proposal: 'предложение, не подтверждено' };
+  var HOW_SHORT = { auto: 'авто', user: 'вы подтвердили', manual: 'вручную', proposal: 'предложение' };
   var UNITS = [['м', 'метры'], ['мм', 'миллиметры'], ['см', 'сантиметры'], ['ft', 'футы'], ['in', 'дюймы']];
 
-  var api = { statusInfo: statusInfo, bucketOf: bucketOf, countBuckets: countBuckets, filterRows: filterRows, rowTitle: rowTitle, KINDS: KINDS, STATUS: STATUS, HOW: HOW, open: function () {}, close: function () {} };
+  var api = { statusInfo: statusInfo, bucketOf: bucketOf, countBuckets: countBuckets, filterRows: filterRows, rowTitle: rowTitle, canAcceptRow: canAcceptRow, acceptableRows: acceptableRows, KINDS: KINDS, STATUS: STATUS, HOW: HOW, open: function () {}, close: function () {} };
   if (!W || typeof document === 'undefined') return api;
 
   /* ---------- Окно ---------- */
   var D = document;
   var modal = null, listEl = null, statsEl = null, tabsEl = null, subEl = null, bodyEl = null, prevFocus = null, roomSel = null;
-  var S = { filter: 'all', tab: 'rows', open: -1, cands: {}, busy: false, reqRoom: '', reqData: null, reqBusy: false, raf: 0 };
+  var S = { filter: 'all', tab: 'rows', open: -1, cands: {}, busy: false, reqRoom: '', reqData: null, reqBusy: false, raf: 0, resetScroll: false };
 
   function el(tag, cls, text) { var n = D.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
   function ic(name, size) { var s = el('span'); s.setAttribute('data-ico', name); s.setAttribute('data-ico-size', String(size || 16)); s.setAttribute('aria-hidden', 'true'); return s; }
@@ -88,7 +93,8 @@
     var acts = el('div', 'vf-actions');
     var runB = btn('Сверить всё', 'wand-sparkles', 'primary', 'Заново прочитать документы и сопоставить все измерения'); runB.id = 'lxVfRun'; runB.onclick = runAll;
     var csvB = btn('CSV', 'file-down', '', 'Сохранить таблицу сверки в CSV'); csvB.id = 'lxVfCsv'; csvB.onclick = function () { if (dc()) dc().exportCsv(); };
-    acts.appendChild(csvB); acts.appendChild(runB);
+    var accB = btn('Принять предложения', 'check-check', '', 'Принять все найденные предложения, по которым уже посчитано отклонение'); accB.id = 'lxVfAcceptAll'; accB.hidden = true; accB.onclick = acceptAll;
+    acts.appendChild(accB); acts.appendChild(csvB); acts.appendChild(runB);
     bar.appendChild(tabsEl); bar.appendChild(acts);
 
     statsEl = el('div', 'vf-stats'); statsEl.setAttribute('role', 'group'); statsEl.setAttribute('aria-label', 'Фильтр по статусу');
@@ -104,7 +110,7 @@
   }
 
   function setTab(t) {
-    S.tab = t; S.open = -1;
+    S.tab = t; S.open = -1; S.resetScroll = true;
     Array.prototype.forEach.call(tabsEl.children, function (b) { var on = b.dataset.tab === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
     render();
     if (t === 'reqs') loadReqs(false);
@@ -130,12 +136,14 @@
     Array.prototype.forEach.call(tabsEl.children, function (b) { var on = b.dataset.tab === S.tab; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
     renderStats(counts);
     statsEl.hidden = S.tab !== 'rows';
+    var keep = S.resetScroll ? 0 : bodyEl.scrollTop; S.resetScroll = false;
     bodyEl.innerHTML = '';
-    var scrollTop = 0;
     if (S.tab === 'rows') renderRows(rows, meta); else renderReqs(meta);
     hydrate(bodyEl);
+    bodyEl.scrollTop = keep;
     var run = modal.querySelector('#lxVfRun'); if (run) { run.disabled = S.busy || !rows.length; }
-    return scrollTop;
+    var acc = modal.querySelector('#lxVfAcceptAll'), nAcc = acceptableRows(rows).length;
+    if (acc) { acc.hidden = !nAcc || S.tab !== 'rows'; var al = acc.querySelector('.lbl'); if (al) al.textContent = 'Принять предложения (' + nAcc + ')'; }
   }
 
   function plural(n, a, b, c) { var m = Math.abs(n) % 100, k = m % 10; if (m > 10 && m < 20) return c; if (k > 1 && k < 5) return b; if (k === 1) return a; return c; }
@@ -146,7 +154,7 @@
       var n = p[0] === 'review' ? counts.review + counts.busy : counts[p[0]];
       var b = el('button', 'vf-stat ' + p[2] + (S.filter === p[0] ? ' on' : '')); b.type = 'button'; b.setAttribute('aria-pressed', S.filter === p[0] ? 'true' : 'false');
       b.appendChild(el('span', 'vf-stat-n', String(n))); b.appendChild(el('span', 'vf-stat-l', p[1]));
-      b.onclick = function () { S.filter = p[0]; S.open = -1; render(); };
+      b.onclick = function () { S.filter = p[0]; S.open = -1; S.resetScroll = true; render(); };
       statsEl.appendChild(b);
     });
   }
@@ -164,6 +172,7 @@
       bodyEl.appendChild(emptyState('ruler', 'Измерений пока нет', 'Измерьте стену, колонну или проём: результат появится здесь и сам сверится с документами помещения.', go));
       return;
     }
+    if (meta.missingUnits) bodyEl.appendChild(unitsBanner(meta));
     var shown = filterRows(rows, S.filter);
     listEl = el('div', 'vf-table'); listEl.setAttribute('role', 'table'); listEl.setAttribute('aria-label', 'Сверка измерений с документацией');
     var hd = el('div', 'vf-row vf-hd'); hd.setAttribute('role', 'row');
@@ -177,7 +186,7 @@
   function rowNode(r, meta) {
     var info = statusInfo(r.status, r.how);
     var wrap = el('div', 'vf-item' + (S.open === r.index ? ' open' : '')); wrap.dataset.index = String(r.index);
-    var row = el('button', 'vf-row vf-main ' + info.tone + (r.how === 'proposal' ? ' proposal' : '')); row.type = 'button'; row.setAttribute('role', 'row');
+    var row = el('div', 'vf-row vf-main ' + info.tone + (r.how === 'proposal' ? ' proposal' : '')); row.tabIndex = 0; row.setAttribute('role', 'row');
     row.setAttribute('aria-expanded', S.open === r.index ? 'true' : 'false');
     var c0 = el('div', 'vf-c c0'); c0.setAttribute('role', 'cell'); c0.appendChild(ic('chevron-right', 14)); c0.appendChild(el('span', '', String(r.index + 1)));
     var c1 = el('div', 'vf-c c1'); c1.setAttribute('role', 'cell');
@@ -196,13 +205,41 @@
       c2.appendChild(el('span', 'vf-t muted', r.status === 'analyzing' ? 'Читаю документы…' : r.status === 'no-match' ? 'Требование не найдено' : '—'));
     }
     var c3 = el('div', 'vf-c c3'); c3.setAttribute('role', 'cell'); c3.appendChild(el('span', 'vf-t', r.actualText || '—')); if (r.fieldLabel) c3.appendChild(el('span', 'vf-s', r.fieldLabel));
-    var c4 = el('div', 'vf-c c4'); c4.setAttribute('role', 'cell'); c4.appendChild(el('span', 'vf-t vf-delta ' + info.tone, r.deltaText || '—'));
-    var c5 = el('div', 'vf-c c5'); c5.setAttribute('role', 'cell'); c5.appendChild(chip(info)); if (r.how && HOW[r.how]) c5.appendChild(el('span', 'vf-s', r.how === 'proposal' ? 'предложение' : r.how === 'auto' ? 'авто' : r.how === 'user' ? 'вы подтвердили' : 'вручную'));
+    var deltaTone = r.how === 'proposal' && r.previewStatus ? statusInfo(r.previewStatus).tone : info.tone;
+    var c4 = el('div', 'vf-c c4'); c4.setAttribute('role', 'cell'); c4.appendChild(el('span', 'vf-t vf-delta ' + deltaTone, r.deltaText || '—'));
+    var c5 = el('div', 'vf-c c5'); c5.setAttribute('role', 'cell'); c5.appendChild(chip(info));
+    if (canAcceptRow(r)) {
+      var qa = btn('Принять', 'check', 'primary xs', 'Принять найденное требование и посчитать отклонение'); qa.classList.remove('sm'); qa.classList.add('vf-quick');
+      qa.onclick = function (e) { e.stopPropagation(); accept(r.index, 0); };
+      qa.onkeydown = function (e) { e.stopPropagation(); };
+      c5.appendChild(qa);
+    } else if (r.how && HOW_SHORT[r.how] && r.status !== 'no-match' && r.status !== 'analyzing') c5.appendChild(el('span', 'vf-s', HOW_SHORT[r.how]));
     [c0, c1, c2, c3, c4, c5].forEach(function (c) { row.appendChild(c); });
-    row.onclick = function () { S.open = S.open === r.index ? -1 : r.index; render(); if (S.open === r.index) loadCands(r.index); };
+    function toggle() { S.open = S.open === r.index ? -1 : r.index; render(); if (S.open === r.index) loadCands(r.index); var again = bodyEl.querySelector('.vf-item[data-index="' + r.index + '"] .vf-main'); if (again) again.focus({ preventScroll: true }); }
+    row.onclick = toggle;
+    row.onkeydown = function (e) { if (e.target === row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(); } };
     wrap.appendChild(row);
     if (S.open === r.index) wrap.appendChild(detailNode(r, meta));
     return wrap;
+  }
+
+  function unitsBanner(meta) {
+    var b = el('div', 'vf-banner'); b.setAttribute('role', 'note');
+    b.appendChild(ic('ruler', 18));
+    var t = el('div', 'vf-banner-t');
+    t.appendChild(el('strong', '', 'В файле облака не указаны единицы'));
+    t.appendChild(el('span', '', 'У измерений: ' + meta.missingUnits + '. Скажите, в чём считает облако, и приложение сравнит числа с документами. Выбор запомнится для новых измерений.'));
+    b.appendChild(t);
+    var acts = el('div', 'vf-banner-acts');
+    var m = btn('Считать метрами', 'check', 'primary'); m.onclick = function () { setUnits('м'); };
+    var other = select([['', 'Другие…']].concat(UNITS.filter(function (u) { return u[0] !== 'м'; }).map(function (u) { return [u[0], u[0] + ' — ' + u[1]]; })), '', function (v) { if (v) setUnits(v); }, 'Другие единицы');
+    acts.appendChild(m); acts.appendChild(other); b.appendChild(acts);
+    return b;
+  }
+  function setUnits(u) {
+    var d = dc(); if (!d) return;
+    S.cands = {};
+    d.setDefaultUnits(u).then(function (c) { if (c) toast('Единицы: ' + u + (c.confirmed ? ' · сверено ' + c.confirmed : ''), { tone: 'ok' }); render(); });
   }
 
   function field(label, control) { var f = el('label', 'lx-field'); f.appendChild(el('span', '', label)); f.appendChild(control); return f; }
@@ -343,6 +380,19 @@
       schedule();
     });
   }
+  function acceptAll() {
+    var d = dc(); if (!d) return;
+    var list = acceptableRows(d.rows());
+    if (!list.length) return;
+    var ask = W.__lxKit && W.__lxKit.ask;
+    var go = function () {
+      var chain = Promise.resolve(), done = 0, out = 0;
+      list.forEach(function (r) { chain = chain.then(function () { return d.accept(r.index, 0); }).then(function (res) { if (res && res.ok) { done++; if (res.status === 'outside-tolerance') out++; } }); });
+      chain.then(function () { S.cands = {}; toast('Принято предложений: ' + done + (out ? ' · отклонений: ' + out : ''), { tone: out ? 'warn' : 'ok' }); schedule(); });
+    };
+    if (!ask) { go(); return; }
+    ask({ title: 'Принять найденные предложения?', message: 'Приложение нашло в документах подходящие пункты для ' + list.length + ' ' + plural(list.length, 'измерения', 'измерений', 'измерений') + ', но не уверено на сто процентов. Перед подтверждением откройте строки и сверьте фрагменты документов: после принятия они получат статус «В допуске» или «Отклонение».', okLabel: 'Принять (' + list.length + ')', cancelLabel: 'Отмена' }).then(function (ok) { if (ok) go(); });
+  }
   function runAll() {
     var d = dc(); if (!d || S.busy) return;
     S.busy = true; S.cands = {};
@@ -359,6 +409,7 @@
     opts = opts || {};
     build();
     prevFocus = D.activeElement;
+    if (D.body.lastElementChild !== modal) D.body.appendChild(modal);   // окна с одинаковым z-index лежат в порядке DOM: сверка должна быть поверх инспектора, и Esc закрывает верхнее
     modal.hidden = false;
     if (opts.focus != null) { S.tab = 'rows'; S.filter = 'all'; S.open = opts.focus; loadCands(opts.focus); }
     else if (opts.tab) S.tab = opts.tab;
@@ -366,7 +417,7 @@
     render();
     if (S.tab === 'reqs') loadReqs(false);
     var first = modal.querySelector('#lxVfRun'); if (first && !first.disabled) first.focus({ preventScroll: true });
-    if (opts.focus != null) { var n = modal.querySelector('.vf-item.open'); if (n && n.scrollIntoView) n.scrollIntoView({ block: 'nearest' }); }
+    if (opts.focus != null) { var n = modal.querySelector('.vf-item.open'), hd = modal.querySelector('.vf-hd'); if (n) bodyEl.scrollTop = Math.max(0, n.offsetTop - (hd ? hd.offsetHeight : 0) - 4); }
   }
   function close() {
     if (!modal || modal.hidden) return;

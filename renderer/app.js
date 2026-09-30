@@ -3416,6 +3416,8 @@
   }
   // Общая точка сохранения: основной вьюер и окно «Инспектор объекта» кладут измерения в один список.
   // extra: { objectType, objectName, origin, label, silent } — тип объекта помогает подобрать требование в документах.
+  const DC_UNITS_KEY = 'bim.docCheck.defaultUnits';
+  function dcDefaultUnits() { try { return localStorage.getItem(DC_UNITS_KEY) || ''; } catch (_) { return ''; } }
   function storeMeasurement(res, extra) {
     extra = extra || {};
     const saved = JSON.parse(JSON.stringify(res));
@@ -3438,7 +3440,8 @@
       objectName: extra.objectName || null,
       origin: extra.origin || 'viewer',
       cloudName: sourcePath.split(/[\\/]/).pop() || null,
-      sourceUnits: viewer && viewer._srcUnits || null,
+      sourceUnits: viewer && viewer._srcUnits || dcDefaultUnits() || null,
+      unitsConfirmedByUser: !(viewer && viewer._srcUnits) && !!dcDefaultUnits(),
       hasCrs: !!(viewer && viewer._srcCrs)
     };
     if (!Array.isArray(saved.docComparisons)) saved.docComparisons = [];
@@ -4018,7 +4021,8 @@
     return rooms.map(r => ({ id: r.id, name: r.name || 'Без названия', docs: roomDocs(r).filter(d => d && d.file).length }));
   }
   function dcMeta() {
-    return { count: __measurements.length, currentRoomId: current && current.id || null, currentRoomName: current && current.name || '', rooms: dcRoomsInfo() };
+    const missing = __measurements.filter(m => !(m.measurementContext && m.measurementContext.sourceUnits)).length;
+    return { count: __measurements.length, currentRoomId: current && current.id || null, currentRoomName: current && current.name || '', rooms: dcRoomsInfo(), missingUnits: missing, defaultUnits: dcDefaultUnits() };
   }
   async function dcCandidates(i) {
     const m = __measurements[i];
@@ -4075,6 +4079,18 @@
     autoCompareMeasurementInBackground(i);
     return true;
   }
+  // Единицы облака часто не записаны в файле (PLY, часть LAS): один раз подтверждаем их для всех измерений и запоминаем.
+  async function dcSetDefaultUnits(unit) {
+    const u = String(unit || '').trim();
+    if (!u || !window.MeasurementDocCompare || !window.MeasurementDocCompare.unitInfo(u)) return null;
+    try { localStorage.setItem(DC_UNITS_KEY, u); } catch (_) {}
+    __measurements.forEach(m => {
+      const ctx = m.measurementContext = m.measurementContext || {};
+      if (!ctx.sourceUnits) { ctx.sourceUnits = u; ctx.unitsConfirmedByUser = true; }
+    });
+    renderMeasList(); persistMeasurements();
+    return computeAllComparisons();
+  }
   function dcRemove(i) {
     if (!__measurements[i]) return false;
     __measurements.splice(i, 1); renderMeasList(); persistMeasurements(); return true;
@@ -4125,7 +4141,7 @@
     meta: dcMeta, rows: () => __measurements.map(dcRow), row: i => (__measurements[i] ? dcRow(__measurements[i], i) : null),
     add: (res, extra) => (res && !res.error ? storeMeasurement(res, extra || {}) : -1),
     update: (i, res) => { const m = __measurements[i]; if (!m || !res || res.error) return false; const keep = { measurementContext: m.measurementContext, label: m.label, docComparisons: m.docComparisons, docComparison: m.docComparison, autoComparisonProposal: m.autoComparisonProposal }; Object.keys(m).forEach(k => delete m[k]); Object.assign(m, JSON.parse(JSON.stringify(res)), keep); renderMeasList(); persistMeasurements(); autoCompareMeasurementInBackground(i); return true; },
-    candidates: dcCandidates, accept: dcAccept, setContext: dcSetContext, remove: dcRemove, requirements: dcRequirements,
+    candidates: dcCandidates, accept: dcAccept, setDefaultUnits: dcSetDefaultUnits, setContext: dcSetContext, remove: dcRemove, requirements: dcRequirements,
     run: i => autoCompareMeasurementInBackground(i), runAll: computeAllComparisons, details: i => compareSavedMeasurement(i),
     openDocument: dcOpenDocument, exportCsv: dcExportCsv
   };

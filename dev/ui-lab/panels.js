@@ -84,6 +84,49 @@ const scenarios = {
     const first = page.locator('.vf-main').first();
     if (await first.count()) { await first.click(); await page.waitForTimeout(900); }
   },
+  async verifyfill(page) {  // пять готовых измерений: показывает все статусы; сначала баннер про единицы
+    await page.evaluate(() => {
+      try { localStorage.removeItem('bim.docCheck.defaultUnits'); } catch (e) {}
+      const dc = window.__lxDocCheck;
+      dc.add({ mode: 'distance', d3: 6.02, horizontal: 6.02, vertical: 0.01, dx: 6.02, dy: 0, dz: 0.01 }, { objectType: 'стена', origin: 'inspector' });
+      dc.add({ mode: 'distance', d3: 2.87, horizontal: 0.02, vertical: 2.87, dx: 0.02, dy: 0, dz: 2.87 }, { objectType: 'стена', origin: 'inspector' });
+      dc.add({ mode: 'distance', d3: 4.21, horizontal: 4.21, vertical: 0, dx: 4.21, dy: 0, dz: 0 }, { objectType: 'воздуховод', origin: 'inspector' });
+      dc.add({ mode: 'plane', length: 2.1, width: 0.905, rectArea: 1.9, kind: 'стена', dip: 89.6, rms: 0.002, inlierCount: 900, total: 1000 }, { objectType: 'дверь', origin: 'inspector' });
+      dc.add({ mode: 'angle', deg: 91.4, lenA: 2.0, lenC: 3.1 }, { origin: 'inspector' });
+    });
+    await page.evaluate(() => window.__lxVerify.open({})); await page.waitForTimeout(900);
+  },
+  async verifyfilled(page) {
+    await scenarios.verifyfill(page);
+    await page.click('.vf-banner .btn.primary'); await page.waitForTimeout(2200);
+  },
+  async verifyopen(page) {  // раскрытая строка с отклонением и вариантами
+    await scenarios.verifyfilled(page);
+    const row = page.locator('.vf-main.proposal, .vf-main.warn').first();
+    if (await row.count()) await row.click();
+    await page.waitForTimeout(1200);
+  },
+  async verifychip(page) {  // клик по статусу в инспекторе: сверка открывается поверх окна инспектора
+    await scenarios.verifyins(page);
+    await page.locator('#lxInsHist .vf-chip, #lxInsModal button.vf-chip').first().click(); await page.waitForTimeout(900);
+  },
+  async verifystack(page) { // статус-чип в инспекторе открывает сверку поверх окна; Esc закрывает сначала сверку, потом инспектор
+    await scenarios.verifyins(page);
+    await page.locator('#lxInsHist .vf-chip, #lxInsModal button.vf-chip').first().click(); await page.waitForTimeout(800);
+    const st = () => page.evaluate(() => ({ vf: !document.getElementById('lxVfModal').hidden, ins: !document.getElementById('lxInsModal').hidden }));
+    const a = await st(); if (!a.vf || !a.ins) throw new Error('Ожидалось: сверка и инспектор открыты, получено ' + JSON.stringify(a));
+    await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+    const b = await st(); if (b.vf || !b.ins) throw new Error('Esc должен закрыть только сверку, получено ' + JSON.stringify(b));
+    await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+    const c = await st(); if (c.vf || c.ins) throw new Error('Второй Esc должен закрыть инспектор, получено ' + JSON.stringify(c));
+    await page.evaluate(() => window.__lxVerify.open({})); await page.waitForTimeout(700);
+  },
+  async verifyaccept(page) { // «Принять» в строке и массовое «Принять предложения»
+    await scenarios.verifyfilled(page);
+    const q = page.locator('.vf-quick');
+    const n = await q.count();
+    if (n) { await page.locator('#lxVfAcceptAll').click(); await page.waitForTimeout(600); }
+  },
   async verifyall(page) {
     await scenarios.verifyins(page);
     await page.keyboard.press('Escape'); await page.waitForTimeout(400);

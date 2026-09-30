@@ -41,7 +41,7 @@ const EXTRA = [
   'clipboard-list', 'sparkles', 'gauge', 'copy', 'list', 'save', 'circle-play', 'orbit', 'box', 'layers', 'crosshair',
   'ruler', 'magnet', 'lasso-select', 'brush-cleaning', 'palette', 'pin', 'pin-off', 'chart-scatter', 'scan-line',
   'wand-sparkles', 'arrow-left', 'arrow-right', 'arrow-up', 'arrow-down', 'keyboard',
-  'sliders-vertical', 'columns-2', 'map-pin', 'focus', 'mouse-pointer-2', 'inbox', 'files', 'clipboard-check', 'scan-search', 'external-link', 'wand-sparkles', 'refresh-cw'
+  'sliders-vertical', 'columns-2', 'map-pin', 'focus', 'mouse-pointer-2', 'inbox', 'files', 'clipboard-check', 'scan-search', 'external-link', 'wand-sparkles', 'refresh-cw', 'check-check', 'file-down', 'check'
 ];
 
 /* Ручные иконки: внутренняя разметка svg (24×24, stroke currentColor, round). */
