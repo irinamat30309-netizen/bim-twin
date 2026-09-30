@@ -24,14 +24,15 @@ function makeRoom(seed, o) {
     }
   }
   const inDoor = p => p[2] > z0 && p[2] < z1 && p[1] < hd;
+  const inGap = p => !!opt.gap && p[1] > opt.gap[0] && p[1] < opt.gap[1];   // строки скана пропустили полосу откоса на этой высоте
   rect([0, 0, 0], [1, 0, 0], [0, 0, 1], W, L, [0, 1, 0]);
   rect([0, H, 0], [1, 0, 0], [0, 0, 1], W, L, [0, -1, 0]);
   rect([0, 0, 0], [0, 1, 0], [0, 0, 1], H, L, [1, 0, 0]);
   rect([0, 0, 0], [1, 0, 0], [0, 1, 0], W, H, [0, 0, 1]);
   rect([0, 0, L], [1, 0, 0], [0, 1, 0], W, H, [0, 0, -1]);
   rect([W, 0, 0], [0, 1, 0], [0, 0, 1], H, L, [-1, 0, 0], inDoor);
-  rect([W, 0, z0], [1, 0, 0], [0, 1, 0], T, hd, [0, 0, 1]);
-  rect([W, 0, z1], [1, 0, 0], [0, 1, 0], T, hd, [0, 0, -1]);
+  rect([W, 0, z0], [1, 0, 0], [0, 1, 0], T, hd, [0, 0, 1], inGap);
+  rect([W, 0, z1], [1, 0, 0], [0, 1, 0], T, hd, [0, 0, -1], inGap);
   rect([W, hd, z0], [1, 0, 0], [0, 0, 1], T, z1 - z0, [0, -1, 0]);
   const k = opt.scale, pos = new Float32Array(pts.length * 3);
   pts.forEach((p, i) => { pos[i * 3] = p[0] * k; pos[i * 3 + 1] = p[1] * k; pos[i * 3 + 2] = p[2] * k; });
@@ -167,6 +168,21 @@ test('проём: ширина между откосами измеряется 
     const g = PS.pairGap(sa, sb);
     assert.equal(g.kind, 'edges');
     assert.ok(Math.abs(g.value - (z1 - z0)) < 0.0007, 'проём ' + mm(Math.abs(g.value - (z1 - z0))));
+  }
+});
+
+test('ребро при пропуске строк скана: откос без точек на уровне курсора всё равно даёт ребро по опоре вдоль линии', () => {
+  const { W, z0 } = OPT, rm = makeRoom(23, { gap: [0.92, 1.08] });
+  const off2 = p => Math.hypot(p[0] - W, p[2] - z0);   // расстояние до настоящей линии ребра: стена x = W, откос z = z0
+  for (const dy of [0, -0.01]) {
+    const seed = nearestTo(rm, [W - 0.004, 1.0 + dy, z0 - 0.004]);
+    const on = PS.snap(seed, rm.index, { snapDist: 0.05, grow: true });
+    assert.equal(on.kind, 'edge');
+    assert.ok(!on.contour, 'это ребро двух плоскостей, а не кромка по плотности точек');
+    assert.ok(on.sparse, 'ребро принято по опоре вдоль линии');
+    assert.ok(off2(on.point) < 0.0008, 'ошибка ребра ' + mm(off2(on.point)));
+    const off = PS.snap(seed, rm.index, { snapDist: 0.05, grow: true, lineSupport: false });
+    assert.ok(off.contour && off2(off.point) > 0.003, 'без опоры вдоль линии остаётся кромка по плотности: ' + mm(off2(off.point)));
   }
 });
 

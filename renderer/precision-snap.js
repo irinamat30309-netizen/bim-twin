@@ -292,6 +292,18 @@
     for (var k = 0; k < ids.length; k++) { var i = ids[k] * 3, ax = Q[i] - p[0], ay = Q[i + 1] - p[1], az = Q[i + 2] - p[2]; if (ax * ax + ay * ay + az * az <= r2) c++; }
     return c;
   }
+  /* Опора ребра вдоль всей линии: сколько точек плоскости лежит не дальше rPerp от линии в пределах tMax вдоль неё.
+   * Строки скана пропускают откос на уровне курсора (под скользящим углом попадает одна строка из нескольких), но выше и ниже точки есть —
+   * проверка «рядом с курсором» отвергала такое ребро, и оставалась одна плоскость или граница по плотности с ошибкой в сантиметр. */
+  function nearOnLine(Q, plane, line, rPerp, tMax) {
+    var r2 = rPerp * rPerp, c = 0, ids = plane.inliers, o = line.point, d = line.dir;
+    for (var k = 0; k < ids.length; k++) {
+      var i = ids[k] * 3, ax = Q[i] - o[0], ay = Q[i + 1] - o[1], az = Q[i + 2] - o[2], t = ax * d[0] + ay * d[1] + az * d[2];
+      ax -= t * d[0]; ay -= t * d[1]; az -= t * d[2];
+      if (ax * ax + ay * ay + az * az <= r2 && Math.abs(t - (line.t0 || 0)) <= tMax) c++;
+    }
+    return c;
+  }
 
 
   /* ---------- Рост плоскости по всей поверхности ---------- */
@@ -621,10 +633,15 @@
     // рёбра
     for (a = 0; a < good.length; a++) for (b = a + 1; b < good.length; b++) {
       var x2 = intersect2(good[a], good[b]); if (!x2) continue;
-      var t = -dot(x2.point, x2.dir), foot = add(x2.point, mul(x2.dir, t)), de = len(foot);
+      var t = -dot(x2.point, x2.dir), foot = add(x2.point, mul(x2.dir, t)), de = len(foot), sparse = false;
       if (de > snapDist) continue;
-      if (nearOnPlane(Q, good[a], foot, supportR) < 3 || nearOnPlane(Q, good[b], foot, supportR) < 3) continue;
-      cands.push({ kind: 'edge', tier: 1, cost: de * 0.8, point: foot, dir: x2.dir, planes: [good[a], good[b]] });
+      if (nearOnPlane(Q, good[a], foot, supportR) < 3 || nearOnPlane(Q, good[b], foot, supportR) < 3) {
+        if (opts.lineSupport === false) continue;
+        x2.t0 = t;
+        if (nearOnLine(Q, good[a], x2, supportR, radius) < 6 || nearOnLine(Q, good[b], x2, supportR, radius) < 6) continue;
+        sparse = true;
+      }
+      cands.push({ kind: 'edge', tier: 1, cost: de * 0.8 + (sparse ? 0.1 * snapDist : 0), point: foot, dir: x2.dir, planes: [good[a], good[b]], sparse: sparse });
     }
     // плоскости
     good.forEach(function (p) {
@@ -683,7 +700,7 @@
       return { normal: p.normal.slice(), d: p.d, centroid: p.centroid.slice(), rms: p.rms, count: p.count, span: p.span, sigma: sg, grown: !!p.grown,
                spread: p.spread, spreadMin: p.spreadMin, tau: p.tau };
     });
-    out.point = pt; out.kind = w.kind; out.refined = true; out.shift = len(sub(pt, raw)); out.cored = !!w.cored;
+    out.point = pt; out.kind = w.kind; out.refined = true; out.shift = len(sub(pt, raw)); out.cored = !!w.cored; out.sparse = !!w.sparse;
     if (contour) { out.point = contour.point; out.kind = 'edge'; out.contour = true; out.shift = len(sub(contour.point, raw)); dir = contour.dir; out.contourInfo = { anchors: contour.anchors || 0, dirSigma: contour.dirSigma, gap: contour.gap, cell: contour.cell, bins: contour.bins, rms: contour.rms, mass: contour.mass, nref: contour.nref, top: contour.top, a1: contour.a1 }; }
     out.grown = out.planes.some(function (p) { return p.grown; });
     out.rms = rms; out.count = cnt === Infinity ? 0 : cnt;
