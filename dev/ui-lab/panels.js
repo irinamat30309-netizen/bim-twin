@@ -19,6 +19,8 @@ async function reset(page) {
   await page.waitForTimeout(200);
   for (let i = 0; i < 3; i++) { await page.keyboard.press('Escape'); await page.waitForTimeout(120); }
   await page.evaluate(() => {
+    try { if (typeof window.__p === 'function') window.__p(); window.__p = null; } catch (e) {}
+    try { const sc = document.getElementById('segScene'); if (sc && !sc.classList.contains('active')) sc.click(); } catch (e) {}   // имитация долгой операции из сценариев progress/askover не должна перекрывать следующие
     try { window.__lxModes && window.__lxModes.cancelAll && window.__lxModes.cancelAll(); } catch (e) {}
     document.querySelectorAll('.lx-modal-back').forEach((n) => n.remove());
     document.querySelectorAll('[data-close]').forEach((b) => { if (b.offsetParent) b.click(); });
@@ -85,6 +87,9 @@ const scenarios = {
   async toasts(page) { await page.evaluate(() => { const k = window.__lxKit; k.toast('Облако загружено: 296 063 точек', { tone: 'ok' }); k.toast('Проверьте единицы измерения', { tone: 'warn' }); k.toast('Не удалось сохранить проект', { tone: 'err' }); k.toast('Обычное уведомление'); k.toast('Обычное уведомление'); }); await page.waitForTimeout(1400); },
   async more(page) { await page.evaluate(() => { const b = document.querySelector('[data-cell="more"] button, .lx-more'); if (b) b.click(); }); await page.waitForTimeout(400); },
   async tree(page) { await page.evaluate(() => { document.querySelectorAll('.lx-node .lx-cloud-eye').forEach(() => {}); }); },
+  async docs(page) { await page.click('#segDocs'); await page.waitForTimeout(800); },   // правая колонка: вкладка «Документы»
+  async room(page) { await page.evaluate(() => { const r = document.querySelectorAll('#tree .room')[1]; if (r) r.click(); }); await page.waitForTimeout(1000); },
+  async roomdocs(page) { await scenarios.room(page); await page.click('#segDocs'); await page.waitForTimeout(900); },
   async drawer(page) { if ((await page.evaluate(() => innerWidth)) > 1100) { console.log('     (выдвижные панели включаются на ширине ≤1100 px — пропуск)'); return; } await page.click('#tbSide'); await page.waitForTimeout(600); },
   async inspectordrawer(page) { if ((await page.evaluate(() => innerWidth)) > 1100) return; await page.click('#tbInspector'); await page.waitForTimeout(600); }
 };

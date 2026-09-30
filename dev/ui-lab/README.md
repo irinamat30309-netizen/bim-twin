@@ -30,7 +30,7 @@ python3 sheet.py out.png shots/a.png shots/b.png   # склейка снимко
 | `lab.js` | общие функции: запуск браузера, `openCloud`, снимок, **`audit`** (см. ниже) |
 | `n1.js` | быстрый дымовой прогон: рабочая область, ошибки консоли |
 | `tabs.js` | обход вкладок ленты: прокрутка ленты (`can-prev/can-next`), отсутствующие иконки, ошибки |
-| `panels.js` | сценарии: `base quality edit cleanmenu geommenu section measure measureplane measurelist measurelistfull objinspect objwin objwinmeasure objesc s2b s2bai flooradd convert settings newproject compare drafts memory draw palette console progress ask askdanger askmulti askover toasts more tree drawer inspectordrawer` |
+| `panels.js` | сценарии: `base quality edit cleanmenu geommenu section measure measureplane measurelist measurelistfull objinspect objwin objwinmeasure objesc s2b s2bai flooradd convert settings newproject compare drafts memory draw palette console progress ask askdanger askmulti askover toasts more tree docs room roomdocs drawer inspectordrawer` |
 | `startup.js` | сценарии стартового экрана: `one many pick search nomatch empty error loading settings newdlg opening` |
 
 Снимки складываются в `shots/`: `p-<тема>-<ширина>-<сценарий>.png` (рабочая область), `st-<тема>-<ширина>-<сценарий>.png`
@@ -46,6 +46,7 @@ python3 sheet.py out.png shots/a.png shots/b.png   # склейка снимко
 | `CLIPPED-TEXT` | текст обрезан многоточием, а полной подсказки (`title` / `data-tip`) у элемента нет |
 | `CLIPPED-CONTROL` | кнопка или поле выходят за край панели/меню/окна/тоста, где содержимое обрезается |
 | `OFFSCREEN` | панель, HUD, меню, окно или подсказка выходят за границы окна |
+| `SIDE-OVERFLOW` | содержимое левой или правой колонки (`.sidebar`, `.inspector`) выходит за её край (например, поле поиска шире колонки) |
 | `OVERLAP` | пересекаются плавающие элементы (панели, HUD, навигация сцены, куб, тосты) — с учётом обрезки прокруткой |
 | `DEFAULT-STYLE` | у кнопки или поля осталась системная рамка — стиль дизайн-системы не применился |
 | `NO-NAME` | кнопка без подписи, `aria-label`, `title` и `data-tip` |

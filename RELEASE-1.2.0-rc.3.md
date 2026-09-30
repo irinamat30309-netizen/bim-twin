@@ -55,7 +55,7 @@
 | Gate | Результат |
 |---|---:|
 | Node regression suite (`node --test`) | 987 total / 984 passed / 0 failed / 3 skipped |
-| Новые/переписанные тесты интерфейса | `ui-system`, `ui-commands`, `ui-modes-behavior`, `ui-dialogs`, `ui-startup` (46 сценариев) |
+| Новые/переписанные тесты интерфейса | `ui-system`, `ui-commands`, `ui-modes-behavior`, `ui-dialogs`, `ui-startup` (47 тестов) |
 | JavaScript/MJS/CJS syntax | 277 файлов / 0 ошибок |
 | Иконки `tools/build-ui-icons.mjs --check` | актуальны, 187 иконок |
 | Шрифт `tools/build-ui-fonts.mjs --check` | OK, 2 начертания |

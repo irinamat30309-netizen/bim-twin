@@ -4903,7 +4903,7 @@
     $('btnBackRoom').addEventListener('click', () => { if (current) openRoom(current.id); });
     { const _boc = $('btnOpenCloud'); if (_boc) _boc.addEventListener('click', openPendingCloud); }
     $('search').addEventListener('input', e => { searchTerm = e.target.value.trim().toLowerCase(); renderTree(); });
-    document.querySelectorAll('.fchip').forEach(c => c.addEventListener('click', () => { document.querySelectorAll('.fchip').forEach(x => x.classList.remove('active')); c.classList.add('active'); filter = c.dataset.f; renderTree(); }));
+    document.querySelectorAll('.fchip').forEach(c => c.addEventListener('click', () => { document.querySelectorAll('.fchip').forEach(x => { x.classList.remove('active'); x.setAttribute('aria-pressed', 'false'); }); c.classList.add('active'); c.setAttribute('aria-pressed', 'true'); filter = c.dataset.f; renderTree(); }));
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => { activeTab = t.dataset.tab; syncTabs(); }));
     $('modelInput').addEventListener('change', e => { if (e.target.files[0]) loadModelFile(e.target.files[0]); e.target.value = ''; });
     $('docInput').addEventListener('change', e => { if (e.target.files[0]) addDocumentFile(e.target.files[0]); e.target.value = ''; });

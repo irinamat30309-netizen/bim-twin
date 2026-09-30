@@ -3,7 +3,7 @@
   'use strict';
   var DICT = {
     ru: {
-      'search.ph': 'Поиск помещений и элементов…',
+      'search.ph': 'Поиск по структуре…',
       'projsel.title': 'Активный проект', 'newproject.title': 'Новый проект',
       'filter.all': 'Все', 'filter.err': 'Ошибки', 'filter.warn': 'Проверка', 'filter.ok': 'ОК',
       'side.users': 'Команда', 'side.export': 'Экспорт', 'side.sync': 'Синхр.',
@@ -50,7 +50,7 @@
       'win.min': 'Свернуть', 'win.max': 'Развернуть', 'win.close': 'Закрыть'
     },
     uk: {
-      'search.ph': 'Пошук приміщень та елементів…',
+      'search.ph': 'Пошук за структурою…',
       'projsel.title': 'Активний проект', 'newproject.title': 'Новий проект',
       'filter.all': 'Усі', 'filter.err': 'Помилки', 'filter.warn': 'Перевірка', 'filter.ok': 'ОК',
       'side.users': 'Команда', 'side.export': 'Експорт', 'side.sync': 'Синхр.',
@@ -97,7 +97,7 @@
       'win.min': 'Згорнути', 'win.max': 'Розгорнути', 'win.close': 'Закрити'
     },
     en: {
-      'search.ph': 'Search rooms and elements…',
+      'search.ph': 'Search structure…',
       'projsel.title': 'Active project', 'newproject.title': 'New project',
       'filter.all': 'All', 'filter.err': 'Errors', 'filter.warn': 'Review', 'filter.ok': 'OK',
       'side.users': 'Team', 'side.export': 'Export', 'side.sync': 'Sync',

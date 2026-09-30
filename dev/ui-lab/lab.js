@@ -62,6 +62,15 @@ exports.audit = (page) => page.evaluate(() => {
       if ((clip || c.classList.contains('fpanel') || c.classList.contains('hud')) && (r.right > own.right + 1 || r.left < own.left - 1)) out.push('CLIPPED-CONTROL ' + nm(b) + ' в ' + nm(c) + ' [' + Math.round(r.left) + '…' + Math.round(r.right) + ' из ' + Math.round(own.left) + '…' + Math.round(own.right) + ']');
     });
   });
+  // Содержимое боковых колонок не должно выходить за их край (рамка поля, обрезанная краем колонки, — типичный «кривой» дефект)
+  document.querySelectorAll('.sidebar,.inspector').forEach((c) => {
+    if (!vis(c)) return; const cr = c.getBoundingClientRect();
+    c.querySelectorAll('*').forEach((e) => {
+      if (!vis(e)) return; const r = e.getBoundingClientRect(); if (r.width < 1) return;
+      for (let p = e.parentElement; p && p !== c; p = p.parentElement) { const o = getComputedStyle(p).overflowX; if (o === 'auto' || o === 'scroll' || o === 'hidden' && p.scrollWidth > p.clientWidth + 1) return; }
+      if (r.right > cr.right + 1 || r.left < cr.left - 1) out.push('SIDE-OVERFLOW ' + nm(e) + ' в ' + nm(c) + ' [' + Math.round(r.left) + '…' + Math.round(r.right) + ' из ' + Math.round(cr.left) + '…' + Math.round(cr.right) + ']');
+    });
+  });
   document.querySelectorAll('.fpanel,.hud,.hud-readout,.lx-pop,.modal-card,.lx-win,.lx-tip').forEach((e) => {
     if (!vis(e)) return; const r = visRect(e);
     if (r.left < -1 || r.top < -1 || r.right > innerWidth + 1 || r.bottom > innerHeight + 1) out.push('OFFSCREEN ' + nm(e) + ' [' + [r.left, r.top, r.right, r.bottom].map(Math.round) + ']');

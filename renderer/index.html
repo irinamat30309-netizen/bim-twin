@@ -69,13 +69,13 @@
       </div>
       <label class="sb-search">
         <span data-ico="search" data-ico-size="15"></span>
-        <input id="search" class="search" type="search" data-i18n-ph="search.ph" placeholder="Поиск помещений и элементов…" autocomplete="off" />
+        <input id="search" class="search" type="search" data-i18n-ph="search.ph" placeholder="Поиск по структуре…" autocomplete="off" />
       </label>
       <div class="filters" role="group" aria-label="Фильтр по статусу">
-        <button type="button" class="fchip active" data-f="all" data-i18n="filter.all">Все</button>
-        <button type="button" class="fchip" data-f="err" data-i18n="filter.err">Ошибки</button>
-        <button type="button" class="fchip" data-f="warn" data-i18n="filter.warn">Проверка</button>
-        <button type="button" class="fchip" data-f="ok" data-i18n="filter.ok">ОК</button>
+        <button type="button" class="fchip active" aria-pressed="true" data-f="all" data-i18n="filter.all">Все</button>
+        <button type="button" class="fchip" aria-pressed="false" data-f="err" data-i18n="filter.err">Ошибки</button>
+        <button type="button" class="fchip" aria-pressed="false" data-f="warn" data-i18n="filter.warn">Проверка</button>
+        <button type="button" class="fchip" aria-pressed="false" data-f="ok" data-i18n="filter.ok">ОК</button>
       </div>
       <div id="tree" class="tree"></div>
       <div class="sb-skeleton" id="treeSkeleton" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>

@@ -7,9 +7,15 @@
 .sb-head .mode::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
 .sb-head .mode.demo::before { background: var(--warn); }
 .sb-search { position: relative; display: block; flex: none; margin: 0 12px 8px; }
+/* Дети колонок имеют фиксированную ширину --w-side / --w-insp (shell.css), поэтому у блоков с боковыми полями вычитаем 2×12 px и рамку колонки — иначе правая рамка уходит за край */
+.sidebar > .sb-search, .sidebar > .filters { width: calc(var(--w-side) - 25px); }
 .sb-search > [data-ico] { position: absolute; top: 50%; left: 10px; width: 15px; height: 15px; color: var(--txt-3); transform: translateY(-50%); pointer-events: none; }
 .sb-search .search { width: 100%; padding-left: 32px; }
-.filters { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; }
+/* Фильтр по статусу — сегментный переключатель в одну строку (не переносится ни при 236, ни при 264 px) */
+.filters { flex: none; display: flex; gap: 2px; margin: 0 12px 10px; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); }
+.filters .fchip { flex: 1 1 auto; justify-content: center; height: 24px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; }
+.filters .fchip:hover { background: var(--bg-3); }
+.filters .fchip.active { background: var(--bg-4); color: var(--txt); box-shadow: var(--shadow-1); }
 .tree { position: relative; flex: 1 1 0; min-height: 0; padding: 0 8px 12px; overflow: auto; }
 .sb-skeleton { position: absolute; top: 112px; right: 0; left: 0; display: grid; gap: 10px; padding: 8px 20px; pointer-events: none; }
 .sb-skeleton i:nth-child(odd) { width: 78%; }
@@ -74,6 +80,7 @@ body.editing .row-actions { display: inline-flex; }
 
 /* ---------- Правая панель ---------- */
 .insp-seg { flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 10px 12px; padding: 3px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); }
+.inspector > .insp-seg { width: calc(var(--w-insp) - 25px); }
 .seg-b {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 28px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--txt-2);
   font: 500 var(--fs-sm)/1 var(--font); cursor: pointer; transition: background var(--t-fast), color var(--t-fast), box-shadow var(--t-fast);
