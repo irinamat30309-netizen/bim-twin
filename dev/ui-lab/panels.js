@@ -35,6 +35,16 @@ const scenarios = {
   async measure(page) { await cmd(page, 'btnMeasure'); await cmd(page, 'mmDistance'); },
   async measureplane(page) { await cmd(page, 'btnMeasure'); await cmd(page, 'mmPlane'); },
   async measurelist(page) { await cmd(page, 'mmList'); },
+  async measurelistfull(page) {
+    await cmd(page, 'btnMeasure'); await cmd(page, 'mmDistance');
+    const b = await page.locator('#viewer').boundingBox();
+    for (const [a, c, d, e] of [[0.35, 0.6, 0.6, 0.62], [0.4, 0.45, 0.65, 0.5], [0.45, 0.7, 0.55, 0.3]]) {
+      await page.mouse.click(b.x + b.width * a, b.y + b.height * c); await page.waitForTimeout(500);
+      await page.mouse.click(b.x + b.width * d, b.y + b.height * e); await page.waitForTimeout(800);
+      await page.click('#mmSave'); await page.waitForTimeout(500);
+    }
+    await cmd(page, 'mmList', 700);
+  },
   async objinspect(page) { await cmd(page, 'lxObjInspectBtn', 900); },
   async objwin(page) {
     await cmd(page, 'lxObjInspectBtn', 700);
@@ -64,7 +74,7 @@ const scenarios = {
   async progress(page) { await page.evaluate(() => { window.__p = window.__lxProgress.begin('Очистка облака…', { onCancel() {} }); window.__p.set && window.__p.set(0.42, 'Удаление выбросов…'); }); await page.waitForTimeout(1200); },
   async ask(page) { await page.evaluate(() => { window.__lxKit.ask({ title: 'Название этажа', message: 'Введите короткое название — оно появится в дереве сцены.', input: true, value: 'Этаж 1', okLabel: 'Сохранить' }); }); await page.waitForTimeout(500); },
   async askdanger(page) { await page.evaluate(() => { window.__lxKit.ask({ title: 'Удалить этаж?', message: 'Этаж «Подвал» будет удалён вместе с привязанными документами.', danger: true, okLabel: 'Удалить' }); }); await page.waitForTimeout(500); },
-  async toasts(page) { await page.evaluate(() => { const k = window.__lxKit; k.toast('Облако загружено: 296 063 точек', { tone: 'ok' }); k.toast('Проверьте единицы измерения', { tone: 'warn' }); k.toast('Не удалось сохранить проект', { tone: 'err' }); k.toast('Обычное уведомление'); }); await page.waitForTimeout(600); },
+  async toasts(page) { await page.evaluate(() => { const k = window.__lxKit; k.toast('Облако загружено: 296 063 точек', { tone: 'ok' }); k.toast('Проверьте единицы измерения', { tone: 'warn' }); k.toast('Не удалось сохранить проект', { tone: 'err' }); k.toast('Обычное уведомление'); k.toast('Обычное уведомление'); }); await page.waitForTimeout(1400); },
   async more(page) { await page.evaluate(() => { const b = document.querySelector('[data-cell="more"] button, .lx-more'); if (b) b.click(); }); await page.waitForTimeout(400); },
   async tree(page) { await page.evaluate(() => { document.querySelectorAll('.lx-node .lx-cloud-eye').forEach(() => {}); }); },
   async drawer(page) { await page.click('#tbSide'); await page.waitForTimeout(600); },

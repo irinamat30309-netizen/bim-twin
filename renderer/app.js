@@ -238,13 +238,13 @@
   function renderTree() {
     const box = $('tree'); box.innerHTML = '';
     const ph = document.createElement('div'); ph.className = 'project';
-    ph.innerHTML = '<span>' + esc(DB.project.name) + '</span>';
+    ph.innerHTML = '<span>' + esc(DB.project.name) + '</span>'; ph.title = DB.project.name;
     { const a = mk('span', 'addfloor', ICON('plus', 13) + '<span class="lbl">Этаж</span>'); a.title = 'Добавить этаж'; a.onclick = createFloorUI; ph.appendChild(a); }
     box.appendChild(ph);
 
     for (const f of DB.floors) {
       const fr = document.createElement('div'); fr.className = 'floor';
-      fr.innerHTML = '<span>' + esc(f.name) + '</span>';
+      fr.innerHTML = '<span>' + esc(f.name) + '</span>'; fr.title = f.name;
       const addRoom = mk('span', 'addroom', ICON('plus', 14)); addRoom.title = 'Добавить помещение'; addRoom.onclick = (ev) => { ev.stopPropagation(); createRoomUI(f.id); }; fr.appendChild(addRoom);
       if (editing) {
         const acts = mk('span', 'row-actions');

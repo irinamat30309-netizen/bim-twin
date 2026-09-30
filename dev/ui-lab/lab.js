@@ -40,6 +40,17 @@ exports.audit = (page) => page.evaluate(() => {
     const cs = getComputedStyle(e);
     if (cs.textOverflow === 'ellipsis' && e.scrollWidth > e.clientWidth + 1 && !e.closest('[data-tip],[title]')) out.push('CLIPPED-TEXT ' + nm(e) + ' "' + e.textContent.trim().slice(0, 36) + '"');
   });
+  // Содержимое, которое не помещается в контейнер с overflow:hidden (например, кнопка «закрыть» за краем панели)
+  document.querySelectorAll('.fpanel,.hud,.stage-side,.lx-pop,.modal-card,.lx-win,.lx-toast').forEach((c) => {
+    if (!vis(c)) return; const cr = c.getBoundingClientRect(); const cs = getComputedStyle(c);
+    const clip = cs.overflowX === 'hidden' || cs.overflowX === 'clip';
+    c.querySelectorAll('button,input,select,textarea,[role="button"],a[href]').forEach((b) => {
+      if (!vis(b)) return; const r = b.getBoundingClientRect();
+      for (let p = b.parentElement; p && p !== c; p = p.parentElement) { const o = getComputedStyle(p).overflowX; if (o === 'auto' || o === 'scroll') return; }
+      const own = cr;
+      if ((clip || c.classList.contains('fpanel') || c.classList.contains('hud')) && (r.right > own.right + 1 || r.left < own.left - 1)) out.push('CLIPPED-CONTROL ' + nm(b) + ' в ' + nm(c) + ' [' + Math.round(r.left) + '…' + Math.round(r.right) + ' из ' + Math.round(own.left) + '…' + Math.round(own.right) + ']');
+    });
+  });
   document.querySelectorAll('.fpanel,.hud,.hud-readout,.lx-pop,.modal-card,.lx-win,.lx-tip').forEach((e) => {
     if (!vis(e)) return; const r = e.getBoundingClientRect();
     if (r.left < -1 || r.top < -1 || r.right > innerWidth + 1 || r.bottom > innerHeight + 1) out.push('OFFSCREEN ' + nm(e) + ' [' + [r.left, r.top, r.right, r.bottom].map(Math.round) + ']');
@@ -51,6 +62,11 @@ exports.audit = (page) => page.evaluate(() => {
     const w = Math.min(p.right, q.right) - Math.max(p.left, q.left), h = Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top);
     if (w > 2 && h > 2) out.push('OVERLAP ' + nm(a) + ' × ' + nm(b) + ' (' + Math.round(w) + '×' + Math.round(h) + ')');
   }
+  // Неоформленные системные элементы: у кнопки 2px outset, у поля inset — значит, стиль дизайн-системы не применился
+  document.querySelectorAll('button, input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="color"]), select, textarea').forEach((b) => {
+    if (!vis(b)) return; const st = getComputedStyle(b).borderTopStyle;
+    if (st === 'outset' || st === 'inset' || st === 'groove' || st === 'ridge') out.push('DEFAULT-STYLE ' + nm(b) + ' "' + (b.textContent || b.value || b.getAttribute('aria-label') || '').trim().slice(0, 24) + '"');
+  });
   document.querySelectorAll('button, [role="button"]').forEach((b) => {
     if (!vis(b)) return;
     const t = (b.getAttribute('aria-label') || b.textContent || b.getAttribute('data-tip') || b.getAttribute('title') || '').trim();

@@ -58,7 +58,6 @@
   var TONE_ICO = { ok: 'circle-check', warn: 'triangle-alert', err: 'circle-x', info: 'info' };
   /** Убирает пиктограммы и эмодзи из текста интерфейса: значки рисуем SVG-иконками. */
   function plain(s) { return String(s == null ? '' : s).replace(PICTO, '').replace(/[ \t]{2,}/g, ' ').replace(/^\s+|\s+$/g, ''); }
-  var toastTimer = 0;
   function toneOf(raw, explicit) {
     if (explicit) return explicit;
     for (var i = 0; i < TONE_BY_EMOJI.length; i++) if (TONE_BY_EMOJI[i][0].test(raw)) return TONE_BY_EMOJI[i][1];
@@ -66,18 +65,56 @@
     if (/^(готово|сохранено|добавлен|создан|импортировано|скопирован)/i.test(raw.replace(EMOJI, ''))) return 'ok';
     return 'info';
   }
+  /* Стек уведомлений: несколько сообщений подряд не теряются, одинаковые склеиваются в «×N», пауза по наведению, закрытие крестиком */
+  var toastHost = null, TOAST_MAX = 4;
+  function toastRoot() {
+    if (toastHost && toastHost.parentNode) return toastHost;
+    toastHost = D.createElement('div'); toastHost.id = 'lxToasts'; toastHost.className = 'lx-toasts';
+    toastHost.setAttribute('role', 'region'); toastHost.setAttribute('aria-label', 'Уведомления');
+    D.body.appendChild(toastHost); return toastHost;
+  }
+  function dismissToast(el) {
+    if (!el || el._gone) return;
+    el._gone = true; clearTimeout(el._t);
+    el.style.maxHeight = el.offsetHeight + 'px'; void el.offsetHeight;
+    el.classList.add('leaving'); el.style.maxHeight = '0px';
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 280);
+  }
+  function armToast(el, ms) {
+    clearTimeout(el._t); el._left = ms; el._from = Date.now();
+    el._t = setTimeout(function () { dismissToast(el); }, ms);
+    var bar = el.querySelector('.t-bar');
+    if (bar) { bar.style.animation = 'none'; void bar.offsetWidth; bar.style.animation = ''; bar.style.animationDuration = ms + 'ms'; }
+  }
   function toast(msg, opts) {
-    var el = $('toast'); if (!el) return;
     opts = opts || {};
     var raw = String(msg == null ? '' : msg);
     var tone = toneOf(raw, opts.tone);
     var text = plain(raw.replace(EMOJI, '')) || raw;
-    el.setAttribute('data-tone', tone);
-    el.innerHTML = '<span class="t-ico">' + ic(TONE_ICO[tone], 18) + '</span><span class="t-msg"></span>';
+    var root = toastRoot();
+    var ms = opts.ms || Math.min(tone === 'err' ? 10000 : 6500, (tone === 'err' ? 5000 : 2400) + text.length * 22);
+    for (var i = root.children.length - 1; i >= 0; i--) {
+      var k = root.children[i];
+      if (!k._gone && k._text === text && k._tone === tone) {
+        k._n = (k._n || 1) + 1;
+        var cnt = k.querySelector('.t-n'); cnt.textContent = '×' + k._n; cnt.hidden = false;
+        k.classList.remove('bump'); void k.offsetWidth; k.classList.add('bump');
+        armToast(k, ms); return;
+      }
+    }
+    var el = D.createElement('div');
+    el.className = 'lx-toast'; el.setAttribute('data-tone', tone); el.setAttribute('role', tone === 'err' ? 'alert' : 'status');
+    el._text = text; el._tone = tone; el._n = 1;
+    el.innerHTML = '<span class="t-ico">' + ic(TONE_ICO[tone], 18) + '</span><span class="t-msg"></span><span class="t-n" hidden></span>' +
+      '<button type="button" class="t-x" aria-label="Закрыть уведомление">' + ic('x', 14) + '</button><i class="t-bar"></i>';
     el.querySelector('.t-msg').textContent = text;
-    el.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.classList.remove('show'); }, opts.ms || Math.min(6500, 2400 + text.length * 22));
+    el.querySelector('.t-x').addEventListener('click', function () { dismissToast(el); });
+    el.addEventListener('mouseenter', function () { if (el._gone) return; clearTimeout(el._t); el._left = Math.max(800, el._left - (Date.now() - el._from)); el.classList.add('paused'); });
+    el.addEventListener('mouseleave', function () { if (el._gone) return; el.classList.remove('paused'); el._from = Date.now(); el._t = setTimeout(function () { dismissToast(el); }, el._left); });
+    root.appendChild(el);
+    var live = []; for (var j = 0; j < root.children.length; j++) if (!root.children[j]._gone) live.push(root.children[j]);
+    while (live.length > TOAST_MAX) dismissToast(live.shift());
+    armToast(el, ms);
   }
 
   /* ---------- Подсказки ---------- */

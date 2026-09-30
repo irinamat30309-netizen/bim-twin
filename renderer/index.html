@@ -118,11 +118,13 @@
           <header class="fpanel-head">
               <span class="fpanel-ico" data-ico="list"></span><h3>Измерения</h3>
               <div class="fpanel-actions">
-                <button id="mlAutoCompare" class="btn sm" type="button" title="Автоматически разобрать документы помещений и сопоставить все измерения"><span data-ico="scale" data-ico-size="15"></span><span class="lbl">Сверить всё</span></button>
-                <button id="mlClearAll" class="icon-btn danger" type="button" data-ico="trash-2" title="Очистить список" aria-label="Очистить список"></button>
                 <button class="icon-btn" type="button" data-close="measureListPanel" data-ico="x" title="Закрыть" aria-label="Закрыть"></button>
               </div>
             </header>
+          <div class="fpanel-toolbar">
+            <button id="mlAutoCompare" class="btn sm" type="button" title="Автоматически разобрать документы помещений и сопоставить все измерения"><span data-ico="scale" data-ico-size="15"></span><span class="lbl">Сверить всё</span></button>
+            <button id="mlClearAll" class="btn sm ghost danger" type="button" title="Очистить список"><span data-ico="trash-2" data-ico-size="15"></span><span class="lbl">Очистить</span></button>
+          </div>
           <div id="measureListBody" class="fpanel-body"></div>
         </section>
         </div>
