@@ -124,7 +124,7 @@ test('webgl-viewer.js: маркеры измерения — маленькие 
 
 test('webgl-viewer.js: CloudCompare-стиль — снап под курсор + предпросмотр', () => {
   assert.ok(VW.includes('_hoverMeasure(cx, cy)'), 'hover preview method missing');
-  assert.ok(VW.includes('_setHoverPoint(pt)'), 'hover marker setter missing');
+  assert.ok(/_setHoverPoint\(pt(, snap)?\) \{/.test(VW), 'hover marker setter missing');
   assert.ok(VW.includes('this._hoverObj ? [this._hoverObj] : []'), 'hover object must join draw list');
   assert.ok(VW.includes('if (this.measuring) this._hoverMeasure'), 'mousemove should drive hover while measuring');
   // снап — по ближайшей к курсору точке, а не просто ближайшей по глубине

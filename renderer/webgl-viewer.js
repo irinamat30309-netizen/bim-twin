@@ -20,6 +20,9 @@
   const TYPE_BASE = { 'вентшахта': '#7c93b8', 'оборудование': '#6b7d99', 'труба': '#a67d63', 'дверь': '#8a79b8', 'кабель-канал': '#5fa39d' };
   const hex2rgb = h => { h = h.replace('#', ''); const n = parseInt(h, 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
   const mixW = (c, t) => [c[0] * (1 - t) + t, c[1] * (1 - t) + t, c[2] * (1 - t) + t];
+  // Точный захват: подписи и цвета меток (угол — розовый, ребро — оранжевый, плоскость — голубой, точка — зелёный)
+  const SNAP_RU = { corner: 'Угол', edge: 'Ребро', plane: 'Плоскость', point: 'Точка облака', raw: 'Без привязки' };
+  const SNAP_COLOR = { corner: '#ff4fd8', edge: '#ffb020', plane: '#39c6ff', point: '#39d98a', raw: '#c9d1e0' };
 
   // ---------- vec / mat helpers (column-major mat4) ----------
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -273,7 +276,8 @@
       this._selAccumulate = true;  // мультивыбор: каждая рамка/лассо ДОБАВЛЯЕТ к выбору
       this.section = { on: false, t: 1, min: [0, 0, 0], max: [1, 1, 1] }; this.measuring = false; this.measurePts = []; this.lod = false; this.isolate = false; this.walk = false;
       this.measureMode = 'distance'; this._measResult = null; this._measLabels = []; // режим измерения: point|distance|polyline|angle|area|plane|deviation
-      this.measureSnap = false; this._measRefPlane = null; this._measHistory = []; // snap к рёбрам/углам; опорная плоскость; история измерений
+      this.measureSnap = true; this._measRefPlane = null; this._measHistory = []; // точный захват угол/ребро/плоскость (PrecisionSnap) — включён; опорная плоскость; история измерений
+      this._measSnaps = []; this._hoverSnap = null; this._psCache = null; this._snapPx = 16;
       this.smartMeasure = true; this._smartAxisTolDeg = 10; // «умное» измерение расстояния: живые направляющие + привязка к осям
       this.theme = 'dark'; this._tween = null;
       // Качество облака (Патч 30): цветовой режим, яркость, множитель размера точки, EDL
@@ -1103,11 +1107,11 @@
       }
       this.render(); return true;
     }
-    setMeasure(on) { this.measuring = on; try { this.canvas.style.cursor = on ? 'crosshair' : 'grab'; } catch (e) {} if (!on) { this._clearMeasure(); this._showMeasLabels(false); this._setHoverPoint(null); this._hideLoupe(); } this.render(); }
+    setMeasure(on) { this.measuring = on; try { this.canvas.style.cursor = on ? 'crosshair' : 'grab'; } catch (e) {} if (!on) { this._clearMeasure(); this._showMeasLabels(false); this._setHoverPoint(null); this._hideLoupe(); this._hideSnapTip(); } else if (this.measureSnap) this._psPrewarm(); this.render(); }
     // Живой предпросмотр точки-снапа под курсором (как выбор точки в CloudCompare)
     _hoverMeasure(cx, cy) {
       // Window mousemove also fires over menus. Never pick or magnify UI controls.
-      if (document.elementFromPoint(cx, cy) !== this.canvas) { this._hideLoupe(); this._setHoverPoint(null); if (this.smartMeasure && (this.measureMode || 'distance') === 'distance' && this.measurePts.length === 1) this._smartDistancePreview(null); return; }
+      if (document.elementFromPoint(cx, cy) !== this.canvas) { this._hideLoupe(); this._hideSnapTip(); this._cancelSnapGrow(); this._setHoverPoint(null); if (this.smartMeasure && (this.measureMode || 'distance') === 'distance' && this.measurePts.length === 1) this._smartDistancePreview(null); return; }
       this._hoverXY = [cx, cy];
       if (this._hoverRAF) return;
       const raf = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : (f) => setTimeout(f, 16);
@@ -1115,15 +1119,129 @@
         this._hoverRAF = 0;
         if (!this.measuring) { this._setHoverPoint(null); this._hideLoupe(); return; }
         const xy = this._hoverXY; const hit = this._pick(xy[0], xy[1]);
-        this._setHoverPoint(hit ? hit.point : null);
-        this._drawLoupe(xy[0], xy[1], hit ? hit.point : null);
-        if (this.smartMeasure && (this.measureMode || 'distance') === 'distance' && this.measurePts.length === 1) { const pv = hit ? this._smartAxisLock(this.measurePts[0], hit.point) : null; this._smartDistancePreview(pv); }
+        const snap = hit && this.measureSnap && !hit.id ? this._precisionSnapAt(hit.point, { grow: false }) : null;
+        this._hoverSnap = snap && snap.refined ? snap : null;
+        const pt = snap ? snap.point : (hit ? hit.point : null);
+        this._setHoverPoint(pt, this._hoverSnap);
+        this._drawLoupe(xy[0], xy[1], pt);
+        this._showSnapTip(xy[0], xy[1], hit ? (snap || { kind: 'raw' }) : null);
+        if (this._hoverSnap) this._scheduleSnapGrow(hit.point); else this._cancelSnapGrow();
+        if (this.smartMeasure && (this.measureMode || 'distance') === 'distance' && this.measurePts.length === 1) { const pv = pt ? (this._hoverSnap ? pt : this._smartAxisLock(this.measurePts[0], pt)) : null; this._smartDistancePreview(pv); }
       });
     }
-    _setHoverPoint(pt) {
+    _setHoverPoint(pt, snap) {
       if (this._hoverObj) { this._delObjs([this._hoverObj]); this._hoverObj = null; }
-      if (pt) this._hoverObj = this._makeObj({ id: null, points: true, pos: new Float32Array([pt[0], pt[1], pt[2]]), col: null, pointSize: 22, color: hex2rgb('#39d98a'), status: 'none', _isSel: true, _spacing: 0, _ptMax: 28 });
+      if (this._hoverLines) { this._delObjs([this._hoverLines]); this._hoverLines = null; }
+      if (pt) {
+        const kind = snap && snap.kind || 'point';
+        this._hoverObj = this._makeObj({ id: null, points: true, pos: new Float32Array([pt[0], pt[1], pt[2]]), col: null, pointSize: kind === 'corner' ? 26 : 22, color: hex2rgb(SNAP_COLOR[kind] || SNAP_COLOR.point), status: 'none', _isSel: true, _spacing: 0, _ptMax: 30 });
+        const seg = this._snapGlyph(snap);
+        if (seg.length) this._hoverLines = this._makeObj({ id: null, line: true, pos: new Float32Array(seg), color: hex2rgb(SNAP_COLOR[kind] || SNAP_COLOR.point) });
+      }
       this.render();
+    }
+    // Короткие отрезки вдоль найденного ребра (или трёх рёбер угла): видно, к какой геометрии привязались
+    _snapGlyph(snap) {
+      if (!snap || !snap.point || (snap.kind !== 'edge' && snap.kind !== 'corner')) return [];
+      const L = Math.max(1, snap.wpp ? snap.wpp * 26 / 1 : 0) || 0.05, p = snap.point, out = [];
+      const dirs = [];
+      if (snap.kind === 'edge' && snap.dir) dirs.push(snap.dir);
+      if (snap.kind === 'corner' && snap.planes && snap.planes.length === 3) {
+        for (let i = 0; i < 3; i++) {
+          const a = snap.planes[i].normal, b = snap.planes[(i + 1) % 3].normal;
+          const u = cross(a, b), l = Math.hypot(u[0], u[1], u[2]);
+          if (l > 0.2) dirs.push([u[0] / l, u[1] / l, u[2] / l]);
+        }
+      }
+      const half = (snap.wpp || 0.002) * 26;
+      for (const d of dirs) out.push(p[0] - d[0] * half, p[1] - d[1] * half, p[2] - d[2] * half, p[0] + d[0] * half, p[1] + d[1] * half, p[2] + d[2] * half);
+      return out;
+    }
+    // ---------- Точный захват (PrecisionSnap): угол → ребро → плоскость → точка ----------
+    _psNow() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
+    _psIndex() {
+      const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null;
+      const bo = this.base && this.base[0];
+      if (!PS || !bo || !bo.points || !bo.pos || bo.pos.length < 36) return null;
+      const n = bo.pos.length / 3, c = this._psCache;
+      if (c && c.pos === bo.pos && c.n === n) return c.index;
+      const t0 = this._psNow();
+      let pos = bo.pos;
+      if (n > 8e6) {   // огромное облако: индекс по каждой k-й точке, чтобы уложиться в память
+        const st = Math.ceil(n / 8e6), m = Math.floor(n / st), cp = new Float32Array(m * 3);
+        for (let i = 0; i < m; i++) { cp[i * 3] = bo.pos[i * st * 3]; cp[i * 3 + 1] = bo.pos[i * st * 3 + 1]; cp[i * 3 + 2] = bo.pos[i * st * 3 + 2]; }
+        pos = cp;
+      }
+      let index = null;
+      try { index = PS.buildIndex(pos); } catch (e) { index = null; }
+      this._psCache = { pos: bo.pos, n, index, ms: this._psNow() - t0, snaps: [] };
+      return index;
+    }
+    _psPrewarm() { if (this._psWarm) return; this._psWarm = setTimeout(() => { this._psWarm = 0; try { this._psIndex(); } catch (e) {} }, 40); }
+    _psWorldPerPx(pt) {
+      const h = Math.max(1, this.canvas.clientHeight || this.canvas.height || 1), fov = this._fov || 0.87;
+      if (this._ortho) return 2 * Math.max(1e-3, this.dist * Math.tan(fov / 2)) / h;
+      const e = this._eye(), d = Math.hypot(pt[0] - e[0], pt[1] - e[1], pt[2] - e[2]);
+      return 2 * Math.max(d, 1e-3) * Math.tan(fov / 2) / h;
+    }
+    // Захват вокруг точки pt: радиус — около 16 пикселей на экране, но не мельче 2,5 шага облака и не крупнее 40 шагов
+    _precisionSnapAt(pt, o) {
+      o = o || {};
+      const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null, idx = this._psIndex();
+      if (!PS || !idx || !idx.n) return null;
+      const sp = idx.spacing || 0.01, wpp = this._psWorldPerPx(pt), px = o.px || this._snapPx || 16;
+      const snapDist = Math.max(2.5 * sp, Math.min(px * wpp, 40 * sp));
+      const key = pt[0].toFixed(5) + ',' + pt[1].toFixed(5) + ',' + pt[2].toFixed(5) + '|' + snapDist.toFixed(4) + (o.grow ? 'g' : 'l');
+      const cache = this._psCache.snaps;
+      for (let i = 0; i < cache.length; i++) if (cache[i].key === key) return cache[i].res;
+      const t0 = this._psNow();
+      let res = null;
+      try { res = PS.snap(pt, idx, { snapDist: snapDist, grow: !!o.grow }); } catch (e) { res = null; }
+      if (!res) return null;
+      res.ms = this._psNow() - t0; res.seed = pt.slice(); res.wpp = wpp; res.px = px;
+      cache.push({ key: key, res: res }); if (cache.length > 8) cache.shift();
+      return res;
+    }
+    // Через 0,15 с после остановки курсора уточняем плоскости по всей поверхности — метка «доезжает» до точного положения
+    _scheduleSnapGrow(seed) {
+      this._cancelSnapGrow();
+      this._growTimer = setTimeout(() => {
+        this._growTimer = 0;
+        if (!this.measuring || !this._hoverSnap || this._hoverSnap.grown) return;
+        const g = this._precisionSnapAt(seed, { grow: true });
+        if (!g || !g.refined) return;
+        this._hoverSnap = g; this._setHoverPoint(g.point, g);
+        const xy = this._hoverXY; if (xy) { this._drawLoupe(xy[0], xy[1], g.point); this._showSnapTip(xy[0], xy[1], g); }
+      }, 150);
+    }
+    _cancelSnapGrow() { if (this._growTimer) { clearTimeout(this._growTimer); this._growTimer = 0; } }
+    _snapTipEl() {
+      if (this._snapTip) return this._snapTip;
+      const el = document.createElement('div');
+      el.className = 'meas-snap-tip'; el.setAttribute('role', 'status'); el.hidden = true;
+      (document.body || document.documentElement).appendChild(el);
+      this._snapTip = el; return el;
+    }
+    _hideSnapTip() { if (this._snapTip) this._snapTip.hidden = true; }
+    _showSnapTip(cx, cy, snap) {
+      if (!this.measuring || !snap || !this.measureSnap) { this._hideSnapTip(); return; }
+      const el = this._snapTipEl(), f = v => (v * 1000).toFixed(v * 1000 < 10 ? 1 : 0).replace('.', ',');
+      const kind = snap.kind || 'raw', name = SNAP_RU[kind] || kind;
+      let l2 = '';
+      if (kind === 'corner') l2 = '3 плоскости';
+      else if (kind === 'edge') l2 = '2 плоскости';
+      else if (kind === 'plane') l2 = 'вписана плоскость';
+      else if (kind === 'point') l2 = 'ближайшая точка облака';
+      else l2 = 'рядом нет ровной поверхности';
+      let l3 = '';
+      if (snap.refined && snap.count) l3 = (snap.grown ? 'по ' + snap.count.toLocaleString('ru-RU') + ' точкам' : 'уточняется…') + ' · шум ' + f(snap.rms) + ' мм' + (snap.grown && snap.sigma ? ' · ±' + f(Math.max(snap.sigma, 0.0001)) + ' мм' : '');
+      el.className = 'meas-snap-tip k-' + kind + (snap.quality ? ' q-' + snap.quality : '');
+      el.innerHTML = '<b>' + name + '</b><span>' + l2 + '</span>' + (l3 ? '<span>' + l3 + '</span>' : '');
+      el.hidden = false;
+      let lx = cx + 20, ly = cy + 22; const w = el.offsetWidth || 190, h = el.offsetHeight || 60;
+      if (lx + w + 8 > window.innerWidth) lx = cx - w - 20;
+      if (ly + h + 8 > window.innerHeight) ly = cy - h - 20;
+      el.style.left = Math.max(4, lx) + 'px'; el.style.top = Math.max(4, ly) + 'px';
     }
     // ---------- Лупа-увеличитель для точного прицеливания при измерении (как AccuSnap/CloudCompare) ----------
     _ensureLoupe() {
@@ -1179,17 +1297,21 @@
     }
     // Привязка (snap) точки клика к ребру/углу/плоскости.
     setMeasureSnap(on) { this.measureSnap = !!on; return this.measureSnap; }
-    // Применить snap к точке, если включено: уточняет положение по локальной геометрии.
+    // Применить snap к точке, если включено: угол → ребро → плоскость → ближайшая точка (PrecisionSnap),
+    // а если модуль недоступен — прежняя привязка Measure.snapToFeature.
     _applySnap(pt) {
       const Me = (typeof window !== 'undefined' && window.Measure);
-      if (!this.measureSnap || !Me) return { point: pt.slice(), kind: 'raw' };
+      if (!this.measureSnap) return { point: pt.slice(), kind: 'raw' };
+      const ps = this._precisionSnapAt(pt, { grow: true });
+      if (ps) return { point: ps.point.slice(), kind: ps.kind, snap: ps };
+      if (!Me) return { point: pt.slice(), kind: 'raw' };
       const r = this._measSnapRadius || this._sceneDiag() * 0.02;
       const pts = this._gatherNeighborhood(pt, r);
       if (pts.length < 6) return { point: pt.slice(), kind: 'raw' };
       const s = Me.snapToFeature(pt, pts);
       return { point: (s.point.slice ? s.point.slice() : s.point), kind: s.kind };
     }
-    _clearMeasure() { this.measurePts = []; this._measResult = null; this._measLabels = []; this._measPlane = null; this._measCornerPlanes = null; this._setOverlay([]); this._renderMeasLabels(); }
+    _clearMeasure() { this.measurePts = []; this._measSnaps = []; this._measResult = null; this._measLabels = []; this._measPlane = null; this._measCornerPlanes = null; this._setOverlay([]); this._renderMeasLabels(); }
     _sceneDiag() { const c = this.bbox; return Math.hypot(c.mx[0] - c.mn[0], c.mx[1] - c.mn[1], c.mx[2] - c.mn[2]) || 8; }
 
     // Сбор локальной окрестности точек вокруг seed в радиусе r (для подгонки плоскости).
@@ -1216,11 +1338,22 @@
       const snapped = this._applySnap(pt);
       // режимы с фиксированным числом точек — начинаем заново после завершения
       const limit = mode === 'point' ? 1 : mode === 'distance' ? 2 : mode === 'angle' ? 3 : Infinity;
-      if (this.measurePts.length >= limit) this.measurePts = [];
+      if (this.measurePts.length >= limit) { this.measurePts = []; this._measSnaps = []; }
+      if (this._measSnaps.length !== this.measurePts.length) this._measSnaps = this.measurePts.map(() => null);
       let placePt = snapped.point;
+      const sn = snapped.snap && snapped.snap.refined ? snapped.snap : null;
       // умное расстояние: 2-ю точку притягиваем к чистой вертикали/горизонтали, если направление близко к оси
-      if (this.smartMeasure && mode === 'distance' && this.measurePts.length === 1) placePt = this._smartAxisLock(this.measurePts[0], placePt);
-      this.measurePts.push(placePt);
+      // (только если она не привязана к углу/ребру/плоскости — привязанную точку двигать нельзя)
+      if (this.smartMeasure && mode === 'distance' && this.measurePts.length === 1 && !sn) placePt = this._smartAxisLock(this.measurePts[0], placePt);
+      // между параллельными плоскостями и рёбрами отрезок идёт по перпендикуляру: так «стена–стена» и «пол–потолок» не зависят от того, где кликнули
+      const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null;
+      if (mode === 'distance' && this.measurePts.length === 1 && sn && this._measSnaps[0] && PS) {
+        const g = PS.pairGap(this._measSnaps[0], sn), A = this.measurePts[0];
+        if (g && g.kind === 'planes') { const t = (placePt[0] - A[0]) * g.normal[0] + (placePt[1] - A[1]) * g.normal[1] + (placePt[2] - A[2]) * g.normal[2]; placePt = [A[0] + g.normal[0] * t, A[1] + g.normal[1] * t, A[2] + g.normal[2] * t]; }
+        else if (g && g.kind === 'edges') { const B = placePt, t = (A[0] - B[0]) * g.dir[0] + (A[1] - B[1]) * g.dir[1] + (A[2] - B[2]) * g.dir[2]; placePt = [B[0] + g.dir[0] * t, B[1] + g.dir[1] * t, B[2] + g.dir[2] * t]; }
+        this._measGap = g || null;
+      } else if (mode === 'distance') this._measGap = null;
+      this.measurePts.push(placePt); this._measSnaps.push(sn);
       this._lastSnapKind = snapped.kind;
       this._computeMeasure();
       this._buildMeasure();
@@ -1293,7 +1426,7 @@
     }
 
     // Завершить накопительный режим (полилиния/площадь) — начать следующее измерение.
-    finishMeasure() { this.measurePts = []; this.render(); }
+    finishMeasure() { this.measurePts = []; this._measSnaps = []; this.render(); }
 
     _fitPlaneAt(seed) {
       const Me = (typeof window !== 'undefined' && window.Measure); if (!Me) return;
@@ -1392,7 +1525,17 @@
       const P = this.measurePts, mode = this.measureMode;
       let res = null;
       if (mode === 'point' && P.length >= 1) res = { mode: 'point', point: P[0].slice() };
-      else if (mode === 'distance' && P.length >= 2 && Me) { const d = Me.distance(P[0], P[1]); res = Object.assign({ mode: 'distance', a: P[0], b: P[1] }, d); }
+      else if (mode === 'distance' && P.length >= 2 && Me) {
+        const d = Me.distance(P[0], P[1]); res = Object.assign({ mode: 'distance', a: P[0], b: P[1] }, d);
+        const S = this._measSnaps || [], PS = typeof window !== 'undefined' ? window.PrecisionSnap : null;
+        if (S.length >= 2 && S[0] && S[1]) {
+          const brief = q => ({ kind: q.kind, rms: +q.rms.toFixed(6), count: q.count, quality: q.quality, sigma: +((q.sigma || 0)).toFixed(6), shift: +q.shift.toFixed(5), grown: !!q.grown });
+          res.snap = { a: brief(S[0]), b: brief(S[1]) };
+          res.sigma = +Math.sqrt(Math.pow(S[0].sigma || 0, 2) + Math.pow(S[1].sigma || 0, 2)).toFixed(6);
+          const g = this._measGap || (PS ? PS.pairGap(S[0], S[1]) : null);
+          if (g) { res.perp = g.value; res.perpKind = g.kind; if (g.along != null) res.along = g.along; res.perpSigma = +(g.uncertainty || 0).toFixed(6); }
+        } else if (S.length >= 2 && (S[0] || S[1])) res.snap = { a: S[0] ? { kind: S[0].kind } : { kind: 'raw' }, b: S[1] ? { kind: S[1].kind } : { kind: 'raw' } };
+      }
       else if (mode === 'polyline' && P.length >= 2 && Me) { const r = Me.polylineLength(P, false); res = { mode: 'polyline', pts: P.slice(), total: r.total, segments: r.segments, count: P.length }; }
       else if (mode === 'angle' && P.length >= 3 && Me) { const a = Me.angleAt(P[0], P[1], P[2]); res = { mode: 'angle', a: P[0], b: P[1], c: P[2], deg: a.deg, lenA: a.lenA, lenC: a.lenC }; }
       else if (mode === 'area' && P.length >= 3 && Me) { const r = Me.polygonArea3D(P); res = { mode: 'area', pts: P.slice(), area: r.area, perimeter: r.perimeter, normal: r.normal, count: P.length }; }
@@ -1410,7 +1553,15 @@
       P.forEach(mk);
       const seg = (a, b, c) => objs.push({ line: true, pos: new Float32Array([a[0], a[1], a[2], b[0], b[1], b[2]]), color: c || lineCol });
       const mode = this.measureMode;
-      if (mode === 'distance') { if (P.length === 2) { seg(P[0], P[1]); if (this.smartMeasure) this._addDistanceDecomp(objs, P[0], P[1]); } else if (P.length === 1 && this.smartMeasure) this._addSmartGuides(objs, P[0]); }
+      {
+        const S = this._measSnaps || [];
+        if (S.length === P.length) S.forEach(q => {
+          if (!q || (q.kind !== 'edge' && q.kind !== 'corner')) return;
+          const g = this._snapGlyph(q);
+          for (let i = 0; i + 5 < g.length; i += 6) objs.push({ line: true, pos: new Float32Array(g.slice(i, i + 6)), color: hex2rgb(SNAP_COLOR[q.kind]) });
+        });
+      }
+      if (mode === 'distance') { if (P.length === 2) { seg(P[0], P[1]); if (this.smartMeasure && !(this._measResult && this._measResult.perp != null && this._measResult.perpKind !== 'point-plane')) this._addDistanceDecomp(objs, P[0], P[1]); } else if (P.length === 1 && this.smartMeasure) this._addSmartGuides(objs, P[0]); }
       else if ((mode === 'polyline' || mode === 'angle') && P.length >= 2) { for (let i = 1; i < P.length; i++) seg(P[i - 1], P[i]); }
       else if (mode === 'area' && P.length >= 2) { for (let i = 1; i < P.length; i++) seg(P[i - 1], P[i]); if (P.length >= 3) seg(P[P.length - 1], P[0], [0.12, 0.7, 0.5]); }
       // визуализация подобранной плоскости: ориентированный прямоугольник + нормаль
@@ -1481,7 +1632,7 @@
       const labels = [], P = this.measurePts, mode = this.measureMode;
       const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
       if (mode === 'point' && P.length >= 1) labels.push({ p: P[0], t: 'X ' + P[0][0].toFixed(3) + '  Y ' + P[0][1].toFixed(3) + '  Z ' + P[0][2].toFixed(3) });
-      else if (mode === 'distance' && P.length === 2) { labels.push({ p: mid(P[0], P[1]), t: Me.fmtLen(Me.dist3(P[0], P[1])) }); if (this.smartMeasure) this._pushDistanceCompLabels(labels, P[0], P[1], Me); }
+      else if (mode === 'distance' && P.length === 2) { labels.push({ p: mid(P[0], P[1]), t: Me.fmtLen(Me.dist3(P[0], P[1])) + (this._measResult && this._measResult.perp != null && this._measResult.perpKind !== 'point-plane' ? ' ⊥' : '') }); if (this.smartMeasure && !(this._measResult && this._measResult.perp != null && this._measResult.perpKind !== 'point-plane')) this._pushDistanceCompLabels(labels, P[0], P[1], Me); }
       else if (mode === 'distance' && P.length === 1 && this.smartMeasure) this._pushSmartGuideLabels(labels, P[0], Me);
       else if (mode === 'polyline' && P.length >= 2) { let tot = 0; for (let i = 1; i < P.length; i++) { const l = Me.dist3(P[i - 1], P[i]); tot += l; labels.push({ p: mid(P[i - 1], P[i]), t: Me.fmtLen(l) }); } labels.push({ p: P[P.length - 1], t: 'Σ ' + Me.fmtLen(tot) }); }
       else if (mode === 'angle' && P.length >= 3) { const a = Me.angleAt(P[0], P[1], P[2]); labels.push({ p: P[1], t: a.deg.toFixed(1) + '°' }); }
@@ -1876,7 +2027,7 @@
       const _cb = this._clipBounds();
       gl.uniform1f(this.u.uClipOn, (this._clipActive() && _cb) ? 1 : 0);
       if (_cb) { gl.uniform3f(this.u.uClipMin, _cb.mn[0], _cb.mn[1], _cb.mn[2]); gl.uniform3f(this.u.uClipMax, _cb.mx[0], _cb.mx[1], _cb.mx[2]); }
-      const drawList = this.base.concat(this.overlay).concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []).concat(this._hoverObj ? [this._hoverObj] : []);
+      const drawList = this.base.concat(this.overlay).concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []).concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []);
       // solids first
       for (const o of drawList) { if (o.line || o.hidden || (o.points && this.cloudVisible === false)) continue; this._drawObj(o); }
       gl.uniform1f(this.u.uClipOn, 0);
