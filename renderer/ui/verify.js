@@ -92,6 +92,19 @@
   function dc() { return W.__lxDocCheck || null; }
   function toast(m, o) { try { if (W.__lxKit) W.__lxKit.toast(m, o); } catch (e) {} }
   function hydrate(n) { try { if (W.__lxKit) W.__lxKit.hydrate(n); } catch (e) {} }
+  /* Строки, обрезанные многоточием, получают подсказку с полным текстом (её показывает kit): иначе «Сертификат огнестойкости · строка те…» не прочитать.
+   * Подсказку ставит только эта функция (метка data-vf-clip) и снимает, когда текст снова помещается. */
+  var CLIP_SEL = '.vf-t, .vf-s, .vf-stat-l, .vf-chip .lbl';
+  function tipClipped(scope) {
+    try {
+      var list = scope.querySelectorAll(CLIP_SEL);
+      for (var i = 0; i < list.length; i++) {
+        var e = list[i], cut = e.scrollWidth > e.clientWidth + 1;
+        if (cut) { if (!e.hasAttribute('data-vf-clip') && !(e.closest && e.closest('[data-tip],[title]'))) { e.setAttribute('title', e.textContent.trim()); e.setAttribute('data-vf-clip', '1'); } }
+        else if (e.hasAttribute('data-vf-clip')) { e.removeAttribute('title'); e.removeAttribute('data-tip'); e.removeAttribute('data-vf-clip'); }
+      }
+    } catch (err) {}
+  }
   function chip(info, extra) {
     var c = el('span', 'vf-chip ' + info.tone + (extra ? ' ' + extra : ''));
     if (info.busy) c.appendChild(el('span', 'vf-spin')); else c.appendChild(el('span', 'vf-dot'));
@@ -167,6 +180,7 @@
     bodyEl.innerHTML = '';
     if (S.tab === 'rows') renderRows(rows, meta); else renderReqs(meta);
     hydrate(bodyEl);
+    tipClipped(bodyEl);
     bodyEl.scrollTop = keep;
     if (fk) {
       var back = bodyEl.querySelector('[data-fk="' + fk + '"]');
@@ -581,6 +595,11 @@
     if (e.key === 'Escape' && modal && !modal.hidden) { e.preventDefault(); e.stopImmediatePropagation(); close(); }
   }, true);
   W.addEventListener('lx-measurements-changed', function () { schedule(); });
+  var clipTimer = 0;
+  W.addEventListener('resize', function () {   // ширина окна изменилась: что обрезано, а что нет — другое
+    if (clipTimer || !modal || modal.hidden) return;
+    clipTimer = W.setTimeout(function () { clipTimer = 0; if (bodyEl && modal && !modal.hidden) tipClipped(bodyEl); }, 120);
+  });
 
   api.open = open; api.close = close; api.isOpen = function () { return !!modal && !modal.hidden; };
   return api;

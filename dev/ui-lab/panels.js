@@ -151,6 +151,31 @@ const scenarios = {
     if (await row.count()) await row.click();
     await page.waitForTimeout(1200);
   },
+  async verifytip(page) {  // строка, обрезанная многоточием, показывает полный текст в подсказке при наведении (заметно на ширине 1024 px)
+    const must = (ok, msg) => { if (!ok) throw new Error('verifytip: ' + msg); };
+    await scenarios.verifyfilled(page);
+    const row = page.locator('.vf-main.proposal, .vf-main.warn').first();
+    if (await row.count()) await row.click();
+    await page.waitForTimeout(800);
+    const clippedInfo = () => page.evaluate(() => {
+      const clipped = Array.from(document.querySelectorAll('#lxVfModal .vf-t, #lxVfModal .vf-s')).filter((e) => e.scrollWidth > e.clientWidth + 1);
+      const bad = clipped.filter((e) => !e.hasAttribute('title') && !e.hasAttribute('data-tip')).length;
+      return { n: clipped.length, bad, text: clipped[0] ? clipped[0].textContent.trim() : '' };
+    });
+    const probe = await clippedInfo();
+    console.log('     обрезано строк:', probe.n, '· без подсказки:', probe.bad);
+    must(probe.bad === 0, 'у обрезанной строки нет подсказки');
+    if (probe.n) {   // подсказку прячет любая прокрутка, поэтому элемент сначала доводим до середины окна, ждём, и только потом ведём мышь
+      await page.evaluate(() => { const e = Array.from(document.querySelectorAll('#lxVfModal .vf-t, #lxVfModal .vf-s')).find((x) => x.scrollWidth > x.clientWidth + 1); e.scrollIntoView({ block: 'center' }); });
+      await page.waitForTimeout(500);
+      const pt = await page.evaluate(() => { const e = Array.from(document.querySelectorAll('#lxVfModal .vf-t, #lxVfModal .vf-s')).find((x) => x.scrollWidth > x.clientWidth + 1), r = e.getBoundingClientRect(); return { x: r.left + Math.min(r.width / 2, 60), y: r.top + r.height / 2 }; });
+      await page.mouse.move(pt.x - 40, pt.y - 40); await page.mouse.move(pt.x, pt.y, { steps: 4 }); await page.waitForTimeout(900);
+      const tip = await page.evaluate(() => { const t = document.getElementById('lxTip'); return t && t.classList.contains('show') ? t.textContent : ''; });
+      console.log('     подсказка при наведении:', tip.slice(0, 90));
+      must(tip.includes(probe.text), 'подсказка не показывает полный текст: ' + tip);
+    }
+    await shot(page, 'p-' + THEME + '-' + W + '-verifytip').catch(() => {});
+  },
   async verifychip(page) {  // клик по статусу в инспекторе: сверка открывается поверх окна инспектора
     await scenarios.verifyins(page);
     await page.locator('#lxInsHist .vf-chip, #lxInsModal button.vf-chip').first().click(); await page.waitForTimeout(900);

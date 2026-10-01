@@ -109,6 +109,23 @@ test('окно сверки: доступность и правила интер
   assert.doesNotMatch(js, /\binnerHTML\s*=(?!\s*['"])/, 'innerHTML только для очистки');
 });
 
+test('окно сверки: строка, обрезанная многоточием, получает подсказку с полным текстом и теряет её, когда текст помещается', () => {
+  const js = read('ui/verify.js');
+  assert.match(js, /function tipClipped\(/);
+  assert.match(js, /e\.scrollWidth > e\.clientWidth \+ 1/, 'подсказка нужна, только если текст действительно обрезан');
+  assert.match(js, /hydrate\(bodyEl\);\s*tipClipped\(bodyEl\);/, 'после каждой перерисовки таблицы');
+  assert.match(js, /addEventListener\('resize'/, 'и при изменении ширины окна');
+  assert.match(js, /removeAttribute\('data-tip'\)/, 'снимается и подсказка, которую kit уже перенёс из title в data-tip');
+  const mk = (sw, cw, extra) => { const attrs = Object.assign({}, extra); return { scrollWidth: sw, clientWidth: cw, textContent: ' Сертификат огнестойкости ', closest: () => null, hasAttribute: (k) => k in attrs, setAttribute: (k, v) => { attrs[k] = v; }, removeAttribute: (k) => { delete attrs[k]; }, attrs }; };
+  const src = js.slice(js.indexOf('var CLIP_SEL'), js.indexOf('function chip('));
+  const fn = new Function('const W = null;' + src + 'return tipClipped;')();
+  const cut = mk(300, 200), fit = mk(200, 200), stale = mk(100, 200, { title: 'старое', 'data-vf-clip': '1', 'data-tip': 'старое' });
+  fn({ querySelectorAll: () => [cut, fit, stale] });
+  assert.equal(cut.attrs.title, 'Сертификат огнестойкости', 'обрезанное: полный текст без пробелов по краям');
+  assert.equal(fit.attrs.title, undefined, 'помещающееся не получает подсказку');
+  assert.deepEqual(Object.keys(stale.attrs), [], 'то, что теперь помещается, лишается нашей подсказки');
+});
+
 /* ---------- Свои размеры и «Сравнить со своим размером» ---------- */
 const C = require('../renderer/measurement-doc-compare.js');
 const vm = require('node:vm');
