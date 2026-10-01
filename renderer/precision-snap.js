@@ -75,38 +75,122 @@
   }
 
   /* ---------- Пространственный индекс (равномерная сетка) ---------- */
-  function buildIndex(pos, opts) {
+  /* Индекс строится «порциями»: createIndexBuilder().step(бюджет_мс) делает не больше бюджета работы и возвращает true, когда готово.
+   * Так облако в десятки миллионов точек не замораживает окно: окно строит индекс по 8–10 мс за кадр (buildIndexAsync).
+   * buildIndex() — тот же построитель без ограничения по времени (результат одинаковый).
+   * opts.local — индекс «без общего шага»: у реального скана плотность разная (у сканера мелкая, вдали крупная), шаг считается у курсора (localSpacing). */
+  function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
+  function createIndexBuilder(pos, opts) {
     opts = opts || {};
     var n = opts.count != null ? Math.min(opts.count, Math.floor(pos.length / 3)) : Math.floor(pos.length / 3);
-    var mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
-    for (var i = 0; i < n; i++) {
-      var x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
-      if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
-      if (y < mn[1]) mn[1] = y; if (y > mx[1]) mx[1] = y;
-      if (z < mn[2]) mn[2] = z; if (z > mx[2]) mx[2] = z;
+    var phase = 0, i = 0, k = 0, mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    var cell = 0, dx = 1, dy = 1, dz = 1, cells = 0, inv = 1, start = null, order = null, fill = null, idx = null, done = false;
+    var CH = 32768;
+    function finishEmpty() {
+      idx = { n: 0, pos: pos, spacing: 0, local: !!opts.local, query: function () { return new Int32Array(0); }, nearest: function () { return -1; } };
+      done = true; return true;
     }
-    if (!n || !isFinite(mn[0])) return { n: 0, pos: pos, spacing: 0, query: function () { return new Int32Array(0); }, nearest: function () { return -1; } };
-    var ex = Math.max(mx[0] - mn[0], 1e-9), ey = Math.max(mx[1] - mn[1], 1e-9), ez = Math.max(mx[2] - mn[2], 1e-9);
-    // ячейка: около 8 точек на ячейку при равномерном заполнении объёма; не больше 8 млн ячеек
-    var cell = opts.cell || Math.cbrt((ex * ey * ez) / Math.max(1, n / 8));
-    var minCell = Math.cbrt((ex * ey * ez) / 8e6);
-    cell = Math.max(cell, minCell, Math.max(ex, ey, ez) / 4096);
-    var dx = Math.max(1, Math.ceil(ex / cell)), dy = Math.max(1, Math.ceil(ey / cell)), dz = Math.max(1, Math.ceil(ez / cell));
-    while (dx * dy * dz > 8e6) { cell *= 1.25; dx = Math.max(1, Math.ceil(ex / cell)); dy = Math.max(1, Math.ceil(ey / cell)); dz = Math.max(1, Math.ceil(ez / cell)); }
-    var cells = dx * dy * dz, inv = 1 / cell;
-    var start = new Int32Array(cells + 1), key = new Int32Array(n);
-    for (i = 0; i < n; i++) {
-      var ix = Math.min(dx - 1, ((pos[i * 3] - mn[0]) * inv) | 0), iy = Math.min(dy - 1, ((pos[i * 3 + 1] - mn[1]) * inv) | 0), iz = Math.min(dz - 1, ((pos[i * 3 + 2] - mn[2]) * inv) | 0);
-      var kk = (iz * dy + iy) * dx + ix; key[i] = kk; start[kk + 1]++;
+    function step(budgetMs) {
+      if (done) return true;
+      var deadline = budgetMs == null || !isFinite(budgetMs) ? Infinity : nowMs() + budgetMs;
+      var e, x, y, z, ix, iy, iz;
+      if (phase === 0) {
+        while (i < n) {
+          e = Math.min(n, i + CH);
+          for (; i < e; i++) {
+            x = pos[i * 3]; y = pos[i * 3 + 1]; z = pos[i * 3 + 2];
+            if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
+            if (y < mn[1]) mn[1] = y; if (y > mx[1]) mx[1] = y;
+            if (z < mn[2]) mn[2] = z; if (z > mx[2]) mx[2] = z;
+          }
+          if (deadline !== Infinity && nowMs() > deadline && i < n) return false;
+        }
+        if (!n || !isFinite(mn[0])) return finishEmpty();
+        var ex = Math.max(mx[0] - mn[0], 1e-9), ey = Math.max(mx[1] - mn[1], 1e-9), ez = Math.max(mx[2] - mn[2], 1e-9);
+        // ячейка: около 8 точек на ячейку при равномерном заполнении объёма; не больше 8 млн ячеек
+        cell = opts.cell || Math.cbrt((ex * ey * ez) / Math.max(1, n / 8));
+        var minCell = Math.cbrt((ex * ey * ez) / 8e6);
+        cell = Math.max(cell, minCell, Math.max(ex, ey, ez) / 4096);
+        dx = Math.max(1, Math.ceil(ex / cell)); dy = Math.max(1, Math.ceil(ey / cell)); dz = Math.max(1, Math.ceil(ez / cell));
+        while (dx * dy * dz > 8e6) { cell *= 1.25; dx = Math.max(1, Math.ceil(ex / cell)); dy = Math.max(1, Math.ceil(ey / cell)); dz = Math.max(1, Math.ceil(ez / cell)); }
+        cells = dx * dy * dz; inv = 1 / cell;
+        start = new Int32Array(cells + 1);
+        phase = 1; i = 0;
+      }
+      if (phase === 1) {   // сколько точек в каждой ячейке
+        var m0 = mn[0], m1 = mn[1], m2 = mn[2], DX = dx - 1, DY = dy - 1, DZ = dz - 1, kk;
+        while (i < n) {
+          e = Math.min(n, i + CH);
+          for (; i < e; i++) {
+            ix = ((pos[i * 3] - m0) * inv) | 0; if (ix > DX) ix = DX;
+            iy = ((pos[i * 3 + 1] - m1) * inv) | 0; if (iy > DY) iy = DY;
+            iz = ((pos[i * 3 + 2] - m2) * inv) | 0; if (iz > DZ) iz = DZ;
+            kk = (iz * dy + iy) * dx + ix; start[kk + 1]++;
+          }
+          if (deadline !== Infinity && nowMs() > deadline && i < n) return false;
+        }
+        phase = 2; k = 0;
+      }
+      if (phase === 2) {   // накопленные суммы
+        while (k < cells) {
+          e = Math.min(cells, k + 262144);
+          for (; k < e; k++) start[k + 1] += start[k];
+          if (deadline !== Infinity && nowMs() > deadline && k < cells) return false;
+        }
+        fill = start.slice(0, cells); order = new Int32Array(n);
+        phase = 3; i = 0;
+      }
+      if (phase === 3) {   // раскладываем точки по ячейкам (ключ считаем заново — без массива на n чисел)
+        var n0 = mn[0], n1 = mn[1], n2 = mn[2], NX = dx - 1, NY = dy - 1, NZ = dz - 1, kq;
+        while (i < n) {
+          e = Math.min(n, i + CH);
+          for (; i < e; i++) {
+            ix = ((pos[i * 3] - n0) * inv) | 0; if (ix > NX) ix = NX;
+            iy = ((pos[i * 3 + 1] - n1) * inv) | 0; if (iy > NY) iy = NY;
+            iz = ((pos[i * 3 + 2] - n2) * inv) | 0; if (iz > NZ) iz = NZ;
+            kq = (iz * dy + iy) * dx + ix; order[fill[kq]++] = i;
+          }
+          if (deadline !== Infinity && nowMs() > deadline && i < n) return false;
+        }
+        fill = null;
+        idx = { n: n, pos: pos, mn: mn, mx: mx, cell: cell, dims: [dx, dy, dz], start: start, order: order, spacing: 0, local: !!opts.local, _st: { stamp: null, gen: 0 } };
+        idx.query = function (cx, cy, cz, r, cap) { return queryIndex(idx, cx, cy, cz, r, cap); };
+        idx.nearest = function (cx, cy, cz, r) { return nearestIndex(idx, cx, cy, cz, r); };
+        phase = 4;
+      }
+      if (phase === 4) {
+        idx.spacing = idx.local ? typicalSpacing(idx) : estimateSpacing(idx);
+        done = true;
+      }
+      return true;
     }
-    for (i = 0; i < cells; i++) start[i + 1] += start[i];
-    var fill = start.slice(0, cells), order = new Int32Array(n);
-    for (i = 0; i < n; i++) order[fill[key[i]]++] = i;
-    var idx = { n: n, pos: pos, mn: mn, mx: mx, cell: cell, dims: [dx, dy, dz], start: start, order: order, spacing: 0 };
-    idx.query = function (cx, cy, cz, r, cap) { return queryIndex(idx, cx, cy, cz, r, cap); };
-    idx.nearest = function (cx, cy, cz, r) { return nearestIndex(idx, cx, cy, cz, r); };
-    idx.spacing = estimateSpacing(idx);
-    return idx;
+    return {
+      step: step,
+      isDone: function () { return done; },
+      index: function () { return done ? idx : null; },
+      progress: function () { return done ? 1 : phase === 0 ? 0.05 * (i / Math.max(1, n)) : phase === 1 ? 0.05 + 0.3 * (i / Math.max(1, n)) : phase === 2 ? 0.35 : phase === 3 ? 0.35 + 0.6 * (i / Math.max(1, n)) : 0.97; }
+    };
+  }
+  function buildIndex(pos, opts) {
+    var b = createIndexBuilder(pos, opts);
+    b.step(Infinity);
+    return b.index();
+  }
+  /* Асинхронная сборка: порции по sliceMs мс, между ними — setTimeout (окно остаётся живым). opts.onProgress(доля), opts.isCancelled(). */
+  function buildIndexAsync(pos, opts) {
+    opts = opts || {};
+    var b = createIndexBuilder(pos, opts), slice = opts.sliceMs > 0 ? opts.sliceMs : 8, tick = opts.schedule || function (f) { setTimeout(f, 0); };
+    return new Promise(function (resolve, reject) {
+      function go() {
+        try {
+          if (opts.isCancelled && opts.isCancelled()) { resolve(null); return; }
+          var ok = b.step(slice);
+          if (opts.onProgress) { try { opts.onProgress(b.progress()); } catch (e) { /* подписчик не должен ронять сборку */ } }
+          if (ok) resolve(b.index()); else tick(go);
+        } catch (e) { reject(e); }
+      }
+      tick(go);
+    });
   }
 
   function cellRange(idx, c, r, axis) {
@@ -156,6 +240,40 @@
     if (!ds.length) return idx.cell / 4;
     ds.sort(function (a, b) { return a - b; });
     return ds[ds.length >> 1];
+  }
+
+  /* Шаг облака у точки seed: медиана расстояния до ближайшего соседа по ≤40 точкам вокруг неё. Радиус растёт вдвое, пока не наберётся 40 точек.
+   * На реальном скане шаг у сканера в несколько раз мельче, чем вдали: один общий шаг на всё облако (как в estimateSpacing) годится только для ровных облаков. */
+  function localSpacing(idx, seed) {
+    if (!idx || !idx.n) return 0;
+    var P = idx.pos, rad = idx.cell / 128, ids = null, k, q, s;
+    for (k = 0; k < 12; k++) { ids = idx.query(seed[0], seed[1], seed[2], rad, 0); if (ids.length >= 40) break; rad *= 2; }
+    if (!ids || ids.length < 12) return idx.cell / 8;
+    var inner = [], r2 = Math.pow(rad * 0.6, 2);
+    for (k = 0; k < ids.length; k++) { var a = ids[k] * 3, ax = P[a] - seed[0], ay = P[a + 1] - seed[1], az = P[a + 2] - seed[2]; if (ax * ax + ay * ay + az * az <= r2) inner.push(ids[k]); }
+    if (inner.length < 6) inner = Array.prototype.slice.call(ids, 0, Math.min(40, ids.length));
+    var S = Math.min(40, inner.length), ds = [];
+    for (s = 0; s < S; s++) {
+      var i0 = inner[Math.floor(s * inner.length / S)], cx = P[i0 * 3], cy = P[i0 * 3 + 1], cz = P[i0 * 3 + 2], bd = Infinity;
+      for (q = 0; q < ids.length; q++) {
+        var j = ids[q]; if (j === i0) continue;
+        var ddx = P[j * 3] - cx, ddy = P[j * 3 + 1] - cy, ddz = P[j * 3 + 2] - cz, d = ddx * ddx + ddy * ddy + ddz * ddz;
+        if (d > 0 && d < bd) bd = d;
+      }
+      if (isFinite(bd)) ds.push(Math.sqrt(bd));
+    }
+    if (!ds.length) return idx.cell / 8;
+    ds.sort(function (x, y) { return x - y; });
+    return clamp(ds[ds.length >> 1], idx.cell / 4096, idx.cell / 2);
+  }
+  /* «Типичный» шаг всего облака — медиана локальных шагов по ~48 точкам, взятым пропорционально числу точек (плотные места весят больше). */
+  function typicalSpacing(idx) {
+    var n = idx.n, S = Math.min(48, n), step = Math.max(1, Math.floor(n / S)), P = idx.pos, ds = [];
+    for (var s = 0; s < n && ds.length < S; s += step) {
+      var i = idx.order[s]; ds.push(localSpacing({ n: idx.n, pos: P, cell: idx.cell, query: idx.query }, [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]]));
+    }
+    ds.sort(function (x, y) { return x - y; });
+    return ds.length ? ds[ds.length >> 1] : idx.cell / 4;
   }
 
   /* ---------- Плоскости в окрестности точки ---------- */
@@ -315,9 +433,10 @@
     var nx = pl.normal[0], ny = pl.normal[1], nz = pl.normal[2], d = pl.d;
     var nsib = sibs ? sibs.length : 0, gap = 0.25 * (index.spacing || cell / 4);
     var cells = dx * dy * dz;
-    if (!index._stamp || index._stamp.length !== cells) { index._stamp = new Uint32Array(cells); index._gen = 0; }
-    var stamp = index._stamp, gen = ++index._gen;
-    if (gen >= 4294967290) { stamp.fill(0); gen = index._gen = 1; }
+    var st = index._st || (index._st = { stamp: null, gen: 0 });   // общий для «видов» индекса (Object.create) — штамп один на все вызовы
+    if (!st.stamp || st.stamp.length !== cells) { st.stamp = new Uint32Array(cells); st.gen = 0; }
+    var stamp = st.stamp, gen = ++st.gen;
+    if (gen >= 4294967290) { stamp.fill(0); gen = st.gen = 1; }
     var out = [], queue = [], head = 0, inv = 1 / cell, reach = cell * 0.87 + tau;
     var lim = rmax > 0 ? (rmax + cell) * (rmax + cell) : Infinity;   // рост ограничен окрестностью: пол/стена не идеально ровные, «плоскость на всё здание» ошибается на миллиметры
     // Ячейка принимается, если поверхность занимает большую её часть: узкие полосы, где плоскость лишь пересекает
@@ -601,6 +720,263 @@
     return r2 || r1;
   }
 
+  /* ---------- Труба (цилиндр): криволинейная поверхность ----------
+   * На трубе кусочки поверхности похожи на «плоскости» с наклоном в десятки градусов друг к другу, и пересечение двух касательных плоскостей
+   * лежит снаружи трубы на 5–10 мм (на реальном облаке: среднее +8 мм, до +34 мм): ложное «ребро» уводило точку наружу, диаметр выходил завышенным.
+   * Поэтому перед поиском рёбер проверяем, не цилиндр ли это: оси — по нормалям (нормали цилиндра перпендикулярны оси), радиус — окружность
+   * в сечении, затем Гаусс–Ньютон по 5 параметрам (ось, смещение, радиус) с отсечением выбросов. Плоскую поверхность, стык двух плоскостей и
+   * ребро с фаской цилиндром не считаем: нужна кривизна, заметная на фоне шума, и подавляющая доля точек у курсора на самой поверхности. */
+  function localNormal(Q, m, ci, rn2, cap) {
+    var cx = Q[ci * 3], cy = Q[ci * 3 + 1], cz = Q[ci * 3 + 2], c = 0, sx = 0, sy = 0, sz = 0, sxx = 0, sxy = 0, sxz = 0, syy = 0, syz = 0, szz = 0;
+    for (var j = 0; j < m; j++) {
+      var x = Q[j * 3] - cx, y = Q[j * 3 + 1] - cy, z = Q[j * 3 + 2] - cz;
+      if (x * x + y * y + z * z > rn2) continue;
+      c++; sx += x; sy += y; sz += z; sxx += x * x; sxy += x * y; sxz += x * z; syy += y * y; syz += y * z; szz += z * z;
+      if (c >= cap) break;
+    }
+    if (c < 10) return null;
+    var mx = sx / c, my = sy / c, mz = sz / c;
+    var e = smallestEigenvector([sxx / c - mx * mx, sxy / c - mx * my, sxz / c - mx * mz, syy / c - my * my, syz / c - my * mz, szz / c - mz * mz]);
+    var l = e.values.slice().sort(function (p, q) { return p - q; });
+    return { n: e.normal, l0: l[0], l1: l[1], l2: l[2] };
+  }
+  function solveN(A, b, n) {   // гауссово исключение с выбором ведущего элемента; A — n×n (массив строк), b — n
+    var M = [], i, j, k;
+    for (i = 0; i < n; i++) { M.push(A[i].slice()); M[i].push(b[i]); }
+    for (i = 0; i < n; i++) {
+      var piv = i; for (j = i + 1; j < n; j++) if (Math.abs(M[j][i]) > Math.abs(M[piv][i])) piv = j;
+      if (Math.abs(M[piv][i]) < 1e-18) return null;
+      var tmp = M[i]; M[i] = M[piv]; M[piv] = tmp;
+      for (j = i + 1; j < n; j++) { var f = M[j][i] / M[i][i]; for (k = i; k <= n; k++) M[j][k] -= f * M[i][k]; }
+    }
+    var x = new Array(n);
+    for (i = n - 1; i >= 0; i--) { var sum = M[i][n]; for (j = i + 1; j < n; j++) sum -= M[i][j] * x[j]; x[i] = sum / M[i][i]; }
+    return x;
+  }
+  function basisFor(a) { var e1 = unit(cross(a, Math.abs(a[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); return [e1, cross(a, e1)]; }
+  /* окружность по МНК (алгебраическая, Kasa) в сечении: u, v — координаты точек ids */
+  function circleKasa(U, V, ids, cnt) {
+    var mu = 0, mv = 0, k;
+    for (k = 0; k < cnt; k++) { mu += U[ids[k]]; mv += V[ids[k]]; }
+    mu /= cnt; mv /= cnt;
+    var suu = 0, suv = 0, svv = 0, su3 = 0, sv3 = 0, suv2 = 0, svu2 = 0;
+    for (k = 0; k < cnt; k++) {
+      var u = U[ids[k]] - mu, v = V[ids[k]] - mv;
+      suu += u * u; suv += u * v; svv += v * v; su3 += u * u * u; sv3 += v * v * v; suv2 += u * v * v; svu2 += v * u * u;
+    }
+    var det = suu * svv - suv * suv;
+    if (Math.abs(det) < 1e-30) return null;
+    var b1 = 0.5 * (su3 + suv2), b2 = 0.5 * (sv3 + svu2);
+    var uc = (b1 * svv - b2 * suv) / det, vc = (b2 * suu - b1 * suv) / det;
+    var R = Math.sqrt(uc * uc + vc * vc + (suu + svv) / cnt);
+    return { u: uc + mu, v: vc + mv, R: R };
+  }
+  function cylResiduals(Q, ids, cnt, a, c, R, out) {
+    for (var k = 0; k < cnt; k++) {
+      var i = ids[k] * 3, dx = Q[i] - c[0], dy = Q[i + 1] - c[1], dz = Q[i + 2] - c[2];
+      var t = dx * a[0] + dy * a[1] + dz * a[2], qx = dx - t * a[0], qy = dy - t * a[1], qz = dz - t * a[2];
+      out[k] = Math.sqrt(qx * qx + qy * qy + qz * qz) - R;
+    }
+    return out;
+  }
+  /* Гаусс–Ньютон (Левенберг–Марквардт) по ids: ось (2 наклона), смещение оси в сечении (2), радиус */
+  function refineCylinder(Q, ids, cnt, a0, c0, R0, iters) {
+    var a = a0.slice(), c = c0.slice(), R = R0, r0 = new Float64Array(cnt), r1 = new Float64Array(cnt), lam = 1e-3, it, k, j;
+    var h = [1e-4, 1e-4, 1e-5, 1e-5, 1e-5];
+    for (it = 0; it < iters; it++) {
+      var bs = basisFor(a), e1 = bs[0], e2 = bs[1];
+      cylResiduals(Q, ids, cnt, a, c, R, r0);
+      var ss0 = 0; for (k = 0; k < cnt; k++) ss0 += r0[k] * r0[k];
+      var Jc = [];
+      for (j = 0; j < 5; j++) {
+        var a2 = a, c2 = c, R2 = R;
+        if (j === 0) a2 = unit([a[0] + h[0] * e1[0], a[1] + h[0] * e1[1], a[2] + h[0] * e1[2]]);
+        else if (j === 1) a2 = unit([a[0] + h[1] * e2[0], a[1] + h[1] * e2[1], a[2] + h[1] * e2[2]]);
+        else if (j === 2) c2 = [c[0] + h[2] * e1[0], c[1] + h[2] * e1[1], c[2] + h[2] * e1[2]];
+        else if (j === 3) c2 = [c[0] + h[3] * e2[0], c[1] + h[3] * e2[1], c[2] + h[3] * e2[2]];
+        else R2 = R + h[4];
+        cylResiduals(Q, ids, cnt, a2, c2, R2, r1);
+        var col = new Float64Array(cnt); for (k = 0; k < cnt; k++) col[k] = (r1[k] - r0[k]) / h[j];
+        Jc.push(col);
+      }
+      var JTJ = [], JTr = [], p, q;
+      for (p = 0; p < 5; p++) { JTJ.push([]); var sr = 0; for (k = 0; k < cnt; k++) sr += Jc[p][k] * r0[k]; JTr.push(-sr); for (q = 0; q < 5; q++) { var sj = 0; for (k = 0; k < cnt; k++) sj += Jc[p][k] * Jc[q][k]; JTJ[p].push(sj); } }
+      var improved = false;
+      for (var tr = 0; tr < 4 && !improved; tr++) {
+        var A = JTJ.map(function (row, ii) { var rr = row.slice(); rr[ii] *= (1 + lam); return rr; });
+        var d = solveN(A, JTr, 5);
+        if (!d) { lam *= 10; continue; }
+        var na = unit([a[0] + d[0] * e1[0] + d[1] * e2[0], a[1] + d[0] * e1[1] + d[1] * e2[1], a[2] + d[0] * e1[2] + d[1] * e2[2]]);
+        var nc = [c[0] + d[2] * e1[0] + d[3] * e2[0], c[1] + d[2] * e1[1] + d[3] * e2[1], c[2] + d[2] * e1[2] + d[3] * e2[2]], nR = R + d[4];
+        if (!(nR > 0)) { lam *= 10; continue; }
+        cylResiduals(Q, ids, cnt, na, nc, nR, r1);
+        var ss1 = 0; for (k = 0; k < cnt; k++) ss1 += r1[k] * r1[k];
+        if (ss1 <= ss0) { a = na; c = nc; R = nR; lam = Math.max(1e-6, lam * 0.3); improved = true; if (Math.abs(ss0 - ss1) < 1e-9 * (ss0 + 1e-12)) it = iters; } else lam *= 10;
+      }
+      if (!improved) break;
+    }
+    return { a: a, c: c, R: R };
+  }
+  /* Цилиндр с отсечением выбросов: допуск сужается по остаткам (МАД), подгонка по inliers (не больше maxFit точек). */
+  function fitCylinderRobust(Q, m, a0, c0, R0, sp, o) {
+    o = o || {};
+    var a = a0, c = c0, R = R0, tau = o.tau0 || Math.max(2.5 * sp, 0.12 * R0), maxFit = o.maxFit || 700, passes = o.passes || 4;
+    var all = new Int32Array(m); for (var i = 0; i < m; i++) all[i] = i;
+    var res = new Float64Array(m), inl = new Int32Array(m), ic = 0, k, pass, lo = 0.3 * sp, hi = o.tauMax || 1.8 * sp;
+    for (pass = 0; pass < passes; pass++) {
+      cylResiduals(Q, all, m, a, c, R, res);
+      ic = 0; for (k = 0; k < m; k++) { if (res[k] < tau && res[k] > -tau) inl[ic++] = k; }
+      if (ic < 24) return null;
+      var step = Math.max(1, Math.floor(ic / maxFit)), fit = new Int32Array(Math.ceil(ic / step)), fc = 0;
+      for (k = 0; k < ic; k += step) fit[fc++] = inl[k];
+      var f = refineCylinder(Q, fit, fc, a, c, R, o.iters || 6);
+      a = f.a; c = f.c; R = f.R;
+      cylResiduals(Q, inl, ic, a, c, R, res);
+      var ab = new Float64Array(ic); for (k = 0; k < ic; k++) ab[k] = Math.abs(res[k]);
+      ab.sort(); tau = clamp(3 * 1.4826 * ab[ic >> 1], lo, hi);
+    }
+    cylResiduals(Q, all, m, a, c, R, res);
+    ic = 0; var ss = 0; for (k = 0; k < m; k++) { if (res[k] < tau && res[k] > -tau) { inl[ic++] = k; ss += res[k] * res[k]; } }
+    if (ic < 24) return null;
+    return { a: a, c: c, R: R, tau: tau, count: ic, rms: Math.sqrt(ss / ic), inliers: Int32Array.from(inl.subarray(0, ic)) };
+  }
+  function arcOf(Q, ids, cnt, a, c) {   // угловой размах точек по окружности, градусы
+    var bs = basisFor(a), e1 = bs[0], e2 = bs[1], ang = [], k;
+    for (k = 0; k < cnt; k++) {
+      var i = ids[k] * 3, dx = Q[i] - c[0], dy = Q[i + 1] - c[1], dz = Q[i + 2] - c[2];
+      ang.push(Math.atan2(dx * e2[0] + dy * e2[1] + dz * e2[2], dx * e1[0] + dy * e1[1] + dz * e1[2]));
+    }
+    ang.sort(function (x, y) { return x - y; });
+    var gap = ang[0] + 2 * Math.PI - ang[ang.length - 1];
+    for (k = 1; k < ang.length; k++) if (ang[k] - ang[k - 1] > gap) gap = ang[k] - ang[k - 1];
+    return (2 * Math.PI - gap) / DEG;
+  }
+  /* Q — соседи относительно курсора (курсор в нуле). Возвращает цилиндр {a, c (относительно курсора), R, rms, count, tau, coreFrac, arc} или null. */
+  /* согласованность нормалей с радиусами модели-цилиндра: отклонение нормали от радиуса (медиана, 80%) и наибольший внутренний разрыв по углу */
+  function normalsContinuity(Q, N, NI, a, c) {
+    var bs = basisFor(a), dv = [], ph = [], k;
+    for (k = 0; k < N.length; k++) {
+      var i = NI[k], p = [Q[i * 3] - c[0], Q[i * 3 + 1] - c[1], Q[i * 3 + 2] - c[2]], t = dot(p, a), r = [p[0] - a[0] * t, p[1] - a[1] * t, p[2] - a[2] * t], rl = len(r);
+      if (rl < 1e-12) continue;
+      r = [r[0] / rl, r[1] / rl, r[2] / rl];
+      var n = N[k], d = dot(n, r); if (d < 0) { n = [-n[0], -n[1], -n[2]]; d = -d; }
+      dv.push(Math.acos(clamp(d, -1, 1)));
+      ph.push(Math.atan2(dot(n, bs[1]), dot(n, bs[0])));
+    }
+    if (dv.length < 8) return { dev50: 0, dev80: 0, gap: 0, spread: 0, n: dv.length };
+    dv.sort(function (x, y) { return x - y; }); ph.sort(function (x, y) { return x - y; });
+    var gaps = [];
+    for (k = 1; k < ph.length; k++) gaps.push(ph[k] - ph[k - 1]);
+    gaps.push(ph[0] + 2 * Math.PI - ph[ph.length - 1]);
+    var big = 0; for (k = 1; k < gaps.length; k++) if (gaps[k] > gaps[big]) big = k;   // самый большой разрыв — «обратная сторона» трубы, не считается
+    var spread = 0, mx = 0; for (k = 0; k < gaps.length; k++) if (k !== big) { spread += gaps[k]; if (gaps[k] > mx) mx = gaps[k]; }
+    return { dev50: dv[dv.length >> 1], dev80: dv[Math.floor(dv.length * 0.8)], gap: mx, spread: spread, n: dv.length };
+  }
+  /* Излом из двух-трёх плоскостей против цилиндра: отношение «остаток плоскостей / остаток цилиндра» по 80% лучших точек ядра.
+   * У трубы оно около 1,2 и выше, у излома 0,5–0,7: плоскости описывают излом заметно точнее. */
+  function modelRatio(Q, m, core, nc, planes, a, c, R) {
+    var ep = new Float64Array(nc), ec = new Float64Array(nc), rs = new Float64Array(m), allI = new Int32Array(m), i, k;
+    for (i = 0; i < m; i++) allI[i] = i;
+    cylResiduals(Q, allI, m, a, c, R, rs);
+    for (k = 0; k < nc; k++) {
+      var ci = core[k], best = 1e9; ec[k] = Math.abs(rs[ci]);
+      for (var pk = 0; pk < planes.length && pk < 3; pk++) { var e = Math.abs(planeDist(planes[pk], Q, ci)); if (e < best) best = e; }
+      ep[k] = best;
+    }
+    ep.sort(); ec.sort();
+    var q80 = Math.max(10, Math.floor(nc * 0.8)), sp2 = 0, sc2 = 0;
+    for (k = 0; k < q80 && k < nc; k++) { sp2 += ep[k] * ep[k]; sc2 += ec[k] * ec[k]; }
+    return Math.sqrt(sp2) / Math.max(Math.sqrt(sc2), 1e-12);
+  }
+  function detectCylinder(Q, m, sp, radius, planes, o) {
+    o = o || {};
+    var W = function (why) { if (o.why) o.why.r = why; return null; };
+    var coreR = 0.55 * radius, core2 = coreR * coreR, core = [], i, k;
+    for (i = 0; i < m; i++) if (Q[i * 3] * Q[i * 3] + Q[i * 3 + 1] * Q[i * 3 + 1] + Q[i * 3 + 2] * Q[i * 3 + 2] <= core2) core.push(i);
+    var nc = core.length;
+    if (nc < 40) return W('core<40');
+    if (planes && planes.length) {   // одна плоскость объясняет почти всё у курсора — поверхность плоская, цилиндр не нужен
+      for (k = 0; k < planes.length && k < 2; k++) {
+        var pl = planes[k], tp = 0.75 * sp, cnt = 0;   // допуск плоскости узкий: широкий (до 1,6 шага) «съедает» дугу трубы радиусом до 15 см; считаем по всему окну — на краю окна дуга уходит от плоскости
+        for (i = 0; i < m; i++) { var e = planeDist(pl, Q, i); if (e < tp && e > -tp) cnt++; }
+        if (cnt >= 0.8 * m) return W('flat-plane');
+      }
+    }
+    var rnd = mulberry32(((o.seed || 7) + 0x51ED) >>> 0);
+    var lsp = Math.sqrt(Math.PI * radius * radius / m), rn = clamp(3.4 * Math.max(lsp, sp), 4 * sp, 0.6 * coreR), rn2 = rn * rn;
+    var S = Math.min(120, nc), N = [], NI = [];
+    for (k = 0; k < S; k++) {
+      var ci0 = core[(rnd() * nc) | 0], ln = localNormal(Q, m, ci0, rn2, 90);
+      if (ln && ln.l0 <= 0.3 * ln.l1) { N.push(ln.n); NI.push(ci0); }
+    }
+    if (N.length < 25) return W('normals<25');
+    var cxx = 0, cxy = 0, cxz = 0, cyy = 0, cyz = 0, czz = 0;
+    for (k = 0; k < N.length; k++) { var nn = N[k]; cxx += nn[0] * nn[0]; cxy += nn[0] * nn[1]; cxz += nn[0] * nn[2]; cyy += nn[1] * nn[1]; cyz += nn[1] * nn[2]; czz += nn[2] * nn[2]; }
+    var ea = smallestEigenvector([cxx / N.length, cxy / N.length, cxz / N.length, cyy / N.length, cyz / N.length, czz / N.length]);
+    var lv = ea.values.slice().sort(function (p, q) { return p - q; });
+    if (o.why) o.why.lv = [lv[0], lv[1], lv[2], N.length];
+    if (lv[1] < 0.008 || lv[0] > 0.35 * lv[1]) return W('axis-eig');   // нормали не раскинуты по дуге (плоскость) или раскинуты по всей сфере
+    var a0 = ea.normal, bs = basisFor(a0), U = new Float64Array(m), V = new Float64Array(m);
+    for (i = 0; i < m; i++) { U[i] = Q[i * 3] * bs[0][0] + Q[i * 3 + 1] * bs[0][1] + Q[i * 3 + 2] * bs[0][2]; V[i] = Q[i * 3] * bs[1][0] + Q[i * 3 + 1] * bs[1][1] + Q[i * 3 + 2] * bs[1][2]; }
+    var ci = circleKasa(U, V, core, nc);
+    if (!ci || !isFinite(ci.R) || ci.R < 3 * sp || ci.R > 4 * radius + 1) return W('circle');
+    var c0 = [bs[0][0] * ci.u + bs[1][0] * ci.v, bs[0][1] * ci.u + bs[1][1] * ci.v, bs[0][2] * ci.u + bs[1][2] * ci.v];
+    var fit = fitCylinderRobust(Q, m, a0, c0, ci.R, sp, { passes: 4 });
+    if (!fit) return W('fit-null');
+    // проверки: радиус, кривизна на фоне шума, доля точек у курсора на поверхности, размах дуги
+    if (fit.R < 4 * sp || fit.R > 3.0) return W('R-range');
+    if (coreR * coreR / (2 * fit.R) < 0.8 * fit.tau) return W('curvature');                // кривизна не заметна — плоскость описывает не хуже
+    var inCore = 0, flag = new Uint8Array(m); for (k = 0; k < fit.inliers.length; k++) flag[fit.inliers[k]] = 1;
+    for (i = 0; i < nc; i++) if (flag[core[i]]) inCore++;
+    var coreFrac = inCore / nc;
+    if (coreFrac < 0.72 || fit.rms > 0.75 * fit.tau) return W('coreFrac/rms');
+    var arc = arcOf(Q, fit.inliers, fit.inliers.length, fit.a, fit.c);
+    if (arc < 24) return W('arc<24');
+    if (planes && planes.length && planes[0].count > 0.92 * fit.count) return W('plane-bigger');   // плоскость собирает не меньше точек, чем цилиндр
+    // непрерывность нормалей: на трубе нормаль поворачивается вместе с радиусом плавно; на изломе (две плоскости) она скачет, а её отклонение от радиуса растёт к краям
+    var cont = normalsContinuity(Q, N, NI, fit.a, fit.c);
+    if (o.why) o.why.cont = cont;
+    if (cont.dev50 > 11 * DEG || cont.dev80 > 18 * DEG || cont.gap > Math.max(12 * DEG, 0.3 * cont.spread)) return W('normals-jump');
+    if (planes && planes.length >= 2) { cont.mr = modelRatio(Q, m, core, nc, planes, fit.a, fit.c, fit.R); if (cont.mr < 0.62) return W('planes-fit-better'); }
+    var d0 = len(sub([0, 0, 0], fit.c)), tt = dot(sub([0, 0, 0], fit.c), fit.a), rho = Math.sqrt(Math.max(0, d0 * d0 - tt * tt));
+    if (Math.abs(rho - fit.R) > Math.max(2 * fit.tau, 0.5 * radius)) return W('seed-far');    // курсор далеко от поверхности — это не «его» цилиндр
+    return { a: fit.a, c: fit.c, R: fit.R, rms: fit.rms, count: fit.count, tau: fit.tau, coreFrac: coreFrac, arc: arc };
+  }
+  /* Рост цилиндра по всей видимой дуге и по длине (~±4 радиуса): ось и радиус по тысячам точек, а не по окну у курсора.
+   * cyl — в абсолютных координатах {a, c, R, tau, count}. Возвращает уточнённую модель или null. */
+  function growCylinder(index, cyl, seed, sp, o) {
+    o = o || {};
+    var Rg = clamp(o.rg || Math.max(40 * sp, 4 * cyl.R), 40 * sp, 1.5), ids = index.query(seed[0], seed[1], seed[2], Rg, o.cap || 60000), m = ids.length;
+    if (m < 60) return null;
+    var P = index.pos, Q = new Float64Array(m * 3), k;
+    for (k = 0; k < m; k++) { Q[k * 3] = P[ids[k] * 3] - seed[0]; Q[k * 3 + 1] = P[ids[k] * 3 + 1] - seed[1]; Q[k * 3 + 2] = P[ids[k] * 3 + 2] - seed[2]; }
+    var c0 = sub(cyl.c, seed);
+    var fit = fitCylinderRobust(Q, m, cyl.a, c0, cyl.R, sp, { passes: 4, maxFit: 1500, tau0: Math.max(cyl.tau || 0, 1.2 * sp), tauMax: 1.8 * sp });
+    if (!fit) return null;
+    if (fit.count < 0.8 * cyl.count || Math.abs(fit.R - cyl.R) > 0.3 * cyl.R || Math.acos(clamp(Math.abs(dot(fit.a, cyl.a)), 0, 1)) > 10 * DEG) return null;
+    var arc = arcOf(Q, fit.inliers, fit.inliers.length, fit.a, fit.c);
+    if (fit.rms > 0.75 * fit.tau) return null;
+    return { a: fit.a, c: add(fit.c, seed), R: fit.R, rms: fit.rms, count: fit.count, tau: fit.tau, arc: arc, grown: true };
+  }
+  function curveResult(out, cyl, seed, index, sp, opts) {
+    var raw = out.raw, abs = { a: cyl.a.slice(), c: add(cyl.c, seed), R: cyl.R, rms: cyl.rms, count: cyl.count, tau: cyl.tau, arc: cyl.arc, coreFrac: cyl.coreFrac };
+    if (opts.grow) {
+      var g = null; try { g = growCylinder(index, abs, seed, sp, opts); } catch (e) { g = null; }
+      if (g) { abs = g; out.grown = true; }
+    }
+    var d = sub(raw, abs.c), t = dot(d, abs.a), q = sub(d, mul(abs.a, t)), rho = len(q);
+    if (rho < 1e-9) return null;
+    var nrm = mul(q, 1 / rho), foot = add(abs.c, mul(abs.a, t)), pt = add(foot, mul(nrm, abs.R));
+    // σ радиуса: статистика по точкам + шероховатость и систематика подгонки (по сверке с автоматическим замером на реальном облаке)
+    var sigR = Math.sqrt(Math.pow(abs.rms / Math.sqrt(Math.max(8, abs.count / 6)), 2) + Math.pow(0.22 * abs.rms, 2) + Math.pow(0.08 * sp, 2));
+    out.point = pt; out.kind = 'curve'; out.refined = true; out.shift = len(sub(pt, raw)); out.planes = []; out.normal = nrm; out.dir = abs.a.slice();
+    out.rms = abs.rms; out.count = abs.count; out.sigma = abs.grown ? sigR : Math.sqrt(sigR * sigR + Math.pow(0.12 * abs.R * 0 + 0.5 * sp, 2));
+    out.cylinder = { axis: abs.a.slice(), center: foot, radius: abs.R, rms: abs.rms, count: abs.count, arc: abs.arc, sigma: sigR, grown: !!abs.grown, tau: abs.tau };
+    out.quality = abs.rms <= 0.9 * sp && abs.count >= 200 ? 'high' : abs.rms <= 1.4 * sp && abs.count >= 60 ? 'medium' : 'low';
+    if (!abs.grown && out.quality === 'high') out.quality = 'medium';
+    return out;
+  }
+
   /* ---------- Захват ---------- */
   /* seed — точка под курсором (координаты облака). index — buildIndex(...).
    * opts.snapDist — насколько далеко от seed искать угол/ребро (в единицах облака);
@@ -610,6 +986,7 @@
     var raw = [seed[0], seed[1], seed[2]];
     var out = { point: raw.slice(), raw: raw, kind: 'raw', refined: false, shift: 0, rms: 0, count: 0, planes: [] };
     if (!index || !index.n) return out;
+    if (index.local || opts.spacing > 0) { var view = Object.create(index); view.spacing = opts.spacing > 0 ? opts.spacing : localSpacing(index, seed); index = view; }   // у большого скана шаг считаем у курсора
     var sp = index.spacing || index.cell / 4;
     var snapDist = clamp(opts.snapDist || 6 * sp, 2.5 * sp, 40 * sp);
     var radius = clamp(opts.radius || 2.4 * snapDist, 10 * sp, 60 * sp);
@@ -628,6 +1005,12 @@
     planes = refineJoint(Q, m, planes, sp, opts.tauMax);
     // «плоскость» из полоски точек вдоль кромки (смешанные пиксели лазера) настоящей поверхностью не считаем: у неё нет ширины
     var good = planes.filter(function (p) { return p.span >= 3.5 * sp && Math.abs(p.d) <= radius * 0.9 && (!p.lam || Math.sqrt(Math.max(p.lam[1], 0)) >= 1.5 * sp); });
+    // труба или другая цилиндрическая поверхность: «рёбра» между касательными плоскостями на ней ложные (лежат снаружи) — привязываемся к самому цилиндру
+    if (opts.curve !== false) {
+      var cylM = null;
+      try { cylM = detectCylinder(Q, m, sp, radius, planes, { seed: seedFor(raw, index.n), why: opts.whyCurve }); } catch (e) { cylM = null; }
+      if (cylM) { var cr0 = curveResult(out, cylM, seed, index, sp, opts); if (cr0) return cr0; }
+    }
     // местный шаг точек: у откосов, кромок и на косых поверхностях облако реже, чем в среднем — опору для ребра/угла ищем с запасом
     var lsp = clamp(Math.sqrt(Math.PI * radius * radius / m), sp, 3 * sp);
     var cands = [], supportR = 3.5 * lsp, a, b, c2;
@@ -760,9 +1143,9 @@
   }
 
   return {
-    buildIndex: buildIndex, snap: snap, pairGap: pairGap, detectPlanes: detectPlanes, fitLSQ: fitLSQ,
+    buildIndex: buildIndex, buildIndexAsync: buildIndexAsync, createIndexBuilder: createIndexBuilder, localSpacing: localSpacing, snap: snap, pairGap: pairGap, detectPlanes: detectPlanes, fitLSQ: fitLSQ,
     growPlane: growPlane, collectPlanePoints: collectPlanePoints, planeSigmaAt: planeSigmaAt,
     intersect2: intersect2, intersect3: intersect3, refineJoint: refineJoint, estimateSpacing: estimateSpacing, seedFor: seedFor,
-    contourEdge: contourEdge, trackContour: trackContour
+    contourEdge: contourEdge, trackContour: trackContour, detectCylinder: detectCylinder, growCylinder: growCylinder, fitCylinderRobust: fitCylinderRobust
   };
 });
