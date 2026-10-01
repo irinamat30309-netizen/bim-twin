@@ -528,7 +528,7 @@
     var A = api(); if (!A) { toast('Сохранение доступно в десктоп-версии', true); return { ok: false }; }
     var cloud = getCloud(); if (!cloud) { if (!opts.silent) toast('Нет облака для сохранения', true); return { ok: false }; }
     var cnt = cloud.pos.length / 3;
-    if (cnt > 90000000) { toast('Слишком большое облако (~' + Math.round(cnt / 1e6) + ' млн) — сначала обрежьте', true); return { ok: false }; }
+    if (cnt > ((window.APP_CONFIG && window.APP_CONFIG.PLY_EXPORT_MAX_POINTS) || 200000000)) { toast('Слишком большое облако (~' + Math.round(cnt / 1e6) + ' млн) — сначала обрежьте', true); return { ok: false }; }
     var saveGeneration = window.__pcAutosave && Number.isSafeInteger(window.__pcAutosave.editGeneration)
       ? window.__pcAutosave.editGeneration : undefined;
     st.saving = true; renderChip();

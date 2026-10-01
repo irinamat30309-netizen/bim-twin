@@ -984,6 +984,8 @@
       const sp = bo._spacing || 0, voxel = sp > 0 ? sp * 2 : undefined;
       const idx = window.PCEdit.magicWand(seed, bo.pos, bo.pos.length / 3, { voxel: voxel, maxPts: (opts && opts.maxPts) || 800000 });
       this._sel = new Set(this._clipFilter(idx)); this._buildSelHighlight();
+      // Точка клика — «указание на объект»: автозамер по ней выбирает именно этот объект среди найденного (земля/стена вокруг не в счёт).
+      this._smartSeed = { sel: this._sel, point: [bo.pos[seed * 3], bo.pos[seed * 3 + 1], bo.pos[seed * 3 + 2]] };
       if (typeof this.onEditSelect === 'function') this.onEditSelect(this._sel.size);
       this.render(); return this._sel.size;
     }
@@ -1005,6 +1007,7 @@
         meta.srcXform = { axis: this._srcXform.axis, t: Array.prototype.slice.call(this._srcXform.t, 0, 3).map(Number) };
       }
       if (this._srcCrs) meta.crsWkt = this._srcCrs;
+      if (this._smartSeed && this._smartSeed.sel === this._sel && this._smartSeed.point) meta.seed = this._smartSeed.point.slice();
       const obj = { id: 'obj-' + this._objSeq, name: name || ('Объект ' + this._objSeq), pos: r.pos, col: r.col || null, count: count, bbox: { mn: mn, mx: mx }, meta: meta };
       this._objects.push(obj);
       return { id: obj.id, name: obj.name, count: obj.count, bbox: obj.bbox };

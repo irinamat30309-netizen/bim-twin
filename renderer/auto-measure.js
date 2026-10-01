@@ -509,7 +509,8 @@
     var d = {
       key: o.key, label: o.label, dimension: o.dimension || null, value: o.value, sigma: o.sigma, method: o.method, how: o.how || '', confidence: clamp(o.confidence, 0, 1),
       a: o.a || null, b: o.b || null, group: o.group || null, tilt: o.tilt != null ? o.tilt : null, range: o.range || null, notes: o.notes || [],
-      evidence: o.evidence || null, kind: o.kind || 'linear', checks: o.checks || null
+      evidence: o.evidence || null, kind: o.kind || 'linear', checks: o.checks || null,
+      ref: !!o.ref   // «привязка к окружению» (расстояние до пола и т. п.): это не размер самого объекта — не сохраняется автоматически
     };
     d.level = level(d.confidence);
     return d;
@@ -1369,6 +1370,22 @@
   }
 
   /* Труба/цилиндр: диаметр, уклон оси, высота оси над полом, видимая длина. */
+  /* Пол «настоящий», если он: горизонтален (до 3°), ровен (СКО до 2 см) и в радиусе rad от точки под ней есть его точки (не просто самая нижняя плоскость кадра). */
+  function surfaceCoverage(sf, p, rad) {
+    var a = dot(p, sf.u), b = dot(p, sf.v), r = Math.max(1, Math.ceil(rad / sf.cs)), cu = Math.floor((a - sf.ext.u0) / sf.cs), cv = Math.floor((b - sf.ext.v0) / sf.cs), tot = 0, occ = 0;
+    for (var j = -r; j <= r; j++) for (var i = -r; i <= r; i++) {
+      if (i * i + j * j > r * r) continue;
+      tot++;
+      var x = cu + i, y = cv + j;
+      if (x >= 0 && y >= 0 && x < sf.W && y < sf.H && sf.occ[y * sf.W + x]) occ++;
+    }
+    return tot ? occ / tot : 0;
+  }
+  function floorIsReal(fl, p, rad) {
+    if (!fl || Math.abs(fl.n[1]) < Math.cos(3 * DEG) || fl.rms > 0.02) return false;
+    return surfaceCoverage(fl, p, rad) >= 0.25;
+  }
+
   function cylinderObject(cy, idx, ctx) {
     var dims = [], notes = [], a = cy.a, c = cy.c, d = 2 * cy.r, sd = 2 * cy.sigmaR;
     var conf = 0.9;
@@ -1401,13 +1418,14 @@
         dims.push(makeDim({ key: 'slope', dimension: 'slope', label: 'Уклон оси трубы', value: grade, sigma: sg, method: 'fit', how: 'по оси цилиндра', confidence: gc, a: ea, b: eb, kind: 'slope', notes: ['Знак «+»: вдоль оси от первой точки ко второй труба поднимается.', 'Уклон отсчитан от вертикали облака: если скан не выровнен по отвесу, значение смещено на угол его наклона. Прогиб трубы между опорами не учитывается, поэтому выше «средней» уверенность не ставится.'] }));
       }
     }
-    // высота оси над полом (если пол есть в кадре)
+    // высота оси над полом — только «привязка к окружению», и только если пол настоящий: ровный, горизонтальный и лежит ПОД трубой.
+    // Неровная земля, наклонная плита, полка или лоток в рамке полом не считаются (раньше именно такие «полы» давали чужие числа).
     if (ctx.floor && Math.abs(a[1]) < 0.5) {
       var fl = ctx.floor, tf = planeT(fl, mid, UP), pf = add(mid, mul(UP, tf)), hh = Math.abs(tf);
-      if (hh > cy.r && tf < 0) {
-        var sf = Math.sqrt(Math.pow(sigmaAt(fl, pf), 2) + cy.sigmaR * cy.sigmaR + SIGMA_SYS * SIGMA_SYS);
-        dims.push(makeDim({ key: 'axis-height', dimension: 'height', label: 'Высота оси над полом', value: hh, sigma: sf, method: 'fit', how: 'от оси трубы до плоскости пола', confidence: clamp(conf - 0.08, 0.1, 0.85), a: pf, b: mid }));
-        dims.push(makeDim({ key: 'bottom-height', dimension: 'height', label: 'Высота низа трубы над полом', value: hh - cy.r, sigma: sf, method: 'fit', how: 'ось − радиус', confidence: clamp(conf - 0.08, 0.1, 0.85), a: pf, b: add(mid, mul(UP, -cy.r)) }));
+      if (hh > cy.r && tf < 0 && floorIsReal(fl, mid, Math.max(0.25, 2 * cy.r))) {
+        var sf = Math.sqrt(Math.pow(sigmaAt(fl, pf), 2) + cy.sigmaR * cy.sigmaR + SIGMA_SYS * SIGMA_SYS), refNote = ['Это расстояние до плоскости пола в рамке, а не размер самой трубы: в проект автоматически не сохраняется.'];
+        dims.push(makeDim({ key: 'axis-height', dimension: 'height', label: 'Высота оси над полом', value: hh, sigma: sf, method: 'fit', how: 'от оси трубы до плоскости пола', confidence: clamp(conf - 0.08, 0.1, 0.85), a: pf, b: mid, ref: true, notes: refNote.slice() }));
+        dims.push(makeDim({ key: 'bottom-height', dimension: 'height', label: 'Высота низа трубы над полом', value: hh - cy.r, sigma: sf, method: 'fit', how: 'ось − радиус', confidence: clamp(conf - 0.08, 0.1, 0.85), a: pf, b: add(mid, mul(UP, -cy.r)), ref: true, notes: refNote.slice() }));
       }
     }
     return { type: 'cylinder', guess: 'pipe', title: 'Труба Ø' + Math.round(d * 1000) + ' мм', dims: dims, notes: [], center: mid, pointsUsed: cy.count, score: 0.5 + 0.3 * Math.min(1, cy.count / 1500) + 0.2 * Math.min(1, cy.arc / 270) - (oblique ? 0.2 : 0), cylinder: cy, index: idx, skew: skew };
@@ -1439,6 +1457,157 @@
       });
     }
     return out;
+  }
+
+  /* ---------- Чьи это размеры: тип, указанная точка, контур ---------- */
+  /* Роль находки — что именно она измеряет. Тип, выбранный человеком, допускает ТОЛЬКО свои роли; остальное остаётся в списке «другое в рамке»
+   * и никогда не становится главным результатом и не сохраняется автоматически (null = подходит любая находка). */
+  var KIND_ROLES = {
+    'проём': ['opening'], 'дверь': ['opening'], 'окно': ['opening'],
+    'труба': ['pipe'], 'воздуховод': ['pipe'],
+    'стена': ['wall', 'room-width'], 'перекрытие': ['slab'], 'пол': ['slab', 'room-height'], 'потолок': ['slab', 'room-height'],
+    'колонна': ['pipe', 'wall', 'slab'], 'балка': ['wall', 'slab'], 'лоток': ['tray', 'wall', 'slab'], 'оборудование': null
+  };
+  function roleOf(ob) {
+    if (ob.type === 'opening') return 'opening';
+    if (ob.type === 'cylinder' || ob.type === 'pipes') return 'pipe';
+    var k = ob.dims && ob.dims[0] && ob.dims[0].key;
+    return k === 'room-height' ? 'room-height' : k === 'room-width' ? 'room-width' : k === 'slab-thickness' ? 'slab' : k === 'inner-width' ? 'tray' : k === 'wall-thickness' ? 'wall' : 'other';
+  }
+  function matchesKind(ob, kind) {
+    if (!kind) return true;
+    var roles = KIND_ROLES[kind];
+    if (roles === undefined || roles === null) return true;
+    return roles.indexOf(ob.role) >= 0;
+  }
+
+  function distPointSegment(p, a, b) {
+    var ab = sub(b, a), l2 = dot(ab, ab), t = l2 > 1e-12 ? clamp(dot(sub(p, a), ab) / l2, 0, 1) : 0;
+    return len(sub(p, add(a, mul(ab, t))));
+  }
+  function distPointPatch(sf, p) {
+    var a = dot(p, sf.u), b = dot(p, sf.v), off = dot(sf.n, p) - sf.d;
+    var du = a < sf.ext.u0 ? sf.ext.u0 - a : a > sf.ext.u1 ? a - sf.ext.u1 : 0, dv = b < sf.ext.v0 ? sf.ext.v0 - b : b > sf.ext.v1 ? b - sf.ext.v1 : 0;
+    return Math.sqrt(off * off + du * du + dv * dv);
+  }
+  function distPointBox(p, pts, pad) {
+    var mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity], i, k;
+    pts.forEach(function (q) { if (!q) return; for (k = 0; k < 3; k++) { if (q[k] < mn[k]) mn[k] = q[k]; if (q[k] > mx[k]) mx[k] = q[k]; } });
+    if (mn[0] === Infinity) return Infinity;
+    var s2 = 0; for (i = 0; i < 3; i++) { var d = p[i] < mn[i] - pad ? mn[i] - pad - p[i] : p[i] > mx[i] + pad ? p[i] - mx[i] - pad : 0; s2 += d * d; }
+    return Math.sqrt(s2);
+  }
+  /* Расстояние от точки до объекта (0 — точка на/внутри объекта): труба — до оси минус радиус, пара плоскостей — до ближайшего куска, остальное — до габарита размеров. */
+  function distToObject(ob, p, ctx) {
+    if (ob.cylinder) { var c = ob.cylinder; return Math.max(0, distPointSegment(p, add(c.c, mul(c.a, c.t0)), add(c.c, mul(c.a, c.t1))) - c.r); }
+    if (ob.surfaces) {
+      var best = Infinity; ob.surfaces.forEach(function (id) { var sf = ctx.surfaces[id]; if (sf) best = Math.min(best, distPointPatch(sf, p)); }); return best;
+    }
+    var pts = [ob.center]; ob.dims.forEach(function (d) { pts.push(d.a, d.b); });
+    return distPointBox(p, pts, 0.1);
+  }
+  /* Множитель ранга по близости к указанной точке: на объекте — 1,6; на 0,5 м дальше — ~0,7; далеко — не ниже 0,15. */
+  function focusFactor(d) { return d <= 0.05 ? 1.6 : Math.max(0.15, 1.6 * Math.exp(-(d - 0.05) / 0.6)); }
+
+  /* Контур объекта (пары концов отрезков для gl.LINES) — чтобы человек видел, ЧТО именно измерено: труба — ось, кольца, образующие; проём — рамка; пара плоскостей — их куски. */
+  function patchOutline(sf, out) {
+    var e = sf.ext, k, cs = [[e.u0, e.v0], [e.u1, e.v0], [e.u1, e.v1], [e.u0, e.v1]], P3 = cs.map(function (q) { return add(add(mul(sf.u, q[0]), mul(sf.v, q[1])), mul(sf.n, sf.d)); });
+    for (k = 0; k < 4; k++) out.push(P3[k], P3[(k + 1) % 4]);
+  }
+  function outlineOf(ob, ctx) {
+    var out = [], k, j;
+    if (ob.cylinder) {
+      var c = ob.cylinder, bs = planeBasis(c.a), A = add(c.c, mul(c.a, c.t0)), B = add(c.c, mul(c.a, c.t1));
+      out.push(A, B);
+      [c.t0, 0.5 * (c.t0 + c.t1), c.t1].forEach(function (t) {
+        var m = add(c.c, mul(c.a, t)), prev = null;
+        for (j = 0; j <= 24; j++) { var th = j / 24 * 2 * Math.PI, q = add(m, add(mul(bs.u, c.r * Math.cos(th)), mul(bs.v, c.r * Math.sin(th)))); if (prev) out.push(prev, q); prev = q; }
+      });
+      for (k = 0; k < 4; k++) { var th2 = k * Math.PI / 2, off = add(mul(bs.u, c.r * Math.cos(th2)), mul(bs.v, c.r * Math.sin(th2))); out.push(add(A, off), add(B, off)); }
+    } else if (ob.surfaces) {
+      ob.surfaces.forEach(function (id) { if (ctx.surfaces[id]) patchOutline(ctx.surfaces[id], out); });
+    } else if (ob.type === 'opening') {
+      var w = ob.dims.filter(function (d) { return d.key === 'width'; })[0], h = ob.dims.filter(function (d) { return d.key === 'height'; })[0];
+      if (w && w.a && w.b && h && h.a && h.b) {
+        var y0 = Math.min(h.a[1], h.b[1]), y1 = Math.max(h.a[1], h.b[1]), q0 = [w.a[0], y0, w.a[2]], q1 = [w.b[0], y0, w.b[2]], q2 = [w.b[0], y1, w.b[2]], q3 = [w.a[0], y1, w.a[2]];
+        out.push(q0, q1, q1, q2, q2, q3, q3, q0);
+      } else ob.dims.forEach(function (d) { if (d.a && d.b) out.push(d.a, d.b); });
+    } else ob.dims.forEach(function (d) { if (d.a && d.b) out.push(d.a, d.b); });
+    return out;
+  }
+
+  /* Дубликаты труб: одна труба, разбитая на два цилиндра (общая ось, тот же радиус, перекрытие вдоль оси) — оставляем сильнейший. */
+  function dedupeCylinders(cobj) {
+    var keep = [];
+    cobj.slice().sort(function (a, b) { return b.score - a.score; }).forEach(function (ob) {
+      var c = ob.cylinder;
+      for (var i = 0; i < keep.length; i++) {
+        var k = keep[i].cylinder;
+        if (angleBetween(k.a, c.a) > 3 * DEG) continue;
+        var w = sub(c.c, k.c), al = dot(w, k.a), perp = len(sub(w, mul(k.a, al)));
+        if (perp > 0.35 * Math.min(k.r, c.r) || Math.abs(k.r - c.r) > 0.1 * k.r) continue;
+        var o0 = Math.max(k.t0, al + c.t0), o1 = Math.min(k.t1, al + c.t1);
+        if (o1 - o0 < 0.3 * Math.min(k.length, c.length)) continue;
+        return;
+      }
+      keep.push(ob);
+    });
+    return keep;
+  }
+  /* «Призраки» в пучке параллельных труб: короткая дуга и диаметр, заметно отличающийся от медианы ≥3 надёжных соседей, — подгонка по пучку, а не труба. */
+  function consensusPipes(cobj) {
+    var strong = cobj.filter(function (ob) { var c = ob.cylinder; return c.arc >= 170 && c.count >= 1500 && ob.dims[0].confidence >= 0.6; }), n = 0;
+    cobj.forEach(function (ob) {
+      var c = ob.cylinder, mates = strong.filter(function (s) { return s !== ob && angleBetween(s.cylinder.a, c.a) <= 8 * DEG; });
+      if (mates.length < 3) return;
+      var R = median(mates.map(function (s) { return s.cylinder.r; }));
+      if (Math.abs(c.r - R) / R > 0.12 && (c.arc < 150 || c.count < 600)) {
+        var d = ob.dims[0]; d.confidence = clamp(d.confidence - 0.35, 0.05, 1); d.level = level(d.confidence);
+        d.notes.push('Диаметр заметно отличается от соседних параллельных труб (медиана Ø' + Math.round(2000 * R) + ' мм) при короткой видимой дуге — это, скорее всего, подгонка по пучку, а не отдельная труба.');
+        ob.score -= 0.35; ob.ghost = true; ob.ghostWhy = ['диаметр заметно отличается от соседних параллельных труб при короткой видимой дуге']; n++;
+      }
+    });
+    return n;
+  }
+
+  /* Проверка «это действительно стенка трубы»: внутри цилиндра, вдоль его оси, не должно быть чужих точек — снаружи скан видит только оболочку.
+     Если внутри полно точек (мелкие трубы пучка, грунт, оборудование), то цилиндр — подгонка по огибающей пучка или по земле, а не отдельная труба. */
+  function hollowStats(cy, P, n) {
+    var a = cy.a, c = cy.c, r = cy.r, inner = Math.max(0.02, 3.5 * cy.rms), rin = r - inner, inside = 0, near = 0;
+    if (rin <= 0.01) return { inside: 0, near: 0, ratio: 0 };
+    var t0 = cy.t0, t1 = cy.t1, ax = a[0], ay = a[1], az = a[2], rin2 = rin * rin, r2 = (r + 0.03) * (r + 0.03);
+    for (var i = 0; i < n; i++) {
+      var q = i * 3, wx = P[q] - c[0], wy = P[q + 1] - c[1], wz = P[q + 2] - c[2], t = wx * ax + wy * ay + wz * az;
+      if (t < t0 || t > t1) continue;
+      var rx = wx - t * ax, ry = wy - t * ay, rz = wz - t * az, d2 = rx * rx + ry * ry + rz * rz;
+      if (d2 < rin2) inside++; else if (d2 < r2) near++;
+    }
+    return { inside: inside, near: near, ratio: inside / Math.max(1, cy.count) };
+  }
+  /* Огибающая пучка/земли: цилиндр охватывает несколько мелких надёжных параллельных труб ИЛИ внутри него много чужих точек ИЛИ радиус и невязка нереальны. */
+  function implausibleCylinders(cobj, P, n) {
+    var strong = cobj.filter(function (ob) { var c = ob.cylinder; return c.arc >= 150 && c.count >= 600 && ob.dims[0].confidence >= 0.5 && c.rms < 0.012; }), cnt = 0;
+    cobj.forEach(function (ob) {
+      var c = ob.cylinder, d = ob.dims[0], why = [], pen = 0;
+      var st = hollowStats(c, P, n); c.hollow = st;
+      var held = strong.filter(function (s) {
+        if (s === ob) return false;
+        var k = s.cylinder; if (k.r > 0.75 * c.r || angleBetween(k.a, c.a) > 8 * DEG) return false;
+        var w = sub(k.c, c.c), al = dot(w, c.a), perp = len(sub(w, mul(c.a, al)));
+        if (perp + k.r > 1.05 * c.r) return false;
+        return Math.min(c.t1, al + k.t1) - Math.max(c.t0, al + k.t0) > 0.3 * Math.min(c.length, k.length);
+      }).length;
+      c.encloses = held;
+      if (held >= 1) { pen += 0.5; why.push('охватывает ' + held + ' более мелк' + (held === 1 ? 'ую трубу' : 'их труб') + ' — это огибающая пучка, а не труба'); }
+      if (st.ratio > 0.25 && st.inside >= 150) { pen += 0.4; why.push('внутри контура много чужих точек (' + st.inside + ' шт., ' + Math.round(100 * st.ratio) + '% от точек трубы) — у настоящей трубы внутри пусто'); }
+      if (c.r > 0.25 && c.rms > 0.02) { pen += 0.3; why.push('для такого диаметра слишком велик разброс точек (СКО ' + (1000 * c.rms).toFixed(0) + ' мм)'); }
+      else if (c.r > 0.25 && c.rms > 0.012 && c.arc < 220) { pen += 0.12; why.push('разброс точек (СКО ' + (1000 * c.rms).toFixed(0) + ' мм) велик для такого диаметра'); }
+      if (pen > 0) {
+        d.confidence = clamp(d.confidence - pen, 0.05, 1); d.level = level(d.confidence); d.notes.push('Скорее всего, это не отдельная труба: ' + why.join('; ') + '.');
+        ob.score -= pen; ob.ghost = true; ob.ghostWhy = why.slice(); cnt++;
+      }
+    });
+    return cnt;
   }
 
   /* ---------- Главный вход ---------- */
@@ -1522,35 +1691,51 @@
         try { holeOpenings(ctx).forEach(function (ho) { holeObjs.push(holeObject(ho, ctx)); }); } catch (eh) { info.holeError = String(eh && eh.message || eh); }
       }
       mergeHoles(objects, holeObjs).forEach(function (hb) { objects.push(hb); });
-      var cy = detectCylinders(S, surfaces, opts), cobj = cy.cylinders.map(function (c, i) { return cylinderObject(c, i, ctx); });
+      var cy = detectCylinders(S, surfaces, opts), cobj = dedupeCylinders(cy.cylinders.map(function (c, i) { return cylinderObject(c, i, ctx); }));
+      // «призраки» (огибающая пучка, подгонка по земле/стене, лишние дубли в пучке) не показываем как трубы: только счётчик и причины
+      info.ghosts = consensusPipes(cobj) + implausibleCylinders(cobj, S.P, S.n);
+      var rejected = cobj.filter(function (ob) { return ob.ghost; });
+      cobj = cobj.filter(function (ob) { return !ob.ghost; });
       cobj.forEach(function (ob) { objects.push(ob); });
       pipePairs(cobj, cobj).slice(0, 6).forEach(function (ob) { objects.push(ob); });
       pairObjects(ctx, usedPairs).sort(function (a, b) { return b.score - a.score; }).slice(0, 6).forEach(function (ob) { objects.push(ob); });
-      var fam = KIND_FAMILY[opts.kind || ''] || null;
+      // Чьи это размеры. 1) Тип, выбранный человеком, пропускает только свои находки (остальные — «другое в рамке», не главные и не сохраняются).
+      // 2) Указанная точка (клик по объекту) поднимает находки рядом с ней и опускает далёкие. 3) Контур объекта — чтобы видеть, что измерено.
+      var kind = opts.kind || '', c0 = pre.c0;
+      var fpt = opts.focus && opts.focus.length >= 3 && isFinite(opts.focus[0] + opts.focus[1] + opts.focus[2]) ? [opts.focus[0] - c0[0], opts.focus[1] - c0[1], opts.focus[2] - c0[2]] : null;
+      var roleSet = {};
       objects.forEach(function (ob) {
-        ob.family = familyOf(ob);
-        ob.rank = ob.score * (fam ? (ob.family === fam ? 3 : (fam === 'box' && ob.family === 'panel' ? 1.2 : 0.7)) : 1);
+        ob.family = familyOf(ob); ob.role = roleOf(ob); ob.onType = matchesKind(ob, kind); roleSet[ob.role] = 1;
+        ob.focusDist = fpt ? distToObject(ob, fpt, ctx) : null;
+        ob.rank = ob.score * (kind ? (ob.onType ? 3 : 0.7) : 1) * (fpt ? focusFactor(ob.focusDist) : 1);
+        try { ob.outline = outlineOf(ob, ctx); } catch (eo) { ob.outline = []; }
       });
-      objects.sort(function (a, b) { return b.rank - a.rank; });
+      objects.sort(function (a, b) { return ((b.onType ? 1 : 0) - (a.onType ? 1 : 0)) || (b.rank - a.rank); });
       // координаты — обратно в систему облака
-      var c0 = pre.c0;
       function back(p) { return p ? [p[0] + c0[0], p[1] + c0[1], p[2] + c0[2]] : p; }
       objects.forEach(function (ob, i) {
-        ob.id = i; ob.center = back(ob.center);
+        ob.id = i; ob.center = back(ob.center); ob.offType = !ob.onType;
         ob.dims.forEach(function (d) { d.a = back(d.a); d.b = back(d.b); d.objectId = i; });
         if (ob.cylinder) { ob.cylinder.c = back(ob.cylinder.c); }
+        if (ob.outline) ob.outline = ob.outline.map(back);
         delete ob.raw;
       });
+      var main = objects.length && objects[0].onType ? objects[0] : null;
       info.spacing = S.spacing; info.noise = S.noise; info.planes = surfaces.length; info.cylinders = cy.cylinders.length; info.floor = !!floor; info.ms = Date.now() - t0; info.c0 = c0;
-      info.seeds = cy.seeds; info.families = cy.families; info.holes = holeObjs.length;
-      return { ok: true, objects: objects, main: objects[0] || null, info: info, surfaces: surfaces.length };
+      info.seeds = cy.seeds; info.families = cy.families; info.holes = holeObjs.length; info.roles = Object.keys(roleSet);
+      var res = { ok: true, objects: objects, main: main, info: info, surfaces: surfaces.length, kind: kind || null };
+      res.rejected = rejected.slice(0, 12).map(function (ob) { return { title: ob.title, why: (ob.ghostWhy || []).join('; '), center: back(ob.center) }; });
+      if (kind && !main && objects.length) res.noMatch = { kind: kind, found: objects.slice(0, 4).map(function (ob) { return ob.title; }) };
+      if (fpt) res.focus = { point: [opts.focus[0], opts.focus[1], opts.focus[2]], distance: main ? main.focusDist : null, far: !!(main && main.focusDist > 0.6) };
+      return res;
     } catch (e) {
       return { ok: false, error: 'Автоматический замер не удался: ' + (e && e.message || e), objects: [], info: info, stack: e && e.stack };
     }
   }
 
   return {
-    version: 1, analyze: analyze, toMeasurement: toMeasurement, nearestStandard: nearestStandard, KIND_FAMILY: KIND_FAMILY, level: level,
+    version: 2, analyze: analyze, toMeasurement: toMeasurement, nearestStandard: nearestStandard, KIND_FAMILY: KIND_FAMILY, KIND_ROLES: KIND_ROLES, roleOf: roleOf, level: level,
+    _dedupeCylinders: dedupeCylinders, _consensusPipes: consensusPipes, _implausibleCylinders: implausibleCylinders, _hollowStats: hollowStats, _distToObject: distToObject, _floorIsReal: floorIsReal, _outlineOf: outlineOf, _focusFactor: focusFactor,
     _eig3: eig3, _prepare: prepare, _buildGrid: buildGrid, _neighbors: neighbors, _estimateSpacing: estimateSpacing, _localNormals: localNormals, _clusterDirections: clusterDirections,
     _planesFromDirection: planesFromDirection, _mergePlanes: mergePlanes, _fitPlane: fitPlane, _detectSurfaces: detectSurfaces, _splitPatches: splitPatches, _planeBasis: planeBasis,
     _buildSurfaces: buildSurfaces, _pairInfo: pairInfo, _footBasis: footBasis, _findOpenings: findOpenings, _sigmaAt: sigmaAt, _detectHoles: detectHoles,

@@ -291,6 +291,12 @@ html.lx-operation-busy, html.lx-operation-busy body { cursor: progress; }
 .lx-auto-card > .lx-auto-warn { padding: 6px 10px 8px; border-top: 1px solid var(--line); }
 .lx-auto-acts { display: flex; flex-wrap: wrap; grid-column: 1 / -1; align-items: center; gap: 6px; margin-top: 2px; }
 .lx-auto-saved { display: inline-flex; align-items: center; gap: 4px; color: var(--ok); font-size: var(--fs-xs); font-weight: 600; }
+.lx-auto-pick { width: 100%; justify-content: center; margin-top: 6px; }
+.lx-auto-pick.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.lx-auto-sum.hint { color: var(--txt-2); }
+.lx-auto-card.off { border-style: dashed; background: transparent; }
+.lx-auto-objline { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; padding: 0 10px 8px; color: var(--txt-3); font-size: var(--fs-xs); }
+.lx-auto-grp { padding: 6px 10px 4px; border-top: 1px solid var(--line); background: var(--bg-3); color: var(--txt-3); font-size: var(--fs-xs); font-weight: 600; line-height: 1.4; }
 .lx-auto-more { display: flex; align-items: center; gap: 6px; padding: 6px 4px; border: 0; background: transparent; color: var(--txt-2); font: 600 var(--fs-sm)/1 var(--font); text-align: left; cursor: pointer; }
 .lx-auto-more:hover { color: var(--txt); }
 .lx-win-foot { display: flex; flex: none; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }

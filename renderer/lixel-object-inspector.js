@@ -14,7 +14,7 @@
 (function () {
   'use strict';
   var modal = null, iv = null, ivCanvas = null, launchBtn = null;
-  var state = { mode: 'distance', pick: false, hist: [], n: 0, lastCloud: null, kind: '', live: null, tab: 'manual', auto: { res: null, busy: false, kind: '', saved: {}, more: false, shown: null, note: '' } };
+  var state = { mode: 'distance', pick: false, hist: [], n: 0, lastCloud: null, kind: '', live: null, tab: 'manual', focus: null, pickObj: false, auto: { res: null, busy: false, kind: '', saved: {}, more: false, shown: null, note: '' } };
   var disp = { mode: 'rgb', edl: false, size: 1 };
   var bandEl = null, prevFocus = null;
 
@@ -117,12 +117,15 @@
     var autoB = button('Измерить автоматически', 'wand-sparkles', 'primary lx-auto-btn', 'Найти размеры выделенного объекта по облаку: проём, стена, труба, лоток. Каждый размер идёт с погрешностью и уровнем уверенности');
     autoB.id = 'lxInsAutoBtn'; autoB.onclick = function () { runAuto(); };
     autoSec.appendChild(autoB);
+    var pickB = button('Указать объект', 'crosshair', 'lx-auto-pick', 'Кликните в окне по нужному объекту (по самой трубе, проёму, стене): замер выберет именно его, а не землю или стену вокруг');
+    pickB.id = 'lxInsAutoPick'; pickB.setAttribute('aria-pressed', 'false'); pickB.onclick = function () { pickObject(); };
+    autoSec.appendChild(pickB);
     var autoSt = el('p', 'lx-win-hint', 'Размеры найдутся сами, надёжные сохранятся в проект и сверятся с документами.'); autoSt.id = 'lxInsAutoState'; autoSt.setAttribute('role', 'status'); autoSt.setAttribute('aria-live', 'polite');
     autoSec.appendChild(autoSt);
     autoPane.appendChild(autoSec);
     var autoGrow = el('section', 'lx-win-sec grow');
     var autoOut = el('div', 'lx-auto-out'); autoOut.id = 'lxInsAutoOut'; autoOut.hidden = true; autoGrow.appendChild(autoOut);
-    autoGrow.appendChild(el('p', 'lx-win-hint lx-auto-intro', 'Обведите объект рамкой и нажмите кнопку: проём, дверь, стена, труба, лоток. Надёжные размеры сохраняются в проект и сверяются с документами; сомнительные ждут вашего решения.'));
+    autoGrow.appendChild(el('p', 'lx-win-hint lx-auto-intro', 'Обведите объект рамкой и нажмите кнопку: проём, дверь, стена, труба, лоток. Если в рамку попали земля, стена или соседние объекты, выберите тип объекта или нажмите «Указать объект». Надёжные размеры самого объекта сохраняются в проект и сверяются с документами; сомнительные ждут вашего решения.'));
     autoPane.appendChild(autoGrow);
 
     var read = el('section', 'lx-win-sec grow');
@@ -151,7 +154,7 @@
     if (!(window.Viewer3DGL && window.Viewer3DGL.isSupported && window.Viewer3DGL.isSupported())) { toast('WebGL2 недоступен — инспектор не запущен', { tone: 'warn' }); return null; }
     try { iv = new window.Viewer3DGL(ivCanvas, function () {}); } catch (e) { toast('Не удалось создать 3D-инспектор', { tone: 'err' }); iv = null; return null; }
     try { iv.setTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'); } catch (e) {}
-    iv.onMeasure = function (res) { refreshReadout(res); };
+    iv.onMeasure = function (res) { onViewerMeasure(res); };
     return iv;
   }
 
@@ -323,48 +326,105 @@
     var dc = docCheck(), sv = state.auto.saved[autoKey(ob, d)]; if (!dc || !sv) return null;
     var row = dc.row(sv.idx); return row && row.origin === 'auto' ? sv.idx : null;
   }
-  /** Надёжные размеры главного объекта (высокая и средняя уверенность) сохраняются сами; низкая — только по кнопке. */
+  /** Надёжные размеры главного объекта (высокая и средняя уверенность) сохраняются сами; низкая — только по кнопке.
+   *  Привязки к окружению (высота над «полом» и т.п. — не размер самого объекта) и находки не того типа сами не сохраняются никогда. */
   function autoSaveReliable(ob) {
-    var n = 0;
-    ob.dims.forEach(function (d) { if (d.level !== 'low') { var r = saveAutoDim(ob, d); if (r) n++; } });
+    var n = 0; if (!ob || ob.offType) return 0;
+    ob.dims.forEach(function (d) { if (d.ref || d.level === 'low') return; var r = saveAutoDim(ob, d); if (r) n++; });
     return n;
   }
   function autoSaveAll() {
-    var res = state.auto.res, n = 0, skipped = 0; if (!res || !res.ok) return;
-    res.objects.forEach(function (ob) { ob.dims.forEach(function (d) { if (d.level === 'low') { skipped++; return; } if (saveAutoDim(ob, d)) n++; }); });
-    toast('В проект сохранено размеров: ' + n + (skipped ? ' (низкую уверенность оставил на ваше решение: ' + skipped + ')' : ''), { tone: n ? 'ok' : 'info' });
+    var res = state.auto.res, n = 0, skipped = 0, refs = 0, off = 0; if (!res || !res.ok) return;
+    res.objects.forEach(function (ob) {
+      if (ob.offType) { off++; return; }
+      ob.dims.forEach(function (d) { if (d.ref) { refs++; return; } if (d.level === 'low') { skipped++; return; } if (saveAutoDim(ob, d)) n++; });
+    });
+    var rest = [];
+    if (skipped) rest.push('низкую уверенность оставил на ваше решение: ' + skipped);
+    if (refs) rest.push('привязки к окружению не сохраняю: ' + refs);
+    if (off) rest.push('находки другого типа пропущены: ' + off);
+    toast('В проект сохранено размеров: ' + n + (rest.length ? ' (' + rest.join('; ') + ')' : ''), { tone: n ? 'ok' : 'info' });
     renderAuto();
+  }
+  var ROLE_RU = { pipe: 'трубы', opening: 'проём', wall: 'стена', slab: 'перекрытие', 'room-height': 'помещение', 'room-width': 'помещение', tray: 'лоток', other: 'прочее' };
+  function rolesText(list) { var seen = {}, out = []; (list || []).forEach(function (r) { var t = ROLE_RU[r] || r; if (!seen[t]) { seen[t] = 1; out.push(t); } }); return out.join(', '); }
+  /** Точка, по которой выбирать объект: указанная человеком в окне, иначе точка клика «умного захвата» в основном вьювере. */
+  function autoFocus() {
+    if (state.focus && state.focus.length >= 3) return state.focus;
+    var m = state.lastCloud && state.lastCloud.meta; return m && m.seed && m.seed.length >= 3 ? m.seed : null;
   }
   function runAuto() {
     var a = state.auto, AM = window.AutoMeasure;
     if (!AM || !AM.analyze) { toast('Модуль автозамера не загружен', { tone: 'err' }); return; }
     if (!state.lastCloud || !state.lastCloud.pos || !state.lastCloud.pos.length) { toast('Нет облака для замера', { tone: 'warn' }); return; }
     if (a.busy) return;
+    var focus = autoFocus();
     a.busy = true; a.more = false; autoBusy(true); autoSetState('Ищу плоскости, откосы и окружности в ' + nfmt(state.lastCloud.count || state.lastCloud.pos.length / 3) + ' точках…'); renderAuto();
     setTimeout(function () {
       var res = null;
-      try { res = AM.analyze(state.lastCloud.pos, { kind: state.kind }); } catch (e) { res = { ok: false, error: String(e && e.message || e), objects: [] }; }
-      a.busy = false; a.res = res; a.kind = state.kind; a.shown = null;
-      var saved = 0;
-      if (res && res.ok && res.objects.length) saved = autoSaveReliable(res.objects[0]);
+      try { res = AM.analyze(state.lastCloud.pos, { kind: state.kind, focus: focus }); } catch (e) { res = { ok: false, error: String(e && e.message || e), objects: [] }; }
+      a.busy = false; a.res = res; a.kind = state.kind; a.shown = null; a.focus = focus; a.focusUser = !!state.focus;
+      var main = res && res.ok ? (res.main !== undefined ? res.main : (res.objects[0] || null)) : null, saved = 0;
+      if (main) saved = autoSaveReliable(main);
       autoBusy(false);
       if (!res || !res.ok) autoSetState(res && res.error || 'Автозамер не удался.');
       else if (!res.objects.length) autoSetState('Размеров не нашлось: обведите объект так, чтобы были видны его грани или окружность.');
-      else autoSetState((saved ? 'В проект сохранено: ' + saved + '. ' : 'Ничего не сохранено автоматически: уверенность низкая. ') + 'Проверьте значения ниже.');
+      else if (!main) autoSetState('Объект типа \u00ab' + (state.kind || '') + '\u00bb в рамке не найден, ничего не сохранено. Обведите объект плотнее, смените тип или укажите объект точкой.');
+      else autoSetState((saved ? 'В проект сохранено: ' + saved + ' (размеры самого объекта). ' : 'Ничего не сохранено автоматически: уверенность низкая. ') + 'Проверьте значения ниже.');
       renderAuto();
+      if (main) showOutline(main);
       if (saved) toast('Автозамер: в проект сохранено размеров: ' + saved, { tone: 'ok' });
     }, 40);
   }
+  /** «Указать объект»: следующий клик по облаку в окне — точка, по которой автозамер выбирает объект среди найденного. */
+  function pickObject() {
+    if (!iv) return;
+    state.pickObj = !state.pickObj;
+    var b = modal && modal.querySelector('#lxInsAutoPick'); setOn(b, state.pickObj);
+    if (state.pickObj) { try { iv.setMeasureMode('point'); iv.setMeasure(true); } catch (e) {} autoSetState('Кликните по нужному объекту (по самой трубе, проёму, стене) \u2014 замер повторится именно по нему.'); }
+    else { setMode(state.mode); autoSetState('Выбор точки отменён.'); }
+  }
+  function onViewerMeasure(res) {
+    if (state.pickObj && res && res.mode === 'point' && res.point) {
+      var pt = [res.point[0], res.point[1], res.point[2]];
+      setTimeout(function () {
+        state.pickObj = false; state.focus = pt; setOn(modal && modal.querySelector('#lxInsAutoPick'), false);
+        setMode(state.mode); runAuto();
+      }, 0);
+      return;
+    }
+    refreshReadout(res);
+  }
   function autoClear() {
     state.auto = { res: null, busy: false, kind: state.kind, saved: {}, more: false, shown: null, note: '' };
+    state.focus = null; state.pickObj = false; setOn(modal && modal.querySelector('#lxInsAutoPick'), false);
     autoBusy(false); autoSetState('Размеры найдутся сами, надёжные сохранятся в проект и сверятся с документами.'); renderAuto();
   }
-  /** Показать размер на облаке: отрезок между точками измерения, точки и подпись. */
+  /** Контур найденного объекта (ось/кольца трубы, рамка проёма, куски плоскостей) — чтобы видеть, ЧТО именно измерено. */
+  function outlineObj(ob) {
+    var o = ob && ob.outline; if (!o || o.length < 2) return null;
+    var n = o.length - (o.length % 2), pos = new Float32Array(n * 3);
+    for (var i = 0; i < n; i++) { pos[i * 3] = o[i][0]; pos[i * 3 + 1] = o[i][1]; pos[i * 3 + 2] = o[i][2]; }
+    return { line: true, pos: pos, color: [0.35, 0.78, 1] };
+  }
+  function focusMarker() {
+    var f = state.focus; if (!f || f.length < 3) return null;
+    return { points: true, pos: new Float32Array([f[0], f[1], f[2]]), col: null, color: [1, 0.85, 0.2], pointSize: 13, status: 'none', _isSel: true, _spacing: 0, _ptMax: 22 };
+  }
+  function showOutline(ob) {
+    if (!iv || !ob) return;
+    var ov = [], ol = outlineObj(ob), fm = focusMarker();
+    if (ol) ov.push(ol); if (fm) ov.push(fm);
+    try { iv._setOverlay(ov); iv._measLabels = []; iv._renderMeasLabels(); iv.render(); state.auto.shown = 'outline:' + ob.id; } catch (e) {}
+  }
+  /** Показать размер на облаке: отрезок между точками измерения, точки и подпись; контур объекта остаётся рядом. */
   function showAuto(ob, d) {
     if (!iv || !d.a || !d.b) return;
     var col = d.level === 'high' ? [0.2, 0.85, 0.45] : d.level === 'medium' ? [1, 0.75, 0.2] : [1, 0.35, 0.35];
     try {
-      iv._setOverlay([iv._mkLine(d.a, d.b, col), { points: true, pos: new Float32Array([d.a[0], d.a[1], d.a[2], d.b[0], d.b[1], d.b[2]]), col: null, color: col, pointSize: 15, status: 'none', _isSel: true, _spacing: 0, _ptMax: 22 }]);
+      var ov = [iv._mkLine(d.a, d.b, col), { points: true, pos: new Float32Array([d.a[0], d.a[1], d.a[2], d.b[0], d.b[1], d.b[2]]), col: null, color: col, pointSize: 15, status: 'none', _isSel: true, _spacing: 0, _ptMax: 22 }];
+      var ol = outlineObj(ob); if (ol) ov.push(ol);
+      iv._setOverlay(ov);
       iv._measLabels = [{ p: [(d.a[0] + d.b[0]) / 2, (d.a[1] + d.b[1]) / 2, (d.a[2] + d.b[2]) / 2], t: autoVal(d) + (autoSig(d) ? ' ' + autoSig(d) : '') }];
       iv._renderMeasLabels(); iv.render();
       state.auto.shown = autoKey(ob, d);
@@ -397,11 +457,23 @@
     return row;
   }
   function autoCard(ob, main) {
-    var card = el('div', 'lx-auto-card' + (main ? ' main' : ''));
+    var card = el('div', 'lx-auto-card' + (main ? ' main' : '') + (ob.offType ? ' off' : ''));
     var head = el('div', 'lx-auto-head'); var t = el('span', ''); t.textContent = ob.title; head.appendChild(t);
-    var sm = el('small', ''); sm.textContent = main ? 'главный объект' : ''; if (main) head.appendChild(sm);
+    var tag = main ? 'главный объект' : (ob.offType ? 'другой тип' : '');
+    if (tag) { var sm = el('small', ''); sm.textContent = tag; head.appendChild(sm); }
     card.appendChild(head);
-    ob.dims.forEach(function (d) { card.appendChild(autoRow(ob, d)); });
+    if (ob.outline && ob.outline.length > 1) {
+      var line = el('div', 'lx-auto-objline');
+      var tx = el('span', 'lx-auto-objtxt'); tx.textContent = 'Измерено по этому объекту' + (ob.pointsUsed ? ' \u00b7 ' + nfmt(ob.pointsUsed) + ' т.' : ''); line.appendChild(tx);
+      var ob1 = button('Показать объект', 'eye', '', 'Подсветить в окне контур этого объекта: видно, что именно измерено'); ob1.dataset.autoOutline = String(ob.id); ob1.onclick = function () { showOutline(ob); }; line.appendChild(ob1);
+      card.appendChild(line);
+    }
+    var own = ob.dims.filter(function (d) { return !d.ref; }), refs = ob.dims.filter(function (d) { return d.ref; });
+    own.forEach(function (d) { card.appendChild(autoRow(ob, d)); });
+    if (refs.length) {
+      var g = el('div', 'lx-auto-grp'); g.textContent = 'Привязка к окружению \u2014 не размер объекта, сама в проект не сохраняется'; card.appendChild(g);
+      refs.forEach(function (d) { card.appendChild(autoRow(ob, d)); });
+    }
     (ob.notes || []).forEach(function (n) { var p = el('div', 'lx-auto-warn'); p.textContent = n; card.appendChild(p); });
     return card;
   }
@@ -414,21 +486,39 @@
     out.hidden = false;
     if (a.busy) { out.appendChild(el('div', 'lx-auto-sum', '<span class="vf-spin" aria-hidden="true"></span> Идёт анализ облака…')); return; }
     if (!res.ok || !res.objects.length) { var e = el('div', 'lx-auto-sum err'); e.textContent = res.ok ? 'Размеров не найдено. Обведите объект так, чтобы были видны его грани (проём \u2014 вместе с откосами, трубу \u2014 с большей частью окружности).' : (res.error || 'Автозамер не удался.'); out.appendChild(e); return; }
+    var main = res.main !== undefined ? res.main : res.objects[0];
     var sum = el('div', 'lx-auto-sum');
-    sum.textContent = 'Найдено объектов: ' + res.objects.length + ' · точек: ' + nfmt(res.info.used || res.info.points || 0) + ' · ' + (res.info.ms || 0) + ' мс';
+    var ghosts = res.info && res.info.ghosts ? res.info.ghosts : 0;
+    sum.textContent = 'Найдено объектов: ' + res.objects.length + ' \u00b7 точек: ' + nfmt(res.info.used || res.info.points || 0) + ' \u00b7 ' + (res.info.ms || 0) + ' мс' + (ghosts ? ' \u00b7 отброшено ложных находок: ' + ghosts : '');
+    if (ghosts && res.rejected && res.rejected.length) sum.setAttribute('data-tip', 'Отброшено как «не труба»: ' + res.rejected.slice(0, 5).map(function (r) { return r.title + ' (' + r.why + ')'; }).join('; ') + '. Причина: подгонка по огибающей пучка, по земле или по стене.');
     out.appendChild(sum);
     if (a.kind !== state.kind) { var st = el('div', 'lx-auto-sum warn'); st.textContent = 'Тип объекта изменён после замера: нажмите «Измерить заново», чтобы пересчитать приоритет.'; out.appendChild(st); }
-    out.appendChild(autoCard(res.objects[0], true));
-    var rest = res.objects.slice(1);
+    if (res.noMatch) {
+      var nm = el('div', 'lx-auto-sum err'); nm.id = 'lxInsAutoNoMatch';
+      nm.textContent = 'Объект типа \u00ab' + res.noMatch.kind + '\u00bb в рамке не найден. Нашлось другое: ' + res.noMatch.found.join('; ') + '. Это не размеры вашего объекта, в проект они сами не сохраняются. Обведите объект плотнее, смените тип или нажмите «Указать объект».';
+      out.appendChild(nm);
+    } else if (main) {
+      var roles = res.info && res.info.roles ? res.info.roles : [];
+      if (!res.kind && roles.length > 1) {
+        var hn = el('div', 'lx-auto-sum hint'); hn.textContent = 'В рамке разные объекты (' + rolesText(roles) + '). Главным выбран \u00ab' + main.title + '\u00bb \u2014 самый уверенный. Нужен другой: выберите тип объекта сверху или нажмите «Указать объект».'; out.appendChild(hn);
+      }
+      if (res.focus && res.focus.far) {
+        var fn0 = el('div', 'lx-auto-sum warn'); fn0.textContent = 'Найденный объект в ' + Math.round(100 * res.focus.distance) + ' см от указанной точки \u2014 возможно, это не тот. Нажмите «Указать объект» и кликните по самой трубе, проёму или стене.'; out.appendChild(fn0);
+      } else if (res.focus && a.focusUser) {
+        var fn1 = el('div', 'lx-auto-sum hint'); fn1.textContent = 'Объект выбран по вашей точке' + (res.focus.distance != null ? ' (в ' + Math.round(100 * res.focus.distance) + ' см от неё)' : '') + '.'; out.appendChild(fn1);
+      }
+      out.appendChild(autoCard(main, true));
+    }
+    var rest = res.objects.filter(function (ob) { return ob !== main; });
     if (rest.length) {
-      var more = el('button', 'lx-auto-more', ico(a.more ? 'chevron-down' : 'chevron-right', 14) + '<span class="lbl">Ещё найдено (' + rest.length + ')</span>');
+      var more = el('button', 'lx-auto-more', ico(a.more ? 'chevron-down' : 'chevron-right', 14) + '<span class="lbl">' + (res.noMatch ? 'Другое в рамке' : 'Ещё найдено') + ' (' + rest.length + ')</span>');
       more.type = 'button'; more.id = 'lxInsAutoMore'; more.setAttribute('aria-expanded', a.more ? 'true' : 'false');
       more.onclick = function () { a.more = !a.more; renderAuto(); };
       out.appendChild(more);
       if (a.more) rest.forEach(function (ob) { out.appendChild(autoCard(ob, false)); });
     }
     var fn = el('div', 'lx-auto-sum'); fn.textContent = 'Погрешность \u00b1 считается по разбросу точек облака; точность самого скана (обычно \u00b12\u20135 мм) в неё не входит. «Низкая» уверенность: проверьте размер вручную.'; out.appendChild(fn);
-    var all = button('Сохранить всё найденное', 'save-all', '', 'Сохранить в проект все размеры, кроме помеченных низкой уверенностью'); all.id = 'lxInsAutoSaveAll'; all.onclick = autoSaveAll; out.appendChild(all);
+    var all = button('Сохранить всё найденное', 'save-all', '', 'Сохранить в проект размеры объектов выбранного типа: без привязок к окружению, без находок другого типа и без низкой уверенности'); all.id = 'lxInsAutoSaveAll'; all.onclick = autoSaveAll; out.appendChild(all);
     if (window.__lxKit) window.__lxKit.hydrate(out);
   }
 
