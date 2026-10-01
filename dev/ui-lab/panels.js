@@ -224,6 +224,16 @@ const scenarios = {
     await page.evaluate(() => { const m = document.getElementById('lxInsAutoMore'); if (m) m.click(); }); await page.waitForTimeout(300);
     await page.evaluate(() => { const g = document.querySelector('#lxInsPane-auto .grow'); if (g) g.scrollTop = 140; }); await page.waitForTimeout(300);
   },
+  async autopick(page) {   // «Указать объект»: режим точки в окне инспектора, клик по облаку привязывает замер к объекту под курсором
+    await scenarios.autodims(page);
+    await page.click('#lxInsAutoPick'); await page.waitForTimeout(250);
+    const on = await page.evaluate(() => document.getElementById('lxInsAutoPick').getAttribute('aria-pressed'));
+    if (on !== 'true') throw new Error('кнопка «Указать объект» не включилась');
+    const b = await page.locator('#lxInsCanvas').boundingBox();
+    await page.mouse.click(b.x + b.width * 0.5, b.y + b.height * 0.8); await page.waitForTimeout(1800);
+    const st = await page.evaluate(() => ({ pressed: document.getElementById('lxInsAutoPick').getAttribute('aria-pressed'), text: (document.getElementById('lxInsAutoOut') || {}).innerText || '' }));
+    console.log('     после клика: pressed=' + st.pressed + ' | ' + (/по вашей точке|указанной точки/.test(st.text) ? 'привязка к точке показана в сводке' : 'нет пометки о точке'));
+  },
   async objesc(page) {   // Esc должен закрывать окно «Инспектор объекта» (в подсказке кнопки написано «Закрыть · Esc»)
     await scenarios.objwin(page);
     await page.keyboard.press('Escape'); await page.waitForTimeout(500);
