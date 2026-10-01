@@ -1,17 +1,20 @@
 /*
- * lixel-object-inspector.js — v1158
+ * lixel-object-inspector.js — v1160
  * «Инспектор объекта» в духе CHCNAV CoProcess.
  * Обводите объект рамкой в облаке точек — открывается отдельное окно только с этим объектом
  * (собственный 3D-вьюер), где удобно мерить стены, трубы и т. д. со всех сторон.
  * Аддитивно: свой экземпляр Viewer3DGL, основной вьюер и остальной интерфейс не трогает.
  * v1158: выделение объекта РАМКОЙ (region-select) вместо клика; режимы отображения (RGB/Высота/EDL/размер);
  *        меньший таргет даунсэмпла для больших объектов (не крашится).
+ * v1160: кнопка «Измерить автоматически» (#lxInsAutoBtn): renderer/auto-measure.js сам находит размеры выделенного объекта
+ *        (проём, стена, труба, лоток…), показывает ±σ, способ и уровень уверенности; надёжные размеры сохраняются в проект
+ *        и сверяются с документами, сомнительные ждут нажатия «Сохранить». Тип «Лоток» добавлен.
  * Кнопку запуска (#lxObjInspectBtn) создаёт этот модуль, размещает и оформляет лента (ui/ribbon.js).
  */
 (function () {
   'use strict';
   var modal = null, iv = null, ivCanvas = null, launchBtn = null;
-  var state = { mode: 'distance', pick: false, hist: [], n: 0, lastCloud: null, kind: '', live: null };
+  var state = { mode: 'distance', pick: false, hist: [], n: 0, lastCloud: null, kind: '', live: null, tab: 'manual', auto: { res: null, busy: false, kind: '', saved: {}, more: false, shown: null, note: '' } };
   var disp = { mode: 'rgb', edl: false, size: 1 };
   var bandEl = null, prevFocus = null;
 
@@ -36,7 +39,7 @@
   var MNAME = { distance: 'Расст.', point: 'Точка', polyline: 'Полилиния', angle: 'Угол', area: 'Площадь', plane: 'Плоскость', deviation: 'Зазор', corner: 'Ребро/угол' };
 
   /* Тип объекта: по нему приложение выбирает, какое требование искать в документах (стена, труба, проём…). */
-  var KINDS = [['', 'Авто'], ['стена', 'Стена'], ['колонна', 'Колонна'], ['балка', 'Балка'], ['перекрытие', 'Перекрытие'], ['пол', 'Пол'], ['потолок', 'Потолок'], ['проём', 'Проём'], ['дверь', 'Дверь'], ['окно', 'Окно'], ['труба', 'Труба'], ['воздуховод', 'Воздуховод'], ['оборудование', 'Оборудование']];
+  var KINDS = [['', 'Авто'], ['стена', 'Стена'], ['колонна', 'Колонна'], ['балка', 'Балка'], ['перекрытие', 'Перекрытие'], ['пол', 'Пол'], ['потолок', 'Потолок'], ['проём', 'Проём'], ['дверь', 'Дверь'], ['окно', 'Окно'], ['труба', 'Труба'], ['воздуховод', 'Воздуховод'], ['лоток', 'Лоток'], ['оборудование', 'Оборудование']];
   function docCheck() { return window.__lxDocCheck || null; }
 
   function buildModal() {
@@ -76,6 +79,14 @@
     body.appendChild(stage);
 
     var side = el('aside', 'lx-win-side');
+    var tabs = el('div', 'lx-win-tabs'); tabs.id = 'lxInsTabs'; tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Способ измерения');
+    [['manual', 'Вручную', 'ruler'], ['auto', 'Автоматически', 'wand-sparkles']].forEach(function (t) {
+      var b = el('button', 'lx-win-tab', ico(t[2], 15) + '<span class="lbl">' + t[1] + '</span>'); b.type = 'button'; b.id = 'lxInsTab-' + t[0]; b.dataset.tab = t[0];
+      b.setAttribute('role', 'tab'); b.setAttribute('aria-controls', 'lxInsPane-' + t[0]); b.onclick = function () { setTab(t[0]); }; tabs.appendChild(b);
+    });
+    side.appendChild(tabs);
+    var manualPane = el('div', 'lx-win-pane'); manualPane.id = 'lxInsPane-manual'; manualPane.dataset.pane = 'manual'; manualPane.setAttribute('role', 'tabpanel'); manualPane.setAttribute('aria-labelledby', 'lxInsTab-manual');
+    var autoPane = el('div', 'lx-win-pane'); autoPane.id = 'lxInsPane-auto'; autoPane.dataset.pane = 'auto'; autoPane.setAttribute('role', 'tabpanel'); autoPane.setAttribute('aria-labelledby', 'lxInsTab-auto');
     var tools = el('section', 'lx-win-sec');
     tools.appendChild(el('h4', 'lx-win-h', 'Инструменты измерения'));
     var mgrid = el('div', 'lx-win-modes'); mgrid.id = 'lxInsModes';
@@ -88,7 +99,7 @@
     var clrB = button('Очистить', 'eraser', 'danger'); clrB.onclick = function () { state.live = null; if (iv) iv.setMeasureMode(state.mode); refreshReadout(null); };
     actions.appendChild(finB); actions.appendChild(clrB); tools.appendChild(actions);
     tools.appendChild(el('p', 'lx-win-hint', 'Клик по облаку добавляет точку. Колёсико — зум, ЛКМ — вращение, Shift+ЛКМ — панорама.'));
-    side.appendChild(tools);
+    manualPane.appendChild(tools);
 
     var kindSec = el('section', 'lx-win-sec');
     kindSec.appendChild(el('h4', 'lx-win-h', 'Что вы измеряете'));
@@ -98,8 +109,21 @@
       b.onclick = function () { setKind(k[0]); }; kinds.appendChild(b);
     });
     kindSec.appendChild(kinds);
-    kindSec.appendChild(el('p', 'lx-win-hint', 'Тип помогает найти нужное требование в документации помещения. Каждое измерение попадает в список проекта и сверяется автоматически.'));
+    kindSec.appendChild(el('p', 'lx-win-hint', 'Тип помогает найти требование в документации; измерения сверяются сами.'));
     side.appendChild(kindSec);
+
+    var autoSec = el('section', 'lx-win-sec'); autoSec.id = 'lxInsAuto';
+    autoSec.appendChild(el('h4', 'lx-win-h', 'Автоматический замер'));
+    var autoB = button('Измерить автоматически', 'wand-sparkles', 'primary lx-auto-btn', 'Найти размеры выделенного объекта по облаку: проём, стена, труба, лоток. Каждый размер идёт с погрешностью и уровнем уверенности');
+    autoB.id = 'lxInsAutoBtn'; autoB.onclick = function () { runAuto(); };
+    autoSec.appendChild(autoB);
+    var autoSt = el('p', 'lx-win-hint', 'Размеры найдутся сами, надёжные сохранятся в проект и сверятся с документами.'); autoSt.id = 'lxInsAutoState'; autoSt.setAttribute('role', 'status'); autoSt.setAttribute('aria-live', 'polite');
+    autoSec.appendChild(autoSt);
+    autoPane.appendChild(autoSec);
+    var autoGrow = el('section', 'lx-win-sec grow');
+    var autoOut = el('div', 'lx-auto-out'); autoOut.id = 'lxInsAutoOut'; autoOut.hidden = true; autoGrow.appendChild(autoOut);
+    autoGrow.appendChild(el('p', 'lx-win-hint lx-auto-intro', 'Обведите объект рамкой и нажмите кнопку: проём, дверь, стена, труба, лоток. Надёжные размеры сохраняются в проект и сверяются с документами; сомнительные ждут вашего решения.'));
+    autoPane.appendChild(autoGrow);
 
     var read = el('section', 'lx-win-sec grow');
     read.appendChild(el('h4', 'lx-win-h', 'Результат'));
@@ -109,7 +133,8 @@
     var openV = button('Открыть сверку', 'clipboard-check', '', 'Таблица измерений и требований из документации'); openV.id = 'lxInsOpenVerify'; openV.style.marginTop = '10px';
     openV.onclick = function () { if (window.__lxVerify) window.__lxVerify.open({}); };
     read.appendChild(openV);
-    side.appendChild(read);
+    manualPane.appendChild(read);
+    side.appendChild(manualPane); side.appendChild(autoPane);
     body.appendChild(side);
 
     win.appendChild(head); win.appendChild(body);
@@ -117,6 +142,7 @@
     modal.addEventListener('mousedown', function (e) { if (e.target === modal) close(); });
     document.body.appendChild(modal);
     if (window.__lxKit) window.__lxKit.hydrate(modal);
+    setTab(state.tab);
     return modal;
   }
 
@@ -136,10 +162,21 @@
     if (g) Array.prototype.forEach.call(g.children, function (c) { setOn(c, c.dataset.mode === m); });
   }
 
+  function setTab(t) {
+    state.tab = t === 'auto' ? 'auto' : 'manual';
+    if (!modal) return;
+    ['manual', 'auto'].forEach(function (n) {
+      var on = n === state.tab, b = modal.querySelector('.lx-win-tab[data-tab="' + n + '"]'), p = modal.querySelector('.lx-win-pane[data-pane="' + n + '"]');
+      if (b) { b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); b.tabIndex = on ? 0 : -1; }
+      if (p) p.hidden = !on;
+    });
+  }
+
   function setKind(k) {
     state.kind = k || '';
     var g = modal && modal.querySelector('#lxInsKinds');
     if (g) Array.prototype.forEach.call(g.children, function (c) { var on = c.dataset.kind === state.kind; setOn(c, on); c.classList.toggle('sel', on); });
+    if (state.auto.res && !state.auto.busy) renderAuto();
     var dc = docCheck();
     if (dc && state.hist.length && state.hist[0].idx != null) {
       // Смена типа относится к последнему измерению: оно сразу пересверяется.
@@ -235,7 +272,165 @@
     });
     if (window.__lxKit) window.__lxKit.hydrate(h);
   }
-  window.addEventListener('lx-measurements-changed', function () { if (modal && !modal.hidden) renderHist(); });
+  window.addEventListener('lx-measurements-changed', function () { if (modal && !modal.hidden) { renderHist(); if (state.auto.res && !state.auto.busy) renderAuto(); } });
+
+
+  /* ---------- Автоматический замер ---------- */
+  var LVL_RU = { high: 'высокая', medium: 'средняя', low: 'низкая' };
+  function Me() { return window.Measure || null; }
+  function autoVal(d) { var m = Me(); return m && m.autoValue ? m.autoValue(d) : String(d.value); }
+  function autoSig(d) { var m = Me(); return m && m.autoSigma ? m.autoSigma(d).trim() : ''; }
+  /** Устойчивый ключ размера: при повторном замере того же облака запись в проекте обновляется, а не дублируется. */
+  function autoKey(ob, d) { var c = ob.center || [0, 0, 0]; return [ob.title, d.key, Math.round(c[0] * 10), Math.round(c[1] * 10), Math.round(c[2] * 10)].join('|'); }
+  /** Тип объекта для сверки: выбранный человеком — только если подходит найденному объекту, иначе по самому объекту. */
+  function autoType(ob) {
+    var AM = window.AutoMeasure, fam = AM && AM.KIND_FAMILY ? AM.KIND_FAMILY[state.kind] : null;
+    var keys = ob.dims.map(function (d) { return d.key; }).join(' ');
+    if (ob.type === 'pair' && /room-/.test(keys)) return 'помещение';
+    if (state.kind && fam && (fam === ob.family || (fam === 'box' && ob.family === 'panel'))) return state.kind;
+    if (ob.type === 'opening') return /Дверн/.test(ob.title) ? 'дверь' : 'проём';
+    if (ob.type === 'cylinder' || ob.type === 'pipes') return 'труба';
+    if (/inner-width/.test(keys)) return 'лоток';
+    if (/slab-thickness/.test(keys)) return 'перекрытие';
+    if (/wall-thickness/.test(keys)) return 'стена';
+    return state.kind || null;
+  }
+  function autoSetState(text) { var p = modal && modal.querySelector('#lxInsAutoState'); if (p) p.textContent = text || ''; }
+  function autoBusy(on) {
+    var b = modal && modal.querySelector('#lxInsAutoBtn'); if (!b) return;
+    b.classList.toggle('busy', !!on); b.disabled = !!on; b.setAttribute('aria-busy', on ? 'true' : 'false');
+    var l = b.querySelector('.lbl'); if (l) l.textContent = on ? 'Анализ облака…' : (state.auto.res ? 'Измерить заново' : 'Измерить автоматически');
+  }
+  /** Сохранить один размер в проект. Повтор обновляет ту же запись. Возвращает { idx, fresh } или null. */
+  function saveAutoDim(ob, d) {
+    var dc = docCheck(), AM = window.AutoMeasure; if (!dc || !AM) return null;
+    var res = AM.toMeasurement(d, { object: ob.title });
+    var label = (ob.title + ': ' + d.label).slice(0, 120), type = autoType(ob), key = autoKey(ob, d), sv = state.auto.saved[key];
+    try {
+      var row = sv ? dc.row(sv.idx) : null;
+      if (row && row.origin === 'auto' && row.label === label) {
+        if (!dc.update(sv.idx, res)) return null;
+        if (sv.type !== type) { dc.setContext(sv.idx, { objectType: type || '' }); sv.type = type; }
+        return { idx: sv.idx, fresh: false };
+      }
+      var idx = dc.add(res, { objectType: type, objectName: ob.title + (state.title ? ' · ' + state.title : ''), origin: 'auto', label: label });
+      if (idx < 0) return null;
+      state.auto.saved[key] = { idx: idx, type: type };
+      return { idx: idx, fresh: true };
+    } catch (e) { return null; }
+  }
+  function autoSavedIdx(ob, d) {
+    var dc = docCheck(), sv = state.auto.saved[autoKey(ob, d)]; if (!dc || !sv) return null;
+    var row = dc.row(sv.idx); return row && row.origin === 'auto' ? sv.idx : null;
+  }
+  /** Надёжные размеры главного объекта (высокая и средняя уверенность) сохраняются сами; низкая — только по кнопке. */
+  function autoSaveReliable(ob) {
+    var n = 0;
+    ob.dims.forEach(function (d) { if (d.level !== 'low') { var r = saveAutoDim(ob, d); if (r) n++; } });
+    return n;
+  }
+  function autoSaveAll() {
+    var res = state.auto.res, n = 0, skipped = 0; if (!res || !res.ok) return;
+    res.objects.forEach(function (ob) { ob.dims.forEach(function (d) { if (d.level === 'low') { skipped++; return; } if (saveAutoDim(ob, d)) n++; }); });
+    toast('В проект сохранено размеров: ' + n + (skipped ? ' (низкую уверенность оставил на ваше решение: ' + skipped + ')' : ''), { tone: n ? 'ok' : 'info' });
+    renderAuto();
+  }
+  function runAuto() {
+    var a = state.auto, AM = window.AutoMeasure;
+    if (!AM || !AM.analyze) { toast('Модуль автозамера не загружен', { tone: 'err' }); return; }
+    if (!state.lastCloud || !state.lastCloud.pos || !state.lastCloud.pos.length) { toast('Нет облака для замера', { tone: 'warn' }); return; }
+    if (a.busy) return;
+    a.busy = true; a.more = false; autoBusy(true); autoSetState('Ищу плоскости, откосы и окружности в ' + nfmt(state.lastCloud.count || state.lastCloud.pos.length / 3) + ' точках…'); renderAuto();
+    setTimeout(function () {
+      var res = null;
+      try { res = AM.analyze(state.lastCloud.pos, { kind: state.kind }); } catch (e) { res = { ok: false, error: String(e && e.message || e), objects: [] }; }
+      a.busy = false; a.res = res; a.kind = state.kind; a.shown = null;
+      var saved = 0;
+      if (res && res.ok && res.objects.length) saved = autoSaveReliable(res.objects[0]);
+      autoBusy(false);
+      if (!res || !res.ok) autoSetState(res && res.error || 'Автозамер не удался.');
+      else if (!res.objects.length) autoSetState('Размеров не нашлось: обведите объект так, чтобы были видны его грани или окружность.');
+      else autoSetState((saved ? 'В проект сохранено: ' + saved + '. ' : 'Ничего не сохранено автоматически: уверенность низкая. ') + 'Проверьте значения ниже.');
+      renderAuto();
+      if (saved) toast('Автозамер: в проект сохранено размеров: ' + saved, { tone: 'ok' });
+    }, 40);
+  }
+  function autoClear() {
+    state.auto = { res: null, busy: false, kind: state.kind, saved: {}, more: false, shown: null, note: '' };
+    autoBusy(false); autoSetState('Размеры найдутся сами, надёжные сохранятся в проект и сверятся с документами.'); renderAuto();
+  }
+  /** Показать размер на облаке: отрезок между точками измерения, точки и подпись. */
+  function showAuto(ob, d) {
+    if (!iv || !d.a || !d.b) return;
+    var col = d.level === 'high' ? [0.2, 0.85, 0.45] : d.level === 'medium' ? [1, 0.75, 0.2] : [1, 0.35, 0.35];
+    try {
+      iv._setOverlay([iv._mkLine(d.a, d.b, col), { points: true, pos: new Float32Array([d.a[0], d.a[1], d.a[2], d.b[0], d.b[1], d.b[2]]), col: null, color: col, pointSize: 15, status: 'none', _isSel: true, _spacing: 0, _ptMax: 22 }]);
+      iv._measLabels = [{ p: [(d.a[0] + d.b[0]) / 2, (d.a[1] + d.b[1]) / 2, (d.a[2] + d.b[2]) / 2], t: autoVal(d) + (autoSig(d) ? ' ' + autoSig(d) : '') }];
+      iv._renderMeasLabels(); iv.render();
+      state.auto.shown = autoKey(ob, d);
+    } catch (e) {}
+  }
+  function dimTip(ob, d) {
+    var parts = ['Способ: ' + (d.how || '—') + '.'];
+    parts.push('Погрешность \u00b1 считается по разбросу точек облака; точность самого скана (обычно \u00b12\u20135 мм) в неё не входит.');
+    if (d.range && d.range.length === 2) parts.push('Значение по длине меняется от ' + autoVal({ dimension: d.dimension, value: d.range[0] }) + ' до ' + autoVal({ dimension: d.dimension, value: d.range[1] }) + '.');
+    (d.notes || []).forEach(function (n) { parts.push(n); });
+    return parts.join(' ');
+  }
+  function autoRow(ob, d) {
+    var row = el('div', 'lx-auto-row ' + d.level);
+    var lbl = el('div', 'lx-auto-lbl'); lbl.textContent = d.label; row.appendChild(lbl);
+    var val = el('div', 'lx-auto-val'); val.textContent = autoVal(d); row.appendChild(val);
+    var meta = el('div', 'lx-auto-meta');
+    var sg = autoSig(d); if (sg) { var s1 = el('span', 'lx-auto-sig'); s1.textContent = sg; meta.appendChild(s1); }
+    var how = el('span', 'lx-auto-how'); how.textContent = d.how || ''; meta.appendChild(how);
+    var lv = el('span', 'lx-lvl ' + d.level); lv.textContent = 'уверенность: ' + (LVL_RU[d.level] || d.level); lv.setAttribute('data-tip', 'Уровень уверенности: ' + (LVL_RU[d.level] || d.level) + '. Высокая — размер подтверждён несколькими гранями с малым разбросом; низкая — проверьте вручную.'); meta.appendChild(lv);
+    row.appendChild(meta);
+    if (d.level === 'low' && d.notes && d.notes.length) { var nt = el('div', 'lx-auto-warn'); nt.textContent = d.notes[0].split(/\.\s/)[0].replace(/\.$/, '') + '. Подробности \u2014 в подсказке строки.'; row.appendChild(nt); }
+    var acts = el('div', 'lx-auto-acts');
+    var showB = button('Показать', 'eye', '', 'Показать этот размер на облаке: отрезок, точки и подпись'); showB.dataset.autoShow = d.key; showB.onclick = function () { showAuto(ob, d); }; acts.appendChild(showB);
+    var idx = autoSavedIdx(ob, d);
+    if (idx == null) { var sv = button('Сохранить', 'save', '', 'Сохранить размер в проект и сверить с документами'); sv.dataset.autoSave = d.key; sv.onclick = function () { var r = saveAutoDim(ob, d); if (r) { toast('Размер сохранён в проект', { tone: 'ok' }); renderAuto(); } else toast('Не удалось сохранить размер', { tone: 'err' }); }; acts.appendChild(sv); }
+    else { var ok = el('span', 'lx-auto-saved', ico('check', 14) + '<span class="lbl">в проекте</span>'); acts.appendChild(ok); var chip = statusChip(idx); if (chip) acts.appendChild(chip); }
+    row.appendChild(acts);
+    row.setAttribute('data-tip', dimTip(ob, d));
+    return row;
+  }
+  function autoCard(ob, main) {
+    var card = el('div', 'lx-auto-card' + (main ? ' main' : ''));
+    var head = el('div', 'lx-auto-head'); var t = el('span', ''); t.textContent = ob.title; head.appendChild(t);
+    var sm = el('small', ''); sm.textContent = main ? 'главный объект' : ''; if (main) head.appendChild(sm);
+    card.appendChild(head);
+    ob.dims.forEach(function (d) { card.appendChild(autoRow(ob, d)); });
+    (ob.notes || []).forEach(function (n) { var p = el('div', 'lx-auto-warn'); p.textContent = n; card.appendChild(p); });
+    return card;
+  }
+  function renderAuto() {
+    var out = modal && modal.querySelector('#lxInsAutoOut'); if (!out) return;
+    var a = state.auto, res = a.res;
+    var intro = modal.querySelector('.lx-auto-intro'); if (intro) intro.hidden = !!(res || a.busy);
+    out.innerHTML = '';
+    if (!res && !a.busy) { out.hidden = true; return; }
+    out.hidden = false;
+    if (a.busy) { out.appendChild(el('div', 'lx-auto-sum', '<span class="vf-spin" aria-hidden="true"></span> Идёт анализ облака…')); return; }
+    if (!res.ok || !res.objects.length) { var e = el('div', 'lx-auto-sum err'); e.textContent = res.ok ? 'Размеров не найдено. Обведите объект так, чтобы были видны его грани (проём \u2014 вместе с откосами, трубу \u2014 с большей частью окружности).' : (res.error || 'Автозамер не удался.'); out.appendChild(e); return; }
+    var sum = el('div', 'lx-auto-sum');
+    sum.textContent = 'Найдено объектов: ' + res.objects.length + ' · точек: ' + nfmt(res.info.used || res.info.points || 0) + ' · ' + (res.info.ms || 0) + ' мс';
+    out.appendChild(sum);
+    if (a.kind !== state.kind) { var st = el('div', 'lx-auto-sum warn'); st.textContent = 'Тип объекта изменён после замера: нажмите «Измерить заново», чтобы пересчитать приоритет.'; out.appendChild(st); }
+    out.appendChild(autoCard(res.objects[0], true));
+    var rest = res.objects.slice(1);
+    if (rest.length) {
+      var more = el('button', 'lx-auto-more', ico(a.more ? 'chevron-down' : 'chevron-right', 14) + '<span class="lbl">Ещё найдено (' + rest.length + ')</span>');
+      more.type = 'button'; more.id = 'lxInsAutoMore'; more.setAttribute('aria-expanded', a.more ? 'true' : 'false');
+      more.onclick = function () { a.more = !a.more; renderAuto(); };
+      out.appendChild(more);
+      if (a.more) rest.forEach(function (ob) { out.appendChild(autoCard(ob, false)); });
+    }
+    var fn = el('div', 'lx-auto-sum'); fn.textContent = 'Погрешность \u00b1 считается по разбросу точек облака; точность самого скана (обычно \u00b12\u20135 мм) в неё не входит. «Низкая» уверенность: проверьте размер вручную.'; out.appendChild(fn);
+    var all = button('Сохранить всё найденное', 'save-all', '', 'Сохранить в проект все размеры, кроме помеченных низкой уверенностью'); all.id = 'lxInsAutoSaveAll'; all.onclick = autoSaveAll; out.appendChild(all);
+    if (window.__lxKit) window.__lxKit.hydrate(out);
+  }
 
   function _strideDown(c, target) { var n = c.pos.length / 3; if (n <= target) return c; var step = Math.ceil(n / target); var m = Math.floor(n / step) + 1; var p = new Float32Array(m * 3); var col = c.col ? new c.col.constructor(m * 3) : null; var w = 0; for (var i = 0; i < n && w < m; i += step) { p[w * 3] = c.pos[i * 3]; p[w * 3 + 1] = c.pos[i * 3 + 1]; p[w * 3 + 2] = c.pos[i * 3 + 2]; if (col) { col[w * 3] = c.col[i * 3]; col[w * 3 + 1] = c.col[i * 3 + 1]; col[w * 3 + 2] = c.col[i * 3 + 2]; } w++; } return { pos: p.subarray(0, w * 3), col: col ? col.subarray(0, w * 3) : null, count: w }; }
 
@@ -247,7 +442,7 @@
     var v = ensureViewer(); if (!v) { modal.hidden = true; return false; }
     state.lastCloud = cloud; state.title = title || 'Объект'; state.live = null;
     var t = modal.querySelector('#lxInsTitle'); if (t) t.textContent = (title || 'Объект') + ' · ' + nfmt(cloud.count || cloud.pos.length / 3) + ' т.';
-    state.hist = []; renderHist(); refreshReadout(null);
+    state.hist = []; renderHist(); refreshReadout(null); autoClear();
     try { var _cl = cloud, _cnt = cloud.count || cloud.pos.length / 3; if (_cnt > 900000) { _cl = _strideDown(cloud, 900000); } v.loadCloud({ pos: _cl.pos, col: _cl.col || null, count: _cl.pos.length / 3 }); } catch (e) { toast('Ошибка загрузки объекта', { tone: 'err' }); }
     setTimeout(function () {
       try { window.dispatchEvent(new Event('resize')); if (v._resize) v._resize(); if (v._frame) v._frame(); } catch (e) {}

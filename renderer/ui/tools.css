@@ -249,6 +249,50 @@ html.lx-operation-busy, html.lx-operation-busy body { cursor: progress; }
 .lx-win-hrow > :first-child { flex: 0 0 84px; color: var(--txt-3); }
 .lx-win-hrow > :last-child { min-width: 0; overflow-wrap: anywhere; }
 .lx-win-empty { color: var(--txt-3); font-size: var(--fs-sm); line-height: 1.5; }
+
+/* Автоматический замер: карточки размеров (окно «Инспектор объекта») */
+/* Вкладки боковой колонки: «Вручную» и «Автоматически». Тип объекта общий и стоит над вкладками. */
+.lx-win-tabs { display: flex; flex: none; gap: 4px; padding: 8px 14px 0; border-bottom: 1px solid var(--line); }
+.lx-win-tab {
+  display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 8px; border: 0; border-bottom: 2px solid transparent; background: transparent;
+  color: var(--txt-2); font: 600 var(--fs-sm)/1 var(--font); cursor: pointer; transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+.lx-win-tab:hover { color: var(--txt); background: var(--bg-2); }
+.lx-win-tab.on { border-bottom-color: var(--accent); color: var(--accent); }
+.lx-win-pane { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.lx-win-pane[hidden] { display: none; }
+.lx-auto-intro { margin-top: 0; }
+@media (max-height: 820px) { .lx-win-kinds + .lx-win-hint { display: none; } }
+.lx-auto-btn { width: 100%; justify-content: center; }
+.lx-auto-btn.busy { pointer-events: none; opacity: .85; }
+.lx-auto-out { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.lx-auto-out[hidden] { display: none; }
+.lx-auto-sum { color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.5; }
+.lx-auto-sum.err { color: var(--err); }
+.lx-auto-sum.warn { color: var(--warn); }
+.lx-auto-sum .vf-spin { display: inline-block; vertical-align: -1px; margin-right: 4px; }
+.lx-auto-card { border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); overflow: hidden; }
+.lx-auto-card.main { border-color: var(--accent-line); }
+.lx-auto-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 8px 10px 6px; font-size: var(--fs-sm); font-weight: 650; }
+.lx-auto-head small { color: var(--accent); font-size: var(--fs-xs); font-weight: 600; }
+.lx-auto-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; padding: 7px 10px 8px; border-top: 1px solid var(--line); border-left: 3px solid var(--line-strong); }
+.lx-auto-row.high { border-left-color: var(--ok); }
+.lx-auto-row.medium { border-left-color: var(--warn); }
+.lx-auto-row.low { border-left-color: var(--err); border-left-style: dashed; }
+.lx-auto-lbl { min-width: 0; color: var(--txt-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.lx-auto-val { font-size: var(--fs-md); font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.lx-auto-meta { display: flex; flex-wrap: wrap; grid-column: 1 / -1; align-items: center; gap: 4px 8px; color: var(--txt-3); font-size: var(--fs-xs); }
+.lx-auto-sig { color: var(--txt-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.lx-lvl { padding: 1px 7px; border: 1px solid var(--line-strong); border-radius: 999px; font-weight: 600; white-space: nowrap; }
+.lx-lvl.high { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: var(--ok-soft); color: var(--ok); }
+.lx-lvl.medium { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: var(--warn-soft); color: var(--warn); }
+.lx-lvl.low { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); background: var(--err-soft); color: var(--err); }
+.lx-auto-warn { grid-column: 1 / -1; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.45; }
+.lx-auto-card > .lx-auto-warn { padding: 6px 10px 8px; border-top: 1px solid var(--line); }
+.lx-auto-acts { display: flex; flex-wrap: wrap; grid-column: 1 / -1; align-items: center; gap: 6px; margin-top: 2px; }
+.lx-auto-saved { display: inline-flex; align-items: center; gap: 4px; color: var(--ok); font-size: var(--fs-xs); font-weight: 600; }
+.lx-auto-more { display: flex; align-items: center; gap: 6px; padding: 6px 4px; border: 0; background: transparent; color: var(--txt-2); font: 600 var(--fs-sm)/1 var(--font); text-align: left; cursor: pointer; }
+.lx-auto-more:hover { color: var(--txt); }
 .lx-win-foot { display: flex; flex: none; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
 .lx-band { position: fixed; z-index: var(--z-toast); border: 1.5px dashed var(--accent); border-radius: 2px; background: var(--accent-soft); pointer-events: none; }
 @media (max-width: 900px) {

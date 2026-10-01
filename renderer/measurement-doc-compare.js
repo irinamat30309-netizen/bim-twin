@@ -674,6 +674,13 @@
     const add = (key, label, value, kind) => { if (num(value)) fields.push({ key, label, value, kind }); };
     switch (m.mode) {
       case 'distance':
+        // Автоматический замер: одно значение с названием от движка. Проекции, ΔX/ΔY/ΔZ и 3D-длина здесь не добавляются:
+        // у отрезка «от грани до грани» они ничего не значат и давали бы ложные совпадения с чужими требованиями.
+        if (m.auto && typeof m.auto === 'object') {
+          if (m.auto.dimension === 'slope') add('slope', m.auto.label || 'Уклон', m.grade, 'slope');
+          else add('perp', m.auto.label || 'Размер', m.perp, 'linear');
+          break;
+        }
         add('perp', m.perpKind === 'edges' ? 'Расстояние между рёбрами (⊥)' : m.perpKind === 'point-plane' ? 'Расстояние до плоскости (⊥)' : 'Расстояние между плоскостями (⊥)', m.perp, 'linear');
         add('distance3d', 'Полная длина (3D)', m.d3, 'linear');
         add('horizontal', 'Горизонтальная проекция', m.horizontal, 'linear');
@@ -737,9 +744,22 @@
     if (v / d3 <= 0.2) return 'horizontal';
     return 'diagonal';
   }
+  // Размер автоматического замера → размер из документа: основной и допустимые соседние (толщина стены в документе нередко называется шириной и т. п.).
+  const AUTO_DIMENSION_MAP = {
+    width: { primary: 'width', compatible: ['thickness', 'diameter', 'gap'] },
+    height: { primary: 'height', compatible: ['length', 'gap', 'thickness'] },
+    thickness: { primary: 'thickness', compatible: ['width', 'gap'] },
+    diameter: { primary: 'diameter', compatible: ['gap', 'thickness', 'width'] },
+    length: { primary: 'length', compatible: ['width', 'height'] },
+    gap: { primary: 'gap', compatible: ['width', 'thickness'] }
+  };
   function measurementFieldDimensions(field, measurement) {
     const key = field && field.key;
     const mode = measurement && measurement.mode;
+    if (measurement && measurement.auto && typeof measurement.auto === 'object' && key === 'perp') {
+      const ad = AUTO_DIMENSION_MAP[String(measurement.auto.dimension || '')];
+      if (ad) return { primary: ad.primary, primaries: [ad.primary], compatible: ad.compatible.slice(), auto: true, orientation: 'auto' };
+    }
     const orient = measurementOrientation(measurement);
     const vert = orient === 'vertical', hor = orient === 'horizontal';
     const map = {

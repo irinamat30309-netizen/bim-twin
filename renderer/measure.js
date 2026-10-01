@@ -513,8 +513,26 @@
 
   const MODE_RU = { point: 'Точка', distance: 'Расстояние', polyline: 'Полилиния', angle: 'Угол', area: 'Площадь', plane: 'Плоскость', deviation: 'Зазор', corner: 'Ребро/Угол' };
   // Краткое человекочитаемое значение измерения (без HTML) — для Markdown/Notion.
+  // Автоматический замер (renderer/auto-measure.js): одно значение с названием, погрешностью ±σ, способом и уровнем уверенности.
+  const AUTO_LEVEL_RU = { high: 'высокая', medium: 'средняя', low: 'низкая' };
+  function autoNum(v, d) { return (+v).toFixed(d).replace('.', ','); }
+  function autoValue(au) {
+    if (!au) return '';
+    if (au.dimension === 'slope') return autoNum(au.value, 2) + ' %';
+    const v = +au.value;
+    return Math.abs(v) >= 1 ? autoNum(v, 3) + ' м' : autoNum(v * 1000, Math.abs(v) < 0.1 ? 1 : 0) + ' мм';
+  }
+  function autoSigma(au) {
+    if (!au || !(au.sigma > 0)) return '';
+    return ' \u00b1' + (au.dimension === 'slope' ? autoNum(au.sigma, 2) + ' %' : autoNum(au.sigma * 1000, au.sigma * 1000 < 10 ? 1 : 0) + ' мм');
+  }
+  function autoValueText(au) {
+    if (!au) return '';
+    return (au.label || 'Размер') + ' ' + autoValue(au) + autoSigma(au) + ' · ' + (au.how || '') + ' · уверенность: ' + (AUTO_LEVEL_RU[au.level] || au.level || '—');
+  }
   function measureValueText(r) {
     if (!r) return '';
+    if (r.mode === 'distance' && r.auto && typeof r.auto === 'object') return autoValueText(r.auto);
     const L = fmtLen, A = fmtArea, n = x => (x == null ? '' : (+x).toFixed(3));
     switch (r.mode) {
       case 'point': return 'X ' + n(r.point[0]) + ', Y ' + n(r.point[1]) + ', Z ' + n(r.point[2]) + ' м';
@@ -626,7 +644,7 @@
     eigen2, planeExtents, polygonArea3D, orientation, flatness,
     classifyLocal, snapToFeature, signedPointPlane,
     angleBetweenPlanes, intersectPlanes, intersectThreePlanes,
-    measureToCsvRow, measurementsToCsv, createMeasurementReport, measureValueText, measurementsToMarkdown,
+    measureToCsvRow, measurementsToCsv, createMeasurementReport, measureValueText, autoValueText, autoValue, autoSigma, measurementsToMarkdown,
     calibrate, scaleMeasurement, coordLabel,
     fmtLen, fmtArea
   };
