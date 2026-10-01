@@ -13,6 +13,9 @@ const DEFAULT_NODE_DISK_RESERVE_BYTES = 256 * MiB;
 const DEFAULT_NODE_DISK_EXPANSION = 1.05;
 const DEFAULT_CLOUD_PREVIEW_BYTES_PER_POINT = 128;
 const DEFAULT_CLOUD_PREVIEW_FIXED_OVERHEAD_BYTES = 128 * MiB;
+// Сколько оперативной памяти нужно на одну точку при открытии облака целиком: pos + col как Float32 (24 Б) и их копии при передаче
+// worker → основной процесс → окно просмотра. Используется только для сужения бюджета точек, когда памяти заведомо не хватает.
+const DEFAULT_CLOUD_LOAD_BYTES_PER_POINT = 72;
 const OUT_OF_CORE_FIXED_MEMORY_BYTES = 192 * MiB;
 const OUT_OF_CORE_BYTES_PER_NODE_POINT = 32;
 const OUT_OF_CORE_BYTES_PER_NODE_DESCRIPTOR = 512;
@@ -201,6 +204,19 @@ function assessCloudPreviewMemory(pointCount, availableBytes, options) {
   };
 }
 
+// Наибольшее число точек, которое безопасно читать в память при данной свободной памяти (null — память неизвестна, ограничивать нечем).
+function maxCloudPreviewPoints(availableBytes, options) {
+  options = options || {};
+  if (availableBytes === null || availableBytes === undefined || availableBytes === '') return null;
+  const available = Number(availableBytes);
+  if (!Number.isFinite(available) || available < 0) return null;
+  const bytesPerPoint = Number.isFinite(options.bytesPerPoint) && options.bytesPerPoint > 0 ? options.bytesPerPoint : DEFAULT_CLOUD_LOAD_BYTES_PER_POINT;
+  const fixed = Number.isFinite(options.fixedOverheadBytes) && options.fixedOverheadBytes >= 0 ? options.fixedOverheadBytes : DEFAULT_CLOUD_PREVIEW_FIXED_OVERHEAD_BYTES;
+  const fraction = Number.isFinite(options.availableMemoryFraction) && options.availableMemoryFraction > 0 && options.availableMemoryFraction <= 1
+    ? options.availableMemoryFraction : DEFAULT_AVAILABLE_MEMORY_FRACTION;
+  return Math.max(0, Math.floor((available * fraction - fixed) / bytesPerPoint));
+}
+
 function formatMiB(bytes) {
   const value = Number(bytes);
   if (!Number.isFinite(value) || value < 0) return 'неизвестно';
@@ -218,6 +234,7 @@ module.exports = {
   DEFAULT_NODE_DISK_EXPANSION,
   DEFAULT_CLOUD_PREVIEW_BYTES_PER_POINT,
   DEFAULT_CLOUD_PREVIEW_FIXED_OVERHEAD_BYTES,
+  DEFAULT_CLOUD_LOAD_BYTES_PER_POINT,
   OUT_OF_CORE_FIXED_MEMORY_BYTES,
   OUT_OF_CORE_BYTES_PER_NODE_POINT,
   OUT_OF_CORE_BYTES_PER_NODE_DESCRIPTOR,
@@ -227,5 +244,6 @@ module.exports = {
   assessOutOfCoreOctreeMemory,
   assessOutOfCoreOctreeDiskSpace,
   assessCloudPreviewMemory,
+  maxCloudPreviewPoints,
   formatMiB
 };

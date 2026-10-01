@@ -145,6 +145,8 @@
       close() { if (stop) { try { stop(); } catch (_) {} } }
     };
   }
+  // Бюджет чтения (200 млн) и бюджет рисования потока октодерева за кадр — разные вещи: рисуем не больше LOD_DRAW_BUDGET точек.
+  function lodDrawBudget(budget) { const cap = Number(window.APP_CONFIG && window.APP_CONFIG.LOD_DRAW_BUDGET) || 80000000; return Math.max(1000000, Math.min(Number(budget) || cap, cap)); }
   async function parseCloudWithProgress(filePath, label) {
     if (!API || typeof API.parseCloud !== 'function') return { ok: false, message: 'Импорт облака недоступен' };
     if (typeof API.onCloudParseProgress !== 'function' || typeof API.cancelCloudParse !== 'function') {
@@ -164,6 +166,9 @@
       else if (result && result.message) panel.update({ phase: 'error', fraction: latest && latest.fraction || 0, message: result.message });
       // Keep completion/error visible briefly so fast jobs still give feedback.
       await new Promise(resolve => setTimeout(resolve, 260));
+      if (result && result.ok && result.pointBudget && result.pointBudget.memoryLimited) {
+        try { const pb = result.pointBudget; toast('Свободной памяти хватает на ~' + Math.round(pb.applied / 1e6) + ' млн точек из ' + (pb.total / 1e6).toFixed(1) + ' млн в файле: облако открыто прореженным. Закройте другие программы и откройте файл снова — тогда оно загрузится целиком.'); } catch (_) {}
+      }
       return result;
     } finally {
       try { if (typeof unsubscribe === 'function') unsubscribe(); } catch (_) {}
@@ -1758,8 +1763,8 @@
     if (qDensity) qDensity.addEventListener('change', async () => {
       const mln = Math.max(1, parseInt(qDensity.value, 10) || 12); const budget = mln * 1000000;
       try { if (window.PointCloud && window.PointCloud.setBudget) window.PointCloud.setBudget(budget); } catch (e) { }
-      try { if (viewer && viewer.setLodBudget) viewer.setLodBudget(budget); } catch (e) { }
-      if (API && API.setSettings) { try { await API.setSettings({ pointBudget: budget }); } catch (e) { } }
+      try { if (viewer && viewer.setLodBudget) viewer.setLodBudget(lodDrawBudget(budget)); } catch (e) { }
+      if (API && API.setSettings) { try { SETTINGS.pointBudget = budget; SETTINGS.pointBudgetCustom = true; await API.setSettings({ pointBudget: budget, pointBudgetCustom: true }); } catch (e) { } }
       if (lastCloudPath && API && API.parseCloud && /\.(las|laz|ply|e57|ptx|pcd|xyz|pts|txt|csv|xyzrgb)$/i.test(lastCloudPath)) {
         toast('Плотность: ' + mln + ' млн точек — перечитываю облако…');
         try { const pr = await parseCloudWithProgress(lastCloudPath, 'Перезагрузка с бюджетом ' + mln + ' млн точек'); if (pr && pr.ok) { if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else { viewer.loadCloud(pr, {sourceName:lastCloudPath,preserveView:true}); cacheCloud(lastCloudPath, pr); lastCloudOffset=(pr.meta&&pr.meta.offset)||null; lastCloudCount=(pr.meta&&pr.meta.points)||pr.count||0; } toast('Готово: ' + mln + ' млн точек'); } else { toast('Не удалось перечитать облако' + (pr&&pr.message?': '+pr.message:'')); } } catch (e) { toast('Ошибка перечитывания: '+(e&&e.message||e)); }
@@ -2790,7 +2795,7 @@
       // Если весь источник уже загружен и помещается в обычный режим, сохраняем
       // привычное поведение. При наличии непрочитанных точек индексируем сам файл
       // в Worker, а не только текущую renderer-выборку.
-      const STREAM_CAP = 130000000;
+      const STREAM_CAP = Number(window.APP_CONFIG && window.APP_CONFIG.DEFAULT_MAX_POINTS) || 200000000;
       if (!sourceIsSampled && loadedCount <= STREAM_CAP) {
         sb.classList.add('on'); // кнопка горит: режим «все точки» активен
         toast(loadedCount ? ('Облако ' + (loadedCount / 1e6).toFixed(1) + ' млн — весь источник уже загружен: показаны все точки') : 'Показаны все точки одним буфером');
@@ -3237,7 +3242,7 @@
       const c = viewer.getEditedCloud(); if (!c || !c.pos || !c.pos.length) { toast('Нет облака для сохранения'); return; }
       const saveGeneration = _asEditGeneration;
       const cnt = c.pos.length / 3;
-      if (cnt > 80000000) { toast('Слишком большое облако для экспорта в PLY (~' + Math.round(cnt / 1e6) + ' млн). Сначала обрежьте облако.'); return; }
+      if (cnt > ((window.APP_CONFIG && window.APP_CONFIG.PLY_EXPORT_MAX_POINTS) || 200000000)) { toast('Слишком большое облако для экспорта в PLY (~' + Math.round(cnt / 1e6) + ' млн). Сначала обрежьте облако.'); return; }
       if (!window.PCEdit) { toast('Модуль редактирования не загружен'); return; }
       if (!(API && API.saveCloud)) { toast('Сохранение доступно в десктоп-версии'); return; }
       const stop = beginProgress('Формирование PLY…'); if (stop.set) stop.set(0, 'Формирование PLY…');
@@ -5252,13 +5257,13 @@
         localStorage.setItem('bim.settings', JSON.stringify(settingsForLocalStorage(SETTINGS)));
       }
     } catch (e) {}
-    // Keep first-open import bounded on machines where a full-resolution
-    // multi-million-point VBO can exhaust renderer/GPU memory. Users may raise
-    // the preview budget explicitly up to the 300M control limit.
-    const defaultPointBudget = Number(window.APP_CONFIG && window.APP_CONFIG.DEFAULT_MAX_POINTS) || 3000000;
-    const initialPointBudget = Number(SETTINGS.pointBudget) > 0 ? Number(SETTINGS.pointBudget) : defaultPointBudget;
+    // Ревизия 4: бюджет точек по умолчанию — 200 млн (облако читается целиком), «пол» для старых проектов — тоже 200 млн
+    // (resolvePointBudget поднимает прежнее сохранённое значение один раз). От нехватки памяти защищает las-node (сужает бюджет,
+    // а не роняет окно), от предела видеопамяти — viewer._maxSingleBuffer. Ползунок «Плотность» можно двигать вручную (до 300 млн).
+    const defaultPointBudget = Number(window.APP_CONFIG && window.APP_CONFIG.DEFAULT_MAX_POINTS) || 200000000;
+    const initialPointBudget = (window.APP_CONFIG && window.APP_CONFIG.resolvePointBudget) ? window.APP_CONFIG.resolvePointBudget(SETTINGS) : (Number(SETTINGS.pointBudget) > 0 ? Number(SETTINGS.pointBudget) : defaultPointBudget);
     try { window.__POINT_BUDGET__ = initialPointBudget; if (window.PointCloud && window.PointCloud.setBudget) window.PointCloud.setBudget(initialPointBudget); } catch (_) {}
-    try { if (viewer && viewer.setLodBudget) viewer.setLodBudget(initialPointBudget); } catch (_) {}
+    try { if (viewer && viewer.setLodBudget) viewer.setLodBudget(lodDrawBudget(initialPointBudget)); } catch (_) {}
     const densityControl = $('qDensity');
     if (densityControl) densityControl.value = String(Math.max(1, Math.min(300, Math.round(initialPointBudget / 1000000))));
     try { decorateIcons(); } catch (e) { console.warn('icons', e); }

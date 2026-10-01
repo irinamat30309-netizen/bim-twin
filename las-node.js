@@ -41,6 +41,21 @@ function currentAvailableMemoryBytes() {
   return candidates.length ? Math.min.apply(null, candidates) : null;
 }
 
+// Массив ровно нужной длины возвращаем как есть (без копии): при бюджете, не меньшем числа точек в файле, это вдвое снижает пик памяти
+// (раньше каждый массив копировался через .slice() — для 50 млн точек это лишние 1,2 ГБ).
+function trimExact(arr, n) { return arr.length === n ? arr : arr.subarray(0, n).slice(); }
+
+// Бюджет точек с учётом свободной памяти: памяти хватает → бюджет не меняется; нет → сужается, но не ниже MIN_SAFE_PREVIEW_POINTS.
+function effectivePointBudget(requested, opts) {
+  opts = opts || {};
+  if (opts.memoryGuard === false) return requested;
+  let avail = null;
+  try { avail = Number.isFinite(opts.availableMemoryBytes) ? opts.availableMemoryBytes : currentAvailableMemoryBytes(); } catch (_) { avail = null; }
+  const cap = ResourceBudget.maxCloudPreviewPoints(avail, { bytesPerPoint: opts.bytesPerPoint });
+  if (cap === null || cap >= requested) return requested;
+  return Math.min(requested, Math.max(cap, cfg.MIN_SAFE_PREVIEW_POINTS || 3000000));
+}
+
 function progressAt(callback, phase, fraction, detail) {
   if (typeof callback !== 'function') return;
   const p = { phase, fraction: Math.max(0, Math.min(1, Number(fraction) || 0)) };
@@ -236,10 +251,10 @@ function parseLASFile(fd, fileSize, maxPoints, onProgress) {
   progressAt(onProgress, 'finalize', 0.96, { pointsLoaded: outN, pointsTotal: count });
   return {
     ok: true, kind: 'points',
-    pos: pos.subarray(0, outN * 3).slice(),
-    col: col.subarray(0, outN * 3).slice(),
-    intensity: intensity ? intensity.subarray(0, outN).slice() : null,
-    classification: classification ? classification.subarray(0, outN).slice() : null,
+    pos: trimExact(pos, outN * 3),
+    col: trimExact(col, outN * 3),
+    intensity: intensity ? trimExact(intensity, outN) : null,
+    classification: classification ? trimExact(classification, outN) : null,
     count: outN,
     meta: { kind: 'points', points: outN, total: count, w, d, h, format: 'LAS fmt ' + fmt, colored: hasColor,
       hasIntensity: !!intensity, hasClassification: !!classification, crsWkt: crsWkt || null,
@@ -1423,9 +1438,9 @@ function parsePLYFile(fd, fileSize, maxPoints, onProgress) {
     }
     progressAt(onProgress, 'finalize', 0.96, { pointsLoaded: outN, pointsTotal: vn });
     return {
-      ok: true, kind: 'points', pos: pos.subarray(0, outN * 3).slice(), col: col.subarray(0, outN * 3).slice(),
-      intensity: intensity ? intensity.subarray(0, outN).slice() : null,
-      classification: classification ? classification.subarray(0, outN).slice() : null, count: outN,
+      ok: true, kind: 'points', pos: trimExact(pos, outN * 3), col: trimExact(col, outN * 3),
+      intensity: intensity ? trimExact(intensity, outN) : null,
+      classification: classification ? trimExact(classification, outN) : null, count: outN,
       meta: { kind: 'points', points: outN, total: vn, w: mxx - mnx, d: mxy - mny, h: mxz - mnz, format: 'PLY cloud (Z-up)', colored: hasColor,
         hasIntensity: !!intensity, hasClassification: !!classification, crsWkt: crsWkt || null, units: units || null,
         offset: { cx: cx + shX, cy: cy + shY, mnz: mnz + shZ }, srcXform: { axis: 'zup', t: [cx + shX, cy + shY, mnz + shZ] } }
@@ -1444,10 +1459,10 @@ function parsePLYFile(fd, fileSize, maxPoints, onProgress) {
   progressAt(onProgress, 'finalize', 0.96, { pointsLoaded: outN, pointsTotal: vn });
   return {
     ok: true, kind: 'points',
-    pos: pos.subarray(0, outN * 3).slice(),
-    col: col.subarray(0, outN * 3).slice(),
-    intensity: intensity ? intensity.subarray(0, outN).slice() : null,
-    classification: classification ? classification.subarray(0, outN).slice() : null,
+    pos: trimExact(pos, outN * 3),
+    col: trimExact(col, outN * 3),
+    intensity: intensity ? trimExact(intensity, outN) : null,
+    classification: classification ? trimExact(classification, outN) : null,
     count: outN,
     meta: { kind: 'points', points: outN, total: vn, w: W, d: D, h: Hh, format: 'PLY cloud (stream)', colored: hasColor,
       hasIntensity: !!intensity, hasClassification: !!classification, crsWkt: crsWkt || null, units: units || null,
@@ -2172,6 +2187,19 @@ async function parseCloudFileAsync(absPath, opts) {
     }
   }
 
+  // Бюджет точек по умолчанию — 200 млн: облако читается целиком. Если свободной памяти заведомо не хватает, бюджет сужается
+  // (но не ниже MIN_SAFE_PREVIEW_POINTS), чтобы облако открылось, а не уронило окно; об этом сообщает result.pointBudget.
+  const requestedBudget = Number(opts.maxPoints) > 0 ? Number(opts.maxPoints) : DEFAULT_MAX_POINTS;
+  const appliedBudget = effectivePointBudget(requestedBudget, opts);
+  const withBudgetInfo = (result) => {
+    if (!result || result.ok === false || appliedBudget >= requestedBudget) return result;
+    const total = Number(result.meta && result.meta.total) || Number(result.total) || 0;
+    if (total > appliedBudget) {
+      result.pointBudget = { requested: requestedBudget, applied: appliedBudget, memoryLimited: true, availableBytes: currentAvailableMemoryBytes(), total };
+    }
+    return result;
+  };
+
   return new Promise((resolve) => {
     let worker = null;
     let settled = false;
@@ -2230,7 +2258,7 @@ async function parseCloudFileAsync(absPath, opts) {
       worker = new Worker(workerPath, {
         workerData: {
           absPath: absolutePath,
-          maxPoints: Number(opts.maxPoints) || DEFAULT_MAX_POINTS,
+          maxPoints: appliedBudget,
           scratchBaseDir: workerScratchDir
         }
       });
@@ -2251,7 +2279,7 @@ async function parseCloudFileAsync(absPath, opts) {
       }
       if (message.type === 'result') {
         gotResult = true;
-        finish(message.result || { ok: false, message: 'Worker импорта вернул пустой ответ' });
+        finish(withBudgetInfo(message.result || { ok: false, message: 'Worker импорта вернул пустой ответ' }));
       }
     });
     worker.on('messageerror', (error) => {
@@ -2271,7 +2299,7 @@ async function parseCloudFileAsync(absPath, opts) {
 }
 
 module.exports = {
-  parseCloudFile, parseCloudFileAsync, parseLASFile, parseLAZFile, parsePLYFile,
+  parseCloudFile, parseCloudFileAsync, effectivePointBudget, parseLASFile, parseLAZFile, parsePLYFile,
   parseE57File, parsePTXFile, parseTextCloudFile, parsePCDFile, finalizeWorldZup,
   getBinaryPlyPointFileInfo, sameBinaryPlyPointFileInfo,
   isBinaryPlyPointFile, prepareBinaryPLYOctreeFile,

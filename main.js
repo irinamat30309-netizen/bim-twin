@@ -19,6 +19,7 @@ const verify = require('./ai/verify');
 const llm = require('./ai/llm');
 const report = require('./ai/report');
 const cloud = require('./las-node');
+const APP_CFG = require('./app-config');
 const { writePlyBinaryToDisk: writePlyBinaryToDiskImpl } = require('./pointcloud-ply-io');
 const octreeStore = require('./renderer/octree-store');
 const e57 = require('./renderer/e57-stations');
@@ -1020,7 +1021,7 @@ function registerIpc() {
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
       const s = readSettings();
-      const maxPoints = Number(s && s.pointBudget) > 0 ? Number(s.pointBudget) : undefined;
+      const maxPoints = APP_CFG.resolvePointBudget(s);
       const controller = new AbortController();
       const key = jobId ? cloudJobKey(event && event.sender, jobId) : null;
       if (key && activeCloudParseJobs.has(key)) return { ok: false, message: 'duplicate_job_id' };
@@ -1426,7 +1427,7 @@ function registerIpc() {
       if (!abs) abs = resolveAuthorizedFile(event, requested, CLOUD_EXT_ALLOW);
       if (!abs) return { ok: false, error: 'path_not_authorized' };
       const s = readSettings();
-      const maxPoints = Number(a.maxPoints) > 0 ? Number(a.maxPoints) : 120000000;
+      const maxPoints = Number(a.maxPoints) > 0 ? Number(a.maxPoints) : APP_CFG.DEFAULT_MAX_POINTS;
       const pr = await cloud.parseCloudFileAsync(abs, { maxPoints });
       if (!pr || !pr.ok) return { ok: false, error: (pr && pr.message) || 'parse_failed' };
       if (pr.kind && pr.kind !== 'points') return { ok: false, error: 'not_points' };
@@ -1570,9 +1571,10 @@ function registerIpc() {
       // Scalar ASCII/binary PLY, uncompressed LAS and ASCII/interleaved-binary/
       // LZF PCD point clouds use bounded source reads and external disk partitions.
       // Other formats still use the memory-backed parser below.
-      const configuredBudget = Number(s && s.pointBudget) > 0 ? Number(s.pointBudget) : 0;
+      const configuredBudget = APP_CFG.resolvePointBudget(s);
       const requestedBudget = Math.max(configuredBudget, Number(a.maxPoints) || 0, 40000000);
-      const maxPoints = Math.min(40000000, Number.isSafeInteger(requestedBudget) ? requestedBudget : 40000000);
+      // Потолок индексации — OCTREE_MAX_POINTS (400 млн); бюджет проекта по умолчанию 200 млн. От нехватки памяти защищают проверки assess*Memory ниже.
+      const maxPoints = Math.min(APP_CFG.OCTREE_MAX_POINTS || 400000000, Number.isSafeInteger(requestedBudget) ? requestedBudget : 40000000);
       const requestedCapacity = Number(a.nodeCapacity) || 120000;
       const nodeCapacity = Math.max(1000, Math.min(500000, Number.isSafeInteger(requestedCapacity) ? requestedCapacity : 120000));
       let sourcePreflightInfo = null;
@@ -2031,7 +2033,7 @@ function registerIpc() {
       const CC_DIRECT = new Set(['.ply', '.las', '.laz', '.e57', '.ptx', '.pcd', '.pts', '.xyz', '.xyzrgb']);
       let inPly = abs;
       if (ext !== '.ply' && !(engine === 'cloudcompare' && CC_DIRECT.has(ext))) {
-        const maxPoints = Number(a.maxPoints) > 0 ? Number(a.maxPoints) : 120000000;
+        const maxPoints = Number(a.maxPoints) > 0 ? Number(a.maxPoints) : APP_CFG.DEFAULT_MAX_POINTS;
         const pr = await cloud.parseCloudFileAsync(abs, { maxPoints });
         if (!pr || !pr.ok) return { ok: false, error: 'parse_failed' };
         if (pr.kind && pr.kind !== 'points') return { ok: false, error: 'not_points' };
@@ -2151,7 +2153,7 @@ function registerIpc() {
         fs.copyFileSync(abs, work);
       } else {
         if (!CLOUD_EXT_ALLOW.has(ext)) return { ok: false, error: 'ext_not_allowed' };
-        const maxPoints = Number(a.maxPoints) > 0 ? Number(a.maxPoints) : 120000000;
+        const maxPoints = Number(a.maxPoints) > 0 ? Number(a.maxPoints) : APP_CFG.DEFAULT_MAX_POINTS;
         const pr = await cloud.parseCloudFileAsync(abs, { maxPoints });
         if (!pr || !pr.ok) return { ok: false, error: 'parse_failed' };
         if (pr.kind && pr.kind !== 'points') return { ok: false, error: 'not_points' };
@@ -2301,7 +2303,7 @@ function registerIpc() {
     const ext = path.extname(abs).toLowerCase();
     if (ext === '.ply') return { ply: abs, tmp: null };
     if (!CLOUD_EXT_ALLOW.has(ext)) return { error: 'ext_not_allowed' };
-    const mp = Number(maxPoints) > 0 ? Number(maxPoints) : 120000000;
+    const mp = Number(maxPoints) > 0 ? Number(maxPoints) : APP_CFG.DEFAULT_MAX_POINTS;
     const pr = await cloud.parseCloudFileAsync(abs, { maxPoints: mp });
     if (!pr || !pr.ok) return { error: 'parse_failed' };
     if (pr.kind && pr.kind !== 'points') return { error: 'not_points' };
@@ -2320,7 +2322,7 @@ function registerIpc() {
   async function ensureGeomPointInput(abs, maxPoints) {
     const ext = path.extname(abs).toLowerCase();
     if (!CLOUD_EXT_ALLOW.has(ext)) return { error: 'ext_not_allowed' };
-    const mp = Number(maxPoints) > 0 ? Number(maxPoints) : 120000000;
+    const mp = Number(maxPoints) > 0 ? Number(maxPoints) : APP_CFG.DEFAULT_MAX_POINTS;
     const pr = await cloud.parseCloudFileAsync(abs, { maxPoints: mp });
     if (!pr || !pr.ok) return { error: 'parse_failed', message: (pr && pr.message) || '' };
     if ((pr.kind && pr.kind !== 'points') || !pr.pos || !pr.pos.length) return { error: 'not_points' };
