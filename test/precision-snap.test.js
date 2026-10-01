@@ -351,7 +351,7 @@ test('непараллельность доходит до пользовате�
 
 test('близкий план: окно плоскостей в просмотре не меньше 17 шагов облака (иначе рёбра откосов нестабильны)', () => {
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'webgl-viewer.js'), 'utf8');
-  assert.match(src, /PS\.snap\(pt, idx, \{ snapDist: snapDist, radius: Math\.max\(2\.4 \* snapDist, 17 \* sp\), grow: !!o\.grow \}\)/);
+  assert.match(src, /PS\.snap\(pt, idx, \{ snapDist: snapDist, radius: Math\.max\(2\.4 \* snapDist, 17 \* sp\), grow: !!o\.grow, spacing: sp \}\)/);
   // окно задано явно и не выходит за пределы, принятые в модуле: [10, 60] шагов
   const r = PS.snap([0.01, 0.01, 0.01], PS.buildIndex(new Float32Array([0, 0, 0, 0.02, 0, 0, 0, 0.02, 0, 0, 0, 0.02, 0.02, 0.02, 0, 0.02, 0, 0.02, 0, 0.02, 0.02, 0.02, 0.02, 0.02])), { snapDist: 0.05, radius: 17 * 0.02 });
   assert.ok(r.radius >= 10 * r.spacing - 1e-12 && r.radius <= 60 * r.spacing + 1e-12, 'окно ' + r.radius);

@@ -118,6 +118,7 @@
 .meas-snap-tip.k-corner { --snap-c: #ff4fd8; }
 .meas-snap-tip.k-edge { --snap-c: #ffb020; }
 .meas-snap-tip.k-plane { --snap-c: #39c6ff; }
+.meas-snap-tip.k-curve { --snap-c: #7c8cff; }
 .meas-snap-tip.k-point { --snap-c: var(--ok); }
 .meas-snap-tip.k-raw { --snap-c: var(--txt-3); }
 .meas-snap-tip.q-medium span:last-child { color: var(--warn); }

@@ -21,8 +21,8 @@
   const hex2rgb = h => { h = h.replace('#', ''); const n = parseInt(h, 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
   const mixW = (c, t) => [c[0] * (1 - t) + t, c[1] * (1 - t) + t, c[2] * (1 - t) + t];
   // Точный захват: подписи и цвета меток (угол — розовый, ребро — оранжевый, плоскость — голубой, точка — зелёный)
-  const SNAP_RU = { corner: 'Угол', edge: 'Ребро', plane: 'Плоскость', point: 'Точка облака', raw: 'Без привязки' };
-  const SNAP_COLOR = { corner: '#ff4fd8', edge: '#ffb020', plane: '#39c6ff', point: '#39d98a', raw: '#c9d1e0' };
+  const SNAP_RU = { corner: 'Угол', edge: 'Ребро', plane: 'Плоскость', curve: 'Труба', point: 'Точка облака', raw: 'Без привязки' };
+  const SNAP_COLOR = { corner: '#ff4fd8', edge: '#ffb020', plane: '#39c6ff', curve: '#7c8cff', point: '#39d98a', raw: '#c9d1e0' };
 
   // ---------- vec / mat helpers (column-major mat4) ----------
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -210,6 +210,13 @@
     float shade = exp(-sum * uStrength * 40.0);
     frag = vec4(c * shade, 1.0);
   }`;
+
+  // Кэш сцены: статичная часть (облако, модель) лежит в текстурах цвета и глубины; при наведении курсора копируем её на экран (цвет + глубина),
+  // а поверх рисуем только маркер и подсказки — без повторной отрисовки десятков миллионов точек.
+  const SC_FS = `#version 300 es
+  precision highp float; precision highp sampler2D; out vec4 frag;
+  uniform sampler2D uCol; uniform sampler2D uDep;
+  void main(){ ivec2 q = ivec2(gl_FragCoord.xy); frag = texelFetch(uCol, q, 0); gl_FragDepth = texelFetch(uDep, q, 0).r; }`;
 
   // Pick-проход «видимые точки»: рендер ID точек (gl_VertexID) в целочисленный буфер R32UI
   // с тестом глубины и реальным размером сплэта — как «Select visible» в CloudCompare/Metashape/VTK.
@@ -411,7 +418,7 @@
       let budget = o._lodBudget || 4000000;
       for (const v of vis) { if (budget <= 0) break; gl.bindVertexArray(v.c.buf.vao); gl.drawArrays(gl.POINTS, 0, v.c.buf.count); budget -= v.c.buf.count; }
     }
-    _setBase(objs) { this._delObjs(this.base); this.base = objs.map(o => this._makeObj(o)); this._recomputeBBox(); if (!this.base.some(o => o.points)) this._cloudRecord = null; this._notifyCloudChanged(); }
+    _setBase(objs) { this._delObjs(this.base); this._psCache = null; this._psJob = null; this._yqCache = null; this.base = objs.map(o => this._makeObj(o)); this._recomputeBBox(); if (!this.base.some(o => o.points)) this._cloudRecord = null; this._notifyCloudChanged(); }
     _setOverlay(objs) { this._delObjs(this.overlay); this.overlay = objs.map(o => this._makeObj(o)); }
 
     _recomputeBBox() {
@@ -456,7 +463,10 @@
     }
     _stopTween() { if (this._tween) { cancelAnimationFrame(this._tween); this._tween = null; } }
     // Кадры: склеиваем несколько render() в один реальный кадр через rAF (не чаще частоты монитора).
-    render() { if (this._rafPending) { this._dirty = true; return; } this._rafPending = true; this._dirty = false; const self = this; requestAnimationFrame(() => { self._rafPending = false; try { self._renderNow(); } catch (e) { console.warn('render', e); } if (self._dirty) { self._dirty = false; self.render(); } }); }
+    render() { this._sceneRev = (this._sceneRev | 0) + 1; this._queueFrame(); }
+    // Только динамика (маркер под курсором, подсказки, превью измерения): статичную сцену из кэша не перерисовываем
+    renderOverlay() { this._queueFrame(); }
+    _queueFrame() { if (this._rafPending) { this._dirty = true; return; } this._rafPending = true; this._dirty = false; const self = this; requestAnimationFrame(() => { self._rafPending = false; try { self._renderNow(); } catch (e) { console.warn('render', e); } if (self._dirty) { self._dirty = false; self._queueFrame(); } }); }
     // «Идёт взаимодействие»: во время вращения/панорамы/зума рисуем прореженное облако для плавности.
     _beginInteract() { this._interacting = true; if (this._idleT) { clearTimeout(this._idleT); this._idleT = 0; } }
     _endInteractSoon(ms) { if (this._idleT) clearTimeout(this._idleT); const self = this; this._idleT = setTimeout(() => { self._idleT = 0; self._interacting = false; self.render(); }, ms == null ? 160 : ms); }
@@ -1127,7 +1137,7 @@
         const pt = snap ? snap.point : (hit ? hit.point : null);
         this._setHoverPoint(pt, this._hoverSnap);
         this._drawLoupe(xy[0], xy[1], pt);
-        this._showSnapTip(xy[0], xy[1], hit ? (snap || { kind: 'raw' }) : null);
+        this._showSnapTip(xy[0], xy[1], hit ? (snap || (this.measureSnap && this._psJob ? { kind: 'raw', preparing: true, progress: this._psProgress() } : { kind: 'raw' })) : null);
         if (this._hoverSnap) this._scheduleSnapGrow(hit.point); else this._cancelSnapGrow();
         if (this.smartMeasure && (this.measureMode || 'distance') === 'distance' && this.measurePts.length === 1) { const pv = pt ? (this._hoverSnap ? pt : this._smartAxisLock(this.measurePts[0], pt)) : null; this._smartDistancePreview(pv); }
       });
@@ -1141,7 +1151,7 @@
         const seg = this._snapGlyph(snap);
         if (seg.length) this._hoverLines = this._makeObj({ id: null, line: true, pos: new Float32Array(seg), color: hex2rgb(SNAP_COLOR[kind] || SNAP_COLOR.point) });
       }
-      this.render();
+      this.renderOverlay();
     }
     // Короткие отрезки вдоль найденного ребра (или трёх рёбер угла): видно, к какой геометрии привязались
     _snapGlyph(snap) {
@@ -1162,24 +1172,58 @@
     }
     // ---------- Точный захват (PrecisionSnap): угол → ребро → плоскость → точка ----------
     _psNow() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
-    _psIndex() {
+    // Индекс облака для привязки. Малое облако (до psAsyncMinPoints) — сразу; большое строится по 8 мс за такт, окно не замирает:
+    // пока индекс не готов, наведение работает по сырой точке, а клик достраивает индекс «до конца» (опция sync).
+    _psIndex(o) {
       const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null;
       const bo = this.base && this.base[0];
       if (!PS || !bo || !bo.points || !bo.pos || bo.pos.length < 36) return null;
       const n = bo.pos.length / 3, c = this._psCache;
       if (c && c.pos === bo.pos && c.n === n) return c.index;
       const t0 = this._psNow();
-      let pos = bo.pos;
-      if (n > 8e6) {   // огромное облако: индекс по каждой k-й точке, чтобы уложиться в память
-        const st = Math.ceil(n / 8e6), m = Math.floor(n / st), cp = new Float32Array(m * 3);
-        for (let i = 0; i < m; i++) { cp[i * 3] = bo.pos[i * st * 3]; cp[i * 3 + 1] = bo.pos[i * st * 3 + 1]; cp[i * 3 + 2] = bo.pos[i * st * 3 + 2]; }
-        pos = cp;
+      const asyncMin = this.psAsyncMinPoints != null ? this.psAsyncMinPoints : 1.5e6;
+      if (n <= asyncMin) {
+        let index = null;
+        try { index = PS.buildIndex(bo.pos); } catch (e) { index = null; }
+        this._psCache = { pos: bo.pos, n, index, ms: this._psNow() - t0, snaps: [] };
+        return index;
       }
-      let index = null;
-      try { index = PS.buildIndex(pos); } catch (e) { index = null; }
-      this._psCache = { pos: bo.pos, n, index, ms: this._psNow() - t0, snaps: [] };
+      let job = this._psJob;
+      if (!job || job.pos !== bo.pos || job.n !== n) {
+        const cap = this.psMaxIndexPoints || 120e6;   // свыше ~120 млн точек в индекс берётся каждая k-я: память (order ≈ 4 байта на точку) и время
+        let b = null;
+        try { b = PS.createIndexBuilder(bo.pos, { local: true, stride: n > cap ? Math.ceil(n / cap) : 1 }); } catch (e) { b = null; }
+        if (!b) { this._psCache = { pos: bo.pos, n, index: null, ms: 0, snaps: [] }; return null; }
+        job = this._psJob = { pos: bo.pos, n, b, t0, timer: 0, ms: 0 };
+      }
+      if (o && o.sync) {   // клик, пока индекс не готов: достраиваем сразу (один раз)
+        if (job.timer) { clearTimeout(job.timer); job.timer = 0; }
+        try { job.b.step(Infinity); } catch (e) { /* ниже — индекс null */ }
+        return this._psFinish(job);
+      }
+      this._psPump();
+      return null;
+    }
+    _psPump() {
+      const job = this._psJob; if (!job || job.timer) return;
+      job.timer = setTimeout(() => {
+        job.timer = 0;
+        if (this._psJob !== job) return;
+        const bo = this.base && this.base[0];
+        if (!bo || bo.pos !== job.pos) { this._psJob = null; return; }   // облако заменили, пока строили
+        let done = false;
+        try { const t1 = this._psNow(); done = job.b.step(8); job.ms += this._psNow() - t1; } catch (e) { this._psJob = null; this._psCache = { pos: job.pos, n: job.n, index: null, ms: 0, snaps: [] }; return; }
+        if (done) this._psFinish(job); else this._psPump();
+        if (this.onSnapIndex) { try { this.onSnapIndex({ ready: done, progress: done ? 1 : job.b.progress() }); } catch (e) { /* подписчик не должен ронять сборку */ } }
+      }, 0);
+    }
+    _psFinish(job) {
+      const index = job.b.isDone() ? job.b.index() : null;
+      this._psCache = { pos: job.pos, n: job.n, index, ms: this._psNow() - job.t0, buildMs: job.ms, snaps: [] };
+      if (this._psJob === job) this._psJob = null;
       return index;
     }
+    _psProgress() { const j = this._psJob; return j ? j.b.progress() : (this._psCache && this._psCache.index ? 1 : 0); }
     _psPrewarm() { if (this._psWarm) return; this._psWarm = setTimeout(() => { this._psWarm = 0; try { this._psIndex(); } catch (e) {} }, 40); }
     _psWorldPerPx(pt) {
       const h = Math.max(1, this.canvas.clientHeight || this.canvas.height || 1), fov = this._fov || 0.87;
@@ -1192,16 +1236,19 @@
     // лишь 140–230 точек (у откосов строки скана редкие), и ребро откоса то находилось, то нет (перепись на реальном облаке)
     _precisionSnapAt(pt, o) {
       o = o || {};
-      const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null, idx = this._psIndex();
+      const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null, idx = this._psIndex(o.sync ? { sync: true } : null);
       if (!PS || !idx || !idx.n) return null;
-      const sp = idx.spacing || 0.01, wpp = this._psWorldPerPx(pt), px = o.px || this._snapPx || 16;
+      // у реального скана шаг точек у сканера и вдали отличается в разы: для «локального» индекса шаг берём у курсора
+      let sp = idx.spacing || 0.01;
+      if (idx.local && PS.localSpacing) { const ls = PS.localSpacing(idx, pt); if (ls > 0) sp = ls; }
+      const wpp = this._psWorldPerPx(pt), px = o.px || this._snapPx || 16;
       const snapDist = Math.max(2.5 * sp, Math.min(px * wpp, 40 * sp));
       const key = pt[0].toFixed(5) + ',' + pt[1].toFixed(5) + ',' + pt[2].toFixed(5) + '|' + snapDist.toFixed(4) + (o.grow ? 'g' : 'l');
       const cache = this._psCache.snaps;
       for (let i = 0; i < cache.length; i++) if (cache[i].key === key) return cache[i].res;
       const t0 = this._psNow();
       let res = null;
-      try { res = PS.snap(pt, idx, { snapDist: snapDist, radius: Math.max(2.4 * snapDist, 17 * sp), grow: !!o.grow }); } catch (e) { res = null; }
+      try { res = PS.snap(pt, idx, { snapDist: snapDist, radius: Math.max(2.4 * snapDist, 17 * sp), grow: !!o.grow, spacing: sp }); } catch (e) { res = null; }
       if (!res) return null;
       res.ms = this._psNow() - t0; res.seed = pt.slice(); res.wpp = wpp; res.px = px;
       cache.push({ key: key, res: res }); if (cache.length > 8) cache.shift();
@@ -1231,11 +1278,13 @@
     _showSnapTip(cx, cy, snap) {
       if (!this.measuring || !snap || !this.measureSnap) { this._hideSnapTip(); return; }
       const el = this._snapTipEl(), f = v => (v * 1000).toFixed(v * 1000 < 10 ? 1 : 0).replace('.', ',');
-      const kind = snap.kind || 'raw', name = SNAP_RU[kind] || kind;
+      const kind = snap.kind || 'raw', name = snap.preparing ? 'Привязка готовится' : (SNAP_RU[kind] || kind);
       let l2 = '';
-      if (kind === 'corner') l2 = snap.weak ? '3 плоскости · оценка грубая' : '3 плоскости';   // weak: третья плоскость держится на нескольких точках (полоска откоса, скругление)
+      if (snap.preparing) l2 = 'индекс облака: ' + Math.round((snap.progress || 0) * 100) + ' %';
+      else if (kind === 'corner') l2 = snap.weak ? '3 плоскости · оценка грубая' : '3 плоскости';   // weak: третья плоскость держится на нескольких точках (полоска откоса, скругление)
       else if (kind === 'edge') l2 = '2 плоскости';
       else if (kind === 'plane') l2 = 'вписана плоскость';
+      else if (kind === 'curve') l2 = snap.cylinder ? 'Ø ' + f(snap.cylinder.radius * 2) + ' мм' : 'круглая поверхность';
       else if (kind === 'point') l2 = 'ближайшая точка облака';
       else l2 = 'рядом нет ровной поверхности';
       let l3 = '';
@@ -1307,7 +1356,7 @@
     _applySnap(pt) {
       const Me = (typeof window !== 'undefined' && window.Measure);
       if (!this.measureSnap) return { point: pt.slice(), kind: 'raw' };
-      const ps = this._precisionSnapAt(pt, { grow: true });
+      const ps = this._precisionSnapAt(pt, { grow: true, sync: true });
       if (ps) return { point: ps.point.slice(), kind: ps.kind, snap: ps };
       if (!Me) return { point: pt.slice(), kind: 'raw' };
       const r = this._measSnapRadius || this._sceneDiag() * 0.02;
@@ -1454,14 +1503,23 @@
     }
 
     // ---------- «Умное» измерение расстояния: живые направляющие + привязка к осям ----------
+    // Отсортированная выборка высот (≤120 000 значений) — считается один раз на облако, а не при каждом движении курсора
+    _yQuantiles() {
+      const bo = this.base && this.base[0];
+      if (!bo || !bo.pos || !bo.pos.length) return null;
+      const c = this._yqCache;
+      if (c && c.pos === bo.pos && c.len === bo.pos.length) return c.ys;
+      const P = bo.pos, n = P.length / 3, step = Math.max(1, Math.floor(n / 120000)), m = Math.ceil(n / step), ys = new Float32Array(m);
+      let k = 0; for (let i = 0; i < n; i += step) ys[k++] = P[i * 3 + 1];
+      const out = k === m ? ys : ys.subarray(0, k);
+      out.sort();
+      this._yqCache = { pos: bo.pos, len: bo.pos.length, ys: out };
+      return out;
+    }
     // Робастная высота потолка сцены (95-й перцентиль Y), зеркально _robustFloorY().
     _robustCeilingY() {
-      const bo = this.base && this.base[0]; const c = this.bbox;
-      if (!bo || !bo.pos || !bo.pos.length) return c ? c.mx[1] : 3;
-      const P = bo.pos, n = P.length / 3, step = Math.max(1, Math.floor(n / 120000)), ys = [];
-      for (let i = 0; i < n; i += step) ys.push(P[i * 3 + 1]);
-      if (!ys.length) return c ? c.mx[1] : 3;
-      ys.sort((a, b) => a - b);
+      const c = this.bbox, ys = this._yQuantiles();
+      if (!ys || !ys.length) return c ? c.mx[1] : 3;
       return ys[Math.floor(ys.length * 0.95)];
     }
     _smartFloorCeil() { return { floorY: this._robustFloorY(), ceilY: this._robustCeilingY() }; }
@@ -1522,7 +1580,7 @@
         this._pushSmartGuideLabels(labels, a, Me);
         if (previewPt) { labels.push({ p: [(a[0] + previewPt[0]) / 2, (a[1] + previewPt[1]) / 2, (a[2] + previewPt[2]) / 2], t: Me.fmtLen(Me.dist3(a, previewPt)) }); this._pushDistanceCompLabels(labels, a, previewPt, Me); }
       }
-      this._measLabels = labels; this._renderMeasLabels(); this.render();
+      this._measLabels = labels; this._renderMeasLabels(); this.renderOverlay();
     }
 
     _computeMeasure() {
@@ -1685,15 +1743,8 @@
     }
     zoomBy(f) { this._stopTween(); this.dist = Math.max(1e-4, Math.min(6000, this.dist * f)); this.render(); }
     _robustFloorY() {
-      const bo = this.base && this.base[0];
-      const c = this.bbox;
-      if (!bo || !bo.pos || !bo.pos.length) return c ? c.mn[1] : 0;
-      const P = bo.pos; const n = P.length / 3;
-      const step = Math.max(1, Math.floor(n / 120000));
-      const ys = [];
-      for (let i = 0; i < n; i += step) ys.push(P[i * 3 + 1]);
-      if (!ys.length) return c ? c.mn[1] : 0;
-      ys.sort((a, b) => a - b);
+      const c = this.bbox, ys = this._yQuantiles();
+      if (!ys || !ys.length) return c ? c.mn[1] : 0;
       return ys[Math.floor(ys.length * 0.05)];   // 5-й перцентиль высоты ~ пол сцены без выбросов-точек под моделью
     }
     setWalk(on) {
@@ -2016,22 +2067,105 @@
       gl.bindVertexArray(null); gl.enable(gl.DEPTH_TEST); gl.useProgram(this.prog); gl.activeTexture(gl.TEXTURE0);
     }
 
-    _renderNow() {
-      const gl = this.gl; if (!gl) return;
-      const _edlOn = this._edl && this._edlReady && !!(this.base[0] && this.base[0].points);
-      if (_edlOn) { if (this._edlW !== this.canvas.width || this._edlH !== this.canvas.height) this._edlResize(); gl.bindFramebuffer(gl.FRAMEBUFFER, this._edlFbo); }
-      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-      const vp = this._vp(); this._lastVP = vp;
+    // Постоянные кадра: программа, яркость/цвет/срез, матрица. Общие для обычного кадра и для кэшированной сцены.
+    _setFrameUniforms(vp) {
+      const gl = this.gl;
       gl.useProgram(this.prog);
       gl.uniform1f(this.u.uBright, this._ptBright || 1); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0);
       { const G = this._grade || {}; gl.uniform1f(this.u.uGrade, G.on ? 1 : 0); gl.uniform1f(this.u.uExposure, G.exposure != null ? G.exposure : 1); gl.uniform1f(this.u.uContrast, G.contrast != null ? G.contrast : 1); gl.uniform1f(this.u.uSaturation, G.saturation != null ? G.saturation : 1); gl.uniform1f(this.u.uGamma, G.gamma != null ? G.gamma : 1); gl.uniform1f(this.u.uTone, G.tone != null ? G.tone : 0); }
       gl.uniform1f(this.u.uElevMin, this._cloudDisplay.min); gl.uniform1f(this.u.uElevMax, this._cloudDisplay.max); gl.uniform1f(this.u.uPalette,this._cloudDisplay.palette); gl.uniform1f(this.u.uCloudOpacity,this._cloudDisplay.opacity); gl.uniform1f(this.u.uCloudPass,0);
-      this._edlOnThisFrame = _edlOn;
       gl.uniformMatrix4fv(this.u.uMVP, false, new Float32Array(vp));
       gl.uniform3fv(this.u.uLightDir, new Float32Array(norm([0.5, 0.9, 0.6])));
       const _cb = this._clipBounds();
       gl.uniform1f(this.u.uClipOn, (this._clipActive() && _cb) ? 1 : 0);
       if (_cb) { gl.uniform3f(this.u.uClipMin, _cb.mn[0], _cb.mn[1], _cb.mn[2]); gl.uniform3f(this.u.uClipMax, _cb.mx[0], _cb.mx[1], _cb.mx[2]); }
+    }
+    // ---------- Кэш статичной сцены (режим измерения, большое облако) ----------
+    _sceneCacheUsable() {
+      if (this._scBroken || !this.measuring || this._interacting || this._octActive || this.cloudVisible === false) return false;
+      const bo = this.base && this.base[0];
+      if (!bo || !bo.points || bo._lod || !bo._pb) return false;
+      return bo.count >= (this.sceneCacheMinPoints != null ? this.sceneCacheMinPoints : 1e6);
+    }
+    _scInit() {
+      if (this._scReady) return true;
+      const gl = this.gl;
+      const sh = (t, src) => { const x = gl.createShader(t); gl.shaderSource(x, src); gl.compileShader(x); if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error('scene-cache shader: ' + gl.getShaderInfoLog(x)); return x; };
+      const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, EDL_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, SC_FS)); gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('scene-cache link: ' + gl.getProgramInfoLog(p));
+      this._scProg = p; this._scU = { uCol: gl.getUniformLocation(p, 'uCol'), uDep: gl.getUniformLocation(p, 'uDep') };
+      const aP = gl.getAttribLocation(p, 'aP');
+      this._scVao = gl.createVertexArray(); gl.bindVertexArray(this._scVao);
+      const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(aP); gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0); gl.bindVertexArray(null);
+      this._scColTex = gl.createTexture(); this._scDepTex = gl.createTexture(); this._scFbo = gl.createFramebuffer();
+      this._scW = 0; this._scH = 0; this._scResize();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this._scFbo);
+      const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      if (!ok) throw new Error('scene-cache framebuffer incomplete');
+      this._scReady = true; return true;
+    }
+    _scResize() {
+      const gl = this.gl, w = this.canvas.width || 800, h = this.canvas.height || 600;
+      gl.bindTexture(gl.TEXTURE_2D, this._scColTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, this._scDepTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, w, h, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this._scFbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._scColTex, 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this._scDepTex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this._scW = w; this._scH = h; this._scRev = -1;
+    }
+    // Рисует список объектов в два прохода: тела (с обрезкой по срезу), затем линии (без обрезки) — как в обычном кадре
+    _drawList(list) {
+      const gl = this.gl;
+      for (const o of list) { if (o.line || o.hidden || (o.points && this.cloudVisible === false)) continue; this._drawObj(o); }
+      gl.uniform1f(this.u.uClipOn, 0);
+      for (const o of list) { if (!o.line || o.hidden) continue; this._drawObj(o); }
+    }
+    _renderCached() {
+      const gl = this.gl;
+      this._scInit();
+      if (this._scW !== this.canvas.width || this._scH !== this.canvas.height) this._scResize();
+      const vp = this._vp(); this._lastVP = vp;
+      const vkey = vp.join(','), st = this._scStat || (this._scStat = { full: 0, present: 0 });
+      this._edlOnThisFrame = false;
+      if (this._scRev !== this._sceneRev || this._scVp !== vkey) {   // статичная часть изменилась — рисуем её в кэш
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this._scFbo);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        this._setFrameUniforms(vp);
+        this._drawList(this.base.concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []));
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        this._scRev = this._sceneRev; this._scVp = vkey; st.full++;
+      }
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.useProgram(this._scProg); gl.bindVertexArray(this._scVao);
+      gl.depthFunc(gl.ALWAYS); gl.depthMask(true);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this._scColTex); gl.uniform1i(this._scU.uCol, 0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this._scDepTex); gl.uniform1i(this._scU.uDep, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindVertexArray(null); gl.depthFunc(gl.LESS); gl.activeTexture(gl.TEXTURE0);
+      st.present++;
+      this._setFrameUniforms(vp);
+      this._drawList(this.overlay.concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []));
+      if (this.measuring && this._measLabels && this._measLabels.length) this._renderMeasLabels();
+    }
+    _renderNow() {
+      const gl = this.gl; if (!gl) return;
+      const _edlOn = this._edl && this._edlReady && !!(this.base[0] && this.base[0].points);
+      if (!_edlOn && this._sceneCacheUsable()) { try { this._renderCached(); return; } catch (e) { console.warn('кэш сцены отключён', e); this._scBroken = true; gl.bindFramebuffer(gl.FRAMEBUFFER, null); } }
+      if (_edlOn) { if (this._edlW !== this.canvas.width || this._edlH !== this.canvas.height) this._edlResize(); gl.bindFramebuffer(gl.FRAMEBUFFER, this._edlFbo); }
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      const vp = this._vp(); this._lastVP = vp;
+      this._setFrameUniforms(vp);
+      this._edlOnThisFrame = _edlOn;
       const drawList = this.base.concat(this.overlay).concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []).concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []);
       // solids first
       for (const o of drawList) { if (o.line || o.hidden || (o.points && this.cloudVisible === false)) continue; this._drawObj(o); }
@@ -2123,7 +2257,13 @@
           for (let i = 0; i < P.length; i += 9) triTest(P, i, obj);
         }
       }
-      if (!best) { const pg = this._pickGPU(sx, sy); if (pg) return pg; const pp = this._pickPoint(sx, sy); return pp || null; }
+      if (!best) {
+        const pg = this._pickGPU(sx, sy); if (pg) return pg;
+        // GPU-проход уже просмотрел окно ±20 px (и с «раздутием» точек): на большом облаке перебор точек на CPU ничего нового не даст, а стоит кадра
+        const b0 = this.base && this.base[0];
+        if (this._pickReady && b0 && b0.points && b0._pb && !b0._lod && b0.count > 2e6) return null;
+        const pp = this._pickPoint(sx, sy); return pp || null;
+      }
       const pt = [o[0] + d[0] * bestT, o[1] + d[1] * bestT, o[2] + d[2] * bestT];
       return { id: best.id, el: best.el, point: pt };
     }
@@ -2343,21 +2483,37 @@
         this._pickReady = true;
       } catch (e) { console.warn('pick init → CPU-фильтр видимости', e); this._pickReady = false; }
     }
-    _pickResize() {
-      const gl = this.gl; const w = this.canvas.width || 800, h = this.canvas.height || 600;
-      gl.bindTexture(gl.TEXTURE_2D, this._pickColTex);
+    _pickAlloc(tex, rb, fbo, w, h) {
+      const gl = this.gl;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32UI, w, h, 0, gl.RED_INTEGER, gl.UNSIGNED_INT, null);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.bindTexture(gl.TEXTURE_2D, null);
-      gl.bindRenderbuffer(gl.RENDERBUFFER, this._pickDepRb);
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
       gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
       gl.bindRenderbuffer(gl.RENDERBUFFER, null);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this._pickFbo);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._pickColTex, 0);
-      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this._pickDepRb);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      this._pickW = w; this._pickH = h;
+    }
+    _pickResize() {
+      const gl = this.gl; const w = this.canvas.width || 800, h = this.canvas.height || 600;
+      this._pickAlloc(this._pickColTex, this._pickDepRb, this._pickFbo, w, h);
+      if (this._pickFbo2) this._pickAlloc(this._pickColTex2, this._pickDepRb2, this._pickFbo2, w, h);
+      this._pickW = w; this._pickH = h; this._pickKeys = [null, null];
+    }
+    // Второй pick-буфер (проход с «раздутием» точек) — создаётся при первой необходимости: оба результата живут в кэше одновременно
+    _pickSlotFbo(slot) {
+      if (!slot) return this._pickFbo;
+      if (!this._pickFbo2) {
+        const gl = this.gl;
+        this._pickColTex2 = gl.createTexture(); this._pickDepRb2 = gl.createRenderbuffer(); this._pickFbo2 = gl.createFramebuffer();
+        this._pickAlloc(this._pickColTex2, this._pickDepRb2, this._pickFbo2, this._pickW || this.canvas.width || 800, this._pickH || this.canvas.height || 600);
+        this._pickKeys[1] = null;
+      }
+      return this._pickFbo2;
     }
     // Рендерит pick-проход (ID видимых точек) во весь буфер: тест глубины (окклюзия) + клип-бокс (срез).
     _drawPickPass(bo, grow) {
@@ -2368,7 +2524,15 @@
       const base = this._cloudDisplay.pointSize || (bo.pointSize || 2.2)*psm;
       const scale = (bo._spacing || 0) * (ch * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm;
       const atten = this._cloudDisplay.pointSize ? 0 : (scale > 0 ? 1 : 0);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this._pickFbo);
+      const _cb = this._clipBounds(), clipOn = (this._clipActive() && _cb) ? 1 : 0, slot = grow ? 1 : 0;
+      // Кэш: пока камера, размер точек, срез и само облако не менялись, ID-буфер тот же — наведение курсора не перерисовывает всё облако
+      const key = [cw, ch, psm, base, scale, atten, (bo._ptMax || 8.0), this._roundPoints ? 1 : 0, grow || 0, clipOn, clipOn ? _cb.mn.join(',') + ';' + _cb.mx.join(',') : '', M.join(',')].join('|');
+      if (!this._pickKeys) this._pickKeys = [null, null];
+      if (!this._pickStat) this._pickStat = { passes: 0, hits: 0 };
+      const ck = this._pickKeys[slot], fbo = this._pickSlotFbo(slot);
+      if (!this.pickCacheOff && ck && ck.k === key && ck.pb === bo._pb && ck.count === bo.count) { this._pickStat.hits++; return fbo; }
+      this._pickStat.passes++;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.viewport(0, 0, cw, ch);
       gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(true);
       gl.clearBufferuiv(gl.COLOR, 0, new Uint32Array([0, 0, 0, 0]));
@@ -2382,8 +2546,7 @@
       gl.uniform1f(this._pickU.uPtMax, (bo._ptMax || 8.0) * psm * 6.0);
       gl.uniform1f(this._pickU.uRound, this._roundPoints ? 1 : 0);
       gl.uniform1f(this._pickU.uGrow, grow || 0);
-      const _cb = this._clipBounds();
-      gl.uniform1f(this._pickU.uClipOn, (this._clipActive() && _cb) ? 1 : 0);
+      gl.uniform1f(this._pickU.uClipOn, clipOn);
       if (_cb) { gl.uniform3f(this._pickU.uClipMin, _cb.mn[0], _cb.mn[1], _cb.mn[2]); gl.uniform3f(this._pickU.uClipMax, _cb.mx[0], _cb.mx[1], _cb.mx[2]); }
       gl.bindVertexArray(this._pickVao);
       gl.bindBuffer(gl.ARRAY_BUFFER, bo._pb);
@@ -2391,6 +2554,8 @@
       gl.vertexAttribPointer(this._pickAPos, 3, gl.FLOAT, false, 0, 0);
       gl.drawArrays(gl.POINTS, 0, bo.count);
       gl.bindVertexArray(null);
+      this._pickKeys[slot] = { k: key, pb: bo._pb, count: bo.count };
+      return fbo;
     }
     // Точный GPU-пикинг одной точки под курсором (WYSIWYG depth-buffer picking, как в
     // Cesium/Potree/CloudCompare): берёт РЕАЛЬНУЮ видимую точку под курсором по её vertex ID.
@@ -2417,9 +2582,9 @@
       // Проход 1: реальный размер точек. Если рядом пусто — проход 2 с «раздутием» (grow),
       // чтобы закрыть зазоры между разреженными сплэтами и всё равно дать снап.
       for (let attempt = 0; attempt < 2 && !id0; attempt++) {
-        this._drawPickPass(bo, attempt === 0 ? 0 : 5);
+        const pf = this._drawPickPass(bo, attempt === 0 ? 0 : 5);
         px = new Uint32Array(w * h);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this._pickFbo);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, pf);
         gl.readPixels(x0, y0, w, h, gl.RED_INTEGER, gl.UNSIGNED_INT, px);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         for (let k = 0; k < px.length; k++) { if (px[k]) { id0 = 1; break; } }
@@ -2451,6 +2616,7 @@
       const psm = this._ptSizeMul || 1;
       const scale = (bo._spacing || 0) * (ch * 0.5 / Math.tan(this._fov / 2)) * 1.25 * psm;
       const atten = (!this._cloudDisplay.pointSize && this._attenuate && scale > 0) ? 1 : 0;
+      if (this._pickKeys) this._pickKeys[0] = null;   // этот проход пишет в первый pick-буфер — кэш наведения недействителен
       gl.bindFramebuffer(gl.FRAMEBUFFER, this._pickFbo);
       gl.viewport(0, 0, cw, ch);
       gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(true);

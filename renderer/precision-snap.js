@@ -82,7 +82,7 @@
   function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
   function createIndexBuilder(pos, opts) {
     opts = opts || {};
-    var n = opts.count != null ? Math.min(opts.count, Math.floor(pos.length / 3)) : Math.floor(pos.length / 3);
+    var total = opts.count != null ? Math.min(opts.count, Math.floor(pos.length / 3)) : Math.floor(pos.length / 3), S = opts.stride > 1 ? opts.stride | 0 : 1, S3 = S * 3, n = Math.ceil(total / S);   // stride: в индекс берём каждую S-ю точку (для облаков свыше сотни миллионов), в order остаются номера исходных точек
     var phase = 0, i = 0, k = 0, mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
     var cell = 0, dx = 1, dy = 1, dz = 1, cells = 0, inv = 1, start = null, order = null, fill = null, idx = null, done = false;
     var CH = 32768;
@@ -98,7 +98,7 @@
         while (i < n) {
           e = Math.min(n, i + CH);
           for (; i < e; i++) {
-            x = pos[i * 3]; y = pos[i * 3 + 1]; z = pos[i * 3 + 2];
+            x = pos[i * S3]; y = pos[i * S3 + 1]; z = pos[i * S3 + 2];
             if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
             if (y < mn[1]) mn[1] = y; if (y > mx[1]) mx[1] = y;
             if (z < mn[2]) mn[2] = z; if (z > mx[2]) mx[2] = z;
@@ -122,9 +122,9 @@
         while (i < n) {
           e = Math.min(n, i + CH);
           for (; i < e; i++) {
-            ix = ((pos[i * 3] - m0) * inv) | 0; if (ix > DX) ix = DX;
-            iy = ((pos[i * 3 + 1] - m1) * inv) | 0; if (iy > DY) iy = DY;
-            iz = ((pos[i * 3 + 2] - m2) * inv) | 0; if (iz > DZ) iz = DZ;
+            ix = ((pos[i * S3] - m0) * inv) | 0; if (ix > DX) ix = DX;
+            iy = ((pos[i * S3 + 1] - m1) * inv) | 0; if (iy > DY) iy = DY;
+            iz = ((pos[i * S3 + 2] - m2) * inv) | 0; if (iz > DZ) iz = DZ;
             kk = (iz * dy + iy) * dx + ix; start[kk + 1]++;
           }
           if (deadline !== Infinity && nowMs() > deadline && i < n) return false;
@@ -145,15 +145,15 @@
         while (i < n) {
           e = Math.min(n, i + CH);
           for (; i < e; i++) {
-            ix = ((pos[i * 3] - n0) * inv) | 0; if (ix > NX) ix = NX;
-            iy = ((pos[i * 3 + 1] - n1) * inv) | 0; if (iy > NY) iy = NY;
-            iz = ((pos[i * 3 + 2] - n2) * inv) | 0; if (iz > NZ) iz = NZ;
-            kq = (iz * dy + iy) * dx + ix; order[fill[kq]++] = i;
+            ix = ((pos[i * S3] - n0) * inv) | 0; if (ix > NX) ix = NX;
+            iy = ((pos[i * S3 + 1] - n1) * inv) | 0; if (iy > NY) iy = NY;
+            iz = ((pos[i * S3 + 2] - n2) * inv) | 0; if (iz > NZ) iz = NZ;
+            kq = (iz * dy + iy) * dx + ix; order[fill[kq]++] = i * S;
           }
           if (deadline !== Infinity && nowMs() > deadline && i < n) return false;
         }
         fill = null;
-        idx = { n: n, pos: pos, mn: mn, mx: mx, cell: cell, dims: [dx, dy, dz], start: start, order: order, spacing: 0, local: !!opts.local, _st: { stamp: null, gen: 0 } };
+        idx = { n: n, pos: pos, mn: mn, mx: mx, cell: cell, dims: [dx, dy, dz], start: start, order: order, spacing: 0, local: !!opts.local, stride: S, _st: { stamp: null, gen: 0 } };
         idx.query = function (cx, cy, cz, r, cap) { return queryIndex(idx, cx, cy, cz, r, cap); };
         idx.nearest = function (cx, cy, cz, r) { return nearestIndex(idx, cx, cy, cz, r); };
         phase = 4;
