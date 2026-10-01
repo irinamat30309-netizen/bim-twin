@@ -208,6 +208,22 @@ const scenarios = {
   async verifyempty(page) {
     await page.evaluate(() => window.__lxVerify.open({})); await page.waitForTimeout(700);
   },
+  async autodims(page) {   // «Измерить автоматически»: карточки размеров, автосохранение надёжных, сверка, повтор обновляет на месте
+    await cmd(page, 'lxObjInspectBtn', 700);
+    const b = await page.locator('#viewer').boundingBox(), x1 = b.x + b.width * 0.02, y1 = b.y + b.height * 0.14, x2 = b.x + b.width * 0.9, y2 = b.y + b.height * 0.95;   // всё облако: комната целиком
+    await page.mouse.move(x1, y1); await page.mouse.down(); await page.mouse.move((x1 + x2) / 2, (y1 + y2) / 2, { steps: 6 }); await page.mouse.move(x2, y2, { steps: 6 }); await page.mouse.up();
+    await page.waitForSelector('#lxInsModal:not([hidden])', { timeout: 20000 }); await page.waitForTimeout(2200);
+    await page.click('#lxInsTab-auto'); await page.waitForTimeout(200);
+    await page.click('#lxInsAutoBtn');
+    try { await page.waitForSelector('#lxInsAutoOut .lx-auto-card', { timeout: 40000 }); }
+    catch (e) { console.log('     состояние:', await page.evaluate(() => (document.getElementById('lxInsAutoState') || {}).textContent + ' | ' + (document.getElementById('lxInsAutoOut') || {}).innerText)); throw e; }
+    await page.waitForTimeout(1500);
+  },
+  async autodims2(page) {   // то же, прокрутка карточек и раскрытый список «Ещё найдено»
+    await scenarios.autodims(page);
+    await page.evaluate(() => { const m = document.getElementById('lxInsAutoMore'); if (m) m.click(); }); await page.waitForTimeout(300);
+    await page.evaluate(() => { const g = document.querySelector('#lxInsPane-auto .grow'); if (g) g.scrollTop = 140; }); await page.waitForTimeout(300);
+  },
   async objesc(page) {   // Esc должен закрывать окно «Инспектор объекта» (в подсказке кнопки написано «Закрыть · Esc»)
     await scenarios.objwin(page);
     await page.keyboard.press('Escape'); await page.waitForTimeout(500);

@@ -30,12 +30,15 @@ python3 sheet.py out.png shots/a.png shots/b.png   # склейка снимко
 | `lab.js` | общие функции: запуск браузера, `openCloud`, снимок, **`audit`** (см. ниже) |
 | `n1.js` | быстрый дымовой прогон: рабочая область, ошибки консоли |
 | `tabs.js` | обход вкладок ленты: прокрутка ленты (`can-prev/can-next`), отсутствующие иконки, ошибки |
-| `panels.js` | сценарии: `base quality edit cleanmenu geommenu section measure measureplane measurelist measurelistfull objinspect objwin objwinmeasure verifyins verify verifyfill verifyfilled verifymanual verifyopen verifytip verifychip verifystack verifyaccept verifyall verifyreqs verifyempty objesc s2b s2bai flooradd convert settings newproject compare drafts memory draw palette console progress ask askdanger askmulti askover toasts more tree docs room roomdocs drawer inspectordrawer` (`verify*` — окно «Сверка с документацией»: статусы, фильтры, раскрытая строка, «Принять», «Свои размеры» и «Сравнить со своим размером» с проверкой результата) |
+| `panels.js` | сценарии: `base quality edit cleanmenu geommenu section measure measureplane measurelist measurelistfull objinspect objwin objwinmeasure verifyins verify verifyfill verifyfilled verifymanual verifyopen verifytip verifychip verifystack verifyaccept verifyall verifyreqs verifyempty objesc s2b s2bai flooradd convert settings newproject compare drafts memory draw palette console progress ask askdanger askmulti askover toasts more tree docs room roomdocs drawer inspectordrawer autodims autodims2` (`verify*` — окно «Сверка с документацией»: статусы, фильтры, раскрытая строка, «Принять», «Свои размеры» и «Сравнить со своим размером» с проверкой результата) |
 | `startup.js` | сценарии стартового экрана: `one many pick search nomatch empty error loading settings newdlg opening` |
 | `real-load.js` | загрузка реального облака (`LAB_CLOUD`) в приложение: время, число точек в просмотре, снимок |
 | `real-snap.js` | точный захват на реальном облаке против эталона (`LAB_GT`): тип привязки, ошибка, покрытие заявленной погрешности ±σ |
 | `real-e2e.js` | сквозной прогон на реальном облаке: настоящие движения и клики мыши по холсту (с промахом 3–6 px), подсказка захвата, панель результата, сохранение замера, окно сверки и сравнение со «своим размером» |
 | `real-node.js` | то же без браузера (Node): захват и расстояния на выборке просмотра «1 из 6», радиусы захвата `SDS`, промах кликов `OS`, порог окна плоскостей `FLOORSP`; за минуту даёт покрытие ±σ по всем привязкам и парам |
+| `real-sel.js` | рамка мышью по реальному облаку (двери, проём, потолочные трубы) → `LAB_SEL_DIR/<имя>.f32`; с `LAB_AUTO=1` — ещё и вкладка «Автоматически», кнопка, чтение карточек, повтор (проверка дублей), «Показать», `<имя>.auto.json`; `LAB_ONLY` — список выделений, `LAB_NO_EYEBOX=1` — косые виды |
+| `auto-node.js` | авто-замер (`renderer/auto-measure.js`) на выгруженных выделениях в Node, сравнение с зашитыми числами эталона; `KIND` — подсказка типа |
+| `pipe-check.js` | независимая проверка диаметров труб (окружности по тонким срезам, «пик радиусов») и повторяемость между рамками |
 | `gt-eval.js` | эталон пары в местах щелчков (у наклонных откосов расстояние зависит от места): `node gt-eval.js результаты.json gt-targets.json` |
 | `ply-bbox.js` | габарит PLY по файлу (общий код `real-*.js`) |
 

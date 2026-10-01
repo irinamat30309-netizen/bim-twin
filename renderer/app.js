@@ -3294,6 +3294,10 @@
     switch (res.mode) {
       case 'point': return 'X ' + res.point[0].toFixed(3) + ' · Y ' + res.point[1].toFixed(3) + ' · Z ' + res.point[2].toFixed(3) + ' м';
       case 'distance': {
+        if (res.auto && typeof res.auto === 'object' && Me && Me.autoValue) {
+          const au = res.auto, lv = { high: 'высокая', medium: 'средняя', low: 'низкая' }[au.level] || au.level || '—';
+          return esc(au.label || 'Размер') + ' <b>' + Me.autoValue(au) + '</b>' + esc(Me.autoSigma(au)) + ' · ' + esc(au.how || '') + ' · уверенность: ' + esc(lv);
+        }
         const SN = { corner: 'угол', edge: 'ребро', plane: 'плоскость', point: 'точка', raw: 'без привязки' };
         const sn = res.snap ? ' · ' + (SN[res.snap.a.kind] || '') + ' → ' + (SN[res.snap.b.kind] || '') : '';
         // ±σ — точность привязок; у ребра и плоскости она только поперёк, а расстояние между точками зависит ещё и от места клика вдоль ребра (плоскости) —
