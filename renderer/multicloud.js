@@ -64,7 +64,7 @@
       if (attempt < 40) setTimeout(function () { openActiveProjectCloud(cloud, token, serial, attempt + 1); }, 100);
       return;
     }
-    Promise.resolve(api.parseCloud(cloud.path)).then(function (parsed) {
+    Promise.resolve(window.CloudChunks && window.CloudChunks.parse ? window.CloudChunks.parse(api, cloud.path) : api.parseCloud(cloud.path)).then(function (parsed) {
       var ps = window.BimProjectState;
       if (serial !== _projectRestoreSerial || !ps || token !== String(ps.projectId || '') + ':' + String(ps.revision || 0)) return;
       if (!parsed || !parsed.ok || !parsed.pos || !parsed.pos.length) {

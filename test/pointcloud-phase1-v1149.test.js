@@ -67,7 +67,7 @@ test('app.js: авто-сохранение, save-on-exit, восстановл�
   // Окно прогресса теперь общее (ui/modes.js → __lxProgress): полоса, счётчик процентов и отмена
   const modes = fs.readFileSync(path.join(R, 'ui', 'modes.js'), 'utf8');
   assert.ok(/lx-progress-fill/.test(modes) && /lx-progress-pct/.test(modes), 'есть полоса и счётчик процентов');
-  assert.ok(/__lxProgress\.begin\(label\)/.test(src), 'beginProgress использует общее окно прогресса');
+  assert.ok(/__lxProgress\.begin\(label(, opts)?\)/.test(src), 'beginProgress использует общее окно прогресса');
   assert.ok(/edBtn\('edForceDelete'/.test(src), 'кнопка обрезки без защит подключена');
   assert.ok(/deleteSelectionForce\(\)/.test(src), 'вызов принудительного удаления');
   assert.ok(/toPLYBinaryAsync/.test(src), 'сохранение использует асинхронный экспорт с прогрессом');

@@ -195,7 +195,8 @@
                 <div class="q-row q-row-btn"><span class="q-lbl">Окраска</span><button id="qColor" class="btn sm" type="button" title="Переключение режимов: RGB, высота, интенсивность, классификация"><span class="lbl">RGB</span></button></div>
                 <label class="q-row"><span class="q-lbl">Яркость</span><input id="qBright" type="range" min="0.4" max="2.5" step="0.05" value="1.3" /></label>
                 <label class="q-row"><span class="q-lbl">Размер точки</span><input id="qSize" type="range" min="0.5" max="3" step="0.1" value="1" /></label>
-                <label class="q-row" title="Млн точек — перечитывает облако"><span class="q-lbl">Плотность</span><input id="qDensity" type="range" min="1" max="300" step="1" value="200" /></label>
+                <label class="q-row" title="Верхний предел числа точек, млн: облако крупнее читается прореженным. Перечитывает облако"><span class="q-lbl">Предел, млн</span><input id="qDensity" type="range" min="1" max="300" step="1" value="200" /></label>
+                <label class="q-row" title="Какую часть точек файла загружать: 100 % — все точки. Перечитывает облако"><span class="q-lbl">Доля точек</span><select id="qShare" aria-label="Доля точек файла"></select></label>
                 <div class="q-toggles">
                   <button id="qEDL" class="tgl" type="button" aria-pressed="false" title="Eye-Dome Lighting — объём и резкость облака"><span class="tgl-sw"></span><span class="lbl">EDL</span></button>
                   <button id="qPhoto" class="tgl" type="button" aria-pressed="false" title="Фото-качество: EDL и крупные круглые сплэты — максимально чёткая картинка при экскурсии"><span class="tgl-sw"></span><span class="lbl">Фото-качество</span></button>
@@ -411,6 +412,7 @@
   <script src="vendor/superdoc.bundle.js?v=1078"></script>
   <script src="vendor/dwg.bundle.js?v=1078"></script>
   <script src="app-utils.js?v=1079"></script>
+  <script src="cloud-chunks.js?v=1160"></script>
   <script src="project-state.js?v=stage2-1"></script>
   <script src="tool-manager.js?v=1"></script>
   <script src="ui/ribbon.js?v=1300"></script>

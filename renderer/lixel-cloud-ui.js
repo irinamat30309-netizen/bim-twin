@@ -69,6 +69,7 @@
       '</div>' +
       '<div id="cpError" role="alert"></div>' +
       '<dl class="lx-cloud-stats"><dt>В исходном файле</dt><dd id="cpTotal"></dd><dt>Загружено точек</dt><dd id="cpLoaded"></dd></dl>' +
+      '<div id="cpShareNote" class="lx-cp-note" hidden></div>' +
       '<div class="lx-cp-caption">Габариты загруженных точек, м</div><div id="cpDimensions"></div>' +
       '<div class="lx-cp-note">Локальные оси · Y — высота</div><div id="cpColorNote" class="lx-cp-note"></div>' +
       '</div>';
@@ -196,6 +197,19 @@
     if (info.streaming) $('cpHistNote').textContent = 'Гистограмма недоступна в потоковом режиме';
     $('cpTotal').textContent = Number.isSafeInteger(info.sourceCount) ? info.sourceCount.toLocaleString('ru-RU') : 'Неизвестно';
     $('cpLoaded').textContent = info.streaming ? 'Потоковый режим' : info.loadedCount.toLocaleString('ru-RU');
+    {
+      // Загружена только часть точек файла (доля в настройках или предел памяти): показываем процент и куда идти за всеми точками
+      const part = !info.streaming && Number.isSafeInteger(info.sourceCount) && info.sourceCount > info.loadedCount && info.loadedCount > 0;
+      if (part) {
+        const pct = info.loadedCount / info.sourceCount * 100;
+        $('cpLoaded').textContent = info.loadedCount.toLocaleString('ru-RU') + ' (' + (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + ' %)';
+      }
+      const note = $('cpShareNote');
+      if (note) {
+        note.hidden = !part;
+        note.textContent = part ? 'Загружена часть точек файла. Все точки: Настройки → Облака точек → «100 %» (при нехватке памяти окно может прореживать само).' : '';
+      }
+    }
     $('cpDimensions').textContent = info.bounds.mx.map((x, i) => 'XYZ'[i] + ': ' + (x - info.bounds.mn[i]).toFixed(3)).join('  ·  ');
     if (window.__bimRefreshQuality) window.__bimRefreshQuality();
     $('cpColorNote').textContent = info.hasRGB ? '' : 'В исходнике нет RGB: используется цвет парсера. Доступна окраска по высоте.';
