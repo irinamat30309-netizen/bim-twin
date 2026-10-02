@@ -982,6 +982,24 @@
     return out;
   }
 
+  /* Точка на уже найденной трубе. Привязка у второй точки иногда срывается на «ребро» между касательными плоскостями (оно лежит на
+   * 8–30 мм снаружи трубы) или остаётся сырой; если сырая точка лежит на той же цилиндрической поверхности в допуске подгонки,
+   * возвращаем для неё такой же результат 'curve' на той же трубе — тогда оба конца отрезка считаются по одной подгонке (Ø = 2R).
+   * src — результат snap() с kind 'curve'; raw — сырая точка облака. Иначе null. */
+  function adoptOnCylinder(src, raw) {
+    if (!src || src.kind !== 'curve' || !src.cylinder || !raw) return null;
+    var c = src.cylinder, a = c.axis, R = c.radius;
+    var d = sub(raw, c.center), t = dot(d, a), q = sub(d, mul(a, t)), rho = len(q);
+    if (rho < 1e-9 || !(R > 0)) return null;
+    var tol = Math.max(c.tau || 0, 3.5 * (c.rms || 0), 0.003);
+    if (Math.abs(rho - R) > tol) return null;
+    var nrm = mul(q, 1 / rho), foot = add(c.center, mul(a, t)), pt = add(foot, mul(nrm, R));
+    var out = {}, k; for (k in src) if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+    out.point = pt; out.normal = nrm; out.seed = raw.slice(); out.raw = raw.slice(); out.shift = len(sub(pt, raw)); out.adopted = true;
+    out.cylinder = { axis: a.slice(), center: foot, radius: R, rms: c.rms, count: c.count, arc: c.arc, sigma: c.sigma, grown: !!c.grown, tau: c.tau };
+    return out;
+  }
+
   /* ---------- Захват ---------- */
   /* seed — точка под курсором (координаты облака). index — buildIndex(...).
    * opts.snapDist — насколько далеко от seed искать угол/ребро (в единицах облака);
@@ -1170,7 +1188,7 @@
 
   return {
     buildIndex: buildIndex, buildIndexAsync: buildIndexAsync, createIndexBuilder: createIndexBuilder, localSpacing: localSpacing, snap: snap, pairGap: pairGap, detectPlanes: detectPlanes, fitLSQ: fitLSQ,
-    growPlane: growPlane, collectPlanePoints: collectPlanePoints, pipeGap: pipeGap, planeSigmaAt: planeSigmaAt,
+    growPlane: growPlane, collectPlanePoints: collectPlanePoints, pipeGap: pipeGap, adoptOnCylinder: adoptOnCylinder, planeSigmaAt: planeSigmaAt,
     intersect2: intersect2, intersect3: intersect3, refineJoint: refineJoint, estimateSpacing: estimateSpacing, seedFor: seedFor,
     contourEdge: contourEdge, trackContour: trackContour, detectCylinder: detectCylinder, growCylinder: growCylinder, fitCylinderRobust: fitCylinderRobust
   };

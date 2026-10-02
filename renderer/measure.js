@@ -225,6 +225,66 @@
   // Проецируем точки на плоскость, ищем главные оси в плоскости (2D PCA) → размеры
   // ориентированного прямоугольника. Для стены = длина × высота, площадь охвата.
   // points — массив [x,y,z] ИЛИ { pos: Float32Array|Float64Array, ids: Int32Array } (индексы точек облака: без копий, для сотен тысяч точек)
+  // Угол оси «1» ориентированного прямоугольника МИНИМАЛЬНОЙ площади вокруг точек (u,v). Главные оси (PCA) у плоскостей с вырезами
+  // (колонна в полу, проём в стене) разворачиваются на несколько миллирадиан — габариты пола 6×4 м выходили 6,04×4,06. Рамка минимальной
+  // площади ложится на сами кромки. Кандидаты — экстремумы по корзинам вдоль u и v (≤ 4·B точек), угол — перебор 0…90° и уточнение.
+  function minAreaAngle(US, VS, N, th0) {
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let i = 0; i < N; i++) { const a = US[i], b = VS[i]; if (a < u0) u0 = a; if (a > u1) u1 = a; if (b < v0) v0 = b; if (b > v1) v1 = b; }
+    const du = u1 - u0, dv = v1 - v0;
+    if (!(du > 0) || !(dv > 0) || N < 4) return th0;
+    const B = 1024, ku = (B - 1e-6) / du, kv = (B - 1e-6) / dv;
+    const aLo = new Float64Array(B).fill(Infinity), aHi = new Float64Array(B).fill(-Infinity), aLoU = new Float64Array(B), aHiU = new Float64Array(B);
+    const bLo = new Float64Array(B).fill(Infinity), bHi = new Float64Array(B).fill(-Infinity), bLoV = new Float64Array(B), bHiV = new Float64Array(B);
+    for (let i = 0; i < N; i++) {
+      const a = US[i], b = VS[i], ia = ((a - u0) * ku) | 0, ib = ((b - v0) * kv) | 0;
+      if (b < aLo[ia]) { aLo[ia] = b; aLoU[ia] = a; } if (b > aHi[ia]) { aHi[ia] = b; aHiU[ia] = a; }
+      if (a < bLo[ib]) { bLo[ib] = a; bLoV[ib] = b; } if (a > bHi[ib]) { bHi[ib] = a; bHiV[ib] = b; }
+    }
+    const cx = [], cy = [];
+    for (let k = 0; k < B; k++) {
+      if (aLo[k] !== Infinity) { cx.push(aLoU[k], aHiU[k]); cy.push(aLo[k], aHi[k]); }
+      if (bLo[k] !== Infinity) { cx.push(bLo[k], bHi[k]); cy.push(bLoV[k], bHiV[k]); }
+    }
+    const M = cx.length;
+    const area = (th) => {
+      const c = Math.cos(th), s = Math.sin(th); let p0 = Infinity, p1 = -Infinity, q0 = Infinity, q1 = -Infinity;
+      for (let i = 0; i < M; i++) { const p = cx[i] * c + cy[i] * s, q = -cx[i] * s + cy[i] * c; if (p < p0) p0 = p; if (p > p1) p1 = p; if (q < q0) q0 = q; if (q > q1) q1 = q; }
+      return (p1 - p0) * (q1 - q0);
+    };
+    const H = Math.PI / 2; let best = th0, ba = area(th0);
+    const NS = 180; for (let k = 0; k < NS; k++) { const th = k * H / NS, a = area(th); if (a < ba - 1e-12) { ba = a; best = th; } }
+    for (let pass = 0, st = H / NS; pass < 3; pass++, st /= 10) { const c0 = best; for (let k = -10; k <= 10; k++) { const th = c0 + k * st / 10, a = area(th); if (a < ba - 1e-12) { ba = a; best = th; } } }
+    return best;
+  }
+
+  // Узкие «усы» вдоль кромок. К плоскости стены/колонны у стыка попадают точки соседнего пола или потолка, лежащие в её допуске (полоса
+  // шириной 1–2 шага), и габариты вырастают на ячейку-две. Морфологическое раскрытие маски занятости (ячейки ≈ 4 шага, элемент 3×3)
+  // убирает всё, что тоньше ≈ 12 шагов, и не трогает кромки настоящей поверхности. Возвращает Uint8Array «оставить точку» или null.
+  function spurMask(A, Bv, N, res) {
+    let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (let i = 0; i < N; i++) { const a = A[i], b = Bv[i]; if (a < a0) a0 = a; if (a > a1) a1 = a; if (b < b0) b0 = b; if (b > b1) b1 = b; }
+    if (!(a1 > a0) || !(b1 > b0) || !(res > 0)) return null;
+    let gw = Math.floor((a1 - a0) / res) + 3, gh = Math.floor((b1 - b0) / res) + 3;
+    if (gw * gh > 4e6) { res *= Math.sqrt(gw * gh / 4e6); gw = Math.floor((a1 - a0) / res) + 3; gh = Math.floor((b1 - b0) / res) + 3; }
+    const occ = new Uint8Array(gw * gh), inv = 1 / res;
+    const cell = new Int32Array(N);
+    for (let i = 0; i < N; i++) { const c = (((Bv[i] - b0) * inv) | 0) * gw + (((A[i] - a0) * inv) | 0) + gw + 1; cell[i] = c; occ[c] = 1; }
+    const er = new Uint8Array(gw * gh);
+    for (let y = 1; y < gh - 1; y++) for (let x = 1; x < gw - 1; x++) {
+      const c = y * gw + x;
+      if (occ[c] && occ[c - 1] && occ[c + 1] && occ[c - gw] && occ[c + gw] && occ[c - gw - 1] && occ[c - gw + 1] && occ[c + gw - 1] && occ[c + gw + 1]) er[c] = 1;
+    }
+    const op = new Uint8Array(gw * gh);
+    for (let y = 1; y < gh - 1; y++) for (let x = 1; x < gw - 1; x++) {
+      const c = y * gw + x;
+      if (er[c]) { op[c] = op[c - 1] = op[c + 1] = op[c - gw] = op[c + gw] = op[c - gw - 1] = op[c - gw + 1] = op[c + gw - 1] = op[c + gw + 1] = 1; }
+    }
+    const keep = new Uint8Array(N); let kept = 0;
+    for (let i = 0; i < N; i++) if (op[cell[i]]) { keep[i] = 1; kept++; }
+    return kept >= 8 && kept >= 0.7 * N ? keep : null;
+  }
+
   function planeExtents(points, plane) {
     const c = plane.centroid;
     // базис в плоскости: предпочитаем «горизонтальную» ось для наглядных стен
@@ -247,21 +307,34 @@
     let cuu = 0, cuv = 0, cvv = 0;
     for (let i = 0; i < N; i++) { const du = US[i] - su, dv = VS[i] - sv; cuu += du * du; cuv += du * dv; cvv += dv * dv; }
     cuu /= N; cuv /= N; cvv /= N;
-    const e = eigen2(cuu, cuv, cvv);
-    // проекция на главные оси → мин/макс → размеры
+    const e0 = eigen2(cuu, cuv, cvv);
+    // ориентация: рамка минимальной площади (не PCA); «усы» вдоль кромок отсекаются маской занятости
+    const th = minAreaAngle(US, VS, N, Math.atan2(e0.v1[1], e0.v1[0]));
+    const ct = Math.cos(th), st = Math.sin(th);
+    const A1 = new Float64Array(N), A2 = new Float64Array(N);
+    for (let i = 0; i < N; i++) { A1[i] = US[i] * ct + VS[i] * st; A2[i] = -US[i] * st + VS[i] * ct; }
+    let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (let i = 0; i < N; i++) { if (A1[i] < a0) a0 = A1[i]; if (A1[i] > a1) a1 = A1[i]; if (A2[i] < b0) b0 = A2[i]; if (A2[i] > b1) b1 = A2[i]; }
+    const sp = (plane.spacing > 0) ? plane.spacing : Math.sqrt(Math.max(1e-12, (a1 - a0) * (b1 - b0)) / Math.max(1, N));
+    const keep = N >= 64 ? spurMask(A1, A2, N, 4 * sp) : null;
+    // проекция на оси рамки → мин/макс → размеры
     let a1mn = Infinity, a1mx = -Infinity, a2mn = Infinity, a2mx = -Infinity;
     for (let i = 0; i < N; i++) {
-      const du = US[i] - su, dv = VS[i] - sv;
-      const p1 = du * e.v1[0] + dv * e.v1[1];
-      const p2 = du * e.v2[0] + dv * e.v2[1];
+      if (keep && !keep[i]) continue;
+      const p1 = A1[i], p2 = A2[i];
       if (p1 < a1mn) a1mn = p1; if (p1 > a1mx) a1mx = p1;
       if (p2 < a2mn) a2mn = p2; if (p2 > a2mx) a2mx = p2;
     }
+    // ось 1 — длинная сторона
+    const swap = (a2mx - a2mn) > (a1mx - a1mn);
+    const e = swap ? { v1: [-st, ct], v2: [-ct, -st] } : { v1: [ct, st], v2: [-st, ct] };
+    if (swap) { const o1n = a1mn, o1x = a1mx, o2n = a2mn, o2x = a2mx; a1mn = o2n; a1mx = o2x; a2mn = -o1x; a2mx = -o1n; }
+    // (a1mn…a1mx) — вдоль e.v1, (a2mn…a2mx) — вдоль e.v2; координаты (u,v) отсчитаны от центроида плоскости c
     const size1 = a1mx - a1mn, size2 = a2mx - a2mn;
     const m1 = (a1mn + a1mx) / 2, m2 = (a2mn + a2mx) / 2;
     // центр ориентированного прямоугольника в uv → в 3D
-    const cU = su + e.v1[0] * m1 + e.v2[0] * m2;
-    const cV = sv + e.v1[1] * m1 + e.v2[1] * m2;
+    const cU = e.v1[0] * m1 + e.v2[0] * m2;
+    const cV = e.v1[1] * m1 + e.v2[1] * m2;
     const center3 = add(add(c, scale(u, cU)), scale(v, cV));
     // главные оси в 3D
     const axis1 = norm(add(scale(u, e.v1[0]), scale(v, e.v1[1])));
@@ -278,6 +351,7 @@
       const vAx = norm(cross(plane.normal, hAxis)); // ~вертикаль в плоскости стены
       let h0 = Infinity, h1 = -Infinity, v0 = Infinity, v1 = -Infinity;
       for (let i = 0; i < N; i++) {
+        if (keep && !keep[i]) continue;
         const px = X(i) - c[0], py = Y(i) - c[1], pz = Z(i) - c[2];
         const ph = px * hAxis[0] + py * hAxis[1] + pz * hAxis[2], pv = px * vAx[0] + py * vAx[1] + pz * vAx[2];
         if (ph < h0) h0 = ph; if (ph > h1) h1 = ph;

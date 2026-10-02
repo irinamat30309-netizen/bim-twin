@@ -33,7 +33,7 @@ test('smart-measure: направляющие доходят до пола/по�
 });
 
 test('smart-measure: предпросмотр и привязка подключены к наведению/клику', () => {
-  assert.ok(SRC.includes('this._smartDistancePreview(pv)'), 'предпросмотр не вызывается при наведении');
+  assert.ok(SRC.includes('this._distancePreviewAt(hit ? hit.point : null, pt)') && SRC.includes('this._smartDistancePreview(pv, gap, A0)'), 'предпросмотр не вызывается при наведении');
   assert.ok(SRC.includes('placePt = this._smartAxisLock('), 'клик не применяет привязку к осям');
 });
 
