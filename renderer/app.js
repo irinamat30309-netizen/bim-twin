@@ -3276,7 +3276,7 @@
     const more = box.querySelector('#epMore'); if (more) more.onclick = () => { activeTab = 'props'; syncTabs(); };
   }
   // ── форматирование результатов измерения ──
-  function measIcon(mode) { return ({ point: 'crosshair', distance: 'ruler', polyline: 'polyline', angle: 'angle', area: 'vector-square', plane: 'brick-wall', deviation: 'arrow-up-down', corner: 'cuboid' })[mode] || 'ruler'; }
+  function measIcon(mode) { return ({ point: 'crosshair', distance: 'ruler', polyline: 'polyline', angle: 'angle', area: 'vector-square', diameter: 'diameter', plane: 'brick-wall', deviation: 'arrow-up-down', corner: 'cuboid' })[mode] || 'ruler'; }
   function measIco(mode, cls) { return '<span class="ro-ico' + (cls ? ' ' + cls : '') + '" data-ico="' + (mode === 'error' ? 'triangle-alert' : measIcon(mode)) + '"></span>'; }
   function measureHint(mode) {
     const H = {
@@ -3285,6 +3285,7 @@
       polyline: 'Полилиния: кликайте точки подряд, «Завершить» — новая',
       angle: 'Угол: кликните 3 точки (вершина — вторая)',
       area: 'Площадь: кликайте вершины контура (≥3), «Завершить» — новая',
+      diameter: 'Диаметр: один клик по трубе — ось и радиус по всей видимой дуге',
       plane: 'Плоскость: кликните по стене/потолку — подберу размеры',
       deviation: 'Зазор: 1-й клик — опорная плоскость (ровная поверхность), дальше — клики для замера отклонения',
       corner: 'Ребро/Угол: кликните 2 плоскости (стена+стена) → точное ребро и угол; 3-я плоскость (+пол/потолок) → точка угла комнаты'
@@ -3308,7 +3309,7 @@
           const au = res.auto, lv = { high: 'высокая', medium: 'средняя', low: 'низкая' }[au.level] || au.level || '—';
           return esc(au.label || 'Размер') + ' <b>' + Me.autoValue(au) + '</b>' + esc(Me.autoSigma(au)) + ' · ' + esc(au.how || '') + ' · уверенность: ' + esc(lv);
         }
-        const SN = { corner: 'угол', edge: 'ребро', plane: 'плоскость', point: 'точка', raw: 'без привязки' };
+        const SN = { corner: 'угол', edge: 'ребро', plane: 'плоскость', point: 'точка', raw: 'без привязки', curve: 'труба' };
         const sn = res.snap ? ' · ' + (SN[res.snap.a.kind] || '') + ' → ' + (SN[res.snap.b.kind] || '') : '';
         // ±σ — точность привязок; у ребра и плоскости она только поперёк, а расстояние между точками зависит ещё и от места клика вдоль ребра (плоскости) —
         // поэтому для обычного 3D-расстояния ± пишем, когда точки определены полностью (угол, точка облака)
@@ -3316,13 +3317,17 @@
         const acc = res.sigma != null && res.sigma > 0 && res.snap && res.snap.a.grown && res.snap.b.grown && (res.perp != null || !(partial(res.snap.a.kind) || partial(res.snap.b.kind))) ? ' · ±' + (Math.max(res.sigma, 0.0001) * 1000).toFixed(1).replace('.', ',') + ' мм' : '';
         // плоскости не параллельны (откосы, перекрытия): расстояние зависит от места замера — говорим об этом, а не выдаём одно число за «ширину вообще»
         const tiltNote = res.tilt != null && res.tilt >= 0.0052 ? ' · не параллельны на ' + (res.tilt * 180 / Math.PI).toFixed(1).replace('.', ',') + '°: значение зависит от места (' + (Math.tan(res.tilt) * 100).toFixed(1).replace('.', ',') + ' мм на 10 см)' : '';
+        const sg1 = v => ' · ±' + (Math.max(v, 0.0001) * 1000).toFixed(1).replace('.', ',') + ' мм';
+        if (res.perp != null && res.perpKind === 'pipe') return 'Ø <b>' + L(res.perp) + '</b> диаметр трубы (радиус ' + L(res.perp / 2) + ')' + sn + (res.perpSigma > 0 && res.snap && res.snap.a.grown && res.snap.b.grown ? sg1(res.perpSigma) : '') + ' · по ' + ((res.snap && res.snap.a.count) || 0).toLocaleString('ru-RU') + ' точкам трубы';
+        if (res.perp != null && res.perpKind === 'pipes') return '<b>' + L(res.perp) + '</b> между осями двух труб · зазор между стенками ' + L(Math.max(0, res.gap || 0)) + sn;
         if (res.perp != null && res.perpKind === 'planes') return '<b>' + L(res.perp) + '</b> между плоскостями (по нормали)' + sn + acc + ' · сдвиг вдоль плоскостей ' + L(Math.sqrt(Math.max(0, res.d3 * res.d3 - res.perp * res.perp))) + tiltNote;
         if (res.perp != null && res.perpKind === 'edges') return '<b>' + L(res.perp) + '</b> между рёбрами (по перпендикуляру)' + sn + acc + (res.along != null ? ' · вдоль ребра ' + L(res.along) : '');
-        return '<b>' + L(res.d3) + '</b> · гориз. ' + L(res.horizontal) + ' · верт. ' + L(res.vertical) + ' · ΔX ' + L(Math.abs(res.dx)) + ' ΔY ' + L(Math.abs(res.dy)) + ' ΔZ ' + L(Math.abs(res.dz)) + sn + acc + (res.perp != null ? ' · до плоскости ⊥ ' + L(res.perp) : '');
+        return '<b>' + L(res.d3) + '</b> · гориз. ' + L(res.horizontal) + ' · верт. ' + L(res.vertical) + ' · ΔX ' + L(Math.abs(res.dx)) + ' ΔY ' + L(Math.abs(res.dy)) + ' ΔZ ' + L(Math.abs(res.dz)) + sn + acc + (res.perp != null ? ' · до плоскости ⊥ ' + L(res.perp) : '') + (res.pipe ? ' · точки на одной трубе Ø ' + L(res.pipe.diameter) + ' (диаметр — клики на противоположных сторонах)' : '');
       }
       case 'polyline': return 'Длина <b>' + L(res.total) + '</b> · точек: ' + res.count + ' · сегментов: ' + (res.count - 1);
       case 'angle': return 'Угол <b>' + res.deg.toFixed(2) + '°</b> · стороны ' + L(res.lenA) + ' и ' + L(res.lenC);
       case 'area': return 'Площадь <b>' + A(res.area) + '</b> · периметр ' + L(res.perimeter) + ' · вершин: ' + res.count;
+      case 'diameter': return 'Ø <b>' + L(res.diameter) + '</b> · радиус ' + L(res.radius) + (res.sigma > 0 ? ' · ±' + (Math.max(res.sigma, 0.0001) * 1000).toFixed(1).replace('.', ',') + ' мм' : '') + ' · по ' + (res.count | 0).toLocaleString('ru-RU') + ' точкам трубы' + (res.arc ? ' · видимая дуга ' + Math.round(res.arc) + '°' : '') + (res.weak ? ' · дуга короткая — оценка грубая, поверните вид и кликните по трубе ближе к середине дуги' : '');
       case 'plane': return esc(res.kind) + ' · <b>' + L(res.length) + ' × ' + L(res.width) + '</b> (≈' + A(res.rectArea) + ') · наклон ' + res.dip.toFixed(1) + '° · RMS ' + (res.rms * 1000).toFixed(1) + ' мм · ' + ptsOf(res);
       case 'deviation':
         if (res.ready) return 'Опорная плоскость готова: ' + L(res.length || 0) + ' × ' + L(res.width || 0) + ' (RMS ' + (res.rms * 1000).toFixed(1) + ' мм, ' + ptsOf(res) + '). Теперь кликайте точки для замера зазора';
@@ -4996,6 +5001,7 @@
   }
   window.__bimSetMeasuring = setMeasuring;
   function wirePhaseB() {
+    if (viewer) viewer.onMeasureReset = mode => { const r = $('measureReadout'); if (r) { r.dataset.hint = '1'; r.style.display = ''; r.innerHTML = measureHint(mode || 'distance'); } };
     if (viewer) viewer.onMeasure = res => { const r = $('measureReadout'); if (r) { r.dataset.hint='0';r.style.display = ''; r.innerHTML = fmtMeasure(res); } if (res && res.mode === 'point' && res.point && window.__lxSetCoords) window.__lxSetCoords(res.point[0], res.point[1], res.point[2]); };
     const bind = (id, fn) => { const b = $(id); if (b) b.addEventListener('click', fn); };
     // кнопки выбора режима измерения

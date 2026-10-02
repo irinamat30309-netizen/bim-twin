@@ -35,8 +35,8 @@
     return b;
   }
 
-  var MODES = [['distance', 'Расстояние', 'ruler'], ['point', 'Координата', 'crosshair'], ['polyline', 'Полилиния', 'polyline'], ['angle', 'Угол', 'angle'], ['area', 'Площадь', 'vector-square'], ['plane', 'Плоскость', 'brick-wall'], ['deviation', 'Зазор', 'arrow-up-down'], ['corner', 'Ребро/угол', 'cuboid']];
-  var MNAME = { distance: 'Расст.', point: 'Точка', polyline: 'Полилиния', angle: 'Угол', area: 'Площадь', plane: 'Плоскость', deviation: 'Зазор', corner: 'Ребро/угол' };
+  var MODES = [['distance', 'Расстояние', 'ruler'], ['point', 'Координата', 'crosshair'], ['polyline', 'Полилиния', 'polyline'], ['angle', 'Угол', 'angle'], ['area', 'Площадь', 'vector-square'], ['diameter', 'Диаметр', 'diameter'], ['plane', 'Плоскость', 'brick-wall'], ['deviation', 'Зазор', 'arrow-up-down'], ['corner', 'Ребро/угол', 'cuboid']];
+  var MNAME = { distance: 'Расст.', point: 'Точка', polyline: 'Полилиния', angle: 'Угол', area: 'Площадь', diameter: 'Диаметр', plane: 'Плоскость', deviation: 'Зазор', corner: 'Ребро/угол' };
 
   /* Тип объекта: по нему приложение выбирает, какое требование искать в документах (стена, труба, проём…). */
   var KINDS = [['', 'Авто'], ['стена', 'Стена'], ['колонна', 'Колонна'], ['балка', 'Балка'], ['перекрытие', 'Перекрытие'], ['пол', 'Пол'], ['потолок', 'Потолок'], ['проём', 'Проём'], ['дверь', 'Дверь'], ['окно', 'Окно'], ['труба', 'Труба'], ['воздуховод', 'Воздуховод'], ['лоток', 'Лоток'], ['оборудование', 'Оборудование']];

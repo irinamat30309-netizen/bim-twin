@@ -427,16 +427,23 @@
     let value = '', extra = '';
     switch (r.mode) {
       case 'point': value = j(r.point); break;
-      case 'distance': value = f(r.d3); extra = 'гориз=' + f(r.horizontal) + '; верт=' + f(r.vertical) + '; dXYZ=' + f(r.dx) + ',' + f(r.dy) + ',' + f(r.dz); break;
+      case 'distance': {
+        // в таблицу идёт то же число, что в окне результата: между плоскостями / рёбрами — по перпендикуляру, труба — диаметр (раньше всегда уходила длина отрезка, и сдвиг вдоль стен её завышал)
+        const hl = r.perp != null && (r.perpKind === 'planes' || r.perpKind === 'edges' || r.perpKind === 'pipe' || r.perpKind === 'pipes');
+        value = f(hl ? r.perp : r.d3);
+        extra = (hl ? 'вид=' + ({ planes: 'между плоскостями', edges: 'между рёбрами', pipe: 'диаметр трубы', pipes: 'между осями труб' })[r.perpKind] + '; d3=' + f(r.d3) + '; ' : '') + 'гориз=' + f(r.horizontal) + '; верт=' + f(r.vertical) + '; dXYZ=' + f(r.dx) + ',' + f(r.dy) + ',' + f(r.dz);
+        break;
+      }
+      case 'diameter': value = f(r.diameter); extra = 'радиус=' + f(r.radius) + '; ось=' + j(r.axis) + (r.sigma != null ? '; sigma_мм=' + f(r.sigma * 1000) : '') + '; RMS_мм=' + f((r.rms || 0) * 1000) + '; точек=' + f(r.count); break;
       case 'polyline': value = f(r.total); extra = 'точек=' + f(r.count); break;
       case 'angle': value = f(r.deg) + '°'; extra = 'стороны=' + f(r.lenA) + ',' + f(r.lenC); break;
       case 'area': value = f(r.area); extra = 'периметр=' + f(r.perimeter) + '; вершин=' + f(r.count); break;
       case 'plane': value = f(r.length) + '×' + f(r.width); extra = 'наклон=' + f(r.dip) + '°; RMS_мм=' + f((r.rms || 0) * 1000) + '; ' + f(r.kind); break;
-      case 'deviation': value = f(r.signed); extra = 'зазор_мм=' + f((r.signed || 0) * 1000) + '; ' + (r.sign >= 0 ? 'снаружи' : 'внутри'); break;
+      case 'deviation': value = f(r.signed); extra = 'зазор_мм=' + f((r.signed || 0) * 1000) + '; ' + (r.sign >= 0 ? 'перед плоскостью' : 'за плоскостью'); break;
       case 'corner': value = (r.angleDeg != null ? f(r.angleDeg) + '°' : ''); extra = (r.corner ? 'угол_xyz=' + j(r.corner) + '; ' : '') + (r.dir ? 'ребро_dir=' + j(r.dir) + '; ' : '') + 'плоскостей=' + f(r.planeCount || 0); break;
       default: value = '';
     }
-    const unit = (r.mode === 'area') ? 'м²' : (r.mode === 'angle') ? '°' : (r.mode === 'point') ? 'м(xyz)' : 'м';
+    const unit = (r.mode === 'area') ? 'м²' : (r.mode === 'angle' || r.mode === 'corner') ? '°' : (r.mode === 'point') ? 'м(xyz)' : 'м';
     return [f(idx), r.mode || '', value, unit, r.label || '', extra].map(csvCell).join(',');
   }
   const csvCell = v => { const s = String(v == null ? '' : v); return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -523,7 +530,7 @@
     return { rms: Math.sqrt(ss / n), peak: peak, valley: valley, pv: peak - valley, count: n };
   }
 
-  const MODE_RU = { point: 'Точка', distance: 'Расстояние', polyline: 'Полилиния', angle: 'Угол', area: 'Площадь', plane: 'Плоскость', deviation: 'Зазор', corner: 'Ребро/Угол' };
+  const MODE_RU = { point: 'Точка', distance: 'Расстояние', polyline: 'Полилиния', angle: 'Угол', area: 'Площадь', plane: 'Плоскость', deviation: 'Зазор', corner: 'Ребро/Угол', diameter: 'Диаметр' };
   // Краткое человекочитаемое значение измерения (без HTML) — для Markdown/Notion.
   // Автоматический замер (renderer/auto-measure.js): одно значение с названием, погрешностью ±σ, способом и уровнем уверенности.
   const AUTO_LEVEL_RU = { high: 'высокая', medium: 'средняя', low: 'низкая' };
@@ -548,12 +555,16 @@
     const L = fmtLen, A = fmtArea, n = x => (x == null ? '' : (+x).toFixed(3));
     switch (r.mode) {
       case 'point': return 'X ' + n(r.point[0]) + ', Y ' + n(r.point[1]) + ', Z ' + n(r.point[2]) + ' м';
-      case 'distance': return L(r.d3) + ' (гор. ' + L(r.horizontal) + ', верт. ' + L(r.vertical) + ')' + (r.perp != null ? ', ⊥ ' + L(r.perp) + (r.perpKind === 'edges' ? ' между рёбрами' : r.perpKind === 'planes' ? ' между плоскостями' : ' до плоскости') : '');
+      case 'distance':
+        if (r.perp != null && r.perpKind === 'pipe') return 'Ø ' + L(r.perp) + ' (диаметр трубы; отрезок ' + L(r.d3) + ')';
+        if (r.perp != null && r.perpKind === 'pipes') return L(r.perp) + ' между осями труб' + (r.gap != null ? ' (зазор ' + L(Math.max(0, r.gap)) + ')' : '');
+        return L(r.d3) + ' (гор. ' + L(r.horizontal) + ', верт. ' + L(r.vertical) + ')' + (r.perp != null ? ', ⊥ ' + L(r.perp) + (r.perpKind === 'edges' ? ' между рёбрами' : r.perpKind === 'planes' ? ' между плоскостями' : ' до плоскости') : '');
+      case 'diameter': return 'Ø ' + L(r.diameter) + ' (радиус ' + L(r.radius) + ')';
       case 'polyline': return L(r.total) + ' (точек ' + r.count + ')';
       case 'angle': return (r.deg != null ? r.deg.toFixed(2) : '') + '°';
       case 'area': return A(r.area) + ' (периметр ' + L(r.perimeter) + ')';
       case 'plane': return L(r.length) + ' × ' + L(r.width) + ' (' + r.kind + ', наклон ' + (r.dip != null ? r.dip.toFixed(1) : '') + '°)';
-      case 'deviation': return (r.sign >= 0 ? '+' : '−') + L(r.distance) + ' (' + (r.sign >= 0 ? 'снаружи' : 'внутри') + ')';
+      case 'deviation': return (r.sign >= 0 ? '+' : '−') + L(r.distance) + ' (' + (r.sign >= 0 ? 'перед плоскостью' : 'за плоскостью') + ')';
       case 'corner': return (r.angleDeg != null ? '∠ ' + r.angleDeg.toFixed(1) + '°' : '') + (r.corner ? ' · угол (' + n(r.corner[0]) + ', ' + n(r.corner[1]) + ', ' + n(r.corner[2]) + ')' : '');
       default: return '';
     }
@@ -620,7 +631,10 @@
     switch (res.mode) {
       case 'distance':
         out.d3 = L(res.d3); out.dx = L(res.dx); out.dy = L(res.dy); out.dz = L(res.dz);
-        out.horizontal = L(res.horizontal); out.vertical = L(res.vertical); break;
+        out.horizontal = L(res.horizontal); out.vertical = L(res.vertical);
+        out.perp = L(res.perp); out.along = L(res.along); out.gap = L(res.gap); out.diameter = L(res.diameter); break;
+      case 'diameter':
+        out.diameter = L(res.diameter); out.radius = L(res.radius); out.sigma = L(res.sigma); out.rms = L(res.rms); break;
       case 'polyline':
         out.total = L(res.total);
         if (Array.isArray(res.segments)) out.segments = res.segments.map(L); break;

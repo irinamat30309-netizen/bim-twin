@@ -681,7 +681,8 @@
           else add('perp', m.auto.label || 'Размер', m.perp, 'linear');
           break;
         }
-        add('perp', m.perpKind === 'edges' ? 'Расстояние между рёбрами (⊥)' : m.perpKind === 'point-plane' ? 'Расстояние до плоскости (⊥)' : 'Расстояние между плоскостями (⊥)', m.perp, 'linear');
+        if (m.perpKind === 'pipe') add('diameter', 'Диаметр трубы (Ø)', m.perp, 'linear');
+        else add('perp', m.perpKind === 'pipes' ? 'Расстояние между осями труб' : m.perpKind === 'edges' ? 'Расстояние между рёбрами (⊥)' : m.perpKind === 'point-plane' ? 'Расстояние до плоскости (⊥)' : 'Расстояние между плоскостями (⊥)', m.perp, 'linear');
         add('distance3d', 'Полная длина (3D)', m.d3, 'linear');
         add('horizontal', 'Горизонтальная проекция', m.horizontal, 'linear');
         add('vertical', 'Перепад высоты', m.vertical, 'linear');
@@ -689,6 +690,9 @@
         add('deltaY', 'Абсолютный ΔY', typeof m.dy === 'number' ? Math.abs(m.dy) : null, 'linear');
         add('deltaZ', 'Абсолютный ΔZ', typeof m.dz === 'number' ? Math.abs(m.dz) : null, 'linear');
         add('slope', 'Уклон', m.grade, 'slope');
+        break;
+      case 'diameter':
+        add('diameter', 'Диаметр трубы (Ø)', m.diameter, 'linear');
         break;
       case 'polyline':
         add('length', 'Длина полилинии', m.total, 'linear');
@@ -724,6 +728,7 @@
     if (d === 'width') return byKey('width') || byKey('perp') || byKey('horizontal') || byKey('distance3d') || fields.find(f => f.kind === (requirement && requirement.kind));
     if (d === 'height') return byKey('perp') && byKey('vertical') ? byKey('perp') : byKey('vertical') || byKey('height') || byKey('length') || fields.find(f => f.kind === (requirement && requirement.kind));
     if (d === 'length') return byKey('length') || byKey('perp') || byKey('distance3d') || byKey('perimeter') || fields.find(f => f.kind === (requirement && requirement.kind));
+    if (d === 'diameter' && byKey('diameter')) return byKey('diameter');
     if (d === 'thickness' || d === 'diameter' || d === 'gap') return byKey('gap') || byKey('perp') || byKey('distance3d') || fields.find(f => f.kind === (requirement && requirement.kind));
     if (d === 'angle') return byKey('angle');
     if (d === 'area') return byKey('area');
@@ -767,6 +772,7 @@
       distance3d: vert ? { primary: 'height', compatible: ['length', 'gap', 'thickness'] }
         : hor ? { primary: ['width', 'length'], compatible: ['thickness', 'diameter', 'gap'] }
           : { primary: 'length', compatible: ['width', 'height', 'thickness', 'diameter', 'gap'] },
+      diameter: { primary: 'diameter', compatible: ['width', 'thickness', 'gap'] },
       horizontal: { primary: ['width', 'length'], compatible: ['diameter', 'gap', 'thickness'] },
       vertical: { primary: 'height', compatible: ['length', 'gap', 'thickness'] },
       deltaX: { primary: ['width', 'length'], compatible: ['thickness', 'diameter', 'gap'], auto: false },

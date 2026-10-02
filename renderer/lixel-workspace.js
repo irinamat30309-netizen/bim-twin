@@ -78,6 +78,8 @@
     if (fp) { const x = fp.querySelector('[data-panel-close]'); if (x) { x.click(); return true; } }
     const v = viewer();
     if (v && v.editSelect && v.selectionCount && v.selectionCount() && v.clearSelection) { v.clearSelection(); notify('Выделение снято. Ещё Esc — выйти из правки.'); return true; }
+    // Незавершённое измерение (точки, плоскости, результат): первый Esc отменяет его, второй выходит из инструмента.
+    if (v && v.measuring && v.cancelMeasure && v.hasMeasureProgress && v.hasMeasureProgress() && v.cancelMeasure()) { notify('Измерение отменено. Ещё Esc — выйти из измерений.'); return true; }
     if (toolActive()) {
       if (window.__lxModes && window.__lxModes.cancelAll) window.__lxModes.cancelAll('escape'); else exitTools();
       return true;
