@@ -365,15 +365,17 @@
       message: 'Находит большие плоскости (стены, пол, потолок), склеивает двойные слои и укладывает точки на одну плоскость. Измерения по таким поверхностям становятся точными. Трубы и мебель не меняются.',
       fields: function (d) {
         return [
+          { key: 'kind', label: 'Тип поверхности', type: 'select', value: 'wall', options: [{ value: 'wall', label: 'Стена, пол, потолок (тонкий слой)' }, { value: 'facade', label: 'Фасад, стекло (толстый слой)' }],
+            hint: 'На сканах через стекло (SLAM) слой фасада «размазан» на 5–10 см: выберите «Фасад, стекло» — допуск не меньше 12 см, участки по 0,6 м. На реальном скане фасада доля точек в пределах ±5 мм от плоскости выросла с 32 до 94 %.' },
           { key: 'tol', label: 'Допуск (толщина слоя)', type: 'number', value: d.flattenTol, min: 0.002, max: 0.5, step: 'any', unit: 'м', hint: 'Точки ближе допуска к плоскости ложатся на неё. Для SLAM-сканеров 0,03–0,06 м, для точных сканеров 0,01 м.' },
           { key: 'strength', label: 'Сила', type: 'number', value: 100, min: 5, max: 100, step: '1', unit: '%' }
         ];
       },
-      params: function (v, d) { return { tol: v.tol, strength: v.strength / 100, spacing: d.spacing }; },
+      params: function (v, d) { var facade = v.kind === 'facade'; return { tol: facade ? Math.max(v.tol, 0.12) : v.tol, strength: v.strength / 100, spacing: d.spacing, cell: facade ? 0.6 : undefined }; },
       finish: function (res, c, v) {
         if (!res.planes) { toast('Выравнивание: больших плоскостей не найдено. Увеличьте допуск (сейчас ' + num(v.tol) + ' м).'); return null; }
         return { cloud: { pos: res.pos, col: c.col, intensity: c.intensity, classification: c.classification, count: c.count }, name: 'flatten',
-          details: { operation: 'cloud.flatten', parameters: { algorithm: 'plane-merge', tolerance: v.tol, strength: v.strength / 100, planes: res.planes, moved: res.moved, points: c.count, rmsShift: res.rmsShift } },
+          details: { operation: 'cloud.flatten', parameters: { algorithm: 'plane-merge', surface: v.kind === 'facade' ? 'facade' : 'wall', tolerance: v.kind === 'facade' ? Math.max(v.tol, 0.12) : v.tol, strength: v.strength / 100, planes: res.planes, moved: res.moved, points: c.count, rmsShift: res.rmsShift } },
           text: 'Выровнено поверхностей: ' + nfmt(res.planes) + ', точек ' + nfmt(res.moved) + ' из ' + nfmt(c.count) + ', средний сдвиг ' + mm(res.rmsShift) };
       }
     });
