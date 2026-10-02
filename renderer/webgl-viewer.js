@@ -1365,19 +1365,26 @@
       const s = Me.snapToFeature(pt, pts);
       return { point: (s.point.slice ? s.point.slice() : s.point), kind: s.kind };
     }
-    _clearMeasure() { this.measurePts = []; this._measSnaps = []; this._measResult = null; this._measLabels = []; this._measPlane = null; this._measCornerPlanes = null; this._setOverlay([]); this._renderMeasLabels(); }
+    _clearMeasure() { this.measurePts = []; this._measSnaps = []; this._measResult = null; this._measLabels = []; this._measPlane = null; this._measCornerPlanes = null; this._measRefPlane = null; this._measCornerLine = null; this._measCornerPt = null; this._measGap = null; this._setOverlay([]); this._renderMeasLabels(); }
     _sceneDiag() { const c = this.bbox; return Math.hypot(c.mx[0] - c.mn[0], c.mx[1] - c.mn[1], c.mx[2] - c.mn[2]) || 8; }
 
-    // Сбор локальной окрестности точек вокруг seed в радиусе r (для подгонки плоскости).
-    _gatherNeighborhood(seed, r) {
+    // Сбор локальной окрестности точек вокруг seed в радиусе r (запасная подгонка плоскости). Через индекс облака — только соседи;
+    // прежний перебор всех точек (с прореживанием на больших облаках) остался на случай, когда индекса нет.
+    _gatherNeighborhood(seed, r, cap) {
       const bo = this.base && this.base[0];
       if (!bo || !bo.points || !bo.pos) return [];
-      const P = bo.pos, n = P.length / 3, r2 = r * r;
+      const P = bo.pos, lim = cap || 60000, out = [];
+      let idx = null; try { idx = this._psIndex({ sync: true }); } catch (e) { idx = null; }
+      if (idx && idx.n && idx.query) {
+        const ids = idx.query(seed[0], seed[1], seed[2], r, lim);
+        for (let k = 0; k < ids.length; k++) { const i = ids[k] * 3; out.push([P[i], P[i + 1], P[i + 2]]); }
+        return out;
+      }
+      const n = P.length / 3, r2 = r * r;
       const stride = n > 1500000 ? Math.ceil(n / 1500000) : 1; // ограничиваем работу на огромных облаках (не виснет при расстановке точек)
-      const out = [], cap = 60000;
       for (let pi = 0; pi < n; pi += stride) {
         const i = pi * 3, dx = P[i] - seed[0], dy = P[i + 1] - seed[1], dz = P[i + 2] - seed[2];
-        if (dx * dx + dy * dy + dz * dz <= r2) { out.push([P[i], P[i + 1], P[i + 2]]); if (out.length >= cap) break; }
+        if (dx * dx + dy * dy + dz * dz <= r2) { out.push([P[i], P[i + 1], P[i + 2]]); if (out.length >= lim) break; }
       }
       return out;
     }
@@ -1414,90 +1421,155 @@
       this.render();
     }
 
-    // Режим «точка → плоскость»: 1-й клик — опорная плоскость (RANSAC), дальше — зазор/отклонение.
+    // Плоскость под курсором. PrecisionSnap находит поверхность у курсора и «растит» её по всему связному участку: стена целиком,
+    // а не клочок возле точки. Раньше брали RANSAC по шару радиусом 5 % диагонали сцены — на сцене в 150 м это 7,5 м вокруг клика:
+    // в шар попадали пол, потолок и соседние стены, и «плоскость» нередко оказывалась не той, по которой кликнули.
+    // Возвращает {plane, ext, snap} (plane — той же формы, что Measure.ransacPlane; нормаль повёрнута к камере),
+    // {error} — понятная причина отказа, null — индекса нет или рядом нет ровной поверхности (тогда запасной RANSAC).
+    _localPlaneAt(pt) {
+      const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null, Me = typeof window !== 'undefined' ? window.Measure : null;
+      if (!PS || !Me) return null;
+      const idx = this._psIndex({ sync: true });
+      if (!idx || !idx.n) return null;
+      const ps = this._precisionSnapAt(pt, { grow: true, sync: true });
+      if (!ps) return null;
+      if (ps.kind === 'curve' && ps.cylinder) return { error: 'Здесь круглая поверхность (труба Ø ' + Math.round(ps.cylinder.radius * 2000) + ' мм), плоскость не определена. Диаметр трубы меряет инструмент «Диаметр»', snap: ps };
+      const cands = (ps.planes || []).filter(p => p.count >= 24);
+      if (!cands.length) return null;
+      // у ребра и угла в окне несколько плоскостей — берём ту, на которой лежит кликнутая точка
+      let best = cands[0], bd = Infinity;
+      for (const p of cands) { const e = Math.abs(p.normal[0] * pt[0] + p.normal[1] * pt[1] + p.normal[2] * pt[2] + p.d); if (e < bd) { bd = e; best = p; } }
+      const sp = ps.spacing || idx.spacing || 0.01, view = Object.create(idx); view.spacing = sp;
+      const sibs = cands.filter(p => p !== best);
+      const e0 = best.normal[0] * pt[0] + best.normal[1] * pt[1] + best.normal[2] * pt[2] + best.d;
+      const foot = [pt[0] - best.normal[0] * e0, pt[1] - best.normal[1] * e0, pt[2] - best.normal[2] * e0];
+      let g = null, ids = null;
+      try { g = PS.growPlane(view, best, { foot: foot, r0: 6 * sp, rmax: Infinity, cap: 2500000, passes: 4, siblings: sibs, keepIds: true }); } catch (e) { g = null; }
+      if (g && g.ids && g.ids.length >= 24) ids = g.ids;
+      else { g = best; try { ids = PS.collectPlanePoints(view, best, foot, best.tau || 1.5 * sp, 700000, 6 * sp, sibs, 110 * sp); } catch (e) { ids = null; } }
+      if (!ids || ids.length < 24) return null;
+      // габариты участка: ещё раз по окончательной плоскости, с точками кромочных ячеек (обход по ячейкам у стыка с полом/стеной теряет до ячейки с каждой стороны)
+      try { const ids2 = PS.collectPlanePoints(view, g, foot, g.tau || 1.5 * sp, 3000000, 6 * sp, sibs, Infinity, true); if (ids2.length >= ids.length) ids = ids2; } catch (e) { /* остаются точки роста */ }
+      let nrm = g.normal.slice(), dd = g.d;
+      const eye = this._eye(), c = g.centroid;
+      if (nrm[0] * (eye[0] - c[0]) + nrm[1] * (eye[1] - c[1]) + nrm[2] * (eye[2] - c[2]) < 0) { nrm = [-nrm[0], -nrm[1], -nrm[2]]; dd = -dd; }   // нормаль — к камере: знак «зазора» определён, а не случаен
+      const bs = Me.planeBasis(nrm);
+      const plane = { normal: nrm, d: dd, centroid: c.slice(), e1: bs[0], e2: bs[1], rms: g.rms, count: ids.length, inlierCount: ids.length, total: ids.length, coverage: 1,
+                      threshold: g.tau, medianError: g.rms * 0.6745, sigma: PS.planeSigmaAt(g, foot), fromSnap: true, spacing: sp };
+      const ext = Me.planeExtents({ pos: idx.pos, ids: ids }, plane);
+      return { plane: plane, ext: ext, snap: ps, radius: 0 };
+    }
+
+    // Подгонка плоскости под курсором → {plane, ext} или {error}, либо null (мало точек).
+    // Сначала локальная плоскость по PrecisionSnap; если индекса нет или рядом нет ровной поверхности — RANSAC по ближней окрестности.
+    _fitPlaneRansacAt(pt) {
+      const Me = (typeof window !== 'undefined' && window.Measure); if (!Me) return null;
+      const lp = this._localPlaneAt(pt);
+      if (lp) return lp;
+      const sp = this._psCache && this._psCache.index ? (this._psCache.index.spacing || 0) : 0;
+      const r = this._measPlaneRadius || Math.min(2, Math.max(0.15, sp > 0 ? 50 * sp : this._sceneDiag() * 0.01));
+      const pts = this._gatherNeighborhood(pt, r, 30000);
+      if (pts.length < 8) return null;
+      const pl = Me.ransacPlane(pts, { iters: 300 });
+      if (!pl) return null;
+      const eye = this._eye(), c = pl.centroid;
+      if (pl.normal[0] * (eye[0] - c[0]) + pl.normal[1] * (eye[1] - c[1]) + pl.normal[2] * (eye[2] - c[2]) < 0) { pl.normal = [-pl.normal[0], -pl.normal[1], -pl.normal[2]]; pl.d = -pl.d; }
+      const ext = Me.planeExtents(pl.inliers && pl.inliers.length >= 3 ? pl.inliers : pts, pl);
+      return { plane: pl, ext: ext, snap: null, radius: r };
+    }
+
+    // Режим «точка → плоскость»: 1-й клик — опорная плоскость, дальше — зазор/отклонение (со знаком: «+» к камере, «−» от неё).
     _deviationClick(pt) {
       const Me = (typeof window !== 'undefined' && window.Measure); if (!Me) return;
+      const fail = msg => { this._measResult = { mode: 'deviation', error: msg }; if (this.onMeasure) this.onMeasure(this._measResult); };
       if (!this._measRefPlane) {
-        const r = this._measPlaneRadius || this._sceneDiag() * 0.05;
-        const pts = this._gatherNeighborhood(pt, r);
-        if (pts.length < 8) { this._measResult = { mode: 'deviation', error: 'Мало точек для опорной плоскости — кликните по ровной поверхности' }; if (this.onMeasure) this.onMeasure(this._measResult); return; }
-        const pl = Me.ransacPlane(pts, { iters: 300 });
-        if (!pl) { this._measResult = { mode: 'deviation', error: 'Не удалось подобрать опорную плоскость' }; return; }
-        this._measRefPlane = pl;
-        this._measPlane = { plane: pl, ext: Me.planeExtents(pl.inliers && pl.inliers.length >= 3 ? pl.inliers : pts, pl) };
+        const fit = this._fitPlaneRansacAt(pt);
+        if (!fit) return fail('Мало точек для опорной плоскости — кликните по ровной поверхности');
+        if (fit.error) return fail(fit.error);
+        const pl = fit.plane;
+        this._measRefPlane = pl; this._measPlane = { plane: pl, ext: fit.ext };
         this.measurePts = [pt.slice()];
-        this._measResult = { mode: 'deviation', ready: true, rms: pl.rms, inlierCount: pl.inlierCount, total: pl.total };
+        this._measResult = { mode: 'deviation', ready: true, rms: pl.rms, inlierCount: pl.inlierCount, total: pl.total, length: fit.ext.length, width: fit.ext.width, sigma: pl.sigma };
         if (this.onMeasure) this.onMeasure(this._measResult);
         return;
       }
       // опорная плоскость есть — меряем зазор до кликнутой точки
-      const sp = this._applySnap(pt);
-      const dv = Me.signedPointPlane(sp.point, this._measRefPlane);
-      this.measurePts = [this._measRefPlane.centroid.slice(), dv.foot, sp.point];
-      this._measResult = { mode: 'deviation', signed: dv.signed, distance: dv.distance, sign: dv.sign, foot: dv.foot, point: sp.point, refRms: this._measRefPlane.rms };
+      const sp = this._applySnap(pt), ref = this._measRefPlane;
+      const dv = Me.signedPointPlane(sp.point, ref);
+      this.measurePts = [ref.centroid.slice(), dv.foot, sp.point];
+      const ps = sp.snap && sp.snap.refined ? sp.snap : null;
+      const sg = Math.hypot(ref.sigma || 0, ps ? (ps.sigma != null ? ps.sigma : ps.rms || 0) : 0);
+      // вторая плоскость не параллельна опорной — значение зависит от места клика
+      let tilt = null;
+      if (ps && ps.kind === 'plane' && ps.planes && ps.planes[0]) { const cn = Math.abs(ps.planes[0].normal[0] * ref.normal[0] + ps.planes[0].normal[1] * ref.normal[1] + ps.planes[0].normal[2] * ref.normal[2]); tilt = Math.acos(Math.min(1, cn)); }
+      this._measResult = { mode: 'deviation', signed: dv.signed, distance: dv.distance, sign: dv.sign, foot: dv.foot, point: sp.point, refRms: ref.rms, sigma: sg || null, tilt: tilt, snapKind: sp.kind };
       if (this.onMeasure) this.onMeasure(this._measResult);
     }
 
-    // Подгонка плоскости RANSAC вокруг точки клика → возвращает {plane, ext} или null.
-    _fitPlaneRansacAt(pt) {
-      const Me = (typeof window !== 'undefined' && window.Measure); if (!Me) return null;
-      const r = this._measPlaneRadius || this._sceneDiag() * 0.05;
-      const pts = this._gatherNeighborhood(pt, r);
-      if (pts.length < 8) return null;
-      const pl = Me.ransacPlane(pts, { iters: 300 });
-      if (!pl) return null;
-      const ext = Me.planeExtents(pl.inliers && pl.inliers.length >= 3 ? pl.inliers : pts, pl);
-      return { plane: pl, ext: ext };
-    }
-
-    // Режим «Ребро/Угол»: кликни по 2 плоскостям → точное ребро (пересечение) + двугранный угол;
+    // Режим «Ребро/Угол»: кликни по 2 плоскостям → точное ребро (пересечение) + угол между плоскостями;
     // 3-й клик по третьей плоскости → точная точка угла комнаты (пересечение трёх плоскостей).
     _cornerClick(pt) {
       const Me = (typeof window !== 'undefined' && window.Measure); if (!Me) return;
-      if (!this._measCornerPlanes || this._measCornerPlanes.length >= 3) this._measCornerPlanes = [];
+      const fail = msg => { this._measResult = { mode: 'corner', planeCount: (this._measCornerPlanes || []).length, error: msg }; if (this.onMeasure) this.onMeasure(this._measResult); };
+      if (!this._measCornerPlanes || this._measCornerPlanes.length >= 3) { this._measCornerPlanes = []; this._measCornerLine = null; this._measCornerPt = null; }
       const fit = this._fitPlaneRansacAt(pt);
-      if (!fit) { this._measResult = { mode: 'corner', error: 'Мало точек рядом — кликните по ровной стене/потолку/полу' }; if (this.onMeasure) this.onMeasure(this._measResult); return; }
+      if (!fit) return fail('Мало точек рядом — кликните по ровной стене/потолку/полу');
+      if (fit.error) return fail(fit.error);
+      const prev = this._measCornerPlanes.map(f => f.plane);
+      // вторая плоскость почти параллельна уже выбранной (или это та же самая) — ребра у них нет; плоскость не принимаем, можно кликнуть ещё раз
+      for (let k = 0; k < prev.length; k++) {
+        if (!Me.intersectPlanes(prev[k], fit.plane) || Me.angleBetweenPlanes(prev[k], fit.plane).deg < 3) return fail(prev.length === 1 ? 'Это та же или параллельная плоскость — кликните соседнюю стену, пол или потолок' : 'Эта плоскость параллельна одной из выбранных — кликните другую');
+      }
+      if (prev.length === 2) { const i3 = Me.intersectThreePlanes(prev[0], prev[1], fit.plane); if (!i3 || Math.abs(i3.det) < 0.05) return fail('Три плоскости почти не пересекаются в одной точке (одна параллельна ребру двух других) — кликните третью поверхность'); }
       this._measCornerPlanes.push(fit);
-      this.measurePts = this._measCornerPlanes.map(f => f.plane.centroid.slice());
-      const planes = this._measCornerPlanes.map(f => f.plane);
-      const n = planes.length;
+      this._cornerSummary();
+    }
+    // Итог по выбранным плоскостям: 1 — «готово», 2 — ребро и угол, 3 — точка угла комнаты
+    _cornerSummary() {
+      const Me = (typeof window !== 'undefined' && window.Measure); if (!Me) return;
+      const fits = this._measCornerPlanes || [], planes = fits.map(f => f.plane), n = planes.length;
+      this._measCornerPt = null;
+      this.measurePts = fits.map(f => f.plane.centroid.slice());
+      if (n === 0) { this._measCornerLine = null; this._measResult = null; return; }
       if (n === 1) {
-        this._measResult = { mode: 'corner', planeCount: 1, ready: true, rms: fit.plane.rms };
+        this._measCornerLine = null;
+        this._measResult = { mode: 'corner', planeCount: 1, ready: true, rms: planes[0].rms, sigma: planes[0].sigma };
       } else if (n === 2) {
         const line = Me.intersectPlanes(planes[0], planes[1]);
         const ang = Me.angleBetweenPlanes(planes[0], planes[1]);
-        if (!line) { this._measResult = { mode: 'corner', planeCount: 2, error: 'Плоскости почти параллельны — ребро не определено' }; }
-        else { this._measCornerLine = line; this._measResult = { mode: 'corner', planeCount: 2, angleDeg: ang.deg, dir: line.dir.slice(), linePoint: line.point.slice() }; }
+        this._measCornerLine = line; this._measResult = { mode: 'corner', planeCount: 2, angleDeg: ang.deg, dir: line.dir.slice(), linePoint: line.point.slice() };
       } else {
         const corner = Me.intersectThreePlanes(planes[0], planes[1], planes[2]);
         const ang = Me.angleBetweenPlanes(planes[0], planes[1]);
         const line = Me.intersectPlanes(planes[0], planes[1]);
         if (line) this._measCornerLine = line;
-        if (!corner) { this._measResult = { mode: 'corner', planeCount: 3, error: 'Плоскости вырождены — точка угла не определена' }; }
-        else { this._measCornerPt = corner.point.slice(); this._measResult = { mode: 'corner', planeCount: 3, corner: corner.point.slice(), angleDeg: ang.deg, dir: (line ? line.dir.slice() : null) }; }
+        this._measCornerPt = corner.point.slice(); this._measResult = { mode: 'corner', planeCount: 3, corner: corner.point.slice(), angleDeg: ang.deg, dir: (line ? line.dir.slice() : null) };
       }
       if (this.onMeasure) this.onMeasure(this._measResult);
     }
 
-    // Завершить накопительный режим (полилиния/площадь) — начать следующее измерение.
-    finishMeasure() { this.measurePts = []; this._measSnaps = []; this.render(); }
+    // Завершить накопительный режим (полилиния/площадь) — начать следующее измерение. У плоскости, зазора и ребра/угла — начать с чистого листа.
+    finishMeasure() {
+      this.measurePts = []; this._measSnaps = [];
+      if (this._measRefPlane || this._measCornerPlanes || this._measPlane) { this._measRefPlane = null; this._measCornerPlanes = null; this._measCornerLine = null; this._measCornerPt = null; this._measPlane = null; this._measResult = null; this._measLabels = []; this._renderMeasLabels(); }
+      this.render();
+    }
 
     _fitPlaneAt(seed) {
       const Me = (typeof window !== 'undefined' && window.Measure); if (!Me) return;
-      const r = this._measPlaneRadius || this._sceneDiag() * 0.05;
-      const pts = this._gatherNeighborhood(seed, r);
-      if (pts.length < 8) { this._measResult = { mode: 'plane', error: 'Мало точек рядом — приблизьтесь или кликните по поверхности' }; this.measurePts = [seed.slice()]; if (this.onMeasure) this.onMeasure(this._measResult); return; }
-      const pl = Me.ransacPlane(pts, { iters: 300 });
-      if (!pl) { this._measResult = { mode: 'plane', error: 'Не удалось подобрать плоскость' }; return; }
-      const ext = Me.planeExtents(pl.inliers && pl.inliers.length >= 3 ? pl.inliers : pts, pl);
+      const fail = msg => { this._measPlane = null; this.measurePts = [seed.slice()]; this._measResult = { mode: 'plane', error: msg }; if (this.onMeasure) this.onMeasure(this._measResult); };
+      const fit = this._fitPlaneRansacAt(seed);
+      if (!fit) return fail('Мало точек рядом — приблизьтесь или кликните по поверхности');
+      if (fit.error) return fail(fit.error);
+      const pl = fit.plane, ext = fit.ext;
       const ori = Me.orientation(pl.normal);
       this._measPlane = { plane: pl, ext: ext };
       this.measurePts = [seed.slice()];
       this._measResult = {
         mode: 'plane', seed: seed.slice(), normal: pl.normal, centroid: pl.centroid,
         rms: pl.rms, inlierCount: pl.inlierCount, total: pl.total, coverage: pl.coverage,
-        length: ext.length, width: ext.width, rectArea: ext.rectArea,
-        dip: ori.dip, azimuth: ori.azimuth, kind: ori.kind, radius: r
+        length: ext.length, width: ext.width, rectArea: ext.rectArea, hSpan: ext.hSpan, vSpan: ext.vSpan,
+        dip: ori.dip, azimuth: ori.azimuth, kind: ori.kind, radius: fit.radius || 0, sigma: pl.sigma != null ? pl.sigma : null, grown: !!pl.fromSnap
       };
       if (this.onMeasure) this.onMeasure(this._measResult);
     }
@@ -1701,7 +1773,7 @@
       else if (mode === 'angle' && P.length >= 3) { const a = Me.angleAt(P[0], P[1], P[2]); labels.push({ p: P[1], t: a.deg.toFixed(1) + '°' }); }
       else if (mode === 'area' && P.length >= 3) { const r = Me.polygonArea3D(P); labels.push({ p: Me.centroid(P), t: Me.fmtArea(r.area) }); }
       else if (mode === 'plane' && this._measResult && !this._measResult.error) { const R = this._measResult; labels.push({ p: (this._measPlane ? this._measPlane.ext.center3 : R.seed), t: Me.fmtLen(R.length) + ' × ' + Me.fmtLen(R.width) + '  · ' + R.kind }); }
-      else if (mode === 'deviation' && this._measResult && this._measResult.signed !== undefined && P.length === 3) { const R = this._measResult; labels.push({ p: [(P[1][0] + P[2][0]) / 2, (P[1][1] + P[2][1]) / 2, (P[1][2] + P[2][2]) / 2], t: (R.sign >= 0 ? '+' : '−') + Me.fmtLen(R.distance) + ' (' + (R.sign >= 0 ? 'снаружи' : 'внутри') + ')' }); }
+      else if (mode === 'deviation' && this._measResult && this._measResult.signed !== undefined && P.length === 3) { const R = this._measResult; labels.push({ p: [(P[1][0] + P[2][0]) / 2, (P[1][1] + P[2][1]) / 2, (P[1][2] + P[2][2]) / 2], t: (R.sign >= 0 ? '+' : '−') + Me.fmtLen(R.distance) + ' (' + (R.sign >= 0 ? 'к камере' : 'от камеры') + ')' }); }
       else if (mode === 'corner' && this._measResult && !this._measResult.error) {
         const R = this._measResult;
         if (R.angleDeg != null && this._measCornerLine) { const lp = this._measCornerPt || this._measCornerLine.point; labels.push({ p: lp, t: '∠ ' + R.angleDeg.toFixed(1) + '°' }); }

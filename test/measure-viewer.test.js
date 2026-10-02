@@ -32,7 +32,8 @@ test('viewer: plane fit uses RANSAC + extents + orientation', () => {
 
 test('viewer: neighborhood gather caps work on huge clouds', () => {
   assert.ok(SRC.includes('n > 1500000 ? Math.ceil(n / 1500000) : 1'), 'no stride cap');
-  assert.ok(SRC.includes('cap = 60000'), 'no collection cap');
+  assert.ok(SRC.includes('cap || 60000'), 'no collection cap');
+  assert.ok(SRC.includes('idx.query(seed[0], seed[1], seed[2], r, lim)'), 'окрестность берётся не из индекса облака');
 });
 
 test('viewer: labels projected with _lastVP each frame', () => {
