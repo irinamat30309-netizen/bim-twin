@@ -207,7 +207,7 @@
       const note = $('cpShareNote');
       if (note) {
         note.hidden = !part;
-        note.textContent = part ? 'Загружена часть точек файла. Все точки: Настройки → Облака точек → «100 %» (при нехватке памяти окно может прореживать само).' : '';
+        note.textContent = part ? 'Загружена часть точек файла. Все точки: кнопка «Потоковый LOD» (индекс на диске по всем точкам) или Настройки → Облака точек → «100 %».' : '';
       }
     }
     $('cpDimensions').textContent = info.bounds.mx.map((x, i) => 'XYZ'[i] + ': ' + (x - info.bounds.mn[i]).toFixed(3)).join('  ·  ');
