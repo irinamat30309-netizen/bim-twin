@@ -41,7 +41,7 @@
 * Стартовый экран — отдельная страница `renderer/startup.html` (+ `startup.js/css`): карточки проектов, поиск,
   «Новый проект», настройки (тема, хранилище, версия), плавный переход в рабочую область.
 
-### Карта ленты (117 команд)
+### Карта ленты (120 команд)
 
 | Вкладка | Группы |
 | --- | --- |
@@ -157,6 +157,15 @@
 (пересчёт при каждой перерисовке окна и при `resize`). Сценарий `verifytip` проверяет подсказку и её показ при наведении; правило аудита `CLIPPED-TEXT`
 ловит такие места на ширине 1024 px.
 
+### Обработка облака (ревизия 6)
+
+Группа «Обработка» вкладки «Облако»: «Ресэмплирование», «Подавление шума», «Сглаживание», «Выровнять поверхности» (затем «Выровнять пол/стену», «Объединить», «Наложение»). Параметры каждой операции
+запрашивает общий диалог `__lxKit.form` (`.lx-form-body/-row/-lbl`: подпись слева, поле справа, единицы и подсказка, строки с `showIf` скрываются по выбору, `Enter` — применить, `Esc` — отмена);
+значения по умолчанию подбираются по облаку (шаг точек, оценка шума). Сам расчёт идёт в фоновом потоке (`renderer/cloud-process.js` → `cloud-process-worker.js`) и показывает окно прогресса
+`__lxProgress.begin(label, { onCancel })`: фаза, процент, кнопка «Отмена»; `Esc` тоже отменяет, облако при этом не меняется. Результат применяется через `__pcTools.loadCloud`, `Ctrl+Z` (`__undoKeys`,
+работает в любой раскладке и вне режима выделения) возвращает предыдущее облако (1–3 копии в зависимости от размера). Выбор доли точек файла — select в «Настройки → Облака точек» и `#qShare` в панели «Вид облака»;
+панель свойств облака показывает «31 550 (25 %)» и заметку о доле.
+
 ## 5. Движение и загрузка
 
 * Открытие/закрытие: панели и drawer'ы выезжают по оси, к которой прикреплены (`transform` + `opacity`, без анимации
@@ -174,7 +183,7 @@
 
 | Объект | Назначение |
 | --- | --- |
-| `__lxKit` | `ic(name,size,cls)`, `hydrate(scope)`, `fade(el,axis)`, `toast(text,{tone,ms})`, `popover({anchor,content,align,…})`, `menu(anchor,items,{title,minWidth})`, `menuItem(it)`, `pointAnchor(x,y)`, `ask({title,message,input,multiline,wide,value,placeholder,hint,validate,danger,okLabel,cancelLabel})` → `Promise`, `plain(str)`, `closePopover()`, `popoverOpen`, `activity(label)` → `{set,done}`, `busy(btn,on)`, `hideTip()`, `esc(str)` |
+| `__lxKit` | `ic(name,size,cls)`, `hydrate(scope)`, `fade(el,axis)`, `toast(text,{tone,ms})`, `popover({anchor,content,align,…})`, `menu(anchor,items,{title,minWidth})`, `menuItem(it)`, `pointAnchor(x,y)`, `ask({title,message,input,multiline,wide,value,placeholder,hint,validate,danger,okLabel,cancelLabel})` → `Promise`, `form({title,message,hint,okLabel,cancelLabel,wide,validate,fields:[{key,label,type:'number'|'select'|'checkbox',value,min,max,step,unit,hint,options,showIf}]})` → `Promise` (значения или `null`), `plain(str)`, `closePopover()`, `popoverOpen`, `activity(label)` → `{set,done}`, `busy(btn,on)`, `hideTip()`, `esc(str)` |
 | `__lxCommands` | `TABS`, `byId(id)`, `all()`, `match(query, text)`, `formatItem(cmd)` — реестр команд |
 | `__lxRibbon` | `build`, `mount(id, el)`, `adopt(id, el)`, `select(tab)`, `collapse(bool)`, `sync()`, `button(id)`, `cells`, `tabs()`, `current` |
 | `__lxChrome` | `onTab`, `showPane('scene'|'docs')`, `setSide`, `setInspector`, `openPalette/closePalette`, `saveState`, `updateStatus`, `fitCloud`, `ready` |
