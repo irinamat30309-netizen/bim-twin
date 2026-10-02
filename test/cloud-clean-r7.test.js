@@ -68,3 +68,79 @@ test('окно просмотра: шейдер читает локальный 
   assert.ok(H.includes('cloud-clean.js?v=1170'), 'скрипт подключён в index.html');
   assert.ok(H.indexOf('cloud-process.js') < H.indexOf('cloud-clean.js'), 'cloud-clean грузится после cloud-process');
 });
+
+// ---------- Умное подавление шума: плотность места вместо одного радиуса на всю сцену ----------
+const CPm = require('../renderer/cloud-process.js');
+const OUT = require('../dev/ui-lab/mkoutdoor.js');
+let sceneCache = null;
+function scene() {
+  if (!sceneCache) { const S = OUT.generate({ ang: 0.2, seed: 11 }), pos = OUT.toViewer(S.pos); sceneCache = { S, pos, n: pos.length / 3 }; }
+  return sceneCache;
+}
+function score(res, S, n) {
+  const tot = [0, 0, 0], got = [0, 0, 0];
+  for (let i = 0; i < n; i++) tot[S.lab[i]]++;
+  for (const i of res.remove) got[S.lab[i]]++;
+  return { noise: got[1] / tot[1], lost: got[0] / tot[0], lostN: got[0], people: got[2] / tot[2] };
+}
+
+test('denoise: уровни по возрастанию удаляют не меньше шума; средний убирает ≥ 70 % мусора и теряет ≤ 0,02 % полезных точек', () => {
+  const { S, pos, n } = scene(), r = {};
+  for (const level of ['soft', 'medium', 'strong']) r[level] = score(CC.denoise(pos, n, { level }), S, n);
+  assert.ok(r.soft.noise <= r.medium.noise + 1e-9 && r.medium.noise <= r.strong.noise + 1e-9, JSON.stringify(r));
+  assert.ok(r.medium.noise >= 0.7, 'средний уровень убрал только ' + (r.medium.noise * 100).toFixed(1) + ' % шума');
+  assert.ok(r.soft.lost <= 0.0002 && r.medium.lost <= 0.0002, 'потери полезных: ' + JSON.stringify(r));
+  assert.ok(r.strong.lost <= 0.0005, 'потери полезных (сильно): ' + r.strong.lost);
+  assert.ok(r.medium.people <= 0.01, 'люди — это поверхность сцены, а не шум: потеряно ' + (r.medium.people * 100).toFixed(2) + ' %');
+});
+
+test('denoise: прежний радиусный фильтр с параметрами по умолчанию терял десятки процентов полезных точек, умный — на два порядка меньше', () => {
+  const { S, pos, n } = scene(), est = CPm.estimate(pos, n), d = CPm.defaults(est);
+  const old = CPm.denoise(pos, n, { radius: d.denoiseRadius, neighbors: d.denoiseNeighbors }), keep = new Uint8Array(n);
+  for (const i of old.keep) keep[i] = 1;
+  let lostOld = 0, tot = 0; for (let i = 0; i < n; i++) if (S.lab[i] === 0) { tot++; if (!keep[i]) lostOld++; }
+  const mine = score(CC.denoise(pos, n, { level: 'medium' }), S, n);
+  assert.ok(lostOld / tot > 0.03, 'прежний фильтр на этой сцене должен терять заметную долю: ' + (lostOld / tot));
+  assert.ok(mine.lost * 100 < lostOld / tot, 'умный должен терять в 100 раз меньше: ' + mine.lost + ' vs ' + lostOld / tot);
+});
+
+test('denoise: плотная поверхность без шума не теряет ни одной точки; малые облака и нечисловые точки обрабатываются', () => {
+  const N = 150000, pos = new Float32Array(N * 3); let s = 777;
+  const rnd = () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
+  for (let i = 0; i < N; i++) { pos[i * 3] = rnd() * 20; pos[i * 3 + 1] = 0; pos[i * 3 + 2] = rnd() * 20; }
+  for (const level of ['soft', 'medium', 'strong']) assert.equal(CC.denoise(pos, N, { level }).removed, 0, level + ': чистая плоскость должна остаться целой');
+  assert.equal(CC.denoise(new Float32Array(0), 0, {}).removed, 0);
+  assert.equal(CC.denoise(new Float32Array([1, 2, 3, 4, 5, 6]), 2, {}).removed, 0);
+  const bad = pos.slice(0, 3000 * 3); bad[7 * 3 + 1] = NaN; bad[9 * 3] = Infinity;
+  const r = CC.denoise(bad, 3000, { level: 'medium' });
+  assert.ok(r.stats.invalid >= 2 && Array.from(r.remove).includes(7) && Array.from(r.remove).includes(9), 'нечисловые точки считаются мусором');
+});
+
+test('denoise: одинокая пылинка над плотной поверхностью и островок из десятка точек удаляются, а тонкий провод и стена — нет', () => {
+  const N = 200000, M = N + 1 + 12 + 2000, pos = new Float32Array(M * 3); let s = 4242, k = 0;
+  const rnd = () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
+  for (let i = 0; i < N; i++) { pos[k++] = rnd() * 8; pos[k++] = 0; pos[k++] = rnd() * 8; }            // пол 8×8 м: шаг ≈ 1,8 см
+  pos[k++] = 4; pos[k++] = 0.3; pos[k++] = 4;                                                          // одиночная пылинка в 30 см над полом
+  for (let i = 0; i < 12; i++) { pos[k++] = 2 + rnd() * 0.1; pos[k++] = 0.8 + rnd() * 0.1; pos[k++] = 2 + rnd() * 0.1; }   // облачко 12 точек в 80 см над полом
+  for (let i = 0; i < 2000; i++) { pos[k++] = 7 + rnd() * 0.01; pos[k++] = 0.5 + i * 0.001; pos[k++] = 7 + rnd() * 0.01; }     // провод 2 м из 2000 точек
+  const rem = new Set(CC.denoise(pos, M, { level: 'medium' }).remove);
+  assert.ok(rem.has(N), 'пылинка удалена');
+  let cloud = 0; for (let i = N + 1; i < N + 13; i++) if (rem.has(i)) cloud++;
+  assert.ok(cloud >= 11, 'облачко из 12 точек удалено: ' + cloud + ' из 12');
+  let wire = 0; for (let i = N + 13; i < M; i++) if (rem.has(i)) wire++;
+  assert.equal(wire, 0, 'провод из 2000 точек не трогаем');
+  let floor = 0; for (let i = 0; i < N; i++) if (rem.has(i)) floor++;
+  assert.ok(floor <= 20, 'пол почти не потерял точек: ' + floor);
+});
+
+test('denoise: слэб core ограничивает результат своей частью (основа для пула воркеров), прогресс доходит до 1', () => {
+  const { pos, n } = scene(), full = CC.denoise(pos, n, { level: 'medium' });
+  let hi = -Infinity, lo = Infinity; for (let i = 0; i < n; i++) { const v = pos[i * 3]; if (v < lo) lo = v; if (v > hi) hi = v; }
+  const mid = (lo + hi) / 2, seen = []; 
+  const part = CC.denoise(pos, n, { level: 'medium', core: { axis: 0, lo: -Infinity, hi: mid } }, { progress: f => seen.push(f) });
+  for (const i of part.remove) assert.ok(pos[i * 3] < mid);
+  const fs2 = new Set(full.remove); let same = 0; for (const i of part.remove) if (fs2.has(i)) same++;
+  assert.equal(same, part.removed, 'слэб не удаляет того, что не удалил бы полный расчёт');
+  assert.ok(seen.length > 3 && seen[seen.length - 1] === 1 && seen.every((v, i) => i === 0 || v >= seen[i - 1] - 1e-9), 'прогресс монотонен и завершается');
+  assert.ok(part.removed < full.removed && part.removed > 0);
+});

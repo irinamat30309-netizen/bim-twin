@@ -83,8 +83,8 @@ function generate(o) {
   o = o || {};
   const ang = (o.ang || 0.12) * Math.PI / 180, R = rng((o.seed || 7) + 1000), S = buildScene(o), E = S.E, gz = S.gz, slope = S.slope;
   const scanners = o.scanners || [[0, 0], [26, -16]];
-  const P = [], C = [], L = [], maxR = o.maxRange || 90, nrm = [-slope, 0, 1], nl = Math.hypot(...nrm);
-  const push = (x, y, z, col, lab) => { P.push(x, y, z); C.push(col[0], col[1], col[2]); L.push(lab); };
+  const P = [], C = [], L = [], K = [], maxR = o.maxRange || 90, nrm = [-slope, 0, 1], nl = Math.hypot(...nrm);
+  let kind = 0; const push = (x, y, z, col, lab) => { P.push(x, y, z); C.push(col[0], col[1], col[2]); L.push(lab); K.push(lab === 1 ? kind : 0); };
   for (const sc of scanners) {
     const so = [sc[0], sc[1], gz(sc[0]) + 1.6], el0 = -62 * Math.PI / 180, el1 = 62 * Math.PI / 180;
     for (let el = el0; el <= el1; el += ang) {
@@ -113,21 +113,24 @@ function generate(o) {
         if (hit.g) z += 0.004 * gauss(R);
         const cj = hit.col, k = 0.9 + 0.2 * R();
         push(x, y, z, [Math.min(255, cj[0] * k), Math.min(255, cj[1] * k), Math.min(255, cj[2] * k)], hit.cls === 2 ? 2 : 0);
-        if ((hit.person || hit.pole) && R() < 0.015) { const t2 = t * (1.02 + R() * 1.2); push(so[0] + d[0] * t2, so[1] + d[1] * t2, so[2] + d[2] * t2, [120, 120, 120], 1); }  // краевой ореол
+        if ((hit.person || hit.pole) && R() < 0.015) { const t2 = t * (1.02 + R() * 1.2); kind = 5; push(so[0] + d[0] * t2, so[1] + d[1] * t2, so[2] + d[2] * t2, [120, 120, 120], 1); kind = 0; }  // краевой ореол
       }
     }
   }
-  const nHit = L.length;
+  const nHit = L.length; kind = 1;
   // шум: пыль у сканеров, «комочки», переотражения под землёй, дальние выбросы
   const nDust = Math.round(nHit * (o.dust == null ? 0.0006 : o.dust));
   for (let i = 0; i < nDust; i++) { const sc = scanners[(R() * scanners.length) | 0], r = 2 + 24 * Math.sqrt(R()), a = R() * 6.2832, x = sc[0] + r * Math.cos(a), y = sc[1] + r * Math.sin(a); push(x, y, gz(x) + 0.3 + R() * 6, [150, 150, 150], 1); }
+  kind = 2;
   for (let i = 0; i < 70; i++) {
     const x = -30 + 70 * R(), y = -25 + 50 * R(), z = gz(x) + 0.8 + 3 * R(), sg = 0.03 + 0.05 * R(), m = 5 + ((R() * 36) | 0);
     for (let k = 0; k < m; k++) push(x + sg * gauss(R), y + sg * gauss(R), z + sg * gauss(R), [140, 140, 140], 1);
   }
+  kind = 3;
   for (let i = 0; i < 200; i++) { const x = -30 + 70 * R(), y = -25 + 50 * R(); push(x, y, gz(x) - 0.6 - 2.5 * R(), [110, 110, 110], 1); }
+  kind = 4;
   for (let i = 0; i < 40; i++) { const a = R() * 6.2832, r = 120 + 200 * R(); push(r * Math.cos(a), r * Math.sin(a), 5 + 30 * R(), [100, 100, 100], 1); }
-  return { pos: new Float32Array(P), col: new Uint8Array(C), lab: new Uint8Array(L), people: S.people, hits: nHit };
+  return { pos: new Float32Array(P), col: new Uint8Array(C), lab: new Uint8Array(L), kind: new Uint8Array(K), people: S.people, hits: nHit };
 }
 function toViewer(pos) { const n = pos.length / 3, out = new Float32Array(pos.length); for (let i = 0; i < n; i++) { out[i * 3] = pos[i * 3]; out[i * 3 + 1] = pos[i * 3 + 2]; out[i * 3 + 2] = -pos[i * 3 + 1]; } return out; }
 function writePly(file, S) {
