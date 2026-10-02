@@ -144,3 +144,19 @@ test('denoise: слэб core ограничивает результат сво�
   assert.ok(seen.length > 3 && seen[seen.length - 1] === 1 && seen.every((v, i) => i === 0 || v >= seen[i - 1] - 1e-9), 'прогресс монотонен и завершается');
   assert.ok(part.removed < full.removed && part.removed > 0);
 });
+
+test('окно: умное подавление шума идёт в воркере, перед удалением есть красный предпросмотр и подтверждение, Esc отменяет', () => {
+  const W = fs.readFileSync(R('renderer', 'cloud-process-worker.js'), 'utf8'), X = fs.readFileSync(R('renderer', 'lixel-tools-ext.js'), 'utf8'), V = fs.readFileSync(R('renderer', 'webgl-viewer.js'), 'utf8');
+  assert.match(W, /importScripts\('cloud-process\.js\?v=1160', 'cloud-clean\.js\?v=1170'\)/);
+  assert.match(W, /m\.op === 'denoise2'/);
+  assert.match(W, /res\.remove && res\.remove\.buffer/, 'список удаляемых точек передаётся без копирования');
+  assert.match(X, /opFor: function \(v\) \{ return v\.mode === 'smart' \? 'denoise2' : 'denoise'; \}/);
+  assert.match(X, /review: function \(res, c, v\)/);
+  assert.match(X, /previewRemoval\(c, removedIndices\(res, c\.count\)/);
+  assert.match(X, /Облако изменилось, пока шёл просмотр/, 'нельзя применить результат к другому облаку');
+  assert.match(X, /big \? 'warn' : ''/, 'при удалении > 5 % облака панель предупреждает');
+  assert.match(X, /e\.key === 'Escape'/);
+  assert.match(V, /previewPoints\(pos, opts\)/); assert.match(V, /clearPreview\(silent\)/);
+  assert.equal((V.match(/\.concat\(this\._prevObj \? \[this\._prevObj\] : \[\]\)/g) || []).length, 2, 'предпросмотр рисуется в обоих списках отрисовки');
+  assert.ok(fs.readFileSync(R('renderer', 'ui', 'tools.css'), 'utf8').includes('.lx-confirmbar'));
+});

@@ -421,7 +421,7 @@
       let budget = o._lodBudget || 4000000;
       for (const v of vis) { if (budget <= 0) break; gl.bindVertexArray(v.c.buf.vao); gl.drawArrays(gl.POINTS, 0, v.c.buf.count); budget -= v.c.buf.count; }
     }
-    _setBase(objs) { this._delObjs(this.base); this._psCache = null; this._psJob = null; this._yqCache = null; this._spTok = (this._spTok || 0) + 1; this.base = objs.map(o => this._makeObj(o)); this._recomputeBBox(); if (!this.base.some(o => o.points)) this._cloudRecord = null; this._notifyCloudChanged(); const _m = this.base[0]; if (_m && _m.points && !_m._lod && !_m._isSel && !_m._isStation && _m.count >= 20000) this._startSpacingField(_m); }
+    _setBase(objs) { if (this._prevObj) this.clearPreview(true); this._delObjs(this.base); this._psCache = null; this._psJob = null; this._yqCache = null; this._spTok = (this._spTok || 0) + 1; this.base = objs.map(o => this._makeObj(o)); this._recomputeBBox(); if (!this.base.some(o => o.points)) this._cloudRecord = null; this._notifyCloudChanged(); const _m = this.base[0]; if (_m && _m.points && !_m._lod && !_m._isSel && !_m._isStation && _m.count >= 20000) this._startSpacingField(_m); }
     // ревизия 7: локальный шаг точек (1 байт на точку) считается кусочками в простое — интерфейс не замирает, пока облако «дорисовывается»
     _startSpacingField(o) {
       const CC = (typeof window !== 'undefined' && window.CloudClean) || (typeof globalThis !== 'undefined' && globalThis.CloudClean);
@@ -2364,7 +2364,7 @@
         gl.bindFramebuffer(gl.FRAMEBUFFER, this._scFbo);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         this._setFrameUniforms(vp);
-        this._drawList(this.base.concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []));
+        this._drawList(this.base.concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []).concat(this._prevObj ? [this._prevObj] : []));
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         this._scRev = this._sceneRev; this._scVp = vkey; st.full++;
       }
@@ -2389,7 +2389,7 @@
       const vp = this._vp(); this._lastVP = vp;
       this._setFrameUniforms(vp);
       this._edlOnThisFrame = _edlOn;
-      const drawList = this.base.concat(this.overlay).concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []).concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []);
+      const drawList = this.base.concat(this.overlay).concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []).concat(this._prevObj ? [this._prevObj] : []).concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []);
       // solids first
       for (const o of drawList) { if (o.line || o.hidden || (o.points && this.cloudVisible === false)) continue; this._drawObj(o); }
       gl.uniform1f(this.u.uClipOn, 0);
@@ -3115,6 +3115,18 @@
       o._spacing = 0; o._ptMax = selSize; o._isSel = true;
       this._selObj = o; this.render();
     }
+    /** Предпросмотр точек, которые будут удалены (красные маркеры поверх облака). pos — Float32Array xyz; ≤ 400 тыс. маркеров (остальные прореживаются равномерно). */
+    previewPoints(pos, opts) {
+      this.clearPreview(true);
+      const total = pos ? (pos.length / 3) | 0 : 0; if (!total) { this.render(); return 0; }
+      const MAXP = 400000, stride = total > MAXP ? Math.ceil(total / MAXP) : 1, cap = Math.ceil(total / stride), out = new Float32Array(cap * 3);
+      let j = 0; for (let i = 0; i < total; i += stride) { out[j * 3] = pos[i * 3]; out[j * 3 + 1] = pos[i * 3 + 1]; out[j * 3 + 2] = pos[i * 3 + 2]; j++; }
+      const bo = this.base && this.base[0], size = Math.min(Math.max(5, (opts && opts.size) || 0), 12);
+      const o = this._makeObj({ id: null, points: true, pos: j === cap ? out : out.subarray(0, j * 3), col: null, pointSize: size, color: hex2rgb((opts && opts.color) || '#ff3b4a'), status: 'none' });
+      o._spacing = 0; o._ptMax = size; o._isSel = true; o._isPreview = true;
+      this._prevObj = o; this.render(); return j;
+    }
+    clearPreview(silent) { if (this._prevObj) { this._delObjs([this._prevObj]); this._prevObj = null; if (!silent) this.render(); } }
     clearSelection() { this._sel = new Set(); if (this._selObj) { this._delObjs([this._selObj]); this._selObj = null; } if (typeof this.onEditSelect === 'function') this.onEditSelect(0); this.render(); }
     selectionCount() { return this._sel ? this._sel.size : 0; }
     invertSelection() {

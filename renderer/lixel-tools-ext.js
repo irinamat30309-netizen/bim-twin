@@ -99,7 +99,7 @@
   // ---------- Обработка облака: ресэмплирование, подавление шума, сглаживание, выравнивание поверхностей ----------
   // Расчёт идёт в фоновом потоке (cloud-process-worker.js) над одноразовой копией координат: окно не зависает, есть отмена.
   function engine() { return window.CloudProcess || null; }
-  var WORKER_URL = 'cloud-process-worker.js?v=1160';
+  var WORKER_URL = 'cloud-process-worker.js?v=1170';
 
   /** Запуск расчёта: { promise, cancel }. Если воркер не создаётся, небольшие облака считаются в основном потоке. */
   function startJob(op, pos, params, onProgress) {
@@ -110,7 +110,12 @@
       function inline(why) {
         if (!CP || pos.length / 3 > 3e6) { reject(new Error(why || 'Фоновый расчёт недоступен в этом окне')); return; }
         setTimeout(function () {
-          try { resolve(CP.run(op, op === 'smooth' || op === 'flatten' ? pos.slice() : pos, params, { progress: onProgress })); } catch (e) { reject(e); }
+          try {
+            var CC = window.CloudClean, n3 = pos.length / 3 | 0, ctl = { progress: onProgress };
+            if (op === 'denoise2' && CC) resolve(CC.denoise(pos, n3, params, ctl));
+            else if (op === 'people' && CC && CC.people) resolve(CC.people(pos, n3, params, ctl));
+            else resolve(CP.run(op, op === 'smooth' || op === 'flatten' ? pos.slice() : pos, params, ctl));
+          } catch (e) { reject(e); }
         }, 0);
       }
       try { w = new Worker(new URL(WORKER_URL, document.baseURI)); } catch (e) { inline(String(e && e.message || e)); return; }
@@ -151,7 +156,8 @@
 
   /**
    * Общий сценарий: диалог параметров (как в Lixel) -> фоновый расчёт с отменой -> загрузка результата (Ctrl+Z возвращает облако).
-   * spec: { op, label, title, message, fields(defs), params(values, defs), finish(res, cloud, values) -> { cloud, name, details, text } }
+   * spec: { op, label, title, message, fields(defs), params(values, defs), finish(res, cloud, values) -> { cloud, name, details, text },
+   *         review?(res, cloud, values) -> Promise<boolean> — предпросмотр на сцене и подтверждение до применения }
    */
   async function processOp(spec) {
     var c0 = needCloud(); if (!c0) return; var CP = engine();
@@ -160,20 +166,88 @@
     var defs = CP.defaults(CP.estimate(c0.pos, c0.count));
     var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({ title: spec.title, message: spec.message, okLabel: 'Применить', fields: spec.fields(defs, c0), validate: spec.validate }) : Promise.resolve(null));
     if (!values) return;
-    var job = null;
+    var job = null, res = null, c = null;
     await run(spec.label, async function (setPct) {
-      var c = needCloud(); if (!c) return;
-      job = startJob(spec.op, c.pos.subarray(0, c.count * 3), spec.params(values, defs), function (f, lab) { setPct(0.04 + 0.86 * f, lab || spec.label); });
-      var res;
-      try { res = await job.promise; } catch (e) { if (e && e.cancelled) { toast('Операция отменена, облако не изменено'); return; } throw e; }
-      if (job.cancelled) { toast('Операция отменена, облако не изменено'); return; }   // Esc нажат в тот же момент, когда расчёт закончился
+      c = needCloud(); if (!c) return;
+      job = startJob(spec.opFor ? spec.opFor(values) : spec.op, c.pos.subarray(0, c.count * 3), spec.params(values, defs), function (f, lab) { setPct(0.04 + 0.86 * f, lab || spec.label); });
+      try { res = await job.promise; } catch (e) { res = null; if (e && e.cancelled) { toast('Операция отменена, облако не изменено'); return; } throw e; }
+      if (job.cancelled) { toast('Операция отменена, облако не изменено'); res = null; return; }   // Esc нажат в тот же момент, когда расчёт закончился
+      if (spec.review) return;   // применение — после предпросмотра и подтверждения, уже без окна прогресса
+      await apply(setPct);
+    }, { onCancel: function () { if (job) job.cancel(); } });
+    if (!res || !spec.review) return;
+    var okGo = false;
+    try { okGo = await spec.review(res, c, values); } catch (e) { console.warn('tools-ext review', e); toast('Ошибка: ' + (e && e.message || e)); }
+    if (!okGo) { toast('Отменено, облако не изменено'); return; }
+    var cur = getCloud();
+    if (!cur || cur.pos !== c.pos || cur.count !== c.count) { toast('Облако изменилось, пока шёл просмотр, — операция отменена. Запустите её заново.'); return; }
+    await run(spec.label, async function (setPct) { setPct(0.5, 'Применение…'); await yieldFrame(); await apply(setPct); });
+    async function apply(setPct) {
       if (!needCloud()) return;
       setPct(0.92, 'Загрузка результата…'); await yieldFrame();
       var out = spec.finish(res, c, values);
       if (!out) return;
       T().loadCloud(out.cloud, out.name, out.details); setPct(1, 'Готово');
       toast(out.text + ' · Ctrl+Z — отмена');
-    }, { onCancel: function () { if (job) job.cancel(); } });
+    }
+  }
+
+  /** Плавающая панель подтверждения над сценой — в отличие от модального окна не закрывает облако (на нём красным видно, что будет удалено).
+   *  o: { title, text, okLabel, cancelLabel, tone: 'warn'|'' } → Promise<boolean>. Enter/«Удалить» — да; Esc/«Отмена» — нет. */
+  function reviewBar(o) {
+    return new Promise(function (resolve) {
+      var D = document, bar = D.createElement('div'), tx = D.createElement('div'), b1 = D.createElement('b'), sp = D.createElement('span'), act = D.createElement('div'), no = D.createElement('button'), ok = D.createElement('button'), done = false;
+      bar.className = 'lx-confirmbar'; bar.setAttribute('role', 'alertdialog'); bar.setAttribute('aria-label', o.title || 'Подтверждение'); if (o.tone) bar.setAttribute('data-tone', o.tone);
+      tx.className = 'lx-confirmbar-text'; b1.textContent = o.title || ''; sp.textContent = o.text || ''; tx.appendChild(b1); tx.appendChild(sp);
+      act.className = 'lx-confirmbar-actions';
+      no.type = 'button'; no.className = 'btn sm'; no.textContent = o.cancelLabel || 'Отмена';
+      ok.type = 'button'; ok.className = 'btn sm primary'; ok.textContent = o.okLabel || 'Применить';
+      act.appendChild(no); act.appendChild(ok); bar.appendChild(tx); bar.appendChild(act);
+      function finish(v) { if (done) return; done = true; D.removeEventListener('keydown', onKey, true); if (bar.parentNode) bar.parentNode.removeChild(bar); resolve(v); }
+      function onKey(e) {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        else if (e.key === 'Enter' && (e.target === ok || e.target === D.body || e.target === bar)) { e.preventDefault(); e.stopPropagation(); finish(true); }
+      }
+      no.onclick = function () { finish(false); }; ok.onclick = function () { finish(true); };
+      D.addEventListener('keydown', onKey, true);
+      D.body.appendChild(bar); try { ok.focus({ preventScroll: true }); } catch (e) {}
+    });
+  }
+
+  /** Предпросмотр удаления: красные точки поверх облака + панель «Удалить N точек?». idx — индексы удаляемых точек; → Promise<boolean>. */
+  async function previewRemoval(c, idx, o) {
+    var V = T() && T().viewer ? T().viewer() : null, total = c.count, k = idx.length, pct = total ? k / total * 100 : 0;
+    if (V && V.previewPoints) {
+      var stride = k > 400000 ? Math.ceil(k / 400000) : 1, m = Math.ceil(k / stride), arr = new Float32Array(m * 3), j = 0;
+      for (var q = 0; q < k; q += stride) { var i3 = idx[q] * 3; arr[j * 3] = c.pos[i3]; arr[j * 3 + 1] = c.pos[i3 + 1]; arr[j * 3 + 2] = c.pos[i3 + 2]; j++; }
+      V.previewPoints(arr.subarray(0, j * 3), { color: o.color });
+    }
+    var big = pct > 5;
+    try {
+      return await reviewBar({
+        title: (o.verb || 'Удалить') + ' ' + nfmt(k) + ' ' + (o.noun || 'точек') + ' (' + num(pct, pct < 1 ? 3 : 1) + ' % облака)?',
+        text: (big ? 'Это больше 5 % облака — убедитесь, что красным отмечено только лишнее. ' : 'Красным отмечено то, что будет удалено. ') + 'Крутите и приближайте облако, затем подтвердите. Ctrl+Z вернёт точки.',
+        okLabel: o.okLabel || 'Удалить', cancelLabel: 'Отмена', tone: big ? 'warn' : ''
+      });
+    } finally { if (V && V.clearPreview) V.clearPreview(); }
+  }
+  /** Индексы удаляемых точек: из результата умного фильтра (remove) или как дополнение к списку оставшихся (keep). */
+  function removedIndices(res, n) {
+    if (res.remove) return res.remove;
+    var mark = new Uint8Array(n), cnt = 0, i, out;
+    for (i = 0; i < res.keep.length; i++) mark[res.keep[i]] = 1;
+    for (i = 0; i < n; i++) if (!mark[i]) cnt++;
+    out = new Uint32Array(cnt); cnt = 0;
+    for (i = 0; i < n; i++) if (!mark[i]) out[cnt++] = i;
+    return out;
+  }
+  /** Оставшиеся индексы по списку удаляемых. */
+  function keptIndices(remove, n) {
+    var mark = new Uint8Array(n), i, cnt = 0, out;
+    for (i = 0; i < remove.length; i++) mark[remove[i]] = 1;
+    out = new Uint32Array(n - remove.length);
+    for (i = 0; i < n; i++) if (!mark[i]) out[cnt++] = i;
+    return out;
   }
 
   function opResample() {
@@ -199,24 +273,36 @@
   }
 
   function opDenoise() {
+    var LEVELS = { soft: 'мягко', medium: 'средне', strong: 'сильно' };
     return processOp({
-      op: 'denoise', label: 'Подавление шума…', title: 'Подавление шума',
-      message: 'Удаляет «летающие» точки и мелкие отдельные сгустки: точка остаётся, если в радиусе поиска у неё не меньше заданного числа соседей.',
+      op: 'denoise', opFor: function (v) { return v.mode === 'smart' ? 'denoise2' : 'denoise'; }, label: 'Подавление шума…', title: 'Подавление шума',
+      message: 'Убирает «летающие» точки, пылинки и мелкие сгустки. «Умный» режим судит по плотности именно этого места и бережёт разреженные, но настоящие участки (дальние стены, провода, кроны); «Классический» — один радиус и число соседей на всю сцену.',
       fields: function (d) {
         return [
-          { key: 'radius', label: 'Радиус поиска', type: 'number', value: d.denoiseRadius, min: 0.005, max: 10, step: 'any', unit: 'м' },
-          { key: 'neighbors', label: 'Окрестность (соседей)', type: 'number', value: d.denoiseNeighbors, min: 1, max: 1000, step: '1', hint: 'Больше соседей — строже фильтр. Если облако прорежено, увеличьте радиус.' }
+          { key: 'mode', label: 'Режим', type: 'select', value: 'smart', options: [{ value: 'smart', label: 'Умный' }, { value: 'radius', label: 'Классический' }] },
+          { key: 'level', label: 'Сила', type: 'select', value: 'medium', options: [{ value: 'soft', label: 'Мягко' }, { value: 'medium', label: 'Средне' }, { value: 'strong', label: 'Сильно' }],
+            hint: 'Мягко — только заведомый мусор; средне (рекомендуется) — пылинки и сгустки до 40 точек; сильно — сгустки до 150 точек и 2 м. Перед удалением будет предпросмотр.', showIf: function (v) { return v.mode === 'smart'; } },
+          { key: 'radius', label: 'Радиус поиска', type: 'number', value: d.denoiseRadius, min: 0.005, max: 10, step: 'any', unit: 'м', showIf: function (v) { return v.mode === 'radius'; } },
+          { key: 'neighbors', label: 'Окрестность (соседей)', type: 'number', value: d.denoiseNeighbors, min: 1, max: 1000, step: '1', hint: 'Единые радиус и число соседей на всю сцену: у неоднородных сканов это удаляет и полезные точки в разреженных местах — для них лучше «Умный».', showIf: function (v) { return v.mode === 'radius'; } },
+          { key: 'preview', label: 'Показать удаляемое красным и спросить', type: 'checkbox', value: true }
         ];
       },
-      params: function (v) { return { radius: v.radius, neighbors: Math.round(v.neighbors) }; },
+      params: function (v) { return v.mode === 'smart' ? { level: v.level } : { radius: v.radius, neighbors: Math.round(v.neighbors) }; },
+      review: function (res, c, v) {
+        if (!v.preview || !res.removed || (res.keep && !res.keep.length)) return true;
+        return previewRemoval(c, removedIndices(res, c.count), { noun: 'точек', color: '#ff3b4a' });
+      },
       finish: function (res, c, v) {
-        if (!res.removed) { toast('Подавление шума: «летающих» точек не найдено (радиус ' + num(v.radius) + ' м, соседей ' + Math.round(v.neighbors) + ')'); return null; }
-        if (!res.keep.length) { toast('При таких параметрах удалились бы все точки — увеличьте радиус или уменьшите число соседей'); return null; }
-        return { cloud: subsetCloud(c, res.keep), name: 'denoise',
-          details: { operation: 'cloud.denoise', parameters: { algorithm: 'radius-outlier', radius: v.radius, neighbors: Math.round(v.neighbors), removed: res.removed, kept: res.keep.length } },
-          text: 'Подавление шума: удалено ' + nfmt(res.removed) + ' точек, осталось ' + nfmt(res.keep.length) };
+        var smart = v.mode === 'smart', what = smart ? 'умный режим, ' + lvlName(v.level) : 'радиус ' + num(v.radius) + ' м, соседей ' + Math.round(v.neighbors);
+        if (!res.removed) { toast('Подавление шума: «летающих» точек не найдено (' + what + ')'); return null; }
+        var keep = smart ? keptIndices(res.remove, c.count) : res.keep, removed = res.removed;
+        if (!keep.length) { toast('При таких параметрах удалились бы все точки — смягчите параметры'); return null; }
+        return { cloud: subsetCloud(c, keep), name: 'denoise',
+          details: { operation: 'cloud.denoise', parameters: smart ? { algorithm: 'density-aware', level: v.level, removed: removed, kept: keep.length } : { algorithm: 'radius-outlier', radius: v.radius, neighbors: Math.round(v.neighbors), removed: removed, kept: keep.length } },
+          text: 'Подавление шума: удалено ' + nfmt(removed) + ' точек (' + num(removed / c.count * 100, removed / c.count < 0.01 ? 3 : 1) + ' %), осталось ' + nfmt(keep.length) };
       }
     });
+    function lvlName(l) { return LEVELS[l] || l; }
   }
 
   function opSmooth() {
