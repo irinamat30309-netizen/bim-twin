@@ -3441,7 +3441,11 @@
   }
   function saveMeasurement() {
     const res = viewer && viewer._measResult;
-    if (!res || res.error || (res.mode === 'deviation' && res.signed === undefined)) { toast('Нет готового измерения для сохранения'); return; }
+    if (!res || res.error || (res.mode === 'deviation' && res.signed === undefined) || (res.mode === 'corner' && !(res.planeCount >= 2))) {
+      toast(res && !res.error && res.mode === 'deviation' ? 'Выбрана опорная плоскость — кликните точку или вторую поверхность, тогда измерение можно сохранить'
+        : res && !res.error && res.mode === 'corner' ? 'Выбрана одна плоскость — кликните соседнюю, тогда измерение можно сохранить' : 'Нет готового измерения для сохранения');
+      return;
+    }
     storeMeasurement(res, {});
     toast('Сохранено измерений: ' + __measurements.length);
   }
@@ -5024,7 +5028,12 @@
     bind('mlOpenVerify', () => { if (window.__lxVerify) window.__lxVerify.open({}); });
     bind('mlCsv', () => exportMeasCsv());
     bind('mlNotion', () => exportMeasNotion());
-    bind('mlClearAll', () => { __measurements = []; renderMeasList(); persistMeasurements(); });
+    // «Очистить всё» без диалога: список из нескольких замеров стирается только вторым нажатием в течение 4 секунд
+    let clearArm = 0;
+    bind('mlClearAll', () => {
+      if (__measurements.length > 1 && Date.now() - clearArm > 4000) { clearArm = Date.now(); toast('В списке замеров: ' + __measurements.length + '. Нажмите ещё раз, чтобы очистить весь список'); return; }
+      clearArm = 0; __measurements = []; renderMeasList(); persistMeasurements();
+    });
     bind('mmList', () => { const p = $('measureListPanel'); if (p) { p.style.display = p.style.display === 'none' ? 'block' : 'none'; renderMeasList(); } });
     window._measSetMode = setMM;
     renderMeasList();

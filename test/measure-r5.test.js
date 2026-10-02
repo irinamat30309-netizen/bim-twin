@@ -160,3 +160,15 @@ test('интерфейс: кнопка «Диаметр» есть в разме
   assert.ok(/"diameter":\s*"<circle/.test(icons));
   assert.ok(!/<[a-z][^>]*\sstyle=/i.test(html), 'inline style= в index.html запрещён');
 });
+
+test('защита от потери данных: неготовый замер не сохраняется, «Очистить всё» требует повторного нажатия, угол без сторон не падает', () => {
+  const APP = R_('renderer', 'app.js');
+  const i = APP.indexOf('function saveMeasurement()');
+  assert.ok(i > 0);
+  const body = APP.slice(i, i + 900);
+  assert.ok(/res\.mode === 'deviation' && res\.signed === undefined/.test(body) && /res\.mode === 'corner' && !\(res\.planeCount >= 2\)/.test(body), 'saveMeasurement: неготовые замеры');
+  assert.ok(/bind\('mlClearAll'[\s\S]{0,260}clearArm/.test(APP), 'mlClearAll: повторное нажатие');
+  const a = M.angleAt([0, 0, 0], [0, 0, 0], [1, 0, 0]);
+  assert.equal(a.deg, 0);
+  assert.ok(Number.isFinite(a.lenA) && Number.isFinite(a.lenC));
+});

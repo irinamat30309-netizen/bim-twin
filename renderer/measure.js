@@ -60,7 +60,7 @@
   function angleAt(a, b, c) {
     const u = sub(a, b), v = sub(c, b);
     const lu = len(u), lv = len(v);
-    if (lu < 1e-12 || lv < 1e-12) return { deg: 0, rad: 0 };
+    if (lu < 1e-12 || lv < 1e-12) return { deg: 0, rad: 0, lenA: lu, lenC: lv };
     const cosv = clamp(dot(u, v) / (lu * lv), -1, 1);
     const rad = Math.acos(cosv);
     return { deg: rad * RAD2DEG, rad: rad, lenA: lu, lenC: lv };
