@@ -159,4 +159,71 @@ test('окно: умное подавление шума идёт в ворке�
   assert.match(V, /previewPoints\(pos, opts\)/); assert.match(V, /clearPreview\(silent\)/);
   assert.equal((V.match(/\.concat\(this\._prevObj \? \[this\._prevObj\] : \[\]\)/g) || []).length, 2, 'предпросмотр рисуется в обоих списках отрисовки');
   assert.ok(fs.readFileSync(R('renderer', 'ui', 'tools.css'), 'utf8').includes('.lx-confirmbar'));
+  assert.match(V, /if \(o\._isPreview\) \{ gl\.disable\(gl\.DEPTH_TEST\); gl\.depthMask\(false\); \}/, 'красные точки предпросмотра рисуются поверх облака');
+  assert.match(X, /opPeople: opPeople/); assert.match(X, /op: 'people'/);
+  assert.match(W, /m\.op === 'people'/);
+  assert.ok(fs.readFileSync(R('renderer', 'ui', 'commands.js'), 'utf8').includes("I('opPeople', 'user-round-x', 'Удалить людей'"));
+});
+
+// ---------- Удаление людей: форма, а не радиус ----------
+test('people: на уличной сцене находит большинство людей (в т.ч. идущих), не трогает колонну, столбы, знак, ящики, деревья и машины', () => {
+  const { S, pos, n } = scene(), r = CC.people(pos, n, { level: 'normal' });
+  const tot = [0, 0, 0], got = [0, 0, 0]; for (let i = 0; i < n; i++) tot[S.lab[i]]++; for (const i of r.remove) got[S.lab[i]]++;
+  assert.ok(r.found.length >= 7 && r.found.length <= 10, 'найдено объектов: ' + r.found.length);
+  assert.ok(got[2] / tot[2] >= 0.9, 'удалено точек людей: ' + (got[2] / tot[2] * 100).toFixed(1) + ' %');
+  assert.ok(got[0] / tot[0] <= 0.0002, 'задето полезных точек сцены: ' + got[0] + ' (' + (got[0] / tot[0] * 100).toFixed(4) + ' %)');
+  const near = (x, y, rad) => { let k = 0; for (const i of r.remove) if (Math.hypot(pos[i * 3] - x, -pos[i * 3 + 2] - y) < rad && S.lab[i] === 0) k++; return k; };
+  assert.equal(near(-9, -3, 0.6), 0, 'колонна ростом с человека остаётся');
+  assert.equal(near(18, 8, 1.2), 0, 'стойка со знаком остаётся');
+  assert.equal(near(3, -6, 1.5), 0, 'тумбы остаются');
+  for (const f of r.found) assert.ok(f.h >= 1.3 && f.h <= 2.2 && f.w <= 1.2, 'размеры найденного: ' + JSON.stringify(f));
+  assert.ok(r.stats.rejected.size > 100, 'большинство компонентов (стены, деревья, машины) отсеяно по размеру');
+});
+
+test('people: уровни — строгий находит не больше обычного, мягкий не меньше; сидящие включаются опцией', () => {
+  const { pos, n } = scene(), c = {};
+  for (const level of ['strict', 'normal', 'loose']) c[level] = CC.people(pos, n, { level }).found.length;
+  assert.ok(c.strict <= c.normal && c.normal <= c.loose, JSON.stringify(c));
+  const seated = CC.people(pos, n, { level: 'normal', sitting: true });
+  assert.ok(seated.found.length >= c.normal);
+});
+
+function surf(out, f, count, rnd) { for (let i = 0; i < count; i++) out.push(f(rnd(), rnd())); }
+function synthRoom(withHuman) {
+  const P = []; let s = 99;
+  const rnd = () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
+  surf(P, (a, b) => [a * 12, 0 + 0.002 * (b - 0.5), b * 12], 120000, rnd);                                      // пол 12×12 м
+  const cyl = (cx, cz, r, y0, y1, k) => surf(P, (a, b) => [cx + r * Math.cos(a * 6.2832), y0 + (y1 - y0) * b, cz + r * Math.sin(a * 6.2832)], k, rnd);
+  const sph = (cx, cy, cz, r, k) => surf(P, (a, b) => { const th = a * 6.2832, ph = Math.acos(1 - 2 * b); return [cx + r * Math.sin(ph) * Math.cos(th), cy + r * Math.cos(ph), cz + r * Math.sin(ph) * Math.sin(th)]; }, k, rnd);
+  cyl(2, 2, 0.26, 0, 1.75, 9000);                                                                              // колонна ростом с человека
+  cyl(10, 2, 0.05, 0, 2.2, 1500);                                                                              // тонкая стойка
+  surf(P, (a, b) => [4 + a, 0.75 * b + 0.75 * (b > 0.5 ? 1 : 0), 8 + 0.9 * (b > 0.5 ? a : (a > 0.5 ? 1 : 0))], 8000, rnd);   // ящик ≈ 1×1,5×0,9 (грубо)
+  if (withHuman) {
+    const hx = 7, hz = 7;
+    cyl(hx - 0.1, hz, 0.075, 0.05, 0.88, 1400); cyl(hx + 0.1, hz, 0.075, 0.05, 0.88, 1400);                      // ноги
+    cyl(hx, hz, 0.17, 0.9, 1.4, 2400);                                                                         // торс
+    cyl(hx - 0.24, hz, 0.045, 0.92, 1.32, 500); cyl(hx + 0.24, hz, 0.045, 0.92, 1.32, 500);                      // руки
+    cyl(hx, hz, 0.05, 1.42, 1.5, 150); sph(hx, 1.62, hz, 0.105, 700);                                           // шея и голова
+  }
+  const pos = new Float32Array(P.length * 3); P.forEach((p, i) => { pos[i * 3] = p[0]; pos[i * 3 + 1] = p[1]; pos[i * 3 + 2] = p[2]; });
+  return { pos, n: P.length, humanFrom: P.length - (withHuman ? 1400 * 2 + 2400 + 1000 + 150 + 700 : 0) };
+}
+test('people: на сцене без людей (колонна, стойка, ящик) удалять нечего; один человек находится целиком вместе с «пеньками» стоп', () => {
+  const a = synthRoom(false), ra = CC.people(a.pos, a.n, { level: 'normal' });
+  assert.equal(ra.removed, 0, 'ложных срабатываний быть не должно: ' + JSON.stringify(ra.found));
+  const b = synthRoom(true), rb = CC.people(b.pos, b.n, { level: 'normal' });
+  assert.equal(rb.found.length, 1, 'найден один человек: ' + JSON.stringify(rb.found));
+  const gone = new Set(rb.remove); let hum = 0; for (let i = b.humanFrom; i < b.n; i++) if (gone.has(i)) hum++;
+  assert.ok(hum / (b.n - b.humanFrom) > 0.97, 'точек человека удалено ' + hum + ' из ' + (b.n - b.humanFrom));
+  let outside = 0; for (const i of rb.remove) if (i < b.humanFrom) outside++;
+  assert.ok(outside <= 30, 'снаружи удалено: ' + outside);
+});
+
+test('people: пустое, малое и нечисловое облако не ломают расчёт; прогресс монотонен', () => {
+  assert.equal(CC.people(new Float32Array(0), 0, {}).removed, 0);
+  assert.equal(CC.people(new Float32Array(30), 10, {}).removed, 0);
+  const a = synthRoom(true), p = a.pos.slice(); p[5] = NaN; p[10] = Infinity;
+  const seen = [], r = CC.people(p, a.n, { level: 'normal' }, { progress: (f) => seen.push(f) });
+  assert.equal(r.found.length, 1);
+  assert.ok(seen.length > 3 && seen[seen.length - 1] === 1 && seen.every((v, i) => !i || v >= seen[i - 1] - 1e-9));
 });

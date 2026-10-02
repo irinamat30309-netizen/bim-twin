@@ -2349,7 +2349,12 @@
     // Рисует список объектов в два прохода: тела (с обрезкой по срезу), затем линии (без обрезки) — как в обычном кадре
     _drawList(list) {
       const gl = this.gl;
-      for (const o of list) { if (o.line || o.hidden || (o.points && this.cloudVisible === false)) continue; this._drawObj(o); }
+      for (const o of list) {
+        if (o.line || o.hidden || (o.points && this.cloudVisible === false)) continue;
+        if (o._isPreview) { gl.disable(gl.DEPTH_TEST); gl.depthMask(false); }   // предпросмотр удаления рисуется поверх облака: красное видно целиком
+        this._drawObj(o);
+        if (o._isPreview) { gl.enable(gl.DEPTH_TEST); gl.depthMask(true); }
+      }
       gl.uniform1f(this.u.uClipOn, 0);
       for (const o of list) { if (!o.line || o.hidden) continue; this._drawObj(o); }
     }
@@ -3121,7 +3126,7 @@
       const total = pos ? (pos.length / 3) | 0 : 0; if (!total) { this.render(); return 0; }
       const MAXP = 400000, stride = total > MAXP ? Math.ceil(total / MAXP) : 1, cap = Math.ceil(total / stride), out = new Float32Array(cap * 3);
       let j = 0; for (let i = 0; i < total; i += stride) { out[j * 3] = pos[i * 3]; out[j * 3 + 1] = pos[i * 3 + 1]; out[j * 3 + 2] = pos[i * 3 + 2]; j++; }
-      const bo = this.base && this.base[0], size = Math.min(Math.max(5, (opts && opts.size) || 0), 12);
+      const size = Math.min(Math.max(9, (opts && opts.size) || 0), 14);
       const o = this._makeObj({ id: null, points: true, pos: j === cap ? out : out.subarray(0, j * 3), col: null, pointSize: size, color: hex2rgb((opts && opts.color) || '#ff3b4a'), status: 'none' });
       o._spacing = 0; o._ptMax = size; o._isSel = true; o._isPreview = true;
       this._prevObj = o; this.render(); return j;

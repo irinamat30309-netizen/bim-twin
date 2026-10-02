@@ -225,7 +225,7 @@
     var big = pct > 5;
     try {
       return await reviewBar({
-        title: (o.verb || 'Удалить') + ' ' + nfmt(k) + ' ' + (o.noun || 'точек') + ' (' + num(pct, pct < 1 ? 3 : 1) + ' % облака)?',
+        title: (o.who != null ? 'Найдено людей (объектов): ' + o.who + '. ' : '') + 'Удалить ' + nfmt(k) + ' ' + (o.noun || 'точек') + ' (' + num(pct, pct < 1 ? 3 : 1) + ' % облака)?',
         text: (big ? 'Это больше 5 % облака — убедитесь, что красным отмечено только лишнее. ' : 'Красным отмечено то, что будет удалено. ') + 'Крутите и приближайте облако, затем подтвердите. Ctrl+Z вернёт точки.',
         okLabel: o.okLabel || 'Удалить', cancelLabel: 'Отмена', tone: big ? 'warn' : ''
       });
@@ -303,6 +303,39 @@
       }
     });
     function lvlName(l) { return LEVELS[l] || l; }
+  }
+
+  function opPeople() {
+    var LV = { strict: 'строго', normal: 'обычно', loose: 'мягко' };
+    return processOp({
+      op: 'people', label: 'Поиск людей…', title: 'Удалить людей',
+      message: 'Находит прохожих по форме: рост, ширина, голова уже плеч, опора на землю. Колонны, столбы, тумбы, ящики, деревья, машины и стены остаются. Это эвристика, а не нейросеть: перед удалением вы увидите найденное красным.',
+      fields: function () {
+        return [
+          { key: 'level', label: 'Строгость поиска', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко' }],
+            hint: 'Строго — только уверенные случаи; обычно (рекомендуется); мягко находит больше, но может задеть колонны и столбы ростом с человека.' },
+          { key: 'minH', label: 'Рост от', type: 'number', value: 1.3, min: 0.5, max: 2.5, step: 'any', unit: 'м' },
+          { key: 'maxH', label: 'Рост до', type: 'number', value: 2.2, min: 1, max: 3, step: 'any', unit: 'м' },
+          { key: 'sitting', label: 'Искать и сидящих (от 0,9 м)', type: 'checkbox', value: false },
+          { key: 'preview', label: 'Показать найденное красным и спросить', type: 'checkbox', value: true }
+        ];
+      },
+      validate: function (v) { return v.maxH > v.minH ? null : 'Верхний рост должен быть больше нижнего'; },
+      params: function (v) { return { level: v.level, minH: v.minH, maxH: v.maxH, sitting: !!v.sitting }; },
+      review: function (res, c, v) {
+        if (!v.preview || !res.removed) return true;
+        return previewRemoval(c, res.remove, { noun: 'точек', color: '#ff3b4a', okLabel: 'Удалить людей', who: res.found.length });
+      },
+      finish: function (res, c, v) {
+        var what = 'строгость: ' + (LV[v.level] || v.level);
+        if (!res.removed) { toast('Людей не найдено (' + what + '). Если они есть на скане, попробуйте «Мягко» или «Искать и сидящих».'); return null; }
+        var keep = keptIndices(res.remove, c.count);
+        if (!keep.length) { toast('Удалились бы все точки — операция отменена'); return null; }
+        return { cloud: subsetCloud(c, keep), name: 'remove-people',
+          details: { operation: 'cloud.removePeople', parameters: { algorithm: 'shape-heuristic', level: v.level, minHeight: v.minH, maxHeight: v.maxH, sitting: !!v.sitting, objects: res.found.length, removed: res.removed, kept: keep.length } },
+          text: 'Удалено объектов: ' + res.found.length + ' (' + nfmt(res.removed) + ' точек, ' + num(res.removed / c.count * 100, res.removed / c.count < 0.01 ? 3 : 1) + ' %)' };
+      }
+    });
   }
 
   function opSmooth() {
@@ -496,7 +529,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opDenoise: opDenoise, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });
