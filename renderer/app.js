@@ -159,6 +159,29 @@
   }
   // Бюджет чтения (200 млн) и бюджет рисования потока октодерева за кадр — разные вещи: рисуем не больше LOD_DRAW_BUDGET точек.
   function lodDrawBudget(budget) { const cap = Number(window.APP_CONFIG && window.APP_CONFIG.LOD_DRAW_BUDGET) || 80000000; return Math.max(1000000, Math.min(Number(budget) || cap, cap)); }
+  // Ревизия 8: файл не поместился в память целиком (например, 271 млн точек → показано 90 млн) — предлагаем потоковый режим:
+  // индекс строится на диске по ВСЕМ точкам файла, на экране рисуется то, что нужно кадру. Вопрос задаём, когда облако уже на экране.
+  const __offeredStream = new Set();
+  function streamOfferText(tot, got) {
+    const pct = Math.round(got / tot * 100), mins = Math.max(1, Math.round(tot / 1.0e6 / 60)), gb = Math.max(0.1, tot * 40 / 1073741824);
+    return 'В файле ' + (tot / 1e6).toFixed(1).replace('.', ',') + ' млн точек, в память поместилось ' + (got / 1e6).toFixed(1).replace('.', ',') + ' млн (' + pct + ' %). ' +
+      'Потоковый режим построит индекс на диске по всем точкам и будет показывать нужные части при просмотре. ' +
+      'Построение разовое: около ' + mins + ' мин на быстром диске, на время работы нужно до ' + gb.toFixed(1).replace('.', ',') + ' ГБ свободного места.';
+  }
+  function offerFullCloud(filePath, result) {
+    const tot = Number(result && result.meta && result.meta.total) || 0, got = Number(result && result.count) || (result && result.pos && result.pos.length / 3) || 0;
+    if (!(tot > got * 1.02) || !got || !API || !API.buildOctree || !/\.(las|ply|pcd)$/i.test(String(filePath))) return;
+    if (result.pointShare && result.pointShare < 1) return;                       // долю точек выбрал сам пользователь в настройках
+    if (__offeredStream.has(filePath)) return; __offeredStream.add(filePath);
+    setTimeout(async () => {
+      const k = window.__lxKit; if (!k || !k.ask || lastCloudPath !== filePath) return;
+      const sb0 = $('vtStream'); if (!sb0 || sb0.classList.contains('on')) return;
+      let yes = false;
+      try { yes = await k.ask({ title: 'Показать все точки файла?', message: streamOfferText(tot, got), okLabel: 'Построить индекс' }); } catch (_) { yes = false; }
+      if (yes && lastCloudPath === filePath) sb0.click();
+      else toast('Все точки можно включить позже: кнопка «Потоковый LOD»');
+    }, 1500);
+  }
   async function parseCloudWithProgress(filePath, label) {
     if (!API || typeof API.parseCloud !== 'function') return { ok: false, message: 'Импорт облака недоступен' };
     if (typeof API.onCloudParseProgress !== 'function' || typeof API.cancelCloudParse !== 'function') {
@@ -182,8 +205,9 @@
         try { const tot = Number(result.meta && result.meta.total) || 0, got = Number(result.count) || (result.pos && result.pos.length / 3) || 0; toast('Открыто ' + Math.round(result.pointShare * 100 * 10) / 10 + ' % точек файла' + (tot ? ' (' + (got / 1e6).toFixed(1) + ' из ' + (tot / 1e6).toFixed(1) + ' млн)' : '') + '. Все точки: Настройки → Облака точек → «100 %».'); } catch (_) {}
       }
       if (result && result.ok && result.pointBudget && result.pointBudget.memoryLimited) {
-        try { const pb = result.pointBudget; toast('Свободной памяти хватает на ~' + Math.round(pb.applied / 1e6) + ' млн точек из ' + (pb.total / 1e6).toFixed(1) + ' млн в файле: облако открыто прореженным. Закройте другие программы и откройте файл снова — тогда оно загрузится целиком.'); } catch (_) {}
+        try { const pb = result.pointBudget; toast('Свободной памяти хватает на ~' + Math.round(pb.applied / 1e6) + ' млн точек из ' + (pb.total / 1e6).toFixed(1) + ' млн в файле: облако открыто прореженным (все точки — через потоковый режим).'); } catch (_) {}
       }
+      try { offerFullCloud(filePath, result); } catch (_) {}
       return result;
     } finally {
       try { if (typeof unsubscribe === 'function') unsubscribe(); } catch (_) {}

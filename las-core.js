@@ -92,8 +92,16 @@
   }
   function keepSampledIndex(gi, stride) {
     if (stride <= 1) return true;
-    var win = (gi / stride) | 0;
-    return (gi - win * stride) === sampleOffset(win, stride);
+    if (stride === (stride | 0)) {   // целый шаг: как раньше
+      var win = (gi / stride) | 0;
+      return (gi - win * stride) === sampleOffset(win, stride);
+    }
+    // Дробный шаг (ревизия 8): окна [ceil(w·s), ceil((w+1)·s)) разной длины floor/ceil(s); в каждом — одна точка со случайным смещением.
+    // Так бюджет точек используется целиком (раньше шаг округлялся вверх: 271 млн при бюджете 135 млн давали 90 млн — каждую 3-ю).
+    var w = Math.floor(gi / stride), a = Math.ceil(w * stride), b = Math.ceil((w + 1) * stride);
+    if (gi < a) { w--; a = Math.ceil(w * stride); b = Math.ceil((w + 1) * stride); }
+    else if (gi >= b) { w++; a = Math.ceil(w * stride); b = Math.ceil((w + 1) * stride); }
+    return gi === a + sampleOffset(w, b - a);
   }
 
   function plyUpAxis(comments, firstXYZ, ranges) {

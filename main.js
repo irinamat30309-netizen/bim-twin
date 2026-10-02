@@ -1613,7 +1613,7 @@ function registerIpc() {
       const configuredBudget = APP_CFG.resolvePointBudget(s);
       const requestedBudget = Math.max(configuredBudget, Number(a.maxPoints) || 0, 40000000);
       // Потолок индексации — OCTREE_MAX_POINTS (400 млн); бюджет проекта по умолчанию 200 млн. От нехватки памяти защищают проверки assess*Memory ниже.
-      const maxPoints = Math.min(APP_CFG.OCTREE_MAX_POINTS || 400000000, Number.isSafeInteger(requestedBudget) ? requestedBudget : 40000000);
+      let maxPoints = Math.min(APP_CFG.OCTREE_MAX_POINTS || 2000000000, Number.isSafeInteger(requestedBudget) ? requestedBudget : 40000000);
       const requestedCapacity = Number(a.nodeCapacity) || 120000;
       const nodeCapacity = Math.max(1000, Math.min(500000, Number.isSafeInteger(requestedCapacity) ? requestedCapacity : 120000));
       let sourcePreflightInfo = null;
@@ -1636,6 +1636,11 @@ function registerIpc() {
       const sourcePointCount = useOutOfCore
         ? Number(sourcePreflightInfo.pointCount || sourcePreflightInfo.vertexCount)
         : advertisedSourcePoints;
+      // Ревизия 8: потоковый индекс строится по ВСЕМ точкам файла (271 млн → 271 млн, 500 млн → 500 млн): прореживание только если файл больше потолка
+      // OCTREE_MAX_POINTS; нехватку места на диске и памяти ловят проверки ниже. Для форматов без потокового чтения остаётся бюджет проекта.
+      if (useOutOfCore && Number.isSafeInteger(sourcePointCount) && sourcePointCount > maxPoints) {
+        maxPoints = Math.min(APP_CFG.OCTREE_MAX_POINTS || 2000000000, sourcePointCount);
+      }
       const estimatePointCount = Number.isSafeInteger(sourcePointCount) && sourcePointCount > 0
         ? Math.min(sourcePointCount, maxPoints)
         : null;

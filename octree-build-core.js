@@ -7,7 +7,8 @@ const Cloud = require('./las-node');
 const Octree = require('./renderer/octree-store');
 const { atomicWriteJsonSync } = require('./db/atomic-file');
 
-const MAX_INDEX_POINTS = 40000000;
+const MAX_INDEX_POINTS = 40000000;                // потолок для индексации «в памяти» (форматы без потокового чтения)
+const MAX_INDEX_POINTS_OUT_OF_CORE = 2000000000;   // ревизия 8: потоковое построение (LAS/PLY/PCD) ограничено только диском — раньше здесь тоже стояло 40 млн
 const CANONICAL_PARTITION_BUFFER_RECORDS = 16384;
 
 function writeAllSync(fd, buffer, position) {
@@ -355,7 +356,7 @@ function buildOctreeToDisk(sourcePath, outputDir, options) {
     }
     if (pointFileInfo && prepareSource) {
       return buildCanonicalPointOctreeToDisk(
-        source, targetDir, maxPoints, nodeCapacity, tempNodePath, onProgress,
+        source, targetDir, Math.max(1, Math.min(MAX_INDEX_POINTS_OUT_OF_CORE, Number.isSafeInteger(requestedBudget) && requestedBudget > 0 ? requestedBudget : MAX_INDEX_POINTS_OUT_OF_CORE)), nodeCapacity, tempNodePath, onProgress,
         options.sourceTransform, options.sourcePreflightInfo || pointFileInfo,
         prepareSource, sourceKind
       );
@@ -435,4 +436,4 @@ function buildOctreeToDisk(sourcePath, outputDir, options) {
   }
 }
 
-module.exports = { buildOctreeToDisk, MAX_INDEX_POINTS };
+module.exports = { buildOctreeToDisk, MAX_INDEX_POINTS, MAX_INDEX_POINTS_OUT_OF_CORE };

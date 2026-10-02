@@ -34,10 +34,14 @@ function shareToStride(share) {
   return Math.max(1, Math.min(1000, Math.round(1 / s)));
 }
 // Шаг выборки: бюджет точек (если в файле больше) или доля файла — что даёт более редкую выборку
+// Ревизия 8: шаг дробный (count/budget), чтобы бюджет использовался целиком: раньше шаг округлялся вверх, и 271 млн точек при бюджете 135 млн
+// давали шаг 3 → 90 млн (33 %). keepSampledIndex (las-core.js) умеет дробный шаг: одна точка на окно из floor/ceil(шага) записей.
 function sampleStride(count, budget, shareStride) {
-  const byBudget = count > budget ? Math.ceil(count / budget) : 1;
+  const q = count / budget, byBudget = count > budget ? (Number.isInteger(q) ? q : q * (1 + 1e-9)) : 1;
   return Math.max(byBudget, shareStride == null ? _shareStride : shareStride);
 }
+// Целый шаг — для форматов, где пропуск задаётся числом записей (LAZ skip, PTX).
+function sampleStrideInt(count, budget, shareStride) { return Math.ceil(sampleStride(count, budget, shareStride) - 1e-6); }
 const CHUNK_BYTES = cfg.CLOUD_CHUNK_BYTES;
 const SCAN_N = cfg.COLOR_SAMPLE_COUNT;
 function currentAvailableMemoryBytes() {
@@ -176,7 +180,7 @@ function parseLASFile(fd, fileSize, maxPoints, onProgress) {
 
   const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
   const stride = sampleStride(count, budget);
-  let outCap = 0; for (let s = 0; s < count; s += stride) outCap++;
+  const outCap = Math.ceil(count / stride);
 
   // Определение глубины цвета: выборка РАВНОМЕРНО по всему файлу (а не первые 4000 точек),
   // иначе неокрашенное начало давало бы серый рендер всего облака. (r9)
@@ -1327,7 +1331,7 @@ function parsePLYFile(fd, fileSize, maxPoints, onProgress) {
   const vn = vtx.count;
   const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
   const stride = sampleStride(vn, budget);
-  let outCap = 0; for (let s = 0; s < vn; s += stride) outCap++;
+  const outCap = Math.ceil(vn / stride);
 
   const names = vtx.props.map((p) => p.name.toLowerCase());
   const findP = (n) => vtx.props.find((p) => p.name.toLowerCase() === n);
@@ -1831,7 +1835,7 @@ function parsePTXFile(fd, fileSize, maxPoints, onProgress) {
   }, 'index');
   if (!validCount) throw new Error('PTX: no valid returns (all points are missing)');
   const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
-  const stride = sampleStride(validCount, budget);
+  const stride = sampleStrideInt(validCount, budget);
   const cap = Math.ceil(validCount / stride);
   const world = new Float64Array(cap * 3), col = hasColor ? new Float32Array(cap * 3) : null;
   const intensity = hasIntensity ? new Float32Array(cap) : null;
@@ -2087,7 +2091,7 @@ async function parseLAZFile(absPath, opts) {
     if (!H.count || !Number.isSafeInteger(H.count)) throw new Error('в LAZ нет точек или число точек превышает безопасный предел');
     crsWkt = readLasCrsWkt(fd, st.size, head);
     const budget = Math.max(200000, Number(opts.maxPoints) || DEFAULT_MAX_POINTS);
-    const skip = sampleStride(H.count, budget, shareToStride(opts.pointShare));
+    const skip = sampleStrideInt(H.count, budget, shareToStride(opts.pointShare));
     const bytes = await fs.promises.readFile(absPath);
     progressAt(opts.onProgress, 'read-compressed', 0.16, { bytesRead: bytes.length, bytesTotal: st.size });
     const input = (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength)
