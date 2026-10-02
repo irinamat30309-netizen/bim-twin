@@ -1,4 +1,4 @@
-/* lixel-tools-ext.js — v1151
+/* lixel-tools-ext.js — v1160
  * UI-обвязка риббонов «Инструмент» и «Приложение» (паритет с LixelStudio).
  * Подключает кнопки к чистым функциям PCEdit + MultiCloud/TinVolume/ExportHub
  * через мост window.__pcTools. Показывает счётчик выполнения в процентах.
@@ -19,7 +19,7 @@
     var t = T(); if (!t) return null;
     var c = t.getCloud ? t.getCloud() : null;
     if (!c || !c.pos || !c.pos.length) return null;
-    return { pos: c.pos, col: c.col || null, count: c.count || c.pos.length / 3 };
+    return { pos: c.pos, col: c.col || null, intensity: c.intensity || null, classification: c.classification || null, count: c.count || c.pos.length / 3 };
   }
   function needCloud() {
     var t = T();
@@ -45,10 +45,10 @@
   }
 
   // Обёртка с полосой прогресса %. work(setPct) — setPct(frac 0..1, label?).
-  async function run(label, work) {
+  async function run(label, work, popts) {
     if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
     var t = T(); busy = true;
-    var stop = (t && t.beginProgress) ? t.beginProgress(label) : { set: function () {}, text: function () {} };
+    var stop = (t && t.beginProgress) ? t.beginProgress(label, popts) : { set: function () {}, text: function () {} };
     function setPct(frac, lab) { try { if (stop && stop.set) stop.set(frac, lab); } catch (e) {} }
     try { setPct(0.02, label); await work(setPct); }
     catch (e) { console.warn('tools-ext', e); toast('Ошибка: ' + (e && e.message || e)); }
@@ -96,30 +96,168 @@
   }
 
   // ---------- Инструмент ----------
+  // ---------- Обработка облака: ресэмплирование, подавление шума, сглаживание, выравнивание поверхностей ----------
+  // Расчёт идёт в фоновом потоке (cloud-process-worker.js) над одноразовой копией координат: окно не зависает, есть отмена.
+  function engine() { return window.CloudProcess || null; }
+  var WORKER_URL = 'cloud-process-worker.js?v=1160';
+
+  /** Запуск расчёта: { promise, cancel }. Если воркер не создаётся, небольшие облака считаются в основном потоке. */
+  function startJob(op, pos, params, onProgress) {
+    var job = { worker: null, cancelled: false }, rejectFn = null;
+    job.promise = new Promise(function (resolve, reject) {
+      rejectFn = reject;
+      var CP = engine(), got = false, w = null;
+      function inline(why) {
+        if (!CP || pos.length / 3 > 3e6) { reject(new Error(why || 'Фоновый расчёт недоступен в этом окне')); return; }
+        setTimeout(function () {
+          try { resolve(CP.run(op, op === 'smooth' || op === 'flatten' ? pos.slice() : pos, params, { progress: onProgress })); } catch (e) { reject(e); }
+        }, 0);
+      }
+      try { w = new Worker(new URL(WORKER_URL, document.baseURI)); } catch (e) { inline(String(e && e.message || e)); return; }
+      job.worker = w;
+      w.onmessage = function (ev) {
+        var m = ev.data || {}; got = true;
+        if (m.type === 'progress') { if (onProgress) onProgress(m.frac, m.label); }
+        else if (m.type === 'done') { try { w.terminate(); } catch (e) {} resolve(m.result); }
+        else if (m.type === 'error') { try { w.terminate(); } catch (e) {} reject(new Error(m.message || 'Ошибка расчёта')); }
+      };
+      w.onerror = function (ev) {
+        try { w.terminate(); } catch (e) {}
+        if (job.cancelled) return;
+        if (!got) inline('Не удалось запустить фоновый расчёт');
+        else reject(new Error('Сбой фонового расчёта' + (ev && ev.message ? ': ' + ev.message : '')));
+      };
+      var buf = pos.slice();   // одноразовая копия: воркер забирает её без повторного копирования, облако на экране не затрагивается
+      w.postMessage({ op: op, pos: buf, params: params || {} }, [buf.buffer]);
+    });
+    job.cancel = function () {
+      job.cancelled = true;
+      if (job.worker) { try { job.worker.terminate(); } catch (e) {} }
+      if (rejectFn) rejectFn(Object.assign(new Error('Операция отменена'), { cancelled: true }));
+    };
+    return job;
+  }
+
+  /** Подмножество облака по индексам keep — координаты, цвет, интенсивность и классы остаются согласованными. */
+  function subsetCloud(c, keep) {
+    var CP = engine(), n = c.count, k = keep.length;
+    var out = { pos: CP.gather(c.pos, keep, 3), col: c.col && c.col.length >= n * 3 ? CP.gather(c.col, keep, 3) : null, count: k };
+    out.intensity = c.intensity && c.intensity.length === n ? CP.gather(c.intensity, keep, 1) : null;
+    out.classification = c.classification && c.classification.length === n ? CP.gather(c.classification, keep, 1) : null;
+    return out;
+  }
+  function mm(v) { return (v * 1000).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' мм'; }
+  function num(v, d) { return Number(v).toLocaleString('ru-RU', { maximumFractionDigits: d == null ? 3 : d }); }
+
+  /**
+   * Общий сценарий: диалог параметров (как в Lixel) -> фоновый расчёт с отменой -> загрузка результата (Ctrl+Z возвращает облако).
+   * spec: { op, label, title, message, fields(defs), params(values, defs), finish(res, cloud, values) -> { cloud, name, details, text } }
+   */
+  async function processOp(spec) {
+    var c0 = needCloud(); if (!c0) return; var CP = engine();
+    if (!CP) { toast('Модуль обработки облака не загружен'); return; }
+    if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
+    var defs = CP.defaults(CP.estimate(c0.pos, c0.count));
+    var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({ title: spec.title, message: spec.message, okLabel: 'Применить', fields: spec.fields(defs, c0), validate: spec.validate }) : Promise.resolve(null));
+    if (!values) return;
+    var job = null;
+    await run(spec.label, async function (setPct) {
+      var c = needCloud(); if (!c) return;
+      job = startJob(spec.op, c.pos.subarray(0, c.count * 3), spec.params(values, defs), function (f, lab) { setPct(0.04 + 0.86 * f, lab || spec.label); });
+      var res;
+      try { res = await job.promise; } catch (e) { if (e && e.cancelled) { toast('Операция отменена, облако не изменено'); return; } throw e; }
+      if (!needCloud()) return;
+      setPct(0.92, 'Загрузка результата…'); await yieldFrame();
+      var out = spec.finish(res, c, values);
+      if (!out) return;
+      T().loadCloud(out.cloud, out.name, out.details); setPct(1, 'Готово');
+      toast(out.text + ' · Ctrl+Z — отмена');
+    }, { onCancel: function () { if (job) job.cancel(); } });
+  }
+
   function opResample() {
-    var c0 = needCloud(); if (!c0) return Promise.resolve(); if (!pcedit()) return Promise.resolve();
-    var vv=T().viewer&&T().viewer(), spacing=(vv&&vv.base&&vv.base[0]&&vv.base[0]._spacing)||0.01; var def = Math.max(0.005, Math.min(0.03, spacing * 2));
-    return askKit({ title: 'Ресэмплинг облака', message: 'Размер вокселя (м). Точки в одном вокселе будут объединены.', input: true, type: 'number', step: '0.001', min: '0.001', value: def.toFixed(3), okLabel: 'Применить', validate: function (v) { var n = Number(String(v).replace(',', '.')); return n > 0 && isFinite(n) ? null : 'Введите положительный размер вокселя в метрах'; } }).then(function (raw) {
-      if (raw === null) return;
-      var voxel = Number(String(raw).replace(',', '.'));
-      if (!(voxel > 0 && isFinite(voxel))) { toast('Введите положительный размер вокселя в метрах'); return; }
-      return run('Ресэмплирование…', async function (setPct) {
-        var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
-        setPct(0.3, 'Понижение плотности…'); await yieldFrame();
-        var r = P.voxelDownsample(c, { voxel: voxel }); setPct(0.8, 'Загрузка результата…'); await yieldFrame();
-        T().loadCloud({ pos: r.pos, col: r.col, count: r.kept }, 'resample', { operation: 'cloud.resample', parameters: { voxel: r.voxel, removed: r.removed, kept: r.kept } }); setPct(1, 'Готово');
-        toast('Ресэмплирование: ' + nfmt(r.kept) + ' точек (удалено ' + nfmt(r.removed) + ', воксель ' + r.voxel.toFixed(3) + ' м)');
-      });
+    return processOp({
+      op: 'resample', label: 'Ресэмплирование…', title: 'Ресэмплирование облака',
+      message: 'Понижает плотность облака. Остаются только настоящие точки исходного скана.',
+      fields: function (d) {
+        return [
+          { key: 'mode', label: 'Тип сэмплирования', type: 'select', value: 'random', options: [{ value: 'random', label: 'Случайный' }, { value: 'voxel', label: 'Пространственный (по сетке)' }] },
+          { key: 'percent', label: 'Частота дискретизации', type: 'number', value: 50, min: 0.01, max: 100, step: 'any', unit: '%', showIf: function (v) { return v.mode === 'random'; } },
+          { key: 'voxel', label: 'Шаг сетки', type: 'number', value: d.voxel, min: 0.001, max: 5, step: 'any', unit: 'м', hint: 'В каждом вокселе остаётся одна точка — ближайшая к его центру.', showIf: function (v) { return v.mode === 'voxel'; } }
+        ];
+      },
+      params: function (v) { return v.mode === 'voxel' ? { mode: 'voxel', voxel: v.voxel } : { mode: 'random', percent: v.percent }; },
+      finish: function (res, c, v) {
+        if (!res.keep || !res.keep.length) { toast('Ресэмплирование убрало бы все точки — изменено ничего не будет'); return null; }
+        if (res.keep.length === c.count) { toast('Ресэмплирование: все точки остались'); return null; }
+        return { cloud: subsetCloud(c, res.keep), name: 'resample',
+          details: { operation: 'cloud.resample', parameters: Object.assign({ algorithm: 'subset', kept: res.keep.length, removed: c.count - res.keep.length }, v.mode === 'voxel' ? { mode: 'voxel', voxel: v.voxel } : { mode: 'random', percent: v.percent }) },
+          text: 'Ресэмплирование: осталось ' + nfmt(res.keep.length) + ' из ' + nfmt(c.count) + ' точек (' + num(res.keep.length / c.count * 100, 1) + ' %)' };
+      }
     });
   }
 
-  function opSmooth() { return run('Сглаживание…', async function (setPct) {
-    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
-    setPct(0.3, 'MLS-проекция на локальные плоскости…'); await yieldFrame();
-    var r = P.smoothMLS(c, { strength: 0.7 }); setPct(0.85, 'Загрузка результата…'); await yieldFrame();
-    T().loadCloud({ pos: r.pos, col: r.col, count: r.count }, 'smooth', { operation: 'cloud.smooth', parameters: { algorithm: 'MLS', strength: 0.7, moved: r.moved, points: r.count } }); setPct(1, 'Готово');
-    toast('Сглаживание: смещено ' + nfmt(r.moved) + ' из ' + nfmt(r.count) + ' точек');
-  }); }
+  function opDenoise() {
+    return processOp({
+      op: 'denoise', label: 'Подавление шума…', title: 'Подавление шума',
+      message: 'Удаляет «летающие» точки и мелкие отдельные сгустки: точка остаётся, если в радиусе поиска у неё не меньше заданного числа соседей.',
+      fields: function (d) {
+        return [
+          { key: 'radius', label: 'Радиус поиска', type: 'number', value: d.denoiseRadius, min: 0.005, max: 10, step: 'any', unit: 'м' },
+          { key: 'neighbors', label: 'Окрестность (соседей)', type: 'number', value: d.denoiseNeighbors, min: 1, max: 1000, step: '1', hint: 'Больше соседей — строже фильтр. Если облако прорежено, увеличьте радиус.' }
+        ];
+      },
+      params: function (v) { return { radius: v.radius, neighbors: Math.round(v.neighbors) }; },
+      finish: function (res, c, v) {
+        if (!res.removed) { toast('Подавление шума: «летающих» точек не найдено (радиус ' + num(v.radius) + ' м, соседей ' + Math.round(v.neighbors) + ')'); return null; }
+        if (!res.keep.length) { toast('При таких параметрах удалились бы все точки — увеличьте радиус или уменьшите число соседей'); return null; }
+        return { cloud: subsetCloud(c, res.keep), name: 'denoise',
+          details: { operation: 'cloud.denoise', parameters: { algorithm: 'radius-outlier', radius: v.radius, neighbors: Math.round(v.neighbors), removed: res.removed, kept: res.keep.length } },
+          text: 'Подавление шума: удалено ' + nfmt(res.removed) + ' точек, осталось ' + nfmt(res.keep.length) };
+      }
+    });
+  }
+
+  function opSmooth() {
+    return processOp({
+      op: 'smooth', label: 'Сглаживание…', title: 'Сглаживание',
+      message: 'Подавляет шум на плоских поверхностях: каждая точка ложится на локальную плоскость. Рёбра, углы и трубы остаются как есть.',
+      fields: function (d) {
+        return [
+          { key: 'radius', label: 'Радиус поиска', type: 'number', value: d.smoothRadius, min: 0.005, max: 2, step: 'any', unit: 'м', hint: 'Лучше всего 3–10 шагов между точками. Для плотного скана 0,03–0,05 м, для прореженного больше.' },
+          { key: 'strength', label: 'Сила', type: 'number', value: 100, min: 5, max: 100, step: '1', unit: '%' },
+          { key: 'protect', label: 'Сохранять рёбра и изогнутые поверхности', type: 'checkbox', value: true }
+        ];
+      },
+      params: function (v) { return { radius: v.radius, strength: v.strength / 100, protect: v.protect }; },
+      finish: function (res, c, v) {
+        if (!res.moved) { toast('Сглаживание: плоских участков для радиуса ' + num(v.radius) + ' м не найдено. Попробуйте радиус побольше.'); return null; }
+        return { cloud: { pos: res.pos, col: c.col, intensity: c.intensity, classification: c.classification, count: c.count }, name: 'smooth',
+          details: { operation: 'cloud.smooth', parameters: { algorithm: 'local-plane-projection', radius: v.radius, strength: v.strength / 100, protectEdges: v.protect, moved: res.moved, points: c.count, rmsShift: res.rmsShift } },
+          text: 'Сглаживание: смещено ' + nfmt(res.moved) + ' из ' + nfmt(c.count) + ' точек, средний сдвиг ' + mm(res.rmsShift) + (res.moved < c.count * 0.2 ? '. Участков с кривизной много — они не тронуты' : '') };
+      }
+    });
+  }
+
+  function opFlatten() {
+    return processOp({
+      op: 'flatten', label: 'Выравнивание поверхностей…', title: 'Выровнять поверхности',
+      message: 'Находит большие плоскости (стены, пол, потолок), склеивает двойные слои и укладывает точки на одну плоскость. Измерения по таким поверхностям становятся точными. Трубы и мебель не меняются.',
+      fields: function (d) {
+        return [
+          { key: 'tol', label: 'Допуск (толщина слоя)', type: 'number', value: d.flattenTol, min: 0.002, max: 0.5, step: 'any', unit: 'м', hint: 'Точки ближе допуска к плоскости ложатся на неё. Для SLAM-сканеров 0,03–0,06 м, для точных сканеров 0,01 м.' },
+          { key: 'strength', label: 'Сила', type: 'number', value: 100, min: 5, max: 100, step: '1', unit: '%' }
+        ];
+      },
+      params: function (v, d) { return { tol: v.tol, strength: v.strength / 100, spacing: d.spacing }; },
+      finish: function (res, c, v) {
+        if (!res.planes) { toast('Выравнивание: больших плоскостей не найдено. Увеличьте допуск (сейчас ' + num(v.tol) + ' м).'); return null; }
+        return { cloud: { pos: res.pos, col: c.col, intensity: c.intensity, classification: c.classification, count: c.count }, name: 'flatten',
+          details: { operation: 'cloud.flatten', parameters: { algorithm: 'plane-merge', tolerance: v.tol, strength: v.strength / 100, planes: res.planes, moved: res.moved, points: c.count, rmsShift: res.rmsShift } },
+          text: 'Выровнено поверхностей: ' + nfmt(res.planes) + ', точек ' + nfmt(res.moved) + ' из ' + nfmt(c.count) + ', средний сдвиг ' + mm(res.rmsShift) };
+      }
+    });
+  }
 
   function refineWall(plane,cloud){
     var p=cloud.pos,n=cloud.count,N=plane.normal,d=plane.d,bounds=[ [Infinity,-Infinity],[Infinity,-Infinity],[Infinity,-Infinity] ];
@@ -271,7 +409,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opSmooth: opSmooth, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opDenoise: opDenoise, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });

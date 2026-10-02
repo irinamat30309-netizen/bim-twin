@@ -56,6 +56,7 @@ const CUSTOM = {
   arc: '<path d="M4 19a15 15 0 0 1 15-15"/><circle cx="4" cy="19" r="1.6"/><circle cx="19" cy="4" r="1.6"/>',
   polyline: '<path d="m4.5 18 4.5-9.5 6 7 4.5-10.5"/><circle cx="4.5" cy="18" r="1.5"/><circle cx="9" cy="8.5" r="1.5"/><circle cx="15" cy="15.5" r="1.5"/><circle cx="19.5" cy="5" r="1.5"/>',
   diameter: '<circle cx="12" cy="12" r="8.5"/><path d="M6 18 18 6"/><path d="M6 14.5V18h3.5"/><path d="M14.5 6H18v3.5"/>',
+  flatten: '<path d="M3 6.5c1.5-2 3 2 4.5 0s3-2 4.5 0 3 2 4.5 0 3-2 4.5 0"/><path d="M12 10.5v5"/><path d="m9.5 13.5 2.5 2.5 2.5-2.5"/><path d="M3 20h18"/>',
   contour: '<path d="M3 20c1-8 5-13 9-13s8 5 9 13"/><path d="M7 20c.7-5 2.6-8 5-8s4.3 3 5 8"/><path d="M3 20h18"/>'
 };
 

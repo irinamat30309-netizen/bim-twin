@@ -159,6 +159,17 @@ input[type="checkbox"].lx-switch:disabled, input[type="checkbox"].set-ctl-chk:di
 .lx-ask-err { margin: -4px 0 0; color: var(--err); font-size: var(--fs-xs); line-height: 1.45; animation: lx-fade var(--t-fast) var(--ease); }
 .lx-ask-body input.invalid, .lx-ask-body input.invalid:focus, .lx-ask-body textarea.invalid, .lx-ask-body textarea.invalid:focus { border-color: var(--err); box-shadow: 0 0 0 3px var(--err-soft); }
 .form-actions .lx-ask-keys { margin-right: auto; color: var(--txt-3); font-size: var(--fs-xs); }
+/* Диалог с несколькими полями (kit.form): подпись слева, поле и единицы справа */
+.lx-form-body { gap: 12px; }
+.lx-form-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 168px); align-items: center; gap: 4px 14px; }
+.lx-form-row[hidden] { display: none; }
+.lx-form-row.chk { grid-template-columns: 18px minmax(0, 1fr); gap: 4px 10px; }
+.lx-form-lbl { color: var(--txt); font-size: var(--fs-md); line-height: 1.35; }
+.lx-form-ctl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lx-form-ctl input[type="number"], .lx-form-ctl select { flex: 1 1 auto; min-width: 0; width: 100%; }
+.lx-form-unit { flex: none; color: var(--txt-3); font-size: var(--fs-sm); }
+.lx-form-hint { grid-column: 1 / -1; margin: 0; }
+.lx-form-body input.invalid, .lx-form-body input.invalid:focus { border-color: var(--err); box-shadow: 0 0 0 3px var(--err-soft); }
 .modal.closing { opacity: 0; transition: opacity var(--t-fast) var(--ease); pointer-events: none; }
 .modal.closing .modal-card { transform: scale(.98); transition: transform var(--t-fast) var(--ease); }
 

@@ -84,7 +84,7 @@ test('каждая кнопка лежит на вкладке по своей �
   const PLACE = {
     project: ['save', 'saveAs', 'autosave', 'btnProjectUndo', 'btnProjectRedo', 'drafts', 'btnNewProject', 'btnBackup', 'btnSettings', 'btnUsers', 'btnSync'],
     import: ['btnOpenCloud', 'vtStream', 'opPotree', 'modelInput', 'ifcInput', 'docInput'],
-    cloud: ['vtQuality', 'vtClean', 'vtEdit', 'opResample', 'opSmooth', 'opFloor', 'opWall', 'opMerge', 'opOverlay', 'vtConvert', 'vtGeom', 'opDSM', 'opDTM', 'opContours', 'opGround', 'opGeoref'],
+    cloud: ['vtQuality', 'vtClean', 'vtEdit', 'opResample', 'opDenoise', 'opSmooth', 'opFlatten', 'opFloor', 'opWall', 'opMerge', 'opOverlay', 'vtConvert', 'vtGeom', 'opDSM', 'opDTM', 'opContours', 'opGround', 'opGeoref'],
     floors: ['floorAdd', 'floorIsolate', 'floorSlice', 'floorAttach', 'floorReport', 'btnBackRoom', 'btnEdit'],
     measure: ['btnMeasure', 'mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmDiameter', 'mmPlane', 'mmDeviation', 'mmCorner', 'mmSnap', 'mmList', 'mmCsv', 'mmQaReport', 'mmNotion', 'vfOpen', 'lxObjInspectBtn'],
     draw: ['draw.pline', 'draw.line', 'draw.rect', 'draw.circle', 'draw.arc', 'draw.point', 'draw.dim', 'draw.text', 'draw.door', 'draw.window', 'draw.extend', 'draw.split', 'draw.snap', 'draw.ortho', 'draw.top', 'draw.sect', 'draw.ai', 'opWalls', 'draw.imp', 'draw.dxf'],
@@ -102,7 +102,7 @@ test('каждая кнопка лежит на вкладке по своей �
 });
 
 test('операции над облаком неактивны, пока облако не загружено', () => {
-  for (const id of ['vtQuality', 'vtClean', 'vtEdit', 'opResample', 'opSmooth', 'opFloor', 'opWall', 'opMerge', 'opOverlay', 'vtGeom', 'opDSM', 'opDTM', 'opContours',
+  for (const id of ['vtQuality', 'vtClean', 'vtEdit', 'opResample', 'opDenoise', 'opSmooth', 'opFlatten', 'opFloor', 'opWall', 'opMerge', 'opOverlay', 'vtGeom', 'opDSM', 'opDTM', 'opContours',
     'opGround', 'opGeoref', 'floorSlice', 'opVolume', 'opCompareVolumes', 'opClosedVolume', 'opIFC4', 'opIFC', 'opRCP', 'opMesh']) {
     assert.equal(C.byId[id].needs, 'cloud', id + ' требует облако');
   }

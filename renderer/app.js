@@ -2148,8 +2148,8 @@
       return pendingCloudPath || null;
     };
     let geomBusy = false;
-    function beginProgress(label) {
-      if (window.__lxProgress && window.__lxProgress.begin) return window.__lxProgress.begin(label);
+    function beginProgress(label, opts) {
+      if (window.__lxProgress && window.__lxProgress.begin) return window.__lxProgress.begin(label, opts);
       // запасной вариант: тонкая полоса активности сверху окна
       const a = window.__lxKit && window.__lxKit.activity ? window.__lxKit.activity(label || 'Обработка…') : null;
       const stop = () => { if (a) a.done(); };

@@ -352,6 +352,114 @@
     });
   }
 
+  /* ---------- Диалог с несколькими полями (параметры операций над облаком) ----------
+   * form({ title, message, hint, okLabel, cancelLabel, wide, validate(values)→текст ошибки|'' ,
+   *        fields:[{ key, label, type:'number'|'select'|'checkbox', value, min, max, step, unit, hint, options:[{value,label}],
+   *                  showIf(values)→bool }] }) → Promise: объект значений или null при отмене.
+   *   number → Number, select → строка, checkbox → boolean. Esc и клик по фону — отмена, Enter — применить. */
+  function form(o) {
+    o = o || {};
+    var fields = o.fields || [];
+    return new Promise(function (resolve) {
+      var prev = D.activeElement, done = false, tid = 'lxAskT' + (++askSeq);
+      var back = D.createElement('div'); back.className = 'modal lx-ask';
+      var card = D.createElement('div'); card.className = 'modal-card ' + (o.wide ? 'md' : 'sm');
+      card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-labelledby', tid);
+      var head = D.createElement('div'); head.className = 'modal-head';
+      head.innerHTML = '<span id="' + tid + '">' + esc(o.title || 'Параметры') + '</span><button type="button" class="x" data-ico="x" aria-label="Закрыть"></button>';
+      var body = D.createElement('div'); body.className = 'form-body lx-ask-body lx-form-body';
+      if (o.message) { var m = D.createElement('p'); m.className = 'lx-ask-msg'; m.textContent = o.message; body.appendChild(m); }
+      var ctls = {}, rows = {}, order = [];
+      fields.forEach(function (f, idx) {
+        var row = D.createElement('div'); row.className = 'lx-form-row' + (f.type === 'checkbox' ? ' chk' : '');
+        var id = tid + 'f' + idx, ctl;
+        if (f.type === 'select') {
+          ctl = D.createElement('select');
+          (f.options || []).forEach(function (op) { var e = D.createElement('option'); e.value = String(op.value); e.textContent = op.label; ctl.appendChild(e); });
+          ctl.value = String(f.value);
+        } else if (f.type === 'checkbox') {
+          ctl = D.createElement('input'); ctl.type = 'checkbox'; ctl.checked = !!f.value;
+        } else {
+          ctl = D.createElement('input'); ctl.type = 'number'; ctl.value = f.value == null ? '' : String(f.value); ctl.autocomplete = 'off';
+          if (f.step) ctl.step = f.step; if (f.min != null) ctl.min = f.min; if (f.max != null) ctl.max = f.max;
+        }
+        ctl.id = id;
+        var lab = D.createElement('label'); lab.className = 'lx-form-lbl'; lab.setAttribute('for', id); lab.textContent = f.label;
+        var wrap = D.createElement('span'); wrap.className = 'lx-form-ctl'; wrap.appendChild(ctl);
+        if (f.unit) { var u = D.createElement('span'); u.className = 'lx-form-unit'; u.textContent = f.unit; wrap.appendChild(u); }
+        if (f.type === 'checkbox') { row.appendChild(wrap); row.appendChild(lab); } else { row.appendChild(lab); row.appendChild(wrap); }
+        if (f.hint) { var hn = D.createElement('p'); hn.className = 'lx-ask-hint lx-form-hint'; hn.textContent = f.hint; row.appendChild(hn); }
+        body.appendChild(row); ctls[f.key] = ctl; rows[f.key] = row; order.push(f);
+        ctl.addEventListener('input', refresh); ctl.addEventListener('change', refresh);
+      });
+      if (o.hint) { var oh = D.createElement('p'); oh.className = 'lx-ask-hint'; oh.textContent = o.hint; body.appendChild(oh); }
+      var errEl = D.createElement('p'); errEl.className = 'lx-ask-err'; errEl.setAttribute('role', 'alert'); errEl.hidden = true; body.appendChild(errEl);
+      var act = D.createElement('div'); act.className = 'form-actions';
+      var cancel = D.createElement('button'); cancel.type = 'button'; cancel.className = 'btn sm'; cancel.textContent = o.cancelLabel || 'Отмена';
+      var ok = D.createElement('button'); ok.type = 'button'; ok.className = 'btn sm primary'; ok.textContent = o.okLabel || 'Применить';
+      act.appendChild(cancel); act.appendChild(ok);
+      card.appendChild(head); card.appendChild(body); card.appendChild(act); back.appendChild(card);
+      function read() {
+        var v = {};
+        order.forEach(function (f) {
+          var c = ctls[f.key];
+          if (f.type === 'checkbox') v[f.key] = !!c.checked;
+          else if (f.type === 'select') v[f.key] = c.value;
+          else v[f.key] = c.value === '' ? NaN : Number(String(c.value).replace(',', '.'));
+        });
+        return v;
+      }
+      function refresh() {
+        var v = read();
+        order.forEach(function (f) { if (typeof f.showIf === 'function') rows[f.key].hidden = !f.showIf(v); });
+        if (!errEl.hidden) { errEl.hidden = true; D.querySelectorAll('.lx-form-body input.invalid').forEach(function (e) { e.classList.remove('invalid'); e.removeAttribute('aria-invalid'); }); }
+      }
+      function fail(text, ctl) {
+        errEl.textContent = String(text); errEl.hidden = false;
+        if (ctl) { ctl.classList.add('invalid'); ctl.setAttribute('aria-invalid', 'true'); try { ctl.focus(); } catch (e) {} }
+      }
+      function finish(v) {
+        if (done) return; done = true;
+        D.removeEventListener('keydown', onKey, true);
+        back.classList.add('closing'); setTimeout(function () { if (back.parentNode) back.parentNode.removeChild(back); }, 140);
+        if (prev && prev.focus) { try { prev.focus({ preventScroll: true }); } catch (e) {} }
+        resolve(v);
+      }
+      function no() { finish(null); }
+      function yes() {
+        var v = read();
+        for (var i = 0; i < order.length; i++) {
+          var f = order[i];
+          if (f.type !== 'number' || rows[f.key].hidden) continue;
+          var x = v[f.key];
+          if (!isFinite(x) || (f.min != null && x < Number(f.min)) || (f.max != null && x > Number(f.max))) {
+            var range = f.min != null && f.max != null ? ' от ' + f.min + ' до ' + f.max : (f.min != null ? ' не меньше ' + f.min : (f.max != null ? ' не больше ' + f.max : ''));
+            fail('Поле «' + f.label + '»: введите число' + range, ctls[f.key]); return;
+          }
+        }
+        if (typeof o.validate === 'function') { var bad = o.validate(v); if (bad) { fail(bad, null); return; } }
+        order.forEach(function (f) { if (rows[f.key].hidden) delete v[f.key]; });
+        finish(v);
+      }
+      function onKey(e) {
+        if (!back.parentNode) return;
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); no(); return; }
+        if (e.key === 'Enter' && e.target !== cancel && e.target.tagName !== 'SELECT') { e.preventDefault(); e.stopPropagation(); yes(); return; }
+        if (e.key === 'Tab') {
+          var f = [].slice.call(card.querySelectorAll('input,select,button:not([disabled])')).filter(function (x) { return !x.closest('[hidden]'); }), i = f.indexOf(D.activeElement);
+          if (!f.length) return;
+          e.preventDefault(); f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+        }
+      }
+      head.querySelector('.x').onclick = no; cancel.onclick = no; ok.onclick = yes;
+      back.addEventListener('mousedown', function (e) { if (e.target === back) no(); });
+      D.addEventListener('keydown', onKey, true);
+      refresh();
+      D.body.appendChild(back); hydrate(back); back.classList.add('open');
+      setTimeout(function () { var first = order.length ? ctls[order[0].key] : ok; try { first.focus({ preventScroll: true }); if (first.select && first.type === 'number') first.select(); } catch (e) {} }, 30);
+    });
+  }
+
   /* ---------- Индикатор фоновых операций (тонкая полоса сверху) ---------- */
   var acts = [], actSeq = 0;
   function paintActivity() {
@@ -440,7 +548,7 @@
     initRanges();
     fadeAll(D);
   }
-  W.__lxKit = { ic: ic, hydrate: hydrate, fade: fade, toast: toast, popover: popover, menu: menu, menuItem: menuItem, pointAnchor: pointAnchor, ask: ask, plain: plain, closePopover: closePopover, activity: activity, busy: busy, hideTip: hideTip, esc: esc,
+  W.__lxKit = { ic: ic, hydrate: hydrate, fade: fade, toast: toast, popover: popover, menu: menu, menuItem: menuItem, pointAnchor: pointAnchor, ask: ask, form: form, plain: plain, closePopover: closePopover, activity: activity, busy: busy, hideTip: hideTip, esc: esc,
     get popoverOpen() { return !!openPop; } };
   if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', init); else init();
 })();

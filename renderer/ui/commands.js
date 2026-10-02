@@ -75,8 +75,10 @@
         I('vtClean', 'sparkles', 'Очистить (Open3D)', { sel: '#vtClean', needs: 'cloud', tip: 'Шум, выбросы, «лучи»: Open3D, а без него быстрый NumPy-фильтр' })
       ]),
       G('process', 'Обработка', [
-        I('opResample', 'grid-3x3', 'Ресэмплинг', { call: OPS_T + 'opResample', needs: 'cloud', tip: 'Понизить плотность облака (воксельная сетка)' }),
-        I('opSmooth', 'waves', 'Сглаживание', { call: OPS_T + 'opSmooth', needs: 'cloud', tip: 'Сглаживание MLS: проекция на локальную плоскость' }),
+        I('opResample', 'grid-3x3', 'Ресэмплирование', { call: OPS_T + 'opResample', needs: 'cloud', tip: 'Понизить плотность облака: случайно (в процентах) или по сетке (шаг в метрах)' }),
+        I('opDenoise', 'cloud-fog', 'Подавление шума', { call: OPS_T + 'opDenoise', needs: 'cloud', tip: 'Убрать «летающие» точки: у точки меньше заданного числа соседей в радиусе поиска' }),
+        I('opSmooth', 'waves', 'Сглаживание', { call: OPS_T + 'opSmooth', needs: 'cloud', tip: 'Подавить шум на плоских поверхностях: проекция на локальную плоскость, рёбра и трубы сохраняются' }),
+        I('opFlatten', 'flatten', 'Выровнять поверхности', { call: OPS_T + 'opFlatten', needs: 'cloud', tip: 'Стены, пол и потолок становятся ровными плоскостями, двойные слои склеиваются — измерения точнее' }),
         I('opFloor', 'arrow-down-to-line', 'Выровнять пол', { call: OPS_T + 'opLevel', args: ['floor', [0, 1, 0], 'Выравнивание'], needs: 'cloud', tip: 'Повернуть облако так, чтобы доминантная плоскость пола стала горизонтальной' }),
         I('opWall', 'move-vertical', 'Выровнять стену', { call: OPS_T + 'opVertical', needs: 'cloud', tip: 'Сделать выбранную стену вертикальной' }),
         I('opMerge', 'merge', 'Объединить', { call: OPS_T + 'opMerge', needs: 'cloud', tip: 'Объединить с другим облаком в одно' }),
