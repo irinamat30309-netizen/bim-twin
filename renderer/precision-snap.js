@@ -1119,9 +1119,30 @@
   /* ---------- Расстояние между двумя захваченными точками ---------- */
   /* Плоскость–плоскость (стена–стена, пол–потолок): расстояние по нормали, не зависит от того, где именно кликнули.
    * Ребро–ребро (проём, колонна): расстояние между параллельными линиями. Точка–плоскость: расстояние по нормали. */
+  /* Две точки на круглых поверхностях. Одна и та же труба (оси совпадают, радиусы равны): диаметр 2R — его ручной замер по двум рёбрам видимой дуги
+   * на кривой поверхности давал на 8–16 мм больше (привязка к «ребру» между касательными плоскостями лежит снаружи трубы).
+   * diameterLike — точки на противоположных сторонах (угол между радиусами от 140°): тогда 2R и есть то, что хотели померить; иначе это хорда или отрезок вдоль трубы.
+   * Две разные параллельные трубы: расстояние между осями и зазор между стенками. */
+  function pipeGap(a, b) {
+    var ca = a.kind === 'curve' && a.cylinder, cb = b.kind === 'curve' && b.cylinder;
+    if (!ca || !cb) return null;
+    var ua = ca.axis, ub = cb.axis, cs = dot(ua, ub);
+    if (Math.abs(cs) < Math.cos(4 * DEG)) return null;   // оси не параллельны — единого диаметра нет
+    var uu = unit(add(ua, mul(ub, cs >= 0 ? 1 : -1)));
+    var dc = sub(cb.center, ca.center), perpv = sub(dc, mul(uu, dot(dc, uu))), dAx = len(perpv);
+    var wa = Math.max(1, ca.count || 1), wb = Math.max(1, cb.count || 1), Rm = (ca.radius * wa + cb.radius * wb) / (wa + wb);
+    var sg = Math.max(ca.sigma || 0, cb.sigma || 0), tol = Math.max(0.1 * Rm, 3 * sg, ca.tau || 0, cb.tau || 0);
+    if (dAx <= tol && Math.abs(ca.radius - cb.radius) <= tol) {
+      var ra = sub(sub(a.point, ca.center), mul(uu, dot(sub(a.point, ca.center), uu))), rb = sub(sub(b.point, cb.center), mul(uu, dot(sub(b.point, cb.center), uu)));
+      var la = len(ra), lb = len(rb), ang = la > 1e-12 && lb > 1e-12 ? Math.acos(clamp(dot(ra, rb) / (la * lb), -1, 1)) : 0;
+      return { kind: 'pipe', value: 2 * Rm, radius: Rm, diameter: 2 * Rm, angleDeg: ang / DEG, diameterLike: ang >= 140 * DEG, uncertainty: 2 * sg, axis: uu };
+    }
+    return { kind: 'pipes', value: dAx, centerDistance: dAx, gap: dAx - ca.radius - cb.radius, radiusA: ca.radius, radiusB: cb.radius, uncertainty: Math.hypot(sg, sg), axis: uu };
+  }
   function pairGap(a, b) {
     if (!a || !b || !a.point || !b.point) return null;
     var pa = a.point, pb = b.point, dv = sub(pb, pa);
+    var pp = pipeGap(a, b); if (pp) return pp;   // обе точки на трубе: диаметр (противоположные стороны) или расстояние между осями (разные трубы)
     var ua = a.kind === 'edge' ? a.dir : null, ub = b.kind === 'edge' ? b.dir : null;
     var na = a.kind === 'plane' && a.planes && a.planes[0] ? a.planes[0].normal : null, nb = b.kind === 'plane' && b.planes && b.planes[0] ? b.planes[0].normal : null;
     var unc = function () { return Math.sqrt(Math.pow(a.sigma != null ? a.sigma : (a.rms || 0), 2) + Math.pow(b.sigma != null ? b.sigma : (b.rms || 0), 2)); };
@@ -1149,7 +1170,7 @@
 
   return {
     buildIndex: buildIndex, buildIndexAsync: buildIndexAsync, createIndexBuilder: createIndexBuilder, localSpacing: localSpacing, snap: snap, pairGap: pairGap, detectPlanes: detectPlanes, fitLSQ: fitLSQ,
-    growPlane: growPlane, collectPlanePoints: collectPlanePoints, planeSigmaAt: planeSigmaAt,
+    growPlane: growPlane, collectPlanePoints: collectPlanePoints, pipeGap: pipeGap, planeSigmaAt: planeSigmaAt,
     intersect2: intersect2, intersect3: intersect3, refineJoint: refineJoint, estimateSpacing: estimateSpacing, seedFor: seedFor,
     contourEdge: contourEdge, trackContour: trackContour, detectCylinder: detectCylinder, growCylinder: growCylinder, fitCylinderRobust: fitCylinderRobust
   };

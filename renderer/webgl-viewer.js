@@ -1120,7 +1120,7 @@
       }
       this.render(); return true;
     }
-    setMeasure(on) { this.measuring = on; try { this.canvas.style.cursor = on ? 'crosshair' : 'grab'; } catch (e) {} if (!on) { this._clearMeasure(); this._showMeasLabels(false); this._setHoverPoint(null); this._hideLoupe(); this._hideSnapTip(); } else if (this.measureSnap) this._psPrewarm(); this.render(); }
+    setMeasure(on) { this.measuring = on; if (on && !this._measKeysBound && typeof window !== 'undefined' && window.addEventListener) { this._measKeysBound = true; window.addEventListener('keydown', e => this._measKey(e)); } try { this.canvas.style.cursor = on ? 'crosshair' : 'grab'; } catch (e) {} if (!on) { this._clearMeasure(); this._showMeasLabels(false); this._setHoverPoint(null); this._hideLoupe(); this._hideSnapTip(); } else if (this.measureSnap) this._psPrewarm(); this.render(); }
     // Живой предпросмотр точки-снапа под курсором (как выбор точки в CloudCompare)
     _hoverMeasure(cx, cy) {
       // Window mousemove also fires over menus. Never pick or magnify UI controls.
@@ -1242,7 +1242,7 @@
       let sp = idx.spacing || 0.01;
       if (idx.local && PS.localSpacing) { const ls = PS.localSpacing(idx, pt); if (ls > 0) sp = ls; }
       const wpp = this._psWorldPerPx(pt), px = o.px || this._snapPx || 16;
-      const snapDist = Math.max(2.5 * sp, Math.min(px * wpp, 40 * sp));
+      const snapDist = o.snapMul > 0 ? Math.min(40, o.snapMul) * sp : Math.max(2.5 * sp, Math.min(px * wpp, 40 * sp));
       const key = pt[0].toFixed(5) + ',' + pt[1].toFixed(5) + ',' + pt[2].toFixed(5) + '|' + snapDist.toFixed(4) + (o.grow ? 'g' : 'l');
       const cache = this._psCache.snaps;
       for (let i = 0; i < cache.length; i++) if (cache[i].key === key) return cache[i].res;
@@ -1342,7 +1342,7 @@
     }
     // Режим измерения: 'point' | 'distance' | 'polyline' | 'angle' | 'area' | 'plane'
     setMeasureMode(mode) {
-      const ok = ['point', 'distance', 'polyline', 'angle', 'area', 'plane', 'deviation', 'corner'];
+      const ok = ['point', 'distance', 'polyline', 'angle', 'area', 'plane', 'deviation', 'corner', 'diameter'];
       this.measureMode = ok.indexOf(mode) >= 0 ? mode : 'distance';
       this._measRefPlane = null;
       this._clearMeasure();
@@ -1365,7 +1365,7 @@
       const s = Me.snapToFeature(pt, pts);
       return { point: (s.point.slice ? s.point.slice() : s.point), kind: s.kind };
     }
-    _clearMeasure() { this.measurePts = []; this._measSnaps = []; this._measResult = null; this._measLabels = []; this._measPlane = null; this._measCornerPlanes = null; this._measRefPlane = null; this._measCornerLine = null; this._measCornerPt = null; this._measGap = null; this._setOverlay([]); this._renderMeasLabels(); }
+    _clearMeasure() { this.measurePts = []; this._measSnaps = []; this._measResult = null; this._measLabels = []; this._measPlane = null; this._measCornerPlanes = null; this._measRefPlane = null; this._measCornerLine = null; this._measCornerPt = null; this._measGap = null; this._measDiam = null; this._setOverlay([]); this._renderMeasLabels(); }
     _sceneDiag() { const c = this.bbox; return Math.hypot(c.mx[0] - c.mn[0], c.mx[1] - c.mn[1], c.mx[2] - c.mn[2]) || 8; }
 
     // Сбор локальной окрестности точек вокруг seed в радиусе r (запасная подгонка плоскости). Через индекс облака — только соседи;
@@ -1395,6 +1395,7 @@
       if (mode === 'plane') { this._fitPlaneAt(pt); this._buildMeasure(); this.render(); return; }
       if (mode === 'deviation') { this._deviationClick(pt); this._buildMeasure(); this.render(); return; }
       if (mode === 'corner') { this._cornerClick(pt); this._buildMeasure(); this.render(); return; }
+      if (mode === 'diameter') { this._diameterClick(pt); this._buildMeasure(); this.render(); return; }
       // привязка к ребру/углу/плоскости (если включена)
       const snapped = this._applySnap(pt);
       // режимы с фиксированным числом точек — начинаем заново после завершения
@@ -1412,6 +1413,9 @@
         const g = PS.pairGap(this._measSnaps[0], sn), A = this.measurePts[0];
         if (g && g.kind === 'planes') { const t = (placePt[0] - A[0]) * g.normal[0] + (placePt[1] - A[1]) * g.normal[1] + (placePt[2] - A[2]) * g.normal[2]; placePt = [A[0] + g.normal[0] * t, A[1] + g.normal[1] * t, A[2] + g.normal[2] * t]; }
         else if (g && g.kind === 'edges') { const B = placePt, t = (A[0] - B[0]) * g.dir[0] + (A[1] - B[1]) * g.dir[1] + (A[2] - B[2]) * g.dir[2]; placePt = [B[0] + g.dir[0] * t, B[1] + g.dir[1] * t, B[2] + g.dir[2] * t]; }
+        else if (g && g.kind === 'pipe' && g.diameterLike && this._measSnaps[0].normal) {   // диаметр: вторая точка — противоположная сторона трубы, отрезок идёт через ось
+          const n0 = this._measSnaps[0].normal; placePt = [A[0] - n0[0] * g.value, A[1] - n0[1] * g.value, A[2] - n0[2] * g.value];
+        }
         this._measGap = g || null;
       } else if (mode === 'distance') this._measGap = null;
       this.measurePts.push(placePt); this._measSnaps.push(sn);
@@ -1548,10 +1552,71 @@
       if (this.onMeasure) this.onMeasure(this._measResult);
     }
 
+    // Режим «Диаметр»: один клик по трубе → ось и радиус по всей видимой дуге и длине (а не две точки по краям, которые на круглой поверхности врут на 8–16 мм)
+    _diameterClick(pt) {
+      const fail = msg => { this._measDiam = null; this.measurePts = [pt.slice()]; this._measResult = { mode: 'diameter', error: msg }; if (this.onMeasure) this.onMeasure(this._measResult); };
+      const PS = typeof window !== 'undefined' ? window.PrecisionSnap : null;
+      if (!PS || !this._psIndex({ sync: true })) return fail('Для диаметра нужен индекс облака — подождите, пока он построится, и кликните ещё раз');
+      let ps = this._precisionSnapAt(pt, { grow: true, sync: true });
+      const isPipe = q => q && q.kind === 'curve' && q.cylinder;
+      // не увидели? Расширяем окно: у крупной трубы или при близком плане 16 пикселей — это лишь небольшая дуга
+      for (const mul of [12, 24, 40]) { if (isPipe(ps)) break; const g = this._precisionSnapAt(pt, { grow: true, sync: true, snapMul: mul }); if (isPipe(g)) ps = g; }
+      if (!isPipe(ps)) return fail(ps && ps.kind === 'plane' ? 'Здесь плоская поверхность — кликните по трубе, ближе к середине видимой дуги' : 'Круглая поверхность не найдена — кликните по трубе, ближе к середине видимой дуги (не по краю и не по стыку со стеной)');
+      const c = ps.cylinder, R = c.radius, n = ps.normal;
+      this._measDiam = { center: c.center.slice(), axis: c.axis.slice(), radius: R, normal: n.slice(), point: ps.point.slice() };
+      this.measurePts = [ps.point.slice()];
+      this._measSnaps = [ps];
+      const arc = c.arc || 0;
+      this._measResult = { mode: 'diameter', diameter: 2 * R, radius: R, axis: c.axis.slice(), center: c.center.slice(), point: ps.point.slice(), rms: c.rms, count: c.count, sigma: 2 * (c.sigma || 0), arc: arc,
+                           grown: !!c.grown, quality: ps.quality, weak: arc > 0 && arc < 80 };
+      if (this.onMeasure) this.onMeasure(this._measResult);
+    }
+
+    // ---------- Отмена и завершение измерения (Esc — слой в lixel-workspace, Backspace/Ctrl+Z — шаг назад, Enter — завершить) ----------
+    hasMeasureProgress() {
+      return !!(this.measuring && ((this.measurePts && this.measurePts.length) || this._measRefPlane || (this._measCornerPlanes && this._measCornerPlanes.length) || this._measDiam || this._measResult));
+    }
+    cancelMeasure() {
+      if (!this.hasMeasureProgress()) return false;
+      this._clearMeasure(); this.render();
+      if (this.onMeasureReset) { try { this.onMeasureReset(this.measureMode); } catch (e) { /* подписчик не должен ронять отмену */ } }
+      return true;
+    }
+    // Убрать последнюю точку (плоскость). Возвращает true, если было что убирать
+    undoMeasurePoint() {
+      if (!this.measuring) return false;
+      const mode = this.measureMode || 'distance', P = this.measurePts;
+      if (mode === 'corner') {
+        if (!this._measCornerPlanes || !this._measCornerPlanes.length) return false;
+        this._measCornerPlanes.pop(); this._cornerSummary();
+        if (!this._measCornerPlanes.length && this.onMeasureReset) this.onMeasureReset(mode);
+      } else if (mode === 'deviation') {
+        if (!this._measRefPlane) return false;
+        if (P.length === 3) { this.measurePts = [this._measRefPlane.centroid.slice()]; const rp = this._measRefPlane, ex = this._measPlane && this._measPlane.ext; this._measResult = { mode: 'deviation', ready: true, rms: rp.rms, inlierCount: rp.inlierCount, total: rp.total, length: ex ? ex.length : 0, width: ex ? ex.width : 0, sigma: rp.sigma }; if (this.onMeasure) this.onMeasure(this._measResult); }
+        else { this._measRefPlane = null; this._measPlane = null; this.measurePts = []; this._measResult = null; if (this.onMeasureReset) this.onMeasureReset(mode); }
+      } else if (mode === 'plane' || mode === 'diameter') {
+        return this.cancelMeasure();
+      } else {
+        if (!P.length) return false;
+        P.pop(); if (this._measSnaps) this._measSnaps.pop(); this._measGap = null;
+        const need = mode === 'distance' ? 2 : mode === 'angle' ? 3 : mode === 'area' ? 3 : mode === 'polyline' ? 2 : 1;
+        if (P.length >= need) this._computeMeasure();
+        else { this._measResult = null; if (this.onMeasureReset) { try { this.onMeasureReset(mode); } catch (e) { /* ignore */ } } }
+      }
+      this._buildMeasure(); this.render();
+      return true;
+    }
+    _measKey(e) {
+      if (!this.measuring || this.editSelect || e.defaultPrevented) return;
+      const t = e.target; if (t && (/^(input|textarea|select)$/i.test(t.tagName || '') || t.isContentEditable)) return;
+      if (e.key === 'Backspace' || ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ')) { if (this.undoMeasurePoint()) e.preventDefault(); }
+      else if (e.key === 'Enter') { const m = this.measureMode; if ((m === 'polyline' || m === 'area') && this.measurePts.length) { e.preventDefault(); this.finishMeasure(); } }
+    }
+
     // Завершить накопительный режим (полилиния/площадь) — начать следующее измерение. У плоскости, зазора и ребра/угла — начать с чистого листа.
     finishMeasure() {
       this.measurePts = []; this._measSnaps = [];
-      if (this._measRefPlane || this._measCornerPlanes || this._measPlane) { this._measRefPlane = null; this._measCornerPlanes = null; this._measCornerLine = null; this._measCornerPt = null; this._measPlane = null; this._measResult = null; this._measLabels = []; this._renderMeasLabels(); }
+      if (this._measRefPlane || this._measCornerPlanes || this._measPlane || this._measDiam) { this._measDiam = null; this._measRefPlane = null; this._measCornerPlanes = null; this._measCornerLine = null; this._measCornerPt = null; this._measPlane = null; this._measResult = null; this._measLabels = []; this._renderMeasLabels(); }
       this.render();
     }
 
@@ -1668,7 +1733,11 @@
           res.snap = { a: brief(S[0]), b: brief(S[1]) };
           res.sigma = +Math.sqrt(Math.pow(S[0].sigma || 0, 2) + Math.pow(S[1].sigma || 0, 2)).toFixed(6);
           const g = this._measGap || (PS ? PS.pairGap(S[0], S[1]) : null);
-          if (g) { res.perp = g.value; res.perpKind = g.kind; if (g.along != null) res.along = g.along; if (g.tilt != null) res.tilt = +g.tilt.toFixed(5); res.perpSigma = +(g.uncertainty || 0).toFixed(6); }
+          if (g && g.kind === 'pipe') {
+            // обе точки на одной трубе: диаметр — если точки на противоположных сторонах, иначе это хорда/отрезок вдоль трубы, обычное расстояние
+            res.pipe = { diameter: +g.diameter.toFixed(6), radius: +g.radius.toFixed(6), angleDeg: +g.angleDeg.toFixed(1), diameterLike: !!g.diameterLike };
+            if (g.diameterLike) { res.perp = g.value; res.perpKind = 'pipe'; res.diameter = +g.diameter.toFixed(6); res.perpSigma = +(g.uncertainty || 0).toFixed(6); }
+          } else if (g) { res.perp = g.value; res.perpKind = g.kind; if (g.along != null) res.along = g.along; if (g.tilt != null) res.tilt = +g.tilt.toFixed(5); if (g.gap != null) res.gap = +g.gap.toFixed(6); res.perpSigma = +(g.uncertainty || 0).toFixed(6); }
         } else if (S.length >= 2 && (S[0] || S[1])) res.snap = { a: S[0] ? { kind: S[0].kind } : { kind: 'raw' }, b: S[1] ? { kind: S[1].kind } : { kind: 'raw' } };
       }
       else if (mode === 'polyline' && P.length >= 2 && Me) { const r = Me.polylineLength(P, false); res = { mode: 'polyline', pts: P.slice(), total: r.total, segments: r.segments, count: P.length }; }
@@ -1704,6 +1773,15 @@
         // перпендикуляр от плоскости (foot) к точке: красный = снаружи, голубой = внутри
         const outward = this._measResult && this._measResult.sign >= 0;
         seg(P[1], P[2], outward ? [1, 0.35, 0.3] : [0.3, 0.7, 1]);
+      }
+      // диаметр: ось трубы, кольцо в плоскости клика и линия Ø через ось
+      if (mode === 'diameter' && this._measDiam) {
+        const D = this._measDiam, R = D.radius, c = D.center, a = D.axis, u = D.normal, v = [a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0]], L = 2.2 * R, ringCol = [0.2, 0.85, 0.45];
+        seg([c[0] - a[0] * L, c[1] - a[1] * L, c[2] - a[2] * L], [c[0] + a[0] * L, c[1] + a[1] * L, c[2] + a[2] * L], [0.6, 0.6, 0.65]);
+        const N = 48; let prev = null;
+        for (let i = 0; i <= N; i++) { const th = i / N * Math.PI * 2, ct = Math.cos(th) * R, st = Math.sin(th) * R, q = [c[0] + u[0] * ct + v[0] * st, c[1] + u[1] * ct + v[1] * st, c[2] + u[2] * ct + v[2] * st]; if (prev) seg(prev, q, ringCol); prev = q; }
+        const p1 = [c[0] + u[0] * R, c[1] + u[1] * R, c[2] + u[2] * R], p2 = [c[0] - u[0] * R, c[1] - u[1] * R, c[2] - u[2] * R];
+        seg(p1, p2, [1, 0.55, 0.1]); markPts.push(p2[0], p2[1], p2[2]);
       }
       // визуализация режима «Ребро/Угол»: прямоугольники плоскостей + ребро-пересечение + точка угла
       if (mode === 'corner' && this._measCornerPlanes && this._measCornerPlanes.length) {
@@ -1767,11 +1845,12 @@
       const labels = [], P = this.measurePts, mode = this.measureMode;
       const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
       if (mode === 'point' && P.length >= 1) labels.push({ p: P[0], t: 'X ' + P[0][0].toFixed(3) + '  Y ' + P[0][1].toFixed(3) + '  Z ' + P[0][2].toFixed(3) });
-      else if (mode === 'distance' && P.length === 2) { labels.push({ p: mid(P[0], P[1]), t: Me.fmtLen(Me.dist3(P[0], P[1])) + (this._measResult && this._measResult.perp != null && this._measResult.perpKind !== 'point-plane' ? ' ⊥' : '') }); if (this.smartMeasure && !(this._measResult && this._measResult.perp != null && this._measResult.perpKind !== 'point-plane')) this._pushDistanceCompLabels(labels, P[0], P[1], Me); }
+      else if (mode === 'distance' && P.length === 2) { labels.push({ p: mid(P[0], P[1]), t: (this._measResult && this._measResult.perpKind === 'pipe' ? 'Ø ' : '') + Me.fmtLen(Me.dist3(P[0], P[1])) + (this._measResult && this._measResult.perp != null && this._measResult.perpKind !== 'point-plane' && this._measResult.perpKind !== 'pipe' ? ' ⊥' : '') }); if (this.smartMeasure && !(this._measResult && this._measResult.perp != null && this._measResult.perpKind !== 'point-plane')) this._pushDistanceCompLabels(labels, P[0], P[1], Me); }
       else if (mode === 'distance' && P.length === 1 && this.smartMeasure) this._pushSmartGuideLabels(labels, P[0], Me);
       else if (mode === 'polyline' && P.length >= 2) { let tot = 0; for (let i = 1; i < P.length; i++) { const l = Me.dist3(P[i - 1], P[i]); tot += l; labels.push({ p: mid(P[i - 1], P[i]), t: Me.fmtLen(l) }); } labels.push({ p: P[P.length - 1], t: 'Σ ' + Me.fmtLen(tot) }); }
       else if (mode === 'angle' && P.length >= 3) { const a = Me.angleAt(P[0], P[1], P[2]); labels.push({ p: P[1], t: a.deg.toFixed(1) + '°' }); }
       else if (mode === 'area' && P.length >= 3) { const r = Me.polygonArea3D(P); labels.push({ p: Me.centroid(P), t: Me.fmtArea(r.area) }); }
+      else if (mode === 'diameter' && this._measResult && !this._measResult.error && this._measDiam) { const D = this._measDiam; labels.push({ p: D.center, t: 'Ø ' + Me.fmtLen(this._measResult.diameter) }); }
       else if (mode === 'plane' && this._measResult && !this._measResult.error) { const R = this._measResult; labels.push({ p: (this._measPlane ? this._measPlane.ext.center3 : R.seed), t: Me.fmtLen(R.length) + ' × ' + Me.fmtLen(R.width) + '  · ' + R.kind }); }
       else if (mode === 'deviation' && this._measResult && this._measResult.signed !== undefined && P.length === 3) { const R = this._measResult; labels.push({ p: [(P[1][0] + P[2][0]) / 2, (P[1][1] + P[2][1]) / 2, (P[1][2] + P[2][2]) / 2], t: (R.sign >= 0 ? '+' : '−') + Me.fmtLen(R.distance) + ' (' + (R.sign >= 0 ? 'к камере' : 'от камеры') + ')' }); }
       else if (mode === 'corner' && this._measResult && !this._measResult.error) {

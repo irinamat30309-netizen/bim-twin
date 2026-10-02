@@ -86,7 +86,7 @@ test('каждая кнопка лежит на вкладке по своей �
     import: ['btnOpenCloud', 'vtStream', 'opPotree', 'modelInput', 'ifcInput', 'docInput'],
     cloud: ['vtQuality', 'vtClean', 'vtEdit', 'opResample', 'opSmooth', 'opFloor', 'opWall', 'opMerge', 'opOverlay', 'vtConvert', 'vtGeom', 'opDSM', 'opDTM', 'opContours', 'opGround', 'opGeoref'],
     floors: ['floorAdd', 'floorIsolate', 'floorSlice', 'floorAttach', 'floorReport', 'btnBackRoom', 'btnEdit'],
-    measure: ['btnMeasure', 'mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmPlane', 'mmDeviation', 'mmCorner', 'mmSnap', 'mmList', 'mmCsv', 'mmQaReport', 'mmNotion', 'vfOpen', 'lxObjInspectBtn'],
+    measure: ['btnMeasure', 'mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmDiameter', 'mmPlane', 'mmDeviation', 'mmCorner', 'mmSnap', 'mmList', 'mmCsv', 'mmQaReport', 'mmNotion', 'vfOpen', 'lxObjInspectBtn'],
     draw: ['draw.pline', 'draw.line', 'draw.rect', 'draw.circle', 'draw.arc', 'draw.point', 'draw.dim', 'draw.text', 'draw.door', 'draw.window', 'draw.extend', 'draw.split', 'draw.snap', 'draw.ortho', 'draw.top', 'draw.sect', 'draw.ai', 'opWalls', 'draw.imp', 'draw.dxf'],
     bim: ['lxScan2BimBtn', 'lxScan2BimAiBtn', 'lxObjExtractBtn'],
     view: ['btnReset', 'view.top', 'view.front', 'view.side', 'view.iso', 'view.ortho', 'view.xray', 'btnSection', 'btnIsolate', 'btnLOD'],

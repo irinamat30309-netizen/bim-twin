@@ -298,7 +298,7 @@
     'view.ortho': function (v) { return !!(v.isOrtho && v.isOrtho()); },
     'view.xray': function () { try { return !!(W.XrayView && W.XrayView.isXray && W.XrayView.isXray()); } catch (e) { return false; } }
   };
-  ['distance', 'point', 'polyline', 'angle', 'area', 'plane', 'deviation', 'corner'].forEach(function (m) {
+  ['distance', 'point', 'polyline', 'angle', 'area', 'diameter', 'plane', 'deviation', 'corner'].forEach(function (m) {
     var id = 'mm' + m.charAt(0).toUpperCase() + m.slice(1);
     STATE[id] = function (v) { return !!v.measuring && (v.measureMode || 'distance') === m; };
   });

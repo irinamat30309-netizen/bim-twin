@@ -127,7 +127,8 @@
         I('mmPoint', 'crosshair', 'Точка', { sel: '#mmPoint', toggle: 1 }),
         I('mmPolyline', 'polyline', 'Полилиния', { sel: '#mmPolyline', toggle: 1 }),
         I('mmAngle', 'angle', 'Угол', { sel: '#mmAngle', toggle: 1 }),
-        I('mmArea', 'vector-square', 'Площадь', { sel: '#mmArea', toggle: 1 })
+        I('mmArea', 'vector-square', 'Площадь', { sel: '#mmArea', toggle: 1 }),
+        I('mmDiameter', 'diameter', 'Диаметр', { sel: '#mmDiameter', toggle: 1, tip: 'Диаметр трубы по одному клику: ось и радиус по всей видимой дуге' })
       ]),
       G('plane', 'Плоскости', [
         I('mmPlane', 'brick-wall', 'Плоскость', { sel: '#mmPlane', toggle: 1 }),
