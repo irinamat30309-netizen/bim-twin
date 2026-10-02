@@ -370,16 +370,10 @@
   };
   var PEOPLE_DEFAULTS = { minH: 1.3, maxH: 2.2, sitting: false, level: 'normal' };
 
-  function* peopleGen(pos, n, opt, ctl) {
-    opt = opt || {}; n = n | 0;
-    var P = Object.assign({}, PEOPLE_DEFAULTS, PEOPLE_LEVELS[opt.level] || PEOPLE_LEVELS.normal, opt.params || {});
-    if (opt.minH != null) P.minH = opt.minH; if (opt.maxH != null) P.maxH = opt.maxH; if (opt.sitting != null) P.sitting = !!opt.sitting; if (opt.maxW != null) P.maxW = opt.maxW;
-    var minH = P.sitting ? Math.min(P.minH, 0.9) : P.minH, maxH = Math.max(P.maxH, minH + 0.2);
-    var empty = { remove: new Uint32Array(0), removed: 0, count: n, found: [], stats: { components: 0, candidates: 0, rejected: {} }, params: P };
-    var box = robustBox(pos, n); if (!box || n < 200) return empty;
-    var est = CP && CP.estimate ? CP.estimate(pos, n) : { spacing: 0.03 }, sp = est.spacing > 0 ? est.spacing : 0.03;
-    var v = clamp(5 * sp, 0.07, 0.15), HLOW = 0.1, HTOP = Math.max(3.0, maxH + 0.8), i, k, c;
-    // --- 1. земля: по клеткам 0,5 м берём низ плотной массы точек (4-ю снизу), затем «открытие» окном ±1,5 м убирает машины, людей, кусты
+  /** Земля: по клеткам 0,5 м берётся низ плотной массы точек (4-я снизу), затем «открытие» окном ±1,5 м убирает машины, людей, кусты. */
+  function* groundGen(pos, n, box, ctl) {
+    var i, c;
+    // земля: по клеткам 0,5 м берём низ плотной массы точек (4-ю снизу), затем «открытие» окном ±1,5 м убирает машины, людей, кусты
     var gcell = 0.5, minX = box.mn[0], minZ = box.mn[2], spanX = box.mx[0] - minX, spanZ = box.mx[2] - minZ;
     while ((spanX / gcell + 2) * (spanZ / gcell + 2) > 2e6) gcell *= 1.5;
     var GX = Math.ceil(spanX / gcell) + 1, GZ = Math.ceil(spanZ / gcell) + 1, GC = GX * GZ;
@@ -420,6 +414,21 @@
     filt(gr, tmp, true); filt(tmp, gr, false);   // «открытие»: сначала min, потом max → нижняя огибающая, повторяющая уклон
     tmp = null;
     for (c = 0; c < GC; c++) if (gr[c] === -Infinity) gr[c] = Infinity;
+    return { gr: gr, gcell: gcell, minX: minX, minZ: minZ, GX: GX, GZ: GZ, GC: GC };
+  }
+
+  function* peopleAGen(pos, n, opt, ctl) {
+    opt = opt || {}; n = n | 0;
+    var P = Object.assign({}, PEOPLE_DEFAULTS, PEOPLE_LEVELS[opt.level] || PEOPLE_LEVELS.normal, opt.params || {});
+    if (opt.minH != null) P.minH = opt.minH; if (opt.maxH != null) P.maxH = opt.maxH; if (opt.sitting != null) P.sitting = !!opt.sitting; if (opt.maxW != null) P.maxW = opt.maxW;
+    var minH = P.sitting ? Math.min(P.minH, 0.9) : P.minH, maxH = Math.max(P.maxH, minH + 0.2);
+    var empty = { remove: new Uint32Array(0), removed: 0, count: n, found: [], stats: { components: 0, candidates: 0, rejected: {} }, params: P };
+    var box = robustBox(pos, n); if (!box || n < 200) return empty;
+    var est = CP && CP.estimate ? CP.estimate(pos, n) : { spacing: 0.03 }, sp = est.spacing > 0 ? est.spacing : 0.03;
+    var v = clamp(5 * sp, 0.07, 0.15), HLOW = 0.1, HTOP = Math.max(3.0, maxH + 0.8), i, k, c;
+    // --- 1. земля (общая для обоих способов поиска)
+    var G = yield* groundGen(pos, n, box, ctl), gcell = G.gcell, minX = G.minX, minZ = G.minZ, spanX = box.mx[0] - minX, spanZ = box.mx[2] - minZ,
+      GX = G.GX, GZ = G.GZ, GC = G.GC, gr = G.gr;
     // --- 2. вокселы точек между землёй+10 см и 3 м
     prog(ctl, 0.14, 'Вокселизация…'); yield 0.14;
     var NX = Math.ceil(spanX / v) + 2, NZ = Math.ceil(spanZ / v) + 2, NY = Math.ceil((box.mx[1] - box.mn[1]) / v) + 2;
@@ -532,6 +541,174 @@
     prog(ctl, 1, 'Готово');
     return { remove: rem.slice(0, cnt), removed: cnt, count: n, found: found, stats: stat, params: P };
   }
+  // ---- второй способ поиска людей: «столбцы» (вид сверху). Не зависит от того, слит ли человек с соседними предметами в одну связную группу:
+  // над каждой клеткой 10 см строится вертикальная цепочка занятых слоёв; человек — «башня» (макушка выше большинства клеток вокруг),
+  // с головой и плечами умеренного размера, туловищем в пределах ширины и без цилиндрической формы (столбы, колонны).
+  var PEOPLE_COLS = {
+    strict: { ringMax: 0.30, headCells: 22, torsoCells: 36, startMax: 5, minPts: 120, lowRatio: 1.5, headRatio: 0.70, cylHead: 0.62, cylLow: 0.92 },
+    normal: { ringMax: 0.45, headCells: 36, torsoCells: 60, startMax: 8, minPts: 60,  lowRatio: 1.9, headRatio: 0.85, cylHead: 0.70, cylLow: 0.97 },
+    loose:  { ringMax: 0.60, headCells: 50, torsoCells: 90, startMax: 11, minPts: 40, lowRatio: 2.6, headRatio: 0.95, cylHead: 9,    cylLow: 9 }
+  };
+  function* peopleColsGen(pos, n, opt, P, box, ctl) {
+    var level = PEOPLE_COLS[opt.level] ? opt.level : 'normal', Q = PEOPLE_COLS[level];
+    var minH = P.sitting ? Math.min(P.minH, 0.9) : P.minH, maxH = Math.max(P.maxH, minH + 0.2);
+    var est = CP && CP.estimate ? CP.estimate(pos, n) : { spacing: 0.03 }, sp = est.spacing > 0 ? est.spacing : 0.03;
+    var G = yield* groundGen(pos, n, box, ctl), gr = G.gr, gcell = G.gcell, minX = G.minX, minZ = G.minZ, GX = G.GX, GZ = G.GZ;
+    var cs = clamp(2.5 * sp, 0.08, 0.2), spanX = box.mx[0] - minX, spanZ = box.mx[2] - minZ;
+    while ((spanX / cs + 3) * (spanZ / cs + 3) > 14e6) cs *= 1.25;
+    var NXc = Math.ceil(spanX / cs) + 2, NZc = Math.ceil(spanZ / cs) + 2, NC = NXc * NZc, SLH = 0.1, i, c;
+    var useStrong = sp < 0.03;
+    var m1 = new Uint32Array(NC), m2 = new Uint32Array(NC);
+    prog(ctl, 0.1, 'Столбцы: заполнение…'); yield 0.1;
+    for (i = 0; i < n; i++) {
+      var X = pos[i * 3], Y = pos[i * 3 + 1], Z = pos[i * 3 + 2];
+      if ((X - X) + (Y - Y) + (Z - Z) !== 0) continue;
+      var gx = Math.floor((X - minX) / gcell), gz = Math.floor((Z - minZ) / gcell);
+      if (gx < 0 || gz < 0 || gx >= GX || gz >= GZ) continue;
+      var h = Y - gr[gz * GX + gx];
+      if (!(h >= 0.03 && h < 3.15) || Y < box.mn[1] || Y > box.mx[1]) continue;
+      var ix = Math.floor((X - minX) / cs), iz = Math.floor((Z - minZ) / cs); if (ix < 0 || iz < 0 || ix >= NXc || iz >= NZc) continue;
+      var col = iz * NXc + ix, bit = 1 << Math.min(31, Math.floor(h / SLH));
+      if (m1[col] & bit) m2[col] |= bit; else m1[col] |= bit;
+      if ((i & 1048575) === 1048575) { prog(ctl, 0.1 + 0.25 * i / n, 'Столбцы: заполнение…'); yield 0.1 + 0.25 * i / n; }
+    }
+    var mask = useStrong ? m2 : m1; m1 = useStrong ? null : m1; if (useStrong) m1 = null;
+    // цепочка слоёв от самого низкого занятого (не выше startMax) с допуском разрыва 3 слоя
+    prog(ctl, 0.38, 'Столбцы: высоты…'); yield 0.38;
+    var top = new Float32Array(NC), bot = new Float32Array(NC).fill(9);
+    for (c = 0; c < NC; c++) {
+      var mk = mask[c]; if (!mk) continue;
+      var s0 = 31 - Math.clz32(mk & -mk); if (s0 > Q.startMax) continue;
+      var last = s0, gap = 0;
+      for (var s = s0 + 1; s < 32; s++) { if (mk & (1 << s)) { last = s; gap = 0; } else if (++gap > 3) break; }
+      top[c] = (last + 1) * SLH; bot[c] = s0 * SLH;
+    }
+    // «второй по высоте среди 3×3»: одиночные выбросы-шипы не создают пиков
+    var topS = new Float32Array(NC), nb = new Float32Array(9);
+    for (var zz = 1; zz < NZc - 1; zz++) for (var xx = 1; xx < NXc - 1; xx++) {
+      var cc = zz * NXc + xx; if (!top[cc]) continue;
+      var m = 0, m2v = 0;
+      for (var dz = -1; dz <= 1; dz++) for (var dx = -1; dx <= 1; dx++) { var t = top[cc + dz * NXc + dx]; if (t > m) { m2v = m; m = t; } else if (t > m2v) m2v = t; }
+      topS[cc] = m2v;
+    }
+    top = null;
+    // пики
+    prog(ctl, 0.45, 'Столбцы: поиск людей…'); yield 0.45;
+    var q, rPk = Math.max(2, Math.round(0.4 / cs)), rRing0 = 0.55, rRing1 = 1.0, rBody = 0.7, owner = new Int32Array(NC).fill(-1), ownD = new Float32Array(NC).fill(1e9);
+    var found = [], pk = [], zoneLo = 0.45, zoneHi = 0.88;
+    var rejected = { notTower: 0, overhead: 0, head: 0, torso: 0, shape: 0, thin: 0 }, cand = 0;
+    function cellsIn(cx, cz, r, fn) {
+      var rr = Math.ceil(r / cs), r2 = r * r / (cs * cs);
+      for (var dz2 = -rr; dz2 <= rr; dz2++) for (var dx2 = -rr; dx2 <= rr; dx2++) { if (dx2 * dx2 + dz2 * dz2 > r2) continue; var ax = cx + dx2, az = cz + dz2; if (ax < 0 || az < 0 || ax >= NXc || az >= NZc) continue; fn(az * NXc + ax, dx2, dz2); }
+    }
+    for (zz = rPk; zz < NZc - rPk; zz++) {
+      for (xx = rPk; xx < NXc - rPk; xx++) {
+        cc = zz * NXc + xx; var tv = topS[cc];
+        if (tv < minH || tv > maxH) continue;
+        var isMax = true;
+        for (dz = -rPk; dz <= rPk && isMax; dz++) for (dx = -rPk; dx <= rPk; dx++) {
+          if (!dx && !dz) continue; if (dx * dx + dz * dz > rPk * rPk) continue;
+          var o2 = topS[cc + dz * NXc + dx]; if (o2 > tv || (o2 === tv && (dz < 0 || (dz === 0 && dx < 0)))) { isMax = false; break; }
+        }
+        if (!isMax) continue;
+        cand++;
+        // изоляция: кольцо 0,55…1,0 м — доля клеток с макушкой не ниже (макушка − 0,3 м)
+        var ringN = 0, ringTall = 0;
+        cellsIn(xx, zz, rRing1, function (id, dx3, dz3) { var d = Math.sqrt(dx3 * dx3 + dz3 * dz3) * cs; if (d < rRing0) return; ringN++; if (topS[id] >= tv - 0.3) ringTall++; });
+        if (ringN && ringTall / ringN > Q.ringMax) { rejected.notTower++; continue; }
+        // над головой должно быть свободно: выше макушки + 0,3 м в соседних клетках нет ≥ 3 занятых слоёв (иначе это стена, крона, навес)
+        var hiBits = 0, hs0 = Math.min(32, Math.floor((tv + 0.3) / SLH) + 1), un = 0;
+        for (q = hs0; q < 32; q++) hiBits |= (1 << q);
+        for (dz = -1; dz <= 1; dz++) for (dx = -1; dx <= 1; dx++) un |= mask[cc + dz * NXc + dx];
+        un &= hiBits; var occ = 0; while (un) { un &= un - 1; occ++; }
+        if (occ >= 3) { rejected.overhead++; continue; }
+        // голова: клетки в радиусе 0,5 м с макушкой не ниже (макушка − 0,25)
+        var headC = 0; cellsIn(xx, zz, 0.5, function (id) { if (topS[id] >= tv - 0.25) headC++; });
+        if (headC > Q.headCells) { rejected.head++; continue; }
+        // туловище и низ: клетки радиуса 0,7 м, где есть занятые слои в соответствующей зоне высот
+        var bLo = Math.floor(zoneLo * tv / SLH), bHi = Math.floor(zoneHi * tv / SLH), lHi = Math.floor(zoneLo * tv / SLH) - 1, zoneB = 0, zoneL = 0, sumX = 0, sumZ = 0, bw = 0;
+        var bmaskB = 0, bmaskL = 0, bmaskH = 0;
+        for (q = bLo; q <= bHi && q < 32; q++) bmaskB |= (1 << q);
+        for (q = 0; q <= lHi && q < 32; q++) bmaskL |= (1 << q);
+        for (q = Math.max(0, Math.floor((tv - 0.15) / SLH)); q < 32 && q <= Math.floor(tv / SLH); q++) bmaskH |= (1 << q);
+        var bx0 = 1e9, bx1 = -1e9, bz0 = 1e9, bz1 = -1e9, headA = 0;
+        cellsIn(xx, zz, rBody, function (id, dx3, dz3) {
+          var mk2 = mask[id]; if (!mk2) return;
+          if (mk2 & bmaskB) { zoneB++; sumX += dx3; sumZ += dz3; bw++; if (dx3 < bx0) bx0 = dx3; if (dx3 > bx1) bx1 = dx3; if (dz3 < bz0) bz0 = dz3; if (dz3 > bz1) bz1 = dz3; }
+          if (mk2 & bmaskL) zoneL++;
+          if (mk2 & bmaskH) headA++;
+        });
+        if (zoneB < 4) { rejected.thin++; continue; }
+        if (zoneB > Q.torsoCells) { rejected.torso++; continue; }
+        var bodyW = Math.sqrt(zoneB), headW = Math.sqrt(Math.max(1, headA)), lowW = Math.sqrt(Math.max(1, zoneL));
+        if (headW > Q.headRatio * bodyW || lowW > Q.lowRatio * bodyW || (headW >= Q.cylHead * bodyW && lowW >= Q.cylLow * bodyW)) { rejected.shape++; continue; }
+        if ((bx1 - bx0 + 1) * cs > 1.3 || (bz1 - bz0 + 1) * cs > 1.3) { rejected.torso++; continue; }
+        var ccx = xx + sumX / bw, ccz = zz + sumZ / bw;
+        pk.push({ cx: ccx, cz: ccz, top: tv, id: pk.length, zoneB: zoneB });
+      }
+      if ((zz & 255) === 255) { prog(ctl, 0.45 + 0.25 * zz / NZc, 'Столбцы: поиск людей…'); yield 0.45 + 0.25 * zz / NZc; }
+    }
+    // принадлежность клеток: ближайший пик в радиусе 0,5 м от центра туловища; клетки выше макушки + 0,3 м (стены, деревья) не берём; клетка должна иметь высоту ≥ 0,5 м
+    for (var pi = 0; pi < pk.length; pi++) {
+      var pp = pk[pi];
+      cellsIn(Math.round(pp.cx), Math.round(pp.cz), 0.5, function (id, dx3, dz3) {
+        var tv2 = topS[id]; if (!mask[id] || tv2 > pp.top + 0.3) return; if (tv2 < 0.5 && !(mask[id] & 15)) return;
+        var d = Math.hypot(Math.round(pp.cx) + dx3 - pp.cx, Math.round(pp.cz) + dz3 - pp.cz); if (d < ownD[id]) { ownD[id] = d; owner[id] = pp.id; }
+      });
+    }
+    // подсчёт точек на владельца, затем отбор
+    prog(ctl, 0.72, 'Столбцы: отбор точек…'); yield 0.72;
+    var cntO = new Int32Array(pk.length + 1), maxHo = new Float32Array(pk.length + 1);
+    for (i = 0; i < n; i++) {
+      X = pos[i * 3]; Y = pos[i * 3 + 1]; Z = pos[i * 3 + 2];
+      if ((X - X) + (Y - Y) + (Z - Z) !== 0) continue;
+      ix = Math.floor((X - minX) / cs); iz = Math.floor((Z - minZ) / cs); if (ix < 0 || iz < 0 || ix >= NXc || iz >= NZc) continue;
+      var ow = owner[iz * NXc + ix]; if (ow < 0) continue;
+      gx = Math.floor((X - minX) / gcell); gz = Math.floor((Z - minZ) / gcell); if (gx < 0 || gz < 0 || gx >= GX || gz >= GZ) continue;
+      h = Y - gr[gz * GX + gx]; if (h >= 0.03 && h <= pk[ow].top + 0.1) cntO[ow]++;
+    }
+    var okOwner = new Uint8Array(pk.length + 1);
+    for (pi = 0; pi < pk.length; pi++) if (cntO[pi] >= Q.minPts) { okOwner[pi] = 1; found.push({ cx: pk[pi].cx * cs + minX, cz: pk[pi].cz * cs + minZ, h: pk[pi].top, w: Math.sqrt(pk[pi].zoneB) * cs, points: cntO[pi], via: 'cols' }); } else rejected.thin++;
+    var rem = new Uint32Array(1 << 16), capR = rem.length, cnt = 0;
+    if (found.length) for (i = 0; i < n; i++) {
+      X = pos[i * 3]; Y = pos[i * 3 + 1]; Z = pos[i * 3 + 2];
+      if ((X - X) + (Y - Y) + (Z - Z) !== 0) continue;
+      ix = Math.floor((X - minX) / cs); iz = Math.floor((Z - minZ) / cs); if (ix < 0 || iz < 0 || ix >= NXc || iz >= NZc) continue;
+      ow = owner[iz * NXc + ix]; if (ow < 0 || !okOwner[ow]) continue;
+      gx = Math.floor((X - minX) / gcell); gz = Math.floor((Z - minZ) / gcell); if (gx < 0 || gz < 0 || gx >= GX || gz >= GZ) continue;
+      h = Y - gr[gz * GX + gx]; if (!(h >= 0.03 && h <= pk[ow].top + 0.1)) continue;
+      if (cnt >= capR) { capR *= 2; var nr = new Uint32Array(capR); nr.set(rem); rem = nr; }
+      rem[cnt++] = i;
+      if ((i & 1048575) === 1048575) { prog(ctl, 0.78 + 0.2 * i / n, 'Столбцы: отбор точек…'); yield 0.78 + 0.2 * i / n; }
+    }
+    return { remove: rem.slice(0, cnt), found: found, stats: { peaks: cand, rejected: rejected, cell: cs } };
+  }
+
+  function* peopleGen(pos, n, opt, ctl) {
+    opt = opt || {}; n = n | 0;
+    var top = 0, sub = function (a, b) { return ctl && typeof ctl.progress === 'function' ? { progress: function (f, l) { var v = Math.max(top, a + (b - a) * f); top = v; ctl.progress(v, l); } } : null; };
+    var A = yield* peopleAGen(pos, n, opt, sub(0, 0.5));
+    if (opt.mode === 'shape' || n < 200) { prog(ctl, 1, 'Готово'); return A; }
+    var box = robustBox(pos, n); if (!box) { prog(ctl, 1, 'Готово'); return A; }
+    var B = yield* peopleColsGen(pos, n, opt, A.params, box, sub(0.5, 0.97));
+    // объединение: флаги по индексам точек (бит на точку)
+    var flag = new Uint8Array((n >> 3) + 1), i, cnt = 0, rem;
+    function mark(arr) { for (var k = 0; k < arr.length; k++) { var j = arr[k]; flag[j >> 3] |= 1 << (j & 7); } }
+    mark(A.remove); mark(B.remove);
+    for (i = 0; i < n; i++) if (flag[i >> 3] & (1 << (i & 7))) cnt++;
+    rem = new Uint32Array(cnt); var w = 0;
+    for (i = 0; i < n; i++) if (flag[i >> 3] & (1 << (i & 7))) rem[w++] = i;
+    var found = A.found.slice();
+    for (var f = 0; f < B.found.length; f++) {   // не дублируем то, что уже найдено первым способом
+      var bf = B.found[f], dup = false;
+      for (var g = 0; g < A.found.length && !dup; g++) if (Math.hypot(A.found[g].cx - bf.cx, A.found[g].cz - bf.cz) < 0.6) dup = true;
+      if (!dup) found.push(bf);
+    }
+    var stats = Object.assign({}, A.stats, { cols: B.stats, foundShape: A.found.length, foundCols: B.found.length });
+    prog(ctl, 1, 'Готово');
+    return { remove: rem, removed: cnt, count: n, found: found, stats: stats, params: A.params };
+  }
+
   function people(pos, n, opt, ctl) { return run(peopleGen(pos, n, opt, ctl)); }
 
   /** Декодирует код 0..255 в шаг, м. */
