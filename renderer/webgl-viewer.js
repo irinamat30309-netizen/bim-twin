@@ -2385,7 +2385,28 @@
       this._drawList(this.overlay.concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []));
       if (this.measuring && this._measLabels && this._measLabels.length) this._renderMeasLabels();
     }
+    // ревизия 8: адаптивное число точек при движении камеры. Раз в два кадра взаимодействия замеряем, сколько кадр занимает у видеокарты (gl.finish),
+    // и подбираем число рисуемых точек (случайный префикс буфера) так, чтобы кадр укладывался в ~13 мс; пока видеокарта справляется — рисуем всё облако.
+    // После остановки (≈160 мс) облако рисуется целиком. Профиль «Максимум» терпит 22 мс.
+    _adaptInter(ms, drawn, total) {
+      if (!(ms > 0) || !(drawn > 0)) return;
+      const tgt = this._perfProfile === 'max' ? 22 : 13, ppms = drawn / Math.max(0.5, ms);
+      this._ptsPerMs = this._ptsPerMs ? this._ptsPerMs * 0.6 + ppms * 0.4 : ppms;
+      let want = this._ptsPerMs * tgt;
+      if (ms < tgt * 0.7 && drawn >= (this._interPts || total)) want = Math.max(want, drawn * 1.25);   // запас есть — возвращаем точки
+      this._interPts = Math.max(1500000, Math.min(total, want));
+      this._interMs = ms;
+    }
+    interactivePointBudget(total) { return this._interPts ? Math.min(total, Math.round(this._interPts)) : total; }
     _renderNow() {
+      const gl = this.gl; if (!gl) return;
+      const probe = !!this._interacting && !this._octActive && ((this._probeN = (this._probeN | 0) + 1) & 1) === 0, probeT0 = probe ? performance.now() : 0;
+      this._probeDrawn = 0;
+      try { this._renderNowInner(); } finally {
+        if (probe && this._probeDrawn > 0) { try { gl.finish(); this._adaptInter(performance.now() - probeT0, this._probeDrawn, this._probeTotal); } catch (e) { } }
+      }
+    }
+    _renderNowInner() {
       const gl = this.gl; if (!gl) return;
       const _edlOn = this._edl && this._edlReady && !!(this.base[0] && this.base[0].points);
       if (!_edlOn && this._sceneCacheUsable()) { try { this._renderCached(); return; } catch (e) { console.warn('кэш сцены отключён', e); this._scBroken = true; gl.bindFramebuffer(gl.FRAMEBUFFER, null); } }
@@ -2426,7 +2447,11 @@
         const vh = gl.canvas.height || 600;
         const fixedPx=isCloud && this._cloudDisplay ? this._cloudDisplay.pointSize : null;
         const baseSize = fixedPx || ((o.pointSize || 2.2) * psm);
-        const scale = (o._spacing || 0) * (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm;
+        // ревизия 8: при движении рисуем только часть точек (адаптивно по времени кадра); размер точек растёт на корень из доли пропущенного, чтобы поверхность не рассыпалась
+        let dcI = o.count;
+        if (isCloud && this._interacting && o._shuffled && !o._lod) { const b = this._interBudget || 4000000; if (dcI > b) dcI = b; dcI = Math.min(dcI, this.interactivePointBudget(o.count)); }
+        const compI = dcI < o.count ? Math.min(3, Math.sqrt(o.count / dcI)) : 1;
+        const scale = (o._spacing || 0) * (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm * compI;
         // По умолчанию — адаптивный размер: вдали точки чёткие постоянного размера,
         // вблизи растут и закрывают зазоры (плотно и чётко на любом приближении).
         const adaptive = isCloud && !fixedPx && !this._frameBox && !this._denseFill && !this._attenuate && scale > 0;
@@ -2440,10 +2465,10 @@
           const closeCap = Math.max(24, Math.round(vh * 0.05));
           if (o._rad && o._rad.codes && o._radVbo && o._rad.codes.length === o.count) {
             radOn = 1;
-            gl.uniform1f(this.u.uPtScale, (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm);
+            gl.uniform1f(this.u.uPtScale, (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm * compI);
             gl.uniform1f(this.u.uRadMin, o._rad.sMin); gl.uniform1f(this.u.uRadLog, Math.log2(o._rad.sMax / o._rad.sMin));
           }
-          gl.uniform1f(this.u.uPtMin, Math.max(1.0, baseSize * 0.8));
+          gl.uniform1f(this.u.uPtMin, Math.max(1.0, baseSize * 0.8 * Math.min(compI, 1.6)));
           gl.uniform1f(this.u.uPtMax, Math.max((o._ptMax || 8.0) * psm * (this._denseFill ? 9.0 : 1.0), closeCap));
         }
         gl.uniform1f(this.u.uRadOn, radOn);
@@ -2452,9 +2477,9 @@
         if (!o.col) gl.uniform3fv(this.u.uColor, new Float32Array(o.color || [0.82, 0.86, 0.93]));
         if (o._lod) { this._drawLod(o); }
         else {
-          let dc = o.count;
-          if (isCloud && this._interacting && o._shuffled) { const b = this._interBudget || 4000000; if (o.count > b) dc = b; }
+          const dc = dcI;
           gl.drawArrays(gl.POINTS, 0, dc);
+          if (isCloud && this._interacting) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + o.count; }
         }
         gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); gl.bindVertexArray(null); return;
       }
