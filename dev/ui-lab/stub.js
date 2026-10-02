@@ -47,12 +47,13 @@ module.exports = function makeStub() {
       ccStatus: () => ({ ok: false }), geomStatus: () => ({ ok: false }), s2bStatus: () => ({ ok: false }), ocrStatus: () => ({ ok: false })
     };
     window.__bimCalls = [];
-    const sync = { getPathForFile: () => '' };
+    // window.__labPath — путь, который «видит» приложение у выбранного файла; window.__bimOverrides — подмена методов из сценария стенда
+    const sync = { getPathForFile: () => window.__labPath || '' };
     const fn = (k) => {
       if (k in sync) return sync[k];
-      if (k in defaults) return (...a) => { window.__bimCalls.push(k); return new Promise(r => setTimeout(() => r(defaults[k](...a)), 12)); };
+      if (k in defaults) return (...a) => { window.__bimCalls.push(k); if (window.__bimOverrides && window.__bimOverrides[k]) return Promise.resolve(window.__bimOverrides[k](...a)); return new Promise(r => setTimeout(() => r(defaults[k](...a)), 12)); };
       if (/^on[A-Z]/.test(k)) return () => () => {};
-      return (...a) => { window.__bimCalls.push(k); return new Promise(r => setTimeout(() => r(null), 8)); };
+      return (...a) => { window.__bimCalls.push(k); if (window.__bimOverrides && window.__bimOverrides[k]) return Promise.resolve(window.__bimOverrides[k](...a)); return new Promise(r => setTimeout(() => r(null), 8)); };
     };
     window.bimAPI = new Proxy({ platform: 'win32' }, {
       get(t, k) { if (k in t) return t[k]; if (typeof k !== 'string') return undefined; return fn(k); },

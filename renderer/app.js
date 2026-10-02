@@ -3281,8 +3281,13 @@
           const bo = viewer.base && viewer.base[0];
           const beforeCount = bo && bo.pos ? bo.pos.length / 3 : null;
           if (bo && bo.pos && (c.pos !== bo.pos || c.count !== bo.pos.length / 3)) {
-            (viewer._undo = viewer._undo || []).push({ pos: bo.pos.slice(), col: bo.col ? bo.col.slice() : null, srcXform: viewer._srcXform || null, crsWkt: viewer._srcCrs || null });
-            if (viewer._undo.length > 3) viewer._undo.shift();
+            // Копия для «Отменить» (Ctrl+Z): позиции, цвет, интенсивность и классы. У крупных облаков копии не копим: 20 млн точек ≈ 0,5 ГБ на копию
+            const nPts = bo.pos.length / 3, iv = viewer._intensityValues, cl = viewer._classificationLabels;
+            (viewer._undo = viewer._undo || []).push({ pos: bo.pos.slice(), col: bo.col ? bo.col.slice() : null,
+              intensity: iv && iv.length === nPts ? iv.slice() : null, classification: cl && cl.length === nPts ? cl.slice() : null,
+              srcXform: viewer._srcXform || null, crsWkt: viewer._srcCrs || null });
+            const keepUndo = nPts > 12e6 ? 1 : (nPts > 4e6 ? 2 : 3);
+            while (viewer._undo.length > keepUndo) viewer._undo.shift();
           }
           const srcName = viewer._cloudRecord && viewer._cloudRecord.sourceName || name || 'tool-result';
           const op = Object.assign({ operation: 'cloud.' + String(name || 'edit'), parameters: { tool: String(name || 'edit'), pointCountBefore: beforeCount, pointCountAfter: c.count || (c.pos.length / 3) } }, details || {});
@@ -3327,6 +3332,14 @@
       } catch (e) { toast('Ошибка сохранения'); }
       finally { try { stop(); } catch (e) {} }
     });
+    // Ctrl+Z вне режима выделения: отменяет результат обработки облака (сглаживание, ресэмплирование, выравнивание …); в режиме выделения работает обработчик ниже
+    if (!window.__undoKeys) { window.__undoKeys = true; window.addEventListener('keydown', e => {
+      if (!viewer || viewer.editSelect || !viewer.undoEdit || e.shiftKey || e.altKey || !(e.ctrlKey || e.metaKey)) return;
+      const k = (e.key || '').toLowerCase(); if (!(e.code === 'KeyZ' || k === 'z' || k === 'я')) return;
+      const t = e.target; if (t && (/^(input|textarea|select)$/i.test(t.tagName || '') || t.isContentEditable)) return;
+      if (!(viewer.canUndo && viewer.canUndo())) return;
+      e.preventDefault(); if (viewer.undoEdit()) toast('Отменено');
+    }); }
     if (!window.__editKeys) { window.__editKeys = true; window.addEventListener('keydown', e => { if (!viewer || !viewer.editSelect) return; const k = (e.key || '').toLowerCase(); if (k === 'delete' || k === 'backspace' || k === 'enter') { const _t = e.target; if (_t && (/^(input|textarea|select)$/i.test(_t.tagName || '') || _t.isContentEditable)) return; if (viewer.selectionCount && viewer.selectionCount()) { const r = viewer.deleteSelection(); const _pb = (viewer._lastProtectRemoved | 0); if (r === 0 && _pb > 0) toast('Выделенное защищено как конструктив (' + nfmt(_pb) + ' т.). Меню «Чистка» → «Защита конструктива» — выключите, чтобы удалить'); else toast('Удалено точек: ' + nfmt(r) + (_pb > 0 ? ' (защищено конструктива: ' + nfmt(_pb) + ')' : '')); } } else if ((e.ctrlKey || e.metaKey) && k === 'z') { if (viewer.undoEdit && viewer.undoEdit()) toast('Отменено'); } else if (k === 'escape') { if (viewer.selectionCount && viewer.selectionCount() && viewer.clearSelection) { viewer.clearSelection(); toast('Выбор очищен (Esc)'); } } }); }
   }
   // v0.9.29: карточка свойств выбранного элемента поверх сцены

@@ -166,6 +166,7 @@
       job = startJob(spec.op, c.pos.subarray(0, c.count * 3), spec.params(values, defs), function (f, lab) { setPct(0.04 + 0.86 * f, lab || spec.label); });
       var res;
       try { res = await job.promise; } catch (e) { if (e && e.cancelled) { toast('Операция отменена, облако не изменено'); return; } throw e; }
+      if (job.cancelled) { toast('Операция отменена, облако не изменено'); return; }   // Esc нажат в тот же момент, когда расчёт закончился
       if (!needCloud()) return;
       setPct(0.92, 'Загрузка результата…'); await yieldFrame();
       var out = spec.finish(res, c, values);

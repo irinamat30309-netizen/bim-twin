@@ -148,3 +148,14 @@ test('run(): единая точка входа для воркера', () => {
   assert.ok(Math.abs(r.keep.length - n / 10) <= 2);
   assert.throws(() => C.run('нет-такой', S.pos, {}), /Неизвестная операция/);
 });
+
+test('Ctrl+Z отменяет результат обработки облака и вне режима выделения; копия для отмены хранит все атрибуты', () => {
+  const fs = require('fs'), path = require('path');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  assert.ok(/window\.__undoKeys/.test(app) && /viewer\.editSelect \|\| !viewer\.undoEdit/.test(app), 'глобальный Ctrl+Z вне режима выделения');
+  assert.ok(/e\.code === 'KeyZ'/.test(app), 'работает и в русской раскладке');
+  assert.ok(/intensity: iv && iv\.length === nPts/.test(app) && /classification: cl && cl\.length === nPts/.test(app), 'в копию для отмены попадают интенсивность и классы');
+  assert.ok(/keepUndo = nPts > 12e6 \? 1/.test(app), 'у крупных облаков копий для отмены меньше');
+  const ext = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'lixel-tools-ext.js'), 'utf8');
+  assert.ok(/if \(job\.cancelled\) \{ toast\('Операция отменена/.test(ext), 'Esc в момент окончания расчёта не применяет результат');
+});
