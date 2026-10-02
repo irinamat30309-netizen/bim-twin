@@ -166,6 +166,9 @@
       else if (result && result.message) panel.update({ phase: 'error', fraction: latest && latest.fraction || 0, message: result.message });
       // Keep completion/error visible briefly so fast jobs still give feedback.
       await new Promise(resolve => setTimeout(resolve, 260));
+      if (result && result.ok && result.pointBudget && result.pointBudget.ipcLimited) {
+        try { const pb = result.pointBudget; toast('В файле ' + (pb.total / 1e6).toFixed(1) + ' млн точек: для устойчивой работы окна открыты ' + Math.round(pb.applied / 1e6) + ' млн (равномерная выборка). Весь файл — кнопка «Потоковый LOD».'); } catch (_) {}
+      }
       if (result && result.ok && result.pointBudget && result.pointBudget.memoryLimited) {
         try { const pb = result.pointBudget; toast('Свободной памяти хватает на ~' + Math.round(pb.applied / 1e6) + ' млн точек из ' + (pb.total / 1e6).toFixed(1) + ' млн в файле: облако открыто прореженным. Закройте другие программы и откройте файл снова — тогда оно загрузится целиком.'); } catch (_) {}
       }

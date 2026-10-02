@@ -599,6 +599,12 @@ function createWindow() {
     ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, webgl: true }
   });
+  // Журнал падений окна: при вылете причина (oom, crashed, killed) и память остаются в crash.log рядом с настройками
+  try {
+    win.webContents.on('render-process-gone', (_e, details) => {
+      try { fs.appendFileSync(path.join(app.getPath('userData'), 'crash.log'), new Date().toISOString() + ' render-process-gone ' + JSON.stringify({ reason: details && details.reason, exitCode: details && details.exitCode, freeMemMB: Math.round(require('os').freemem() / 1048576) }) + '\n'); } catch (_) {}
+    });
+  } catch (_) {}
   if (!isMac) win.maximize();
   // v1208.2: clear stale renderer cache before loading the UI hotfix.
   win.webContents.session.clearCache().catch(() => {}).finally(() => {
@@ -1021,7 +1027,9 @@ function registerIpc() {
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
       const s = readSettings();
-      const maxPoints = APP_CFG.resolvePointBudget(s);
+      const budgetSetting = APP_CFG.resolvePointBudget(s);
+      // В окно за один раз уходит не больше IPC_MAX_POINTS точек: массив на сотни мегабайт одним сообщением роняет процесс окна
+      const maxPoints = Math.min(budgetSetting, APP_CFG.IPC_MAX_POINTS || budgetSetting);
       const controller = new AbortController();
       const key = jobId ? cloudJobKey(event && event.sender, jobId) : null;
       if (key && activeCloudParseJobs.has(key)) return { ok: false, message: 'duplicate_job_id' };
@@ -1040,7 +1048,11 @@ function registerIpc() {
       };
       try {
         const result = await cloud.parseCloudFileAsync(abs, { maxPoints, signal: controller.signal, onProgress });
-        if (result && result.ok) onProgress({ phase: 'done', fraction: 1, pointsLoaded: result.count || (result.pos && result.pos.length / 3) || 0 });
+        if (result && result.ok) {
+          const totalInFile = Number(result.meta && result.meta.total) || Number(result.total) || 0;
+          if (maxPoints < budgetSetting && totalInFile > maxPoints && !result.pointBudget) result.pointBudget = { requested: budgetSetting, applied: maxPoints, ipcLimited: true, total: totalInFile };
+          onProgress({ phase: 'done', fraction: 1, pointsLoaded: result.count || (result.pos && result.pos.length / 3) || 0 });
+        }
         return result;
       } finally {
         if (key) activeCloudParseJobs.delete(key);
