@@ -2224,6 +2224,15 @@
       stop.text = (lab) => { if (a && lab != null) a.set(null, lab); };
       return stop;
     }
+    // Ненавязчивый индикатор фоновой работы (авто-сохранение): полоса активности без блокирующей карточки прогресса
+    function beginQuietProgress(label) {
+      const a = window.__lxKit && window.__lxKit.activity ? window.__lxKit.activity(label || 'Обработка…') : null;
+      if (!a) return beginProgress(label);
+      const stop = () => a.done();
+      stop.set = (frac, lab) => a.set(frac, lab);
+      stop.text = (lab) => { if (lab != null) a.set(null, lab); };
+      return stop;
+    }
     async function withBusy(btn, label, fn) {
       if (geomBusy) { toast('Идёт обработка облака — дождитесь завершения'); return; }
       geomBusy = true; if (btn) { btn.classList.add('on'); btn.classList.add('busy'); btn.disabled = true; }
@@ -3080,7 +3089,7 @@
         ? { axis: tr.axis, t: Array.prototype.slice.call(tr.t, 0, 3).map(Number) } : null;
       const crsWkt = viewer && typeof viewer._srcCrs === 'string' ? viewer._srcCrs : null;
       _asBusy = true;
-      const stop = beginProgress('Авто-сохранение…'); if (stop.set) stop.set(0, 'Авто-сохранение…');
+      const stop = beginQuietProgress('Авто-сохранение…'); if (stop.set) stop.set(0, 'Авто-сохранение…');   // ревизия 7: тонкая полоса сверху, без модального окна — работать можно, пока черновик пишется
       const task = (async function () {
         try {
           const bytes = window.PCEdit.toPLYBinaryAsync ? await window.PCEdit.toPLYBinaryAsync(c, f => { if (stop.set) stop.set(f * 0.92, 'Авто-сохранение…'); }) : window.PCEdit.toPLYBinary(c);

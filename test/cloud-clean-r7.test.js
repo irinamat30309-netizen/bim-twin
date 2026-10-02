@@ -227,3 +227,10 @@ test('people: пустое, малое и нечисловое облако не
   assert.equal(r.found.length, 1);
   assert.ok(seen.length > 3 && seen[seen.length - 1] === 1 && seen.every((v, i) => !i || v >= seen[i - 1] - 1e-9));
 });
+
+test('автосохранение черновика идёт тонкой полосой активности, а не модальной карточкой прогресса', () => {
+  const A = fs.readFileSync(R('renderer', 'app.js'), 'utf8');
+  assert.ok(A.includes('function beginQuietProgress(label)'));
+  assert.ok(A.includes("beginQuietProgress('Авто-сохранение…')"));
+  assert.ok(!A.includes("beginProgress('Авто-сохранение…')"));
+});
