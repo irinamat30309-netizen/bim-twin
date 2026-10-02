@@ -11,6 +11,7 @@ const osNative = require('node:os');
 const { pathToFileURL, fileURLToPath } = require('url');
 const fs = require('fs');
 const crypto = require('crypto');
+const { createPendingCloudStore } = require('./pending-clouds');
 const { Worker } = require('worker_threads');
 const { parseIFC, mapIfcType } = require('./db/ifcImport');
 const parsers = require('./ai/parsers');
@@ -708,6 +709,8 @@ function isTrustedIpcEvent(event) {
 
 function registerIpc() {
   const activeCloudParseJobs = new Map();
+  const pendingClouds = createPendingCloudStore();
+  const pendingCloudSenders = new Set();
   const activeOctreeBuildJobs = new Map();
   const activeExportStreams = new Map();
   const fileGrants = new PathGrantRegistry({ fs });
@@ -1027,9 +1030,9 @@ function registerIpc() {
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
       const s = readSettings();
-      const budgetSetting = APP_CFG.resolvePointBudget(s);
-      // В окно за один раз уходит не больше IPC_MAX_POINTS точек: массив на сотни мегабайт одним сообщением роняет процесс окна
-      const maxPoints = Math.min(budgetSetting, APP_CFG.IPC_MAX_POINTS || budgetSetting);
+      const maxPoints = APP_CFG.resolvePointBudget(s);
+      // Доля точек файла (Настройки → Облака точек): 100 % — все точки; иначе каждая k-я
+      const pointShare = APP_CFG.resolvePointShare(s);
       const controller = new AbortController();
       const key = jobId ? cloudJobKey(event && event.sender, jobId) : null;
       if (key && activeCloudParseJobs.has(key)) return { ok: false, message: 'duplicate_job_id' };
@@ -1047,11 +1050,21 @@ function registerIpc() {
         } catch (_) {}
       };
       try {
-        const result = await cloud.parseCloudFileAsync(abs, { maxPoints, signal: controller.signal, onProgress });
+        const result = await cloud.parseCloudFileAsync(abs, { maxPoints, pointShare, signal: controller.signal, onProgress });
         if (result && result.ok) {
-          const totalInFile = Number(result.meta && result.meta.total) || Number(result.total) || 0;
-          if (maxPoints < budgetSetting && totalInFile > maxPoints && !result.pointBudget) result.pointBudget = { requested: budgetSetting, applied: maxPoints, ipcLimited: true, total: totalInFile };
-          onProgress({ phase: 'done', fraction: 1, pointsLoaded: result.count || (result.pos && result.pos.length / 3) || 0 });
+          const loaded = result.count || (result.pos && result.pos.length / 3) || 0;
+          if (pointShare < 1) result.pointShare = pointShare;
+          // Крупное облако — в окно кусками (одно сообщение на 1–1,5 ГБ роняло процесс окна)
+          if (result.kind !== 'mesh' && ArrayBuffer.isView(result.pos) && result.pos.length / 3 > (APP_CFG.IPC_INLINE_POINTS || 6000000) && sender && sender.id != null) {
+            onProgress({ phase: 'transfer', fraction: 0, pointsLoaded: loaded });
+            const light = pendingClouds.stash(sender.id, result, APP_CFG.IPC_CHUNK_POINTS || 4000000);
+            if (!pendingCloudSenders.has(sender.id)) {
+              pendingCloudSenders.add(sender.id);
+              try { sender.once('destroyed', () => { pendingClouds.releaseSender(sender.id); pendingCloudSenders.delete(sender.id); }); } catch (_) {}
+            }
+            return light;
+          }
+          onProgress({ phase: 'done', fraction: 1, pointsLoaded: loaded });
         }
         return result;
       } finally {
@@ -1062,6 +1075,20 @@ function registerIpc() {
       }
     }
     catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  ipcMain.handle('bim:readCloudChunk', (event, req) => {
+    try {
+      const sender = ipcSender(event);
+      if (!sender) return { ok: false, message: 'нет доступа' };
+      return pendingClouds.read(sender.id, req);
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  ipcMain.handle('bim:releaseCloud', (event, req) => {
+    try {
+      const sender = ipcSender(event);
+      if (!sender) return false;
+      return pendingClouds.release(sender.id, req && req.token);
+    } catch (_) { return false; }
   });
   // In-app document reader: returns file bytes (images/pdf/svg) and/or extracted text/table for preview.
   // Covers the widest set of formats used in construction/BIM; binary CAD (dwg/rvt) fall back to external open.

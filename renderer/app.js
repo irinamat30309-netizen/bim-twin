@@ -78,6 +78,17 @@
       API = __wrap;
     }
   } catch (e) { API = _rawAPI; try { (console.__orig_warn || console.warn)('bimLog: API wrap failed, using raw API', e); } catch (e2) {} }
+  // Ревизия 6: крупные облака main отдаёт кусками (bim:readCloudChunk) — собираем их здесь, в основном мире окна (cloud-chunks.js).
+  // Третий аргумент parseCloud(path, jobId, { onProgress(доля) }) сообщает ход передачи.
+  try {
+    if (API && typeof API.parseCloud === 'function' && window.CloudChunks) {
+      const innerParse = API.parseCloud;
+      if (API === _rawAPI) API = Object.assign({}, _rawAPI);
+      API.parseCloud = function (p, jobId, opts) {
+        return Promise.resolve(innerParse.call(API, p, jobId)).then(function (r) { return window.CloudChunks.resolve(_rawAPI, r, opts); });
+      };
+    }
+  } catch (e) { try { (console.__orig_warn || console.warn)('cloud chunks wrap failed', e); } catch (e2) {} }
   function selectedFilePath(file) {
     if (!file) return '';
     try {
@@ -114,6 +125,7 @@
       'sample-text': 'Выбираю точки в пределах бюджета',
       'ptx-index': 'Проверяю сетки и сканы PTX',
       'ptx-sample': 'Применяю положение сканов PTX',
+      transfer: 'Передаю облако в окно',
       'decode-laz': 'Распаковываю LAZ (декодер не сообщает процент)',
       'decoded-laz': 'LAZ распакован; подготавливаю точки',
       done: 'Готово',
@@ -160,14 +172,14 @@
       panel.update(event);
     });
     try {
-      const result = await API.parseCloud(filePath, jobId);
+      const result = await API.parseCloud(filePath, jobId, { onProgress: (f) => panel.update({ phase: 'transfer', fraction: f }) });
       if (result && result.ok) panel.update({ phase: 'done', fraction: 1, pointsLoaded: result.count || (result.pos && result.pos.length / 3) || 0 });
       else if (result && result.cancelled) panel.update({ phase: 'cancelled', fraction: 0 });
       else if (result && result.message) panel.update({ phase: 'error', fraction: latest && latest.fraction || 0, message: result.message });
       // Keep completion/error visible briefly so fast jobs still give feedback.
       await new Promise(resolve => setTimeout(resolve, 260));
-      if (result && result.ok && result.pointBudget && result.pointBudget.ipcLimited) {
-        try { const pb = result.pointBudget; toast('В файле ' + (pb.total / 1e6).toFixed(1) + ' млн точек: для устойчивой работы окна открыты ' + Math.round(pb.applied / 1e6) + ' млн (равномерная выборка). Весь файл — кнопка «Потоковый LOD».'); } catch (_) {}
+      if (result && result.ok && result.pointShare && result.pointShare < 1) {
+        try { const tot = Number(result.meta && result.meta.total) || 0, got = Number(result.count) || (result.pos && result.pos.length / 3) || 0; toast('Открыто ' + Math.round(result.pointShare * 100 * 10) / 10 + ' % точек файла' + (tot ? ' (' + (got / 1e6).toFixed(1) + ' из ' + (tot / 1e6).toFixed(1) + ' млн)' : '') + '. Все точки: Настройки → Облака точек → «100 %».'); } catch (_) {}
       }
       if (result && result.ok && result.pointBudget && result.pointBudget.memoryLimited) {
         try { const pb = result.pointBudget; toast('Свободной памяти хватает на ~' + Math.round(pb.applied / 1e6) + ' млн точек из ' + (pb.total / 1e6).toFixed(1) + ' млн в файле: облако открыто прореженным. Закройте другие программы и откройте файл снова — тогда оно загрузится целиком.'); } catch (_) {}
@@ -735,6 +747,52 @@
     }
   }
 
+  // ---- Доля точек файла (ревизия 6) ----
+  // 100 % — все точки файла (по умолчанию); меньшая доля — каждая k-я точка (1/k). Выбирается в Настройки → Облака точек и в «Вид облака».
+  const POINT_SHARE_LABELS = { 100: '100 % — все точки файла', 50: '50 % — каждая 2-я точка', 33: '33 % — каждая 3-я точка', 25: '25 % — каждая 4-я точка', 20: '20 % — каждая 5-я точка', 10: '10 % — каждая 10-я точка', 5: '5 % — каждая 20-я точка', 2: '2 % — каждая 50-я точка', 1: '1 % — каждая 100-я точка' };
+  function pointShareList() { const l = window.APP_CONFIG && window.APP_CONFIG.POINT_SHARES; return Array.isArray(l) && l.length ? l : [100, 50, 33, 25, 20, 10, 5, 2, 1]; }
+  function currentPointSharePercent() {
+    const sh = (window.APP_CONFIG && window.APP_CONFIG.resolvePointShare) ? window.APP_CONFIG.resolvePointShare(SETTINGS) : 1;
+    return Math.max(1, Math.round(sh * 100));
+  }
+  function fillPointShareSelect(sel) {
+    if (!sel) return;
+    sel.replaceChildren();
+    pointShareList().forEach((pc) => { const o = document.createElement('option'); o.value = String(pc); o.textContent = POINT_SHARE_LABELS[pc] || (pc + ' %'); sel.appendChild(o); });
+    sel.value = String(currentPointSharePercent());
+  }
+  function syncPointShareControls() { const q = $('qShare'); if (q) { if (!q.options.length) fillPointShareSelect(q); else q.value = String(currentPointSharePercent()); } }
+  const CLOUD_FILE_RE = /\.(las|laz|ply|e57|ptx|pcd|xyz|pts|txt|csv|xyzrgb)$/i;
+  // Перечитать последнее открытое облако (после смены доли или предела): правки облака теряются так же, как при смене «Плотности»
+  async function reloadLastCloud(progressLabel, startMsg) {
+    toast(startMsg);
+    try {
+      const pr = await parseCloudWithProgress(lastCloudPath, progressLabel);
+      if (pr && pr.ok) {
+        if (pr.kind === 'mesh') viewer.loadColoredMesh(pr);
+        else { viewer.loadCloud(pr, { sourceName: lastCloudPath, preserveView: true }); cacheCloud(lastCloudPath, pr); lastCloudOffset = (pr.meta && pr.meta.offset) || null; lastCloudCount = (pr.meta && pr.meta.points) || pr.count || 0; }
+        const got = Number(pr.count) || (pr.pos && pr.pos.length / 3) || 0;
+        toast('Готово: ' + (got / 1e6).toFixed(got >= 1e7 ? 1 : 2) + ' млн точек');
+        return true;
+      }
+      toast('Не удалось перечитать облако' + (pr && pr.message ? ': ' + pr.message : ''));
+    } catch (e) { toast('Ошибка перечитывания: ' + (e && e.message || e)); }
+    return false;
+  }
+  async function applyPointShare(pct) {
+    const percent = Math.max(1, Math.min(100, Math.round(Number(pct)) || 100));
+    const prev = currentPointSharePercent();
+    SETTINGS.pointShare = percent;
+    const saved = await persistSettings({ pointShare: percent });
+    syncPointShareControls();
+    if (saved && saved.ok === false) { toast('Не удалось сохранить настройку: ' + saved.error); return; }
+    if (percent === prev) return;
+    try { cloudCacheMap.clear(); cloudCacheBytes = 0; } catch (_) {}
+    if (lastCloudPath && API && API.parseCloud && CLOUD_FILE_RE.test(lastCloudPath)) {
+      await reloadLastCloud('Перезагрузка: ' + percent + ' % точек файла', percent === 100 ? 'Загружаю все точки файла…' : 'Загружаю ' + percent + ' % точек файла…');
+    } else toast(percent === 100 ? 'Будут загружаться все точки файла' : 'Будет загружаться ' + percent + ' % точек файла — применится при открытии облака');
+  }
+
   async function openSettings() {
     let s = SETTINGS || {};
     if (CAN_VERIFY) { try { s = Object.assign({}, s, (await API.getSettings()) || {}); SETTINGS = s; } catch (e) {} }
@@ -750,8 +808,10 @@
       llmRemoteConsent: s.llmRemoteConsent === true,
       llmDocumentCharLimit: Number.isSafeInteger(Number(s.llmDocumentCharLimit)) ? Number(s.llmDocumentCharLimit) : 6000,
       ocrLang: s.ocrLang || 'rus+ukr+eng',
-      autoVerify: s.autoVerify !== false
+      autoVerify: s.autoVerify !== false,
+      pointShare: currentPointSharePercent()
     };
+    const initialShare = st.pointShare;
     const p = modalPanel(T('settings.title'));
     p.body.classList.add('settings-body');
     const section = (title) => { const sec = mk('div', 'set-sec'); sec.appendChild(mk('div', 'set-h', esc(title))); p.body.appendChild(sec); return sec; };
@@ -782,6 +842,11 @@
     const secA = section(T('settings.appearance'));
     rowSelect(secA, T('settings.theme'), [['light', T('settings.theme.light')], ['dark', T('settings.theme.dark')]], st.theme, v => { st.theme = v; applyTheme(v); });
     rowSelect(secA, T('settings.lang'), (window.I18N ? window.I18N.langs : ['ru']).map(l => [l, (window.I18N && window.I18N.label[l]) || l]), st.lang, v => { st.lang = v; applyLang(v); p.close(); openSettings(); });
+
+    // Облака точек (ревизия 6): доля точек файла
+    const secC = section('Облака точек');
+    rowSelect(secC, 'Доля точек файла', pointShareList().map(pc => [String(pc), POINT_SHARE_LABELS[pc] || (pc + ' %')]), String(st.pointShare), v => { st.pointShare = Number(v) || 100; });
+    secC.appendChild(mk('div', 'set-hint', 'По умолчанию загружаются все точки файла (100 %). Меньшая доля берёт каждую 2-ю, 3-ю … 100-ю точку: облако открывается быстрее и легче для памяти и видеокарты. Если облако открыто, оно перечитается сразу при сохранении. Формат E57 читается целиком. Если свободной памяти не хватает, приложение само прореживает облако и сообщает об этом.'));
 
     // AI & verification
     const secAI = section(T('settings.ai'));
@@ -876,6 +941,7 @@
       }
       applyTheme(st.theme); applyLang(st.lang);
       p.close(); toast(T('settings.save'), { tone: 'ok' });
+      if (st.pointShare !== initialShare) applyPointShare(st.pointShare);
     };
     bar.appendChild(save); p.body.appendChild(bar);
   }
@@ -1762,15 +1828,16 @@
     if (qDense) qDense.addEventListener('click', () => { if (!viewer || !viewer.setDenseFill) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setDenseFill(!qDense.classList.contains('on')); qDense.classList.toggle('on', on); const qA = $('qAtten'); if (qA && viewer.attenuateOn) { const a = viewer.attenuateOn(); qA.classList.toggle('on', a); } toast(on ? 'Плотная заливка включена — без чёрных промежутков при приближении' : 'Плотная заливка выключена'); });
     const qFrame = $('qFrame');
     if (qFrame) qFrame.addEventListener('click', () => { if (!viewer || !viewer.setFrame) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setFrame(!qFrame.classList.contains('on')); qFrame.classList.toggle('on', on); toast(on ? 'Чёрные рамки точек включены' : 'Чёрные рамки точек выключены'); });
+    const qShare = $('qShare');
+    if (qShare) { fillPointShareSelect(qShare); qShare.addEventListener('change', () => applyPointShare(Number(qShare.value))); }
     const qDensity = $('qDensity');
     if (qDensity) qDensity.addEventListener('change', async () => {
       const mln = Math.max(1, parseInt(qDensity.value, 10) || 12); const budget = mln * 1000000;
       try { if (window.PointCloud && window.PointCloud.setBudget) window.PointCloud.setBudget(budget); } catch (e) { }
       try { if (viewer && viewer.setLodBudget) viewer.setLodBudget(lodDrawBudget(budget)); } catch (e) { }
       if (API && API.setSettings) { try { SETTINGS.pointBudget = budget; SETTINGS.pointBudgetCustom = true; await API.setSettings({ pointBudget: budget, pointBudgetCustom: true }); } catch (e) { } }
-      if (lastCloudPath && API && API.parseCloud && /\.(las|laz|ply|e57|ptx|pcd|xyz|pts|txt|csv|xyzrgb)$/i.test(lastCloudPath)) {
-        toast('Плотность: ' + mln + ' млн точек — перечитываю облако…');
-        try { const pr = await parseCloudWithProgress(lastCloudPath, 'Перезагрузка с бюджетом ' + mln + ' млн точек'); if (pr && pr.ok) { if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else { viewer.loadCloud(pr, {sourceName:lastCloudPath,preserveView:true}); cacheCloud(lastCloudPath, pr); lastCloudOffset=(pr.meta&&pr.meta.offset)||null; lastCloudCount=(pr.meta&&pr.meta.points)||pr.count||0; } toast('Готово: ' + mln + ' млн точек'); } else { toast('Не удалось перечитать облако' + (pr&&pr.message?': '+pr.message:'')); } } catch (e) { toast('Ошибка перечитывания: '+(e&&e.message||e)); }
+      if (lastCloudPath && API && API.parseCloud && CLOUD_FILE_RE.test(lastCloudPath)) {
+        await reloadLastCloud('Перезагрузка с бюджетом ' + mln + ' млн точек', 'Плотность: ' + mln + ' млн точек — перечитываю облако…');
       } else { toast('Плотность ' + mln + ' млн — применится при следующей загрузке облака'); }
     });
     const wb = $('vtWalk'); if (wb) wb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setWalk) { toast('Прогулка доступна в 3D‑режиме (WebGL)'); return; } const v = !wb.classList.contains('on'); wb.classList.toggle('on', v); viewer.setWalk(v); { const qP = $('qPhoto'); if (qP && viewer.photoOn) { const on = viewer.photoOn(); qP.classList.toggle('on', on); } const qE = $('qEDL'); if (qE) { const e = !!viewer._edl; qE.classList.toggle('on', e); } } toast(v ? 'Прогулка: W/A/S/D — движение, мышь — осмотр, Q/E — вниз/вверх, колесо — вперёд/назад, Esc — выход' : 'Обычный режим'); });
@@ -5289,6 +5356,7 @@
     try { if (viewer && viewer.setLodBudget) viewer.setLodBudget(lodDrawBudget(initialPointBudget)); } catch (_) {}
     const densityControl = $('qDensity');
     if (densityControl) densityControl.value = String(Math.max(1, Math.min(300, Math.round(initialPointBudget / 1000000))));
+    try { syncPointShareControls(); } catch (_) {}
     try { decorateIcons(); } catch (e) { console.warn('icons', e); }
     applyLang(SETTINGS.lang || (window.I18N && window.I18N.lang) || 'ru');
     // v0.9.19: одноразовый переход на новую светлую тему claude.ai (сбрасывает старую тёмную один раз)

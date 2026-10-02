@@ -74,6 +74,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "pending-clouds.js",
       "scan2bim-server.js",
       "sync-bundle.js",
       "app-config.js",

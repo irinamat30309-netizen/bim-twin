@@ -24,6 +24,20 @@ const PcdOutOfCore = require('./pcd-out-of-core');
 const ResourceBudget = require('./octree-resource-budget');
 
 const DEFAULT_MAX_POINTS = cfg.DEFAULT_MAX_POINTS;
+// Доля точек файла (ревизия 6): доля вида 1/k → читаем каждую k-ю точку. 1 = все точки файла (по умолчанию).
+// На время синхронного разбора значение хранится в _shareStride (parseCloudFile сбрасывает его в finally);
+// асинхронный LAZ получает его локально, поэтому параллельные разборы друг другу не мешают.
+let _shareStride = 1;
+function shareToStride(share) {
+  const s = Number(share);
+  if (!(s > 0) || s >= 1) return 1;
+  return Math.max(1, Math.min(1000, Math.round(1 / s)));
+}
+// Шаг выборки: бюджет точек (если в файле больше) или доля файла — что даёт более редкую выборку
+function sampleStride(count, budget, shareStride) {
+  const byBudget = count > budget ? Math.ceil(count / budget) : 1;
+  return Math.max(byBudget, shareStride == null ? _shareStride : shareStride);
+}
 const CHUNK_BYTES = cfg.CLOUD_CHUNK_BYTES;
 const SCAN_N = cfg.COLOR_SAMPLE_COUNT;
 function currentAvailableMemoryBytes() {
@@ -161,7 +175,7 @@ function parseLASFile(fd, fileSize, maxPoints, onProgress) {
   if (count <= 0) throw new Error('в LAS нет точек');
 
   const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
-  const stride = count > budget ? Math.ceil(count / budget) : 1;
+  const stride = sampleStride(count, budget);
   let outCap = 0; for (let s = 0; s < count; s += stride) outCap++;
 
   // Определение глубины цвета: выборка РАВНОМЕРНО по всему файлу (а не первые 4000 точек),
@@ -1312,7 +1326,7 @@ function parsePLYFile(fd, fileSize, maxPoints, onProgress) {
   if (faceEl && faceEl.count > 0) return { ok: false, fallback: true, message: 'PLY mesh' };
   const vn = vtx.count;
   const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
-  const stride = vn > budget ? Math.ceil(vn / budget) : 1;
+  const stride = sampleStride(vn, budget);
   let outCap = 0; for (let s = 0; s < vn; s += stride) outCap++;
 
   const names = vtx.props.map((p) => p.name.toLowerCase());
@@ -1624,7 +1638,7 @@ function parseTextCloudFile(fd, fileSize, maxPoints, ext, onProgress) {
   }, 0, 'index-text', 0, 0.44);
   if (!total || !layout) throw new Error('в файле нет строк с координатами X Y Z');
   if (layout.x < 0 || layout.y < 0 || layout.z < 0 || layout.x >= cols || layout.y >= cols || layout.z >= cols) throw new Error('в текстовом облаке отсутствуют колонки X/Y/Z');
-  const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS, stride = total > budget ? Math.ceil(total / budget) : 1;
+  const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS, stride = sampleStride(total, budget);
   const cap = Math.ceil(total / stride);
   const hasColor = layout.r >= 0 && layout.g >= 0 && layout.b >= 0;
   const hasIntensity = layout.intensity >= 0, hasClassification = layout.classification >= 0;
@@ -1817,7 +1831,7 @@ function parsePTXFile(fd, fileSize, maxPoints, onProgress) {
   }, 'index');
   if (!validCount) throw new Error('PTX: no valid returns (all points are missing)');
   const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS;
-  const stride = validCount > budget ? Math.ceil(validCount / budget) : 1;
+  const stride = sampleStride(validCount, budget);
   const cap = Math.ceil(validCount / stride);
   const world = new Float64Array(cap * 3), col = hasColor ? new Float32Array(cap * 3) : null;
   const intensity = hasIntensity ? new Float32Array(cap) : null;
@@ -1895,7 +1909,7 @@ function parsePCDFile(fd, fileSize, maxPoints, onProgress, scratchBaseDir) {
   const ir = idx('r','red'), ig = idx('g','green'), ib = idx('b','blue');
   if (ix < 0 || iy < 0 || iz < 0) throw new Error('PCD: нет полей x y z');
   for (const i of [ix,iy,iz,ii,ic,irgb,ir,ig,ib]) if (i >= 0 && counts[i] !== 1 && i !== irgb) throw new Error('PCD: многокомпонентные координаты/скаляры не поддержаны');
-  const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS, stride = n > budget ? Math.ceil(n / budget) : 1, cap = Math.ceil(n / stride);
+  const budget = maxPoints > 0 ? maxPoints : DEFAULT_MAX_POINTS, stride = sampleStride(n, budget), cap = Math.ceil(n / stride);
   const previewMemory = ResourceBudget.assessCloudPreviewMemory(cap, currentAvailableMemoryBytes());
   if (!previewMemory.ok) {
     throw new Error('PCD: недостаточно доступной оперативной памяти для предпросмотра — ' +
@@ -2073,7 +2087,7 @@ async function parseLAZFile(absPath, opts) {
     if (!H.count || !Number.isSafeInteger(H.count)) throw new Error('в LAZ нет точек или число точек превышает безопасный предел');
     crsWkt = readLasCrsWkt(fd, st.size, head);
     const budget = Math.max(200000, Number(opts.maxPoints) || DEFAULT_MAX_POINTS);
-    const skip = H.count > budget ? Math.ceil(H.count / budget) : 1;
+    const skip = sampleStride(H.count, budget, shareToStride(opts.pointShare));
     const bytes = await fs.promises.readFile(absPath);
     progressAt(opts.onProgress, 'read-compressed', 0.16, { bytesRead: bytes.length, bytesTotal: st.size });
     const input = (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength)
@@ -2134,6 +2148,8 @@ async function parseLAZFile(absPath, opts) {
 // ============================================================
 function parseCloudFile(absPath, opts) {
   let fd = null;
+  const prevShareStride = _shareStride;
+  _shareStride = shareToStride(opts && opts.pointShare);
   try {
     if (!absPath || !fs.existsSync(absPath)) return { ok: false, message: 'Файл не найден' };
     const st = fs.statSync(absPath);
@@ -2152,6 +2168,7 @@ function parseCloudFile(absPath, opts) {
   } catch (e) {
     return { ok: false, message: 'Ошибка чтения облака: ' + String((e && e.message) || e) };
   } finally {
+    _shareStride = prevShareStride;
     if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} }
   }
 }
@@ -2259,6 +2276,7 @@ async function parseCloudFileAsync(absPath, opts) {
         workerData: {
           absPath: absolutePath,
           maxPoints: appliedBudget,
+          pointShare: Number(opts.pointShare) > 0 ? Number(opts.pointShare) : 1,
           scratchBaseDir: workerScratchDir
         }
       });
@@ -2311,5 +2329,5 @@ module.exports = {
   samePcdPointFileInfo: PcdOutOfCore.samePcdPointFileInfo,
   isOutOfCorePcdPointFile: PcdOutOfCore.isOutOfCorePcdPointFile,
   preparePcdOctreeFile: PcdOutOfCore.preparePcdOctreeFile,
-  DEFAULT_MAX_POINTS
+  DEFAULT_MAX_POINTS, shareToStride
 };

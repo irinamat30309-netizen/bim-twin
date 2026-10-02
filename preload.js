@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   readFile: (p) => inv('bim:readFile', p),
   readPicked: (p) => inv('bim:readPicked', p),
   parseCloud: (p, jobId) => inv('bim:parseCloud', jobId ? { path: p, jobId } : p),
+  readCloudChunk: (a) => inv('bim:readCloudChunk', a),
+  releaseCloud: (a) => inv('bim:releaseCloud', a),
   onCloudParseProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => {
