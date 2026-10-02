@@ -130,11 +130,12 @@ test('sampled octree metadata reports the observed approximate ratio, not a fals
     const { result } = await runWorker(source, output, { maxPoints: 200000, nodeCapacity: 1000 });
     assert.equal(result.ok, true, result.error);
     assert.equal(result.sourcePointCount, 210000);
-    assert.equal(result.indexedPointCount, 104999);
+    // Ревизия 8: шаг выборки дробный (210000 / 200000 = 1,05), поэтому бюджет используется целиком, а не «каждая 2-я точка» (было 104 999).
+    assert.equal(result.indexedPointCount, 199999);
     assert.equal(result.index.exactDecimation, false);
-    assert.ok(Math.abs(result.index.samplingRatio - 210000 / 104999) < 1e-12);
-    assert.equal(result.index.decimation, 2,
-      'user-facing estimate should use the observed ratio rather than round a near-2 sample up to 3');
+    assert.ok(Math.abs(result.index.samplingRatio - 210000 / 199999) < 1e-12);
+    assert.ok(Math.abs(result.index.decimation - 1.05) <= 0.06,
+      'user-facing estimate should use the observed ratio (≈1,05), not round it up: ' + result.index.decimation);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
