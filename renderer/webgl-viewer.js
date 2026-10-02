@@ -130,12 +130,14 @@
 
   const VS = `#version 300 es
   in vec3 aPos; in vec3 aNormal; in vec3 aColor;
-  in float aIntensity; in float aClassification; uniform mat4 uMVP;
+  in float aIntensity; in float aClassification; in float aRad; uniform mat4 uMVP;
   uniform float uPointSize; uniform float uAttenuate; uniform float uPtScale; uniform float uPtMin; uniform float uPtMax;
+  uniform float uRadOn; uniform float uRadMin; uniform float uRadLog;
   out vec3 vN; out vec3 vW; out vec3 vC; out float vIntensity; out float vClassification;
   void main(){ vW=aPos; vN=aNormal; vC=aColor; vIntensity=aIntensity; vClassification=aClassification; gl_Position=uMVP*vec4(aPos,1.0);
     float ps = uPointSize;
-    if(uAttenuate>0.5){ ps = clamp(uPtScale / max(gl_Position.w, 0.0001), uPtMin, uPtMax); }
+    // ревизия 7: при uRadOn размер точки берётся из локального шага именно этого места (aRad: 0..1 — лог-шкала [uRadMin, uRadMin·2^uRadLog])
+    if(uAttenuate>0.5){ float sc = uPtScale; if(uRadOn>0.5){ sc = uPtScale * uRadMin * exp2(aRad * uRadLog); } ps = clamp(sc / max(gl_Position.w, 0.0001), uPtMin, uPtMax); }
     gl_PointSize = ps; }`;
   const FS = `#version 300 es
   precision highp float; in vec3 vN; in vec3 vW; in vec3 vC;
@@ -326,8 +328,9 @@
       this.aPos = gl.getAttribLocation(p, 'aPos'); this.aNormal = gl.getAttribLocation(p, 'aNormal'); this.aColor = gl.getAttribLocation(p, 'aColor');
       this.aIntensity = gl.getAttribLocation(p, 'aIntensity');
       this.aClassification = gl.getAttribLocation(p, 'aClassification');
+      this.aRad = gl.getAttribLocation(p, 'aRad');
       this.u = {};
-      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette']) this.u[k] = gl.getUniformLocation(p, k);
+      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog']) this.u[k] = gl.getUniformLocation(p, k);
       gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
       const _tc = this._themeColors(); gl.clearColor(_tc.bg[0], _tc.bg[1], _tc.bg[2], 1);
     }
@@ -372,7 +375,7 @@
       }
       return o;
     }
-    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._kb) gl.deleteBuffer(o._kb); } }
+    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._kb) gl.deleteBuffer(o._kb); if (o._radVbo) { gl.deleteBuffer(o._radVbo); o._radVbo = null; o._rad = null; } } }
     _makeLodObj(o) {
       const gl = this.gl; const lb = o._lodBuild;
       const mkBuf = (pos, col) => {
@@ -418,7 +421,35 @@
       let budget = o._lodBudget || 4000000;
       for (const v of vis) { if (budget <= 0) break; gl.bindVertexArray(v.c.buf.vao); gl.drawArrays(gl.POINTS, 0, v.c.buf.count); budget -= v.c.buf.count; }
     }
-    _setBase(objs) { this._delObjs(this.base); this._psCache = null; this._psJob = null; this._yqCache = null; this.base = objs.map(o => this._makeObj(o)); this._recomputeBBox(); if (!this.base.some(o => o.points)) this._cloudRecord = null; this._notifyCloudChanged(); }
+    _setBase(objs) { this._delObjs(this.base); this._psCache = null; this._psJob = null; this._yqCache = null; this._spTok = (this._spTok || 0) + 1; this.base = objs.map(o => this._makeObj(o)); this._recomputeBBox(); if (!this.base.some(o => o.points)) this._cloudRecord = null; this._notifyCloudChanged(); const _m = this.base[0]; if (_m && _m.points && !_m._lod && !_m._isSel && !_m._isStation && _m.count >= 20000) this._startSpacingField(_m); }
+    // ревизия 7: локальный шаг точек (1 байт на точку) считается кусочками в простое — интерфейс не замирает, пока облако «дорисовывается»
+    _startSpacingField(o) {
+      const CC = (typeof window !== 'undefined' && window.CloudClean) || (typeof globalThis !== 'undefined' && globalThis.CloudClean);
+      if (!CC || typeof CC.spacingGen !== 'function' || typeof setTimeout !== 'function') return;
+      const tok = this._spTok, self = this; let gen = null;
+      const tick = () => {
+        if (tok !== self._spTok || self.base[0] !== o) return;
+        try {
+          if (!gen) gen = CC.spacingGen(o.pos, o.count, {});
+          const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now()); let r;
+          do { r = gen.next(); } while (!r.done && (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0 < 14);
+          if (r.done) { self._applySpacingField(o, r.value); return; }
+        } catch (e) { try { console.warn('[cloud] локальный шаг точек недоступен:', e && e.message); } catch (_) {} return; }
+        setTimeout(tick, 6);
+      };
+      setTimeout(tick, 30);
+    }
+    _applySpacingField(o, f) {
+      const gl = this.gl; if (!gl || !o._vao || this.aRad < 0 || !f || !f.codes || f.codes.length !== o.count) return false;
+      const rb = gl.createBuffer(); if (!rb) return false;
+      gl.bindVertexArray(o._vao); gl.bindBuffer(gl.ARRAY_BUFFER, rb); gl.bufferData(gl.ARRAY_BUFFER, f.codes, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(this.aRad); gl.vertexAttribPointer(this.aRad, 1, gl.UNSIGNED_BYTE, true, 0, 0); gl.bindVertexArray(null);
+      if (o._radVbo) gl.deleteBuffer(o._radVbo);
+      o._radVbo = rb; o._rad = { codes: f.codes, sMin: f.sMin, sMax: f.sMax, s0: f.s0 };
+      try { console.info('[cloud] локальный шаг точек: ' + (f.sMin * 1000).toFixed(1) + '…' + (f.sMax * 1000).toFixed(1) + ' мм (по ячейкам ' + f.cells.toLocaleString('ru-RU') + ')'); } catch (_) {}
+      this.render(); return true;
+    }
+    getSpacingField() { const o = this.base && this.base[0]; return o && o._rad ? { sMin: o._rad.sMin, sMax: o._rad.sMax, s0: o._rad.s0 } : null; }
     _setOverlay(objs) { this._delObjs(this.overlay); this.overlay = objs.map(o => this._makeObj(o)); }
 
     _recomputeBBox() {
@@ -2397,6 +2428,20 @@
         const atten = (!fixedPx && isCloud && (this._attenuate || this._denseFill || adaptive) && scale > 0) ? 1 : 0;
         gl.uniform1f(this.u.uAttenuate, atten); gl.uniform1f(this.u.uPtScale, scale);
         gl.uniform1f(this.u.uPtMin, adaptive ? baseSize : 1.0); gl.uniform1f(this.u.uPtMax, (o._ptMax || 8.0) * psm * (isCloud && this._denseFill ? 9.0 : (adaptive ? 6.0 : 1.0)));
+        // ревизия 7: вблизи точки растут до замыкания поверхности (прежний потолок ≈ 3–5 px оставлял зазоры); размер — по локальному
+        // шагу этого места (поле o._rad), а без него — по среднему шагу облака; потолок зависит от высоты окна, а не от числа точек.
+        let radOn = 0;
+        if (isCloud && atten && !fixedPx && !this._frameBox) {
+          const closeCap = Math.max(24, Math.round(vh * 0.05));
+          if (o._rad && o._rad.codes && o._radVbo && o._rad.codes.length === o.count) {
+            radOn = 1;
+            gl.uniform1f(this.u.uPtScale, (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm);
+            gl.uniform1f(this.u.uRadMin, o._rad.sMin); gl.uniform1f(this.u.uRadLog, Math.log2(o._rad.sMax / o._rad.sMin));
+          }
+          gl.uniform1f(this.u.uPtMin, Math.max(1.0, baseSize * 0.8));
+          gl.uniform1f(this.u.uPtMax, Math.max((o._ptMax || 8.0) * psm * (this._denseFill ? 9.0 : 1.0), closeCap));
+        }
+        gl.uniform1f(this.u.uRadOn, radOn);
         gl.uniform1f(this.u.uFrame, (isCloud && this._frameBox) ? 1 : 0);
         gl.uniform1f(this.u.uPointSize, baseSize);
         if (!o.col) gl.uniform3fv(this.u.uColor, new Float32Array(o.color || [0.82, 0.86, 0.93]));
@@ -2406,7 +2451,7 @@
           if (isCloud && this._interacting && o._shuffled) { const b = this._interBudget || 4000000; if (o.count > b) dc = b; }
           gl.drawArrays(gl.POINTS, 0, dc);
         }
-        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); gl.bindVertexArray(null); return;
+        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); gl.bindVertexArray(null); return;
       }
       gl.uniform1f(this.u.uCloudPass,0);
       let col = o.color; let amb = 0.4;
