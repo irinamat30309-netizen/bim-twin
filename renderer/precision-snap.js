@@ -428,7 +428,7 @@
   /* Плоскость по окрестности в 20 см ошибается по наклону на несколько тысячных: на расстоянии в 3 м это уже сантиметры.
    * Поэтому после захвата плоскость «растёт» по связной поверхности (пол, стена, откос): собираем все точки в пределах
    * допуска, уточняем плоскость, повторяем. Так меряют по всей стене, а не по клочку возле курсора. */
-  function collectPlanePoints(index, pl, foot, tau, cap, r0, sibs, rmax) {
+  function collectPlanePoints(index, pl, foot, tau, cap, r0, sibs, rmax, fill) {
     var P = index.pos, dims = index.dims, dx = dims[0], dy = dims[1], dz = dims[2], cell = index.cell, mn = index.mn;
     var nx = pl.normal[0], ny = pl.normal[1], nz = pl.normal[2], d = pl.d;
     var nsib = sibs ? sibs.length : 0, gap = 0.25 * (index.spacing || cell / 4);
@@ -437,7 +437,7 @@
     if (!st.stamp || st.stamp.length !== cells) { st.stamp = new Uint32Array(cells); st.gen = 0; }
     var stamp = st.stamp, gen = ++st.gen;
     if (gen >= 4294967290) { stamp.fill(0); gen = st.gen = 1; }
-    var out = [], queue = [], head = 0, inv = 1 / cell, reach = cell * 0.87 + tau;
+    var out = [], rim = [], queue = [], head = 0, inv = 1 / cell, reach = cell * 0.87 + tau;
     var lim = rmax > 0 ? (rmax + cell) * (rmax + cell) : Infinity;   // рост ограничен окрестностью: пол/стена не идеально ровные, «плоскость на всё здание» ошибается на миллиметры
     // Ячейка принимается, если поверхность занимает большую её часть: узкие полосы, где плоскость лишь пересекает
     // пол, потолок или дальнюю стену, не имеют «обратной связи» и держат подгонку в том наклоне, с которого она начала.
@@ -454,7 +454,10 @@
           if (!skip) { out.push(i / 3); hit = true; }
         }
       }
-      if (hit && out.length - before < 0.45 * (e - s)) { out.length = before; return false; }
+      if (hit && out.length - before < 0.45 * (e - s)) {
+        if (fill) for (var j = before; j < out.length; j++) rim.push(out[j]);   // кромочная ячейка: сама в обход не идёт, но её точки у плоскости — настоящие (габариты участка)
+        out.length = before; return false;
+      }
       return hit;
     }
     var cx = Math.floor((foot[0] - mn[0]) * inv), cy = Math.floor((foot[1] - mn[1]) * inv), cz = Math.floor((foot[2] - mn[2]) * inv);
@@ -480,6 +483,7 @@
         if (scan(nid)) queue.push(nid);
       }
     }
+    if (fill) for (var q2 = 0; q2 < rim.length; q2++) out.push(rim[q2]);   // fill: добавить точки кромочных ячеек (у стыка с другой поверхностью обход ячеек теряет до ячейки с каждой стороны)
     return Int32Array.from(out);
   }
 
@@ -505,6 +509,7 @@
       var moved = best ? Math.max(Math.acos(clamp(dot(nrm, best.normal), -1, 1)) * (best.spread || 1), Math.abs(dd - best.d)) : Infinity;
       best = { normal: nrm, d: dd, centroid: f.centroid, rms: rmsNew, count: ids.length, tau: tauNew, span: pl.span, grown: true,
                spread: Math.sqrt(Math.max(f.lam[2], 1e-12)), spreadMin: Math.sqrt(Math.max(f.lam[1], 1e-12)) };
+      if (opts.keepIds) best.ids = ids;
       var grew = ids.length > last * 1.02;
       last = ids.length; cur = { normal: nrm, d: dd, tau: tauNew };
       if (pass > 0 && (moved < 0.02 * sp || !grew)) break;

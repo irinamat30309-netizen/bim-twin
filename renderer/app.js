@@ -3292,6 +3292,11 @@
     const m = H[mode] ? mode : 'distance';
     return measIco(m) + '<span class="ro-t">' + H[m] + '</span>';
   }
+  // «по N точкам» (плоскость выросла по всей поверхности) или «точек N/M» (запасной RANSAC по окрестности)
+  function ptsOf(res) {
+    const n = res.inlierCount | 0, t = res.total | 0, f = v => v.toLocaleString('ru-RU');
+    return t && t !== n ? 'точек ' + f(n) + '/' + f(t) : 'по ' + f(n) + ' точкам';
+  }
   // Текст результата без значка (для строк списка и строки состояния)
   function fmtMeasureText(res) {
     if (!res) return '';
@@ -3318,15 +3323,15 @@
       case 'polyline': return 'Длина <b>' + L(res.total) + '</b> · точек: ' + res.count + ' · сегментов: ' + (res.count - 1);
       case 'angle': return 'Угол <b>' + res.deg.toFixed(2) + '°</b> · стороны ' + L(res.lenA) + ' и ' + L(res.lenC);
       case 'area': return 'Площадь <b>' + A(res.area) + '</b> · периметр ' + L(res.perimeter) + ' · вершин: ' + res.count;
-      case 'plane': return esc(res.kind) + ' · <b>' + L(res.length) + ' × ' + L(res.width) + '</b> (≈' + A(res.rectArea) + ') · наклон ' + res.dip.toFixed(1) + '° · RMS ' + (res.rms * 1000).toFixed(1) + ' мм · точек ' + res.inlierCount + '/' + res.total;
+      case 'plane': return esc(res.kind) + ' · <b>' + L(res.length) + ' × ' + L(res.width) + '</b> (≈' + A(res.rectArea) + ') · наклон ' + res.dip.toFixed(1) + '° · RMS ' + (res.rms * 1000).toFixed(1) + ' мм · ' + ptsOf(res);
       case 'deviation':
-        if (res.ready) return 'Опорная плоскость готова (RMS ' + (res.rms * 1000).toFixed(1) + ' мм, точек ' + res.inlierCount + '/' + res.total + '). Теперь кликайте точки для замера зазора';
+        if (res.ready) return 'Опорная плоскость готова: ' + L(res.length || 0) + ' × ' + L(res.width || 0) + ' (RMS ' + (res.rms * 1000).toFixed(1) + ' мм, ' + ptsOf(res) + '). Теперь кликайте точки для замера зазора';
         if (res.signed === undefined) return 'Кликните по ровной поверхности — задать опорную плоскость';
-        return 'Отклонение <b>' + (res.sign >= 0 ? '+' : '−') + L(res.distance) + '</b> · ' + (res.sign >= 0 ? 'со стороны нормали (снаружи)' : 'за плоскостью (внутри)') + ' · база RMS ' + ((res.refRms || 0) * 1000).toFixed(1) + ' мм';
+        return 'Зазор до плоскости <b>' + (res.sign >= 0 ? '+' : '−') + L(res.distance) + '</b> · ' + (res.sign >= 0 ? 'перед плоскостью (к камере)' : 'за плоскостью (от камеры)') + ' · база RMS ' + ((res.refRms || 0) * 1000).toFixed(1) + ' мм' + (res.sigma ? ' · ±' + (Math.max(res.sigma, 0.0001) * 1000).toFixed(1).replace('.', ',') + ' мм' : '') + (res.tilt != null && res.tilt >= 0.0052 ? ' · поверхность не параллельна опорной на ' + (res.tilt * 180 / Math.PI).toFixed(1).replace('.', ',') + '°: значение зависит от места клика' : '');
       case 'corner':
         if (res.planeCount === 1) return 'Плоскость 1 задана (RMS ' + ((res.rms || 0) * 1000).toFixed(1) + ' мм). Кликните 2-ю плоскость для ребра/угла';
-        if (res.planeCount === 2) return 'Ребро найдено · двугранный угол <b>' + (res.angleDeg != null ? res.angleDeg.toFixed(2) : '?') + '°</b>. Кликните 3-ю плоскость → точка угла комнаты';
-        return 'Угол комнаты <b>X ' + res.corner[0].toFixed(3) + ' · Y ' + res.corner[1].toFixed(3) + ' · Z ' + res.corner[2].toFixed(3) + '</b> м · двугранный угол ' + (res.angleDeg != null ? res.angleDeg.toFixed(2) : '?') + '°';
+        if (res.planeCount === 2) return 'Ребро найдено · угол между плоскостями <b>' + (res.angleDeg != null ? res.angleDeg.toFixed(2) : '?') + '°</b>. Кликните 3-ю плоскость → точка угла комнаты';
+        return 'Угол комнаты <b>X ' + res.corner[0].toFixed(3) + ' · Y ' + res.corner[1].toFixed(3) + ' · Z ' + res.corner[2].toFixed(3) + '</b> м · угол между плоскостями ' + (res.angleDeg != null ? res.angleDeg.toFixed(2) : '?') + '°';
       default: return '';
     }
   }

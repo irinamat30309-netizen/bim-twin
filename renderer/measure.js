@@ -215,31 +215,43 @@
   }
   const norm2 = v => { const l = Math.hypot(v[0], v[1]) || 1; return [v[0] / l, v[1] / l]; };
 
+  // два единичных вектора в плоскости с нормалью n (для плоскостей без e1/e2 — из PrecisionSnap)
+  function planeBasis(n) {
+    const a = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const e1 = norm(cross(a, n)), e2 = norm(cross(n, e1));
+    return [e1, e2];
+  }
   // ---------- ориентированные габариты плоского участка (длина × высота) ----------
   // Проецируем точки на плоскость, ищем главные оси в плоскости (2D PCA) → размеры
   // ориентированного прямоугольника. Для стены = длина × высота, площадь охвата.
+  // points — массив [x,y,z] ИЛИ { pos: Float32Array|Float64Array, ids: Int32Array } (индексы точек облака: без копий, для сотен тысяч точек)
   function planeExtents(points, plane) {
     const c = plane.centroid;
     // базис в плоскости: предпочитаем «горизонтальную» ось для наглядных стен
     let u = plane.e1, v = plane.e2;
+    if (!u || !v) { const bs = planeBasis(plane.normal); u = bs[0]; v = bs[1]; }
+    let N, X, Y, Z;
+    if (points && points.pos && points.ids) {
+      const P = points.pos, ids = points.ids; N = ids.length;
+      X = i => P[ids[i] * 3]; Y = i => P[ids[i] * 3 + 1]; Z = i => P[ids[i] * 3 + 2];
+    } else { N = points.length; X = i => points[i][0]; Y = i => points[i][1]; Z = i => points[i][2]; }
     // проекция на (u,v)
-    const N = points.length;
-    const uv = new Array(N);
+    const US = new Float64Array(N), VS = new Float64Array(N);
     let su = 0, sv = 0;
     for (let i = 0; i < N; i++) {
-      const p = sub(points[i], c);
-      const cu = dot(p, u), cv = dot(p, v);
-      uv[i] = [cu, cv]; su += cu; sv += cv;
+      const px = X(i) - c[0], py = Y(i) - c[1], pz = Z(i) - c[2];
+      const cu = px * u[0] + py * u[1] + pz * u[2], cv = px * v[0] + py * v[1] + pz * v[2];
+      US[i] = cu; VS[i] = cv; su += cu; sv += cv;
     }
     su /= N; sv /= N;
     let cuu = 0, cuv = 0, cvv = 0;
-    for (let i = 0; i < N; i++) { const du = uv[i][0] - su, dv = uv[i][1] - sv; cuu += du * du; cuv += du * dv; cvv += dv * dv; }
+    for (let i = 0; i < N; i++) { const du = US[i] - su, dv = VS[i] - sv; cuu += du * du; cuv += du * dv; cvv += dv * dv; }
     cuu /= N; cuv /= N; cvv /= N;
     const e = eigen2(cuu, cuv, cvv);
     // проекция на главные оси → мин/макс → размеры
     let a1mn = Infinity, a1mx = -Infinity, a2mn = Infinity, a2mx = -Infinity;
     for (let i = 0; i < N; i++) {
-      const du = uv[i][0] - su, dv = uv[i][1] - sv;
+      const du = US[i] - su, dv = VS[i] - sv;
       const p1 = du * e.v1[0] + dv * e.v1[1];
       const p2 = du * e.v2[0] + dv * e.v2[1];
       if (p1 < a1mn) a1mn = p1; if (p1 > a1mx) a1mx = p1;
@@ -266,8 +278,8 @@
       const vAx = norm(cross(plane.normal, hAxis)); // ~вертикаль в плоскости стены
       let h0 = Infinity, h1 = -Infinity, v0 = Infinity, v1 = -Infinity;
       for (let i = 0; i < N; i++) {
-        const p = sub(points[i], c);
-        const ph = dot(p, hAxis), pv = dot(p, vAx);
+        const px = X(i) - c[0], py = Y(i) - c[1], pz = Z(i) - c[2];
+        const ph = px * hAxis[0] + py * hAxis[1] + pz * hAxis[2], pv = px * vAx[0] + py * vAx[1] + pz * vAx[2];
         if (ph < h0) h0 = ph; if (ph > h1) h1 = ph;
         if (pv < v0) v0 = pv; if (pv > v1) v1 = pv;
       }
@@ -641,7 +653,7 @@
     sub, add, scale, dot, cross, len, norm, dist3,
     distance, polylineLength, angleAt,
     jacobiEigen3, centroid, fitPlanePCA, fitLinePCA, pointPlaneDist, ransacPlane,
-    eigen2, planeExtents, polygonArea3D, orientation, flatness,
+    eigen2, planeBasis, planeExtents, polygonArea3D, orientation, flatness,
     classifyLocal, snapToFeature, signedPointPlane,
     angleBetweenPlanes, intersectPlanes, intersectThreePlanes,
     measureToCsvRow, measurementsToCsv, createMeasurementReport, measureValueText, autoValueText, autoValue, autoSigma, measurementsToMarkdown,
