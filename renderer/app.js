@@ -1864,6 +1864,34 @@
     if (qFrame) qFrame.addEventListener('click', () => { if (!viewer || !viewer.setFrame) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setFrame(!qFrame.classList.contains('on')); qFrame.classList.toggle('on', on); toast(on ? 'Чёрные рамки точек включены' : 'Чёрные рамки точек выключены'); });
     const qShare = $('qShare');
     if (qShare) { fillPointShareSelect(qShare); qShare.addEventListener('change', () => applyPointShare(Number(qShare.value))); }
+    // Ревизия 9: потоковый режим — доля точек при движении и предел в покое (по умолчанию в покое рисуются ВСЕ точки файла)
+    (function setupStreamPrefs() {
+      const qMove = $('qMove'), qIdle = $('qIdle'); if (!qMove || !qIdle) return;
+      const lsGet = (k, d) => { try { const v = window.localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
+      const lsSet = (k, v) => { try { window.localStorage.setItem(k, String(v)); } catch (_) {} };
+      [['0', 'Авто (под видеокарту)'], ['50', '50 % точек'], ['25', '25 % точек'], ['10', '10 % точек'], ['5', '5 % точек'], ['2', '2 % точек']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; qMove.appendChild(o); });
+      [['0', 'Все точки файла'], ['150000000', 'до 150 млн'], ['100000000', 'до 100 млн'], ['50000000', 'до 50 млн'], ['30000000', 'до 30 млн']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; qIdle.appendChild(o); });
+      qMove.value = lsGet('bim.stream.move', '0'); if (qMove.value !== lsGet('bim.stream.move', '0')) qMove.value = '0';
+      qIdle.value = lsGet('bim.stream.idle', '0'); if (qIdle.value !== lsGet('bim.stream.idle', '0')) qIdle.value = '0';
+      const rows = Array.from(document.querySelectorAll('.q-stream'));
+      const apply = () => {
+        if (!viewer) return;
+        try { if (viewer.setOctreeMovePercent) viewer.setOctreeMovePercent(Number(qMove.value) || 0); if (viewer.setOctreeIdleLimit) viewer.setOctreeIdleLimit(Number(qIdle.value) || 0); } catch (_) {}
+      };
+      qMove.addEventListener('change', () => { lsSet('bim.stream.move', qMove.value); apply(); toast(Number(qMove.value) ? 'При движении рисуется ' + qMove.value + ' % точек файла, в покое — все' : 'При движении число точек подбирается под видеокарту, в покое рисуются все'); });
+      qIdle.addEventListener('change', () => { lsSet('bim.stream.idle', qIdle.value); apply(); toast(Number(qIdle.value) ? 'В покое рисуется не больше ' + (Number(qIdle.value) / 1e6) + ' млн точек' : 'В покое рисуются все точки файла'); });
+      window.addEventListener('bim-octree-state', (e) => {
+        const on = !!(e && e.detail && e.detail.active);
+        rows.forEach((r) => { r.hidden = !on; });
+        if (on) apply();
+      });
+      let lastVram = 0;
+      window.addEventListener('bim-octree-vram-limit', (e) => {
+        const now = Date.now(); if (now - lastVram < 15000) return; lastVram = now;
+        const pts = e && e.detail && e.detail.points;
+        toast('Видеопамяти не хватает на все точки сразу: в покое рисуется ≈ ' + (pts ? (pts / 1e6).toFixed(0) + ' млн' : 'часть') + '. Остальные остаются в индексе и появляются при приближении.');
+      });
+    })();
     const qDensity = $('qDensity');
     if (qDensity) qDensity.addEventListener('change', async () => {
       const mln = Math.max(1, parseInt(qDensity.value, 10) || 12); const budget = mln * 1000000;
@@ -2998,9 +3026,10 @@
           }
           if (!window.OctreeStore) throw new Error('OctreeStore is unavailable');
           // ревизия 9: сразу в формат видеокарты (цвет RGBA8 — 4 байта вместо 12), без Float32 на цвет
-          const np = window.OctreeStore.decodeNodeGpu(r.bytes, r.count, index);
-          if (!np || !np.pos || !np.pos.length) throw new Error('empty octree node data');
-          const b = np.pos.byteLength + (np.rgba ? np.rgba.byteLength : 0) +
+          const np = window.OctreeStore.decodeNodeGpu(r.bytes, r.count, index, true);   // позиции Uint16 внутри ящика узла: 6 Б/точку в видеопамяти
+          const pa = np && (np.pos16 || np.pos);
+          if (!pa || !pa.length) throw new Error('empty octree node data');
+          const b = pa.byteLength + (np.rgba ? np.rgba.byteLength : 0) +
             (np.intensity ? np.intensity.byteLength : 0) +
             (np.classification ? np.classification.byteLength : 0);
           octNodeCache.set(key, np); octNodeBytes += b;
@@ -3008,7 +3037,7 @@
             for (const k of octNodeCache.keys()) {
               if (k === key) continue;
               const e = octNodeCache.get(k);
-              octNodeBytes -= e.pos.byteLength + (e.rgba ? e.rgba.byteLength : 0) +
+              octNodeBytes -= (e.pos16 || e.pos).byteLength + (e.rgba ? e.rgba.byteLength : 0) +
                 (e.intensity ? e.intensity.byteLength : 0) +
                 (e.classification ? e.classification.byteLength : 0);
               octNodeCache.delete(k);

@@ -221,7 +221,11 @@
   function streamLoadedText(info, st) {
     const indexed = st && st.total ? st.total : 0, src = Number(info.sourceCount) || 0;
     const head = indexed && src && indexed < src * 0.999 ? 'Индекс: ' + mln(indexed) + ' из ' + mln(src) : 'Все точки файла';
-    return head + (st ? ' · на экране ' + mln(st.drawn) : ' · потоковый режим');
+    if (!st) return head + ' · потоковый режим';
+    const tot = st.total || 0, pct = tot ? Math.round(st.drawn / tot * 100) : 0;
+    if (st.interacting) return head + ' · при движении ' + mln(st.drawn) + (tot ? ' (' + pct + ' %)' : '');
+    if (st.missing > 0 || st.inflight > 0) return head + ' · загружается: ' + mln(st.drawn) + (st.points ? ' из ' + mln(st.points) : '');
+    return head + ' · на экране ' + mln(st.drawn) + (tot && st.drawn < tot * 0.995 ? ' из ' + mln(tot) : '');
   }
   window.addEventListener('bim-octree-stats', (e) => {
     lastStats = e && e.detail || null;

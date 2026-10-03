@@ -596,8 +596,10 @@
     return out;
   }
 
-  // Быстрый разбор узла для видеокарты: позиции float32 + цвет RGBA8 (4 байта вместо 12) [+ интенсивность float32] [+ класс uint8].
-  function decodeNodeGpu(bytes, count, format) {
+  // Быстрый разбор узла для видеокарты: цвет RGBA8 (4 байта вместо 12) [+ интенсивность float32] [+ класс uint8].
+  // Позиции: Float32 (12 байт) или, при quantize, Uint16 внутри точного ящика узла (6 байт на точку): pos16 + q = { off, scale }, позиция = pos16 * scale + off.
+  // Ошибка квантования ≤ ящик узла / 131070 (у узла 8 м — 0,06 мм; у корня сцены 150 м — 1,1 мм), то есть много меньше шага точек.
+  function decodeNodeGpu(bytes, count, format, quantize) {
     var layout = getNodePointLayout(format);
     if (!layout) throw new Error('invalid octree node point layout');
     var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), stride = layout.stride;
@@ -605,18 +607,40 @@
       throw new RangeError('octree node byte length does not match its point count and layout');
     }
     var dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-    var pos = new Float32Array(count * 3);
+    var pos = quantize ? null : new Float32Array(count * 3);
+    var pos16 = quantize ? new Uint16Array(count * 3) : null, q = null;
     var rgba = layout.hasColor ? new Uint8Array(count * 4) : null;
     var inten = layout.hasIntensity ? new Float32Array(count) : null;
     var cls = layout.hasClassification ? new Uint8Array(count) : null;
     var io = layout.intensityOffset, co = layout.classificationOffset;
-    for (var i = 0, off = 0, j = 0; i < count; i++, off += stride, j += 3) {
-      pos[j] = dv.getFloat32(off, true); pos[j + 1] = dv.getFloat32(off + 4, true); pos[j + 2] = dv.getFloat32(off + 8, true);
+    var i, off, j, v;
+    var ox = 0, oy = 0, oz = 0, ix = 0, iy = 0, iz = 0;
+    if (quantize) {
+      var nx = Infinity, ny = Infinity, nz = Infinity, xx = -Infinity, xy = -Infinity, xz = -Infinity;
+      for (i = 0, off = 0; i < count; i++, off += stride) {
+        v = dv.getFloat32(off, true); if (v < nx) nx = v; if (v > xx) xx = v;
+        v = dv.getFloat32(off + 4, true); if (v < ny) ny = v; if (v > xy) xy = v;
+        v = dv.getFloat32(off + 8, true); if (v < nz) nz = v; if (v > xz) xz = v;
+      }
+      if (!(nx <= xx)) { nx = xx = 0; } if (!(ny <= xy)) { ny = xy = 0; } if (!(nz <= xz)) { nz = xz = 0; }
+      ox = nx; oy = ny; oz = nz;
+      var ex = xx - nx, ey = xy - ny, ez = xz - nz;
+      ix = ex > 0 ? 65535 / ex : 0; iy = ey > 0 ? 65535 / ey : 0; iz = ez > 0 ? 65535 / ez : 0;
+      q = { off: [ox, oy, oz], scale: [ex > 0 ? ex / 65535 : 0, ey > 0 ? ey / 65535 : 0, ez > 0 ? ez / 65535 : 0] };
+    }
+    for (i = 0, off = 0, j = 0; i < count; i++, off += stride, j += 3) {
+      if (quantize) {
+        v = Math.round((dv.getFloat32(off, true) - ox) * ix); pos16[j] = v > 0 ? (v < 65535 ? v : 65535) : 0;
+        v = Math.round((dv.getFloat32(off + 4, true) - oy) * iy); pos16[j + 1] = v > 0 ? (v < 65535 ? v : 65535) : 0;
+        v = Math.round((dv.getFloat32(off + 8, true) - oz) * iz); pos16[j + 2] = v > 0 ? (v < 65535 ? v : 65535) : 0;
+      } else {
+        pos[j] = dv.getFloat32(off, true); pos[j + 1] = dv.getFloat32(off + 4, true); pos[j + 2] = dv.getFloat32(off + 8, true);
+      }
       if (rgba) { var k = i * 4; rgba[k] = u8[off + 12]; rgba[k + 1] = u8[off + 13]; rgba[k + 2] = u8[off + 14]; rgba[k + 3] = 255; }
       if (inten) inten[i] = dv.getFloat32(off + io, true);
       if (cls) cls[i] = u8[off + co];
     }
-    return { pos: pos, col: null, rgba: rgba, intensity: inten, classification: cls };
+    return { pos: pos, pos16: pos16, q: q, col: null, rgba: rgba, intensity: inten, classification: cls };
   }
 
   var api = {

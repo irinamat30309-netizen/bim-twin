@@ -32,7 +32,7 @@ const fd = fs.openSync(path.join(dir, 'nodes.bin'), 'r');
       index: idx,
       fetchNode: (key) => fetch('/__oct/' + key).then((r) => r.arrayBuffer()).then((ab) => {
         const nd = idx.nodes.find((x) => x.key === key);
-        return window.OctreeStore.decodeNodeGpu(new Uint8Array(ab), nd.count, idx);
+        return window.OctreeStore.decodeNodeGpu(new Uint8Array(ab), nd.count, idx, true);
       })
     });
     if (cap) v.setLodBudget(cap);
