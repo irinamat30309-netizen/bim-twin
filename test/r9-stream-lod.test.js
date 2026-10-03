@@ -164,9 +164,9 @@ test('планировщик: не более 6 одновременных чт�
     resolvers.splice(0).forEach(f => f());
     await new Promise(r => setImmediate(r));
     assert.ok(v.renders > 0, 'после загрузки запрошена перерисовка');
-    assert.equal(v._octInflight, 0);
-    v._drawOctree(); await Promise.resolve();
-    assert.ok(started.length > 6 && started.length <= 12);
+    // очередь сама запускает следующие чтения без нового кадра, но не больше 6 одновременно
+    assert.ok(started.length > 6 && new Set(started).size === started.length, 'очередь продолжила загрузку без дублей');
+    assert.ok(v._octInflight <= 6);
     v.clearOctreeStream();
     assert.equal(v.getOctreeStats(), null);
   } finally { if (prev === undefined) delete global.window; else global.window = prev; }
@@ -191,20 +191,82 @@ test('узел с цветом RGBA8 загружается 16 байт/точк
   } finally { if (prev === undefined) delete global.window; else global.window = prev; }
 });
 
-test('бюджет кадра: при движении — адаптивный (_interPts), в покое — потолок; потолок не больше 30 млн (60 млн в «Максимуме»)', () => {
+test('бюджет кадра: в покое — ВСЕ точки файла, при движении — авто или фиксированный процент; предел видеопамяти и пользователя', () => {
   const prev = global.window; global.window = { OctreeStore: OS };
   try {
     const { v } = harness();
-    v.setOctreeStream({ index: treeIndex(0), fetchNode() { return new Promise(() => {}); } });
-    v._octBudget = 80000000;
-    assert.equal(v._octFrameCap(), 30000000);
-    v._perfProfile = 'max'; assert.equal(v._octFrameCap(), 60000000);
-    v._perfProfile = 'balanced'; v._octBudget = 5000000; assert.equal(v._octFrameCap(), 5000000);
-    v._octBudget = 80000000; v._interacting = true; v._interPts = 2000000; v._drawOctree();
+    const idx = treeIndex(2);                                  // 73 узла × 100 000 = 7,3 млн
+    v.setOctreeStream({ index: idx, fetchNode() { return new Promise(() => {}); } });
+    const total = idx.pointCount;
+    v._octBudget = 5000000;                                    // старый «бюджет плотности» поток больше не ограничивает
+    assert.equal(v._octFrameCap(), total, 'в покое потолок = все точки');
+    v._drawOctree();
+    assert.equal(v.getOctreeStats().budget, total);
+    assert.ok(v.getOctreeStats().tPx < 0.01, 'в покое уточняем до листьев');
+    // движение, авто
+    v._interacting = true; v._interPts = 2000000; v._drawOctree();
     assert.equal(v.getOctreeStats().budget, 2000000);
     assert.equal(v.getOctreeStats().tPx, 1.7);
-    v._interacting = false; v._drawOctree();
-    assert.equal(v.getOctreeStats().budget, 30000000);
-    assert.equal(v.getOctreeStats().tPx, 1);
+    // движение, фиксированный процент: 10 % файла
+    v.setOctreeMovePercent(10); v._drawOctree();
+    assert.equal(v.getOctreeStats().budget, Math.round(total * 0.1));
+    assert.ok(v.getOctreeStats().tPx < 0.01);
+    v.setOctreeMovePercent(0); v._interacting = false;
+    // предел пользователя
+    v.setOctreeIdleLimit(3000000); assert.equal(v._octFrameCap(), 3000000); v.setOctreeIdleLimit(0);
+    // предел видеопамяти (после OUT_OF_MEMORY): байты / (6 или 12 + цвет)
+    v._octVramBytes = 2000000 * 16; v._octPosBytes = 12; v._octHasColor = true;
+    assert.equal(v._octFrameCap(), 2000000);
+    // старый режим с потолком 30/60 млн остаётся доступен
+    v._octVramBytes = 0; v.setOctreeAllPoints(false); v._octBudget = 80000000;
+    assert.equal(v._octFrameCap(), Math.min(total, 30000000));
+  } finally { if (prev === undefined) delete global.window; else global.window = prev; }
+});
+
+test('ошибка OUT_OF_MEMORY при загрузке узла: узел не остаётся, предел видеопамяти запоминается, событие отправлено', async () => {
+  const events = [];
+  const prev = global.window; global.window = { OctreeStore: OS, dispatchEvent(e) { events.push(e); } };
+  const prevCE = global.CustomEvent; global.CustomEvent = class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } };
+  try {
+    const { v, gl } = harness();
+    gl.OUT_OF_MEMORY = 0x0505; let oom = false; gl.getError = () => (oom ? 0x0505 : 0);
+    let nfetch = 0;
+    v.setOctreeStream({ index: treeIndex(1), fetchNode() { if (++nfetch === 1) return Promise.resolve(node(10)); return new Promise(r => setImmediate(() => { oom = true; r(node(10)); })); } });
+    v._drawOctree();
+    for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));   // корень загрузился, на втором узле — OUT_OF_MEMORY
+    assert.ok(v._octCache.get('r').buf);
+    assert.ok(v._octVramBytes > 0, 'предел видеопамяти запомнен');
+    assert.ok(events.some(e => e.type === 'bim-octree-vram-limit'));
+    assert.ok(v._octFrameCap() < Infinity);
+  } finally { if (prev === undefined) delete global.window; else global.window = prev; if (prevCE === undefined) delete global.CustomEvent; else global.CustomEvent = prevCE; }
+});
+
+test('узел с квантованными позициями Uint16 (6 Б/точку): декодирование точное до 1/131070 ящика, буфер и uniform-ы распаковки', async () => {
+  const prev = global.window; global.window = { OctreeStore: OS };
+  try {
+    // декодер
+    const fmt = { stride: 15, hasColor: true };
+    const n = 5, buf = new Uint8Array(n * 15), dv = new DataView(buf.buffer);
+    const P = [[-3.5, 1, 2], [10, 1.25, -2], [0.001, 3, 7], [9.99, -1, 0], [2, 2, 2]];
+    P.forEach((p, i) => { dv.setFloat32(i * 15, p[0], true); dv.setFloat32(i * 15 + 4, p[1], true); dv.setFloat32(i * 15 + 8, p[2], true); buf[i * 15 + 12] = 10 * i; buf[i * 15 + 13] = 20; buf[i * 15 + 14] = 30; });
+    const d = OS.decodeNodeGpu(buf, n, { stride: 15, hasColor: true, hasIntensity: false, hasClassification: false, version: 1 }, true);
+    assert.ok(d.pos16 instanceof Uint16Array && d.pos === null && d.pos16.length === n * 3);
+    for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) {
+      const back = d.pos16[i * 3 + k] * d.q.scale[k] + d.q.off[k];
+      assert.ok(Math.abs(back - Math.fround(P[i][k])) <= d.q.scale[k] * 0.51 + 1e-9, 'позиция ' + i + '/' + k);
+    }
+    assert.equal(d.rgba[4 * 2], 20);
+    // видеобуфер: ushort, 6 + 4 байта на точку, uniform-ы распаковки перед отрисовкой
+    const { v, calls, gl } = harness();
+    gl.UNSIGNED_SHORT = 6; gl.uniform3f = (...a) => calls.push(['uniform3f', ...a]);
+    v.setOctreeStream({ index: treeIndex(0), fetchNode() { return Promise.resolve(d); } });
+    v._drawOctree(); await new Promise(r => setImmediate(r));
+    const e = v._octCache.get('r');
+    assert.equal(e.buf.bytes, n * 6 + n * 4);
+    assert.ok(calls.some(c => c[0] === 'pointer' && c[1] === 0 && c[2] === 3 && c[3] === 6), 'позиции — UNSIGNED_SHORT');
+    calls.length = 0; v._drawOctree();
+    const u = calls.filter(c => c[0] === 'uniform3f');
+    assert.ok(u.length >= 2 && u[0][1] === 'uQScale' && u[0][2] === d.q.scale[0] && u[1][1] === 'uQOff' && u[1][2] === d.q.off[0], 'uniform-ы распаковки заданы');
+    const last = u[u.length - 1]; assert.deepEqual(last.slice(1), ['uQOff', 0, 0, 0], 'после потока вернули единичное преобразование');
   } finally { if (prev === undefined) delete global.window; else global.window = prev; }
 });

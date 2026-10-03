@@ -131,10 +131,11 @@
   const VS = `#version 300 es
   in vec3 aPos; in vec3 aNormal; in vec3 aColor;
   in float aIntensity; in float aClassification; in float aRad; uniform mat4 uMVP;
+  uniform vec3 uQOff; uniform vec3 uQScale;
   uniform float uPointSize; uniform float uAttenuate; uniform float uPtScale; uniform float uPtMin; uniform float uPtMax;
   uniform float uRadOn; uniform float uRadMin; uniform float uRadLog;
   out vec3 vN; out vec3 vW; out vec3 vC; out float vIntensity; out float vClassification;
-  void main(){ vW=aPos; vN=aNormal; vC=aColor; vIntensity=aIntensity; vClassification=aClassification; gl_Position=uMVP*vec4(aPos,1.0);
+  void main(){ vec3 P = aPos * uQScale + uQOff; vW=P; vN=aNormal; vC=aColor; vIntensity=aIntensity; vClassification=aClassification; gl_Position=uMVP*vec4(P,1.0);
     float ps = uPointSize;
     // ревизия 7: при uRadOn размер точки берётся из локального шага именно этого места (aRad: 0..1 — лог-шкала [uRadMin, uRadMin·2^uRadLog])
     if(uAttenuate>0.5){ float sc = uPtScale; if(uRadOn>0.5){ sc = uPtScale * uRadMin * exp2(aRad * uRadLog); } ps = clamp(sc / max(gl_Position.w, 0.0001), uPtMin, uPtMax); }
@@ -276,7 +277,7 @@
       this._fov = 50 * Math.PI / 180; this._run = false;
       this.showAI = true; this.selectedId = null;
       this.base = []; this.overlay = []; this.bbox = { mn: [-1, 0, -1], mx: [1, 3, 1] };
-      this._octActive = false; this._octIndex = null; this._octFetch = null; this._octCache = null; this._octBudget = Infinity;
+      this._octActive = false; this._octIndex = null; this._octFetch = null; this._octCache = null; this._octBudget = Infinity; this._octAll = true; this._octMovePct = 0; this._octIdleLimit = 0; this._octVramBytes = 0;
       this._octGeneration = 0; this._octFailures = null; this._octNow = null; // cancel stale node reads; bounded retry state
       this._interBudget = 128000000; this._perfProfile = 'balanced'; this._densityBoost = 1.8; // бюджет точек при движении камеры (порог плотности): 6 млн — без подвисаний на больших LAS
       this._selDepthMode = 0; this._selThrough = false; // режим глубины выделения: 0 тонко / 1 шире / 2 насквозь
@@ -330,7 +331,8 @@
       this.aClassification = gl.getAttribLocation(p, 'aClassification');
       this.aRad = gl.getAttribLocation(p, 'aRad');
       this.u = {};
-      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog']) this.u[k] = gl.getUniformLocation(p, k);
+      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog', 'uQOff', 'uQScale']) this.u[k] = gl.getUniformLocation(p, k);
+      gl.uniform3f(this.u.uQScale, 1, 1, 1); gl.uniform3f(this.u.uQOff, 0, 0, 0);   // r9: обычные объекты рисуются без распаковки позиций
       gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
       const _tc = this._themeColors(); gl.clearColor(_tc.bg[0], _tc.bg[1], _tc.bg[2], 1);
     }
@@ -500,7 +502,7 @@
     _queueFrame() { if (this._rafPending) { this._dirty = true; return; } this._rafPending = true; this._dirty = false; const self = this; requestAnimationFrame(() => { self._rafPending = false; try { self._renderNow(); } catch (e) { console.warn('render', e); } if (self._dirty) { self._dirty = false; self._queueFrame(); } }); }
     // «Идёт взаимодействие»: во время вращения/панорамы/зума рисуем прореженное облако для плавности.
     _beginInteract() { this._interacting = true; if (this._idleT) { clearTimeout(this._idleT); this._idleT = 0; } }
-    _endInteractSoon(ms) { if (this._idleT) clearTimeout(this._idleT); const self = this; this._idleT = setTimeout(() => { self._idleT = 0; self._interacting = false; self.render(); }, ms == null ? 160 : ms); }
+    _endInteractSoon(ms) { if (this._idleT) clearTimeout(this._idleT); const self = this; this._idleT = setTimeout(() => { self._idleT = 0; self._interacting = false; self.render(); }, ms == null ? (self._octActive ? 320 : 160) : ms); }
     // Однократное перемешивание точек (Fisher–Yates), чтобы префикс буфера был равномерной выборкой по всему облаку.
     _shuffleCloud(pos, col, intensity, classification) {
       const n = pos.length / 3; if (n < 2) return;
@@ -2581,7 +2583,7 @@
         this._beginInteract();
         this.render();
       });
-      el.addEventListener('wheel', e => { e.preventDefault(); this._stopTween(); this._beginInteract(); this._endInteractSoon(220); if (this.editSelect && this.editMode === 'brush' && (e.ctrlKey || e.metaKey)) { this._brushRadius = Math.max(4, Math.min(160, (this._brushRadius || 16) * (e.deltaY > 0 ? 0.85 : 1.18))); if (typeof this.onBrushRadius === 'function') this.onBrushRadius(Math.round(this._brushRadius)); return; } if (this.walk) { const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw); const s = (e.deltaY > 0 ? -1 : 1) * 0.6; this.target[0] += -sy * s; this.target[2] += -cy * s; this.render(); return; } this.dist *= (e.deltaY > 0 ? 1.1 : 0.9); this.dist = Math.max(1e-4, Math.min(6000, this.dist)); this.render(); }, { passive: false });
+      el.addEventListener('wheel', e => { e.preventDefault(); this._stopTween(); this._beginInteract(); this._endInteractSoon(this._octActive ? 380 : 220); if (this.editSelect && this.editMode === 'brush' && (e.ctrlKey || e.metaKey)) { this._brushRadius = Math.max(4, Math.min(160, (this._brushRadius || 16) * (e.deltaY > 0 ? 0.85 : 1.18))); if (typeof this.onBrushRadius === 'function') this.onBrushRadius(Math.round(this._brushRadius)); return; } if (this.walk) { const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw); const s = (e.deltaY > 0 ? -1 : 1) * 0.6; this.target[0] += -sy * s; this.target[2] += -cy * s; this.render(); return; } this.dist *= (e.deltaY > 0 ? 1.1 : 0.9); this.dist = Math.max(1e-4, Math.min(6000, this.dist)); this.render(); }, { passive: false });
       try { if (typeof window !== 'undefined') window.__lxViewer = this; } catch (e) {}
     }
     _click(cx, cy) {
@@ -3685,7 +3687,7 @@
       const cloudRecord=this._cloudRecord;this._setBase([]);this._cloudRecord=cloudRecord;
       this._octIndex = opts.index; this._octFetch = opts.fetchNode;
       this._octCache = new Map(); this._octFrame = 0; this._octActive = true;
-      this._octFailures = new Map(); this._octLod = null; this._octSel = null; this._octInflight = 0; this._octStats = null;
+      this._octFailures = new Map(); this._octLod = null; this._octSel = null; this._octInflight = 0; this._octStats = null; this._octQueue = null; this._octResPoints = 0; this._octPosBytes = 0; this._octMark = null;
       this._octHasColor = !!opts.index.hasColor;
       this._octHasIntensity = opts.index.hasIntensity === true;
       this._octHasClassification = opts.index.hasClassification === true;
@@ -3711,6 +3713,7 @@
         ? Math.floor(configuredBudget)
         : 4000000;
       this._octBudget = Math.min(pc, safeBudget);
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') { try { window.dispatchEvent(new CustomEvent('bim-octree-state', { detail: { active: true, total: pc } })); } catch (_) {} }
       if (!opts.preserveView) this._frame();
       this.render();
       return true;
@@ -3721,7 +3724,9 @@
       const fallback = this._octFallbackColorMode;
       this._octGeneration = (this._octGeneration || 0) + 1;
       this._octCache = null; this._octIndex = null; this._octFetch = null; this._octActive = false;
-      this._octFailures = null; this._octLod = null; this._octSel = null; this._octInflight = 0; this._octStats = null;
+      this._octFailures = null; this._octLod = null; this._octSel = null; this._octInflight = 0; this._octStats = null; this._octQueue = null; this._octResPoints = 0; this._octMark = null;
+      if (this._octRT) { clearTimeout(this._octRT); this._octRT = 0; }
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') { try { window.dispatchEvent(new CustomEvent('bim-octree-state', { detail: { active: false } })); } catch (_) {} }
       this._octHasColor = false; this._octHasIntensity = false; this._octHasClassification = false;
       this._octFallbackColorMode = null;
       if (restoreColorMode !== false && fallback && this.getAvailableColorModes().includes(fallback)) {
@@ -3730,9 +3735,11 @@
       }
     }
     octreeActive() { return !!this._octActive; }
-    _mkPtBuf(pos, col, intensity, classification, rgba) {
+    _mkPtBuf(pos, col, intensity, classification, rgba, q) {
       const count = pos && pos.length / 3;
-      if (!(pos instanceof Float32Array) || !Number.isSafeInteger(count) || count < 1 ||
+      // r9: позиции узла — либо Float32Array, либо Uint16Array внутри ящика узла (q = { off:[x,y,z], scale:[x,y,z] }): 6 байт вместо 12 на точку
+      const quant = !!q && pos instanceof Uint16Array && Array.isArray(q.off) && Array.isArray(q.scale);
+      if (!(pos instanceof Float32Array || quant) || !Number.isSafeInteger(count) || count < 1 ||
           (col && (!(col instanceof Float32Array) || col.length !== count * 3)) ||
           (rgba && (!(rgba instanceof Uint8Array) || rgba.length !== count * 4)) ||
           (intensity && (!(intensity instanceof Float32Array) || intensity.length !== count)) ||
@@ -3741,7 +3748,7 @@
       }
       const gl = this.gl; const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
       const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
-      gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
+      gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, quant ? gl.UNSIGNED_SHORT : gl.FLOAT, false, 0, 0);
       let cb = null;
       if (col && this.aColor >= 0) { cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, col, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, gl.FLOAT, false, 0, 0); }
       else if (rgba && this.aColor >= 0) { cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, rgba, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, gl.UNSIGNED_BYTE, true, 4, 0); }
@@ -3760,7 +3767,7 @@
       }
       gl.bindVertexArray(null);
       return {
-        vao, pb, cb, ib, kb, count,
+        vao, pb, cb, ib, kb, count, q: quant ? { off: q.off.slice(0, 3), scale: q.scale.slice(0, 3) } : null,
         bytes: pos.byteLength + (col ? col.byteLength : 0) + (!col && rgba ? rgba.byteLength : 0) +
           (intensity ? intensity.byteLength : 0) +
           (classification ? classification.byteLength : 0)
@@ -3785,11 +3792,23 @@
       }
       return detail;
     }
-    // Потолок точек на кадр в покое: пользовательский бюджет, но не больше разумного для одного кадра (профиль «Максимум» — больше).
-    _octFrameCap() { return Math.min(this._octBudget || Infinity, this._perfProfile === 'max' ? 60000000 : 30000000); }
-    // Ревизия 9: LOD по экранной плотности. Узлы выбираются так, чтобы расстояние между точками на экране было ≈1 пиксель (при движении — 1,7):
-    // видно всё, что способен показать экран, остальные точки остаются в индексе и появляются при приближении. Загрузка — с ограниченным числом
-    // одновременных чтений, грубые узлы раньше мелких; пока узел грузится, рисуется его родитель (дыр нет).
+    // Ревизия 9 (доработка): в покое рисуются ВСЕ точки файла (каждая точка лежит ровно в одном узле октодерева), при движении — доля точек
+    // (авто под видеокарту или фиксированный процент). Потолок в покое задают только память видеокарты (узнаётся по ошибке OUT_OF_MEMORY) и
+    // необязательный предел пользователя (setOctreeIdleLimit).
+    _octBytesPerPoint() { return (this._octPosBytes || 12) + (this._octHasColor ? 4 : 0) + (this._octHasIntensity ? 4 : 0) + (this._octHasClassification ? 1 : 0); }
+    _octVramCapPoints() { const b = this._octVramBytes; return b > 0 ? Math.max(1000000, Math.floor(b / this._octBytesPerPoint())) : Infinity; }
+    _octFrameCap() {
+      const total = Number(this._octIndex && this._octIndex.pointCount) || Infinity;
+      let cap = Math.min(total, this._octVramCapPoints());
+      if (this._octIdleLimit > 0) cap = Math.min(cap, this._octIdleLimit);
+      if (this._octAll === false) cap = Math.min(cap, this._octBudget || Infinity, this._perfProfile === 'max' ? 60000000 : 30000000);
+      return cap;
+    }
+    setOctreeMovePercent(p) { p = Number(p); this._octMovePct = (p > 0 && p <= 100) ? p : 0; this.render(); return this._octMovePct; }
+    setOctreeIdleLimit(n) { n = Number(n); this._octIdleLimit = n > 0 ? Math.floor(n) : 0; this.render(); return this._octIdleLimit; }
+    setOctreeAllPoints(on) { this._octAll = on !== false; this.render(); return this._octAll; }
+    // Выбор узлов по экранной плотности (OctreeStore.selectLod). В покое порог плотности ~0 и бюджет = все точки: берутся все узлы в пирамиде видимости до листьев;
+    // при движении — тот же выбор, ограниченный бюджетом (грубые узлы первыми, т. е. равномерная «доля» всего облака). Загрузка — очередь с ограниченным числом чтений.
     _drawOctree() {
       const gl = this.gl, OS = typeof window !== 'undefined' ? window.OctreeStore : null;
       if (!gl || !this._octActive || !OS || !OS.selectLod || !this._octCache) return;
@@ -3800,11 +3819,16 @@
       const lod = this._octLod;
       const vh = gl.canvas.height || 600;
       const focal = vh * 0.5 / Math.tan(this._fov / 2);
-      const cap = this._octFrameCap(), inter = !!this._interacting;
-      const budget = inter ? Math.min(cap, Math.max(1500000, this._interPts ? Math.round(this._interPts) : 6000000)) : cap;
+      const total = Number(this._octIndex && this._octIndex.pointCount) || 0;
+      const cap = this._octFrameCap(), inter = !!this._interacting, pctMode = inter && this._octMovePct > 0;
+      let budget = cap;
+      if (inter) {
+        const want = pctMode ? Math.round(Math.max(1, total) * this._octMovePct / 100) : (this._interPts ? Math.round(this._interPts) : 6000000);
+        budget = Math.min(cap, Math.max(pctMode ? 1000 : 1500000, want));
+      }
       const view = {
         vp: M, eye, f: focal, ortho: !!this._ortho, ppu: this._ortho ? focal / Math.max(1e-6, this.dist) : 0,
-        tPx: inter ? 1.7 : 1.0, budget, maxNodes: 6000
+        tPx: (inter && !pctMode) ? 1.7 : 0.0001, budget, maxNodes: inter ? 6000 : 400000
       };
       const sel = OS.selectLod(lod, view, this._octSel || (this._octSel = {}));
       gl.uniform1f(this.u.uUnlit, 1); gl.uniform1f(this.u.uUseVColor, this._octHasColor ? 1 : 0);
@@ -3824,33 +3848,46 @@
       const selSet = new Set();
       const missing = [];
       const now0 = typeof this._octNow === 'function' ? this._octNow() : Date.now();
-      let drawn = 0, drawnNodes = 0, lastSize = basePt;
+      const mark = (this._octMark && this._octMark.length >= lod.n) ? this._octMark : (this._octMark = new Uint8Array(lod.n));
+      const ents = this._octEnts || (this._octEnts = []); ents.length = 0;
       for (let i = 0; i < sel.n; i++) {
-        const key = lod.keys[sel.ids[i]];
+        const id = sel.ids[i], key = lod.keys[id];
         selSet.add(key);
         const e = this._octCache.get(key);
-        if (e && e.buf) {
-          e.lastUsed = this._octFrame;
-          // грубые узлы (пока дети не загружены) рисуем крупнее, чтобы не было «решета»
-          const size = Math.min(basePt * 2.5, Math.max(basePt, sel.sp[i] * 0.9));
+        if (e && e.buf) { e.lastUsed = this._octFrame; ents.push(e); mark[id] = 1; } else ents.push(null);
+      }
+      let drawn = 0, drawnNodes = 0, lastSize = basePt, qOn = false;
+      for (let i = 0; i < sel.n; i++) {
+        const id = sel.ids[i], e = ents[i];
+        if (e) {
+          const buf = e.buf;
+          // узел, у которого дети уже нарисованы, рисуется обычным размером; «передний край» (детей нет или ещё грузятся) — крупнее, чтобы не было «решета»
+          let covered = false;
+          for (let c = lod.cs[id]; c < lod.cs[id + 1]; c++) if (mark[lod.kids[c]]) { covered = true; break; }
+          const size = covered ? basePt : Math.min(basePt * 2.5, Math.max(basePt, sel.sp[i] * 0.9));
           if (size !== lastSize) { gl.uniform1f(this.u.uPointSize, size); lastSize = size; }
-          gl.bindVertexArray(e.buf.vao); gl.drawArrays(gl.POINTS, 0, e.buf.count);
-          drawn += e.buf.count; drawnNodes++;
+          if (buf.q) { gl.uniform3f(this.u.uQScale, buf.q.scale[0], buf.q.scale[1], buf.q.scale[2]); gl.uniform3f(this.u.uQOff, buf.q.off[0], buf.q.off[1], buf.q.off[2]); qOn = true; }
+          else if (qOn) { gl.uniform3f(this.u.uQScale, 1, 1, 1); gl.uniform3f(this.u.uQOff, 0, 0, 0); qOn = false; }
+          gl.bindVertexArray(buf.vao); gl.drawArrays(gl.POINTS, 0, buf.count);
+          drawn += buf.count; drawnNodes++;
           continue;
         }
-        if (e && e.loading) continue;
+        const key = lod.keys[id], c0 = this._octCache.get(key);
+        if (c0 && c0.loading) continue;
         const failure = this._octFailures && this._octFailures.get(key);
         if (failure && failure.retryAt > now0) continue;
         missing.push(i);
       }
-      if (missing.length) {
-        missing.sort((a, b) => (lod.level[sel.ids[a]] - lod.level[sel.ids[b]]) || (sel.sp[b] - sel.sp[a]));
-        const slots = (inter ? 3 : 6) - (this._octInflight || 0);
-        for (let m = 0; m < missing.length && m < slots; m++) this._octStartFetch(lod.keys[sel.ids[missing[m]]], streamGeneration);
-      }
+      for (let i = 0; i < sel.n; i++) mark[sel.ids[i]] = 0;
+      if (qOn) { gl.uniform3f(this.u.uQScale, 1, 1, 1); gl.uniform3f(this.u.uQOff, 0, 0, 0); }
+      // очередь загрузки: сначала грубые узлы (картинка появляется сразу и дорисовывается), внутри уровня — самые разреженные на экране
+      missing.sort((a, b) => (lod.level[sel.ids[a]] - lod.level[sel.ids[b]]) || (sel.sp[b] - sel.sp[a]));
+      this._octQueue = missing.map(i => lod.keys[sel.ids[i]]);
+      this._octPump(streamGeneration);
       this._octStats = {
         nodes: sel.n, drawnNodes, points: sel.points, drawn, missing: missing.length,
-        inflight: this._octInflight || 0, tPx: view.tPx, budget, cap, total: Number(this._octIndex && this._octIndex.pointCount) || 0
+        inflight: this._octInflight || 0, tPx: view.tPx, budget, cap, total,
+        resident: this._octResPoints || 0, movePct: this._octMovePct || 0, vramLimited: this._octVramBytes > 0, interacting: inter
       };
       this._probeDrawn = (this._probeDrawn || 0) + drawn; this._probeTotal = (this._probeTotal || 0) + cap;
       // панель «Свойства облака» показывает, сколько точек на экране прямо сейчас (не чаще 4 раз в секунду)
@@ -3862,6 +3899,43 @@
       this._trimOctreeGpuCache(selSet, sel.points);
     }
     getOctreeStats() { return this._octActive && this._octStats ? Object.assign({}, this._octStats) : null; }
+    // запуск чтений из очереди: не больше 6 одновременно (3 при движении)
+    _octPump(streamGeneration) {
+      const q = this._octQueue; if (!q || !q.length || !this._octCache) return;
+      const maxSlots = this._interacting ? 3 : 6;
+      const now = typeof this._octNow === 'function' ? this._octNow() : Date.now();
+      while (q.length && (this._octInflight || 0) < maxSlots) {
+        const k = q.shift();
+        if (this._octCache.has(k)) continue;
+        const f = this._octFailures && this._octFailures.get(k);
+        if (f && f.retryAt > now) continue;
+        this._octStartFetch(k, streamGeneration);
+      }
+    }
+    // перерисовка после загрузки узла: пока идёт массовая подгрузка — не чаще 4 раз в секунду (иначе каждый узел перерисовывал бы десятки миллионов точек)
+    _octRenderSoon() {
+      const nowFn = () => (typeof this._octNow === 'function' ? this._octNow() : Date.now());
+      const now = nowFn(), busy = (this._octQueue && this._octQueue.length) || (this._octInflight > 0);
+      if (!busy || now - (this._octLastR || 0) >= 250) { this._octLastR = now; this.render(); return; }
+      if (this._octRT) return;
+      const self = this;
+      this._octRT = setTimeout(() => { self._octRT = 0; self._octLastR = nowFn(); if (self._octActive) self.render(); }, Math.max(10, 250 - (now - (this._octLastR || 0))));
+    }
+    _octFreeBuf(buf) {
+      const gl = this.gl; if (!gl || !buf) return;
+      try { gl.deleteVertexArray(buf.vao); gl.deleteBuffer(buf.pb); if (buf.cb) gl.deleteBuffer(buf.cb); if (buf.ib) gl.deleteBuffer(buf.ib); if (buf.kb) gl.deleteBuffer(buf.kb); } catch (_) {}
+    }
+    // видеопамяти не хватило: запоминаем предел (чуть ниже того, что уже лежит в памяти) — дальше рисуется столько точек, сколько помещается
+    _octOnOom(key, error) {
+      let res = 0; if (this._octCache) this._octCache.forEach(e => { if (e && e.buf) res += Number(e.buf.bytes) || 0; });
+      this._octVramBytes = Math.max(64 * 1048576, Math.floor(res * 0.85));
+      this._octOom = (this._octOom | 0) + 1;
+      const detail = { residentBytes: res, limitBytes: this._octVramBytes, points: this._octVramCapPoints() };
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        try { window.dispatchEvent(new CustomEvent('bim-octree-vram-limit', { detail })); } catch (_) {}
+      }
+      return this._recordOctreeNodeFailure(key, error);
+    }
     _octStartFetch(k, streamGeneration) {
       const self = this;
       this._octCache.set(k, { buf: null, loading: true, lastUsed: this._octFrame });
@@ -3874,13 +3948,21 @@
         const ent = self._octCache && self._octCache.get(k);
         if (!ent) return;
         try {
-          if (!res || !res.pos || !res.pos.length) throw new Error('empty octree node response');
-          ent.buf = self._mkPtBuf(res.pos, res.col || null,
-            res.intensity || null, res.classification || null, res.rgba || null);
+          const posArr = res && (res.pos16 || res.pos);
+          if (!res || !posArr || !posArr.length) throw new Error('empty octree node response');
+          const buf = self._mkPtBuf(posArr, res.col || null,
+            res.intensity || null, res.classification || null, res.rgba || null, res.q || null);
+          const gl = self.gl;
+          if (gl && typeof gl.getError === 'function' && gl.getError() === (gl.OUT_OF_MEMORY || 0x0505)) {
+            self._octFreeBuf(buf);
+            const oe = new Error('GPU out of memory while uploading an octree node'); oe.oom = true; throw oe;
+          }
+          self._octPosBytes = buf.q ? 6 : 12;
+          ent.buf = buf;
           if (self._octFailures) self._octFailures.delete(k);
         } catch (error) {
           if (self._octCache) self._octCache.delete(k);
-          self._recordOctreeNodeFailure(k, error);
+          if (error && error.oom) self._octOnOom(k, error); else self._recordOctreeNodeFailure(k, error);
         } finally {
           const current = self._octCache && self._octCache.get(k);
           if (current === ent) {
@@ -3888,7 +3970,8 @@
             ent.lastUsed = self._octFrame;
           }
         }
-        self.render();
+        self._octPump(streamGeneration);
+        self._octRenderSoon();
       }).catch(function (error) {
         settle();
         if (self._octGeneration !== streamGeneration || !self._octActive) return;
@@ -3900,36 +3983,35 @@
     _trimOctreeGpuCache(selSet, visiblePoints) {
       const gl = this.gl, cache = this._octCache;
       if (!gl || !cache) return;
-      const bytesPerPoint = 12 + (this._octHasColor ? 4 : 0) +
-        (this._octHasIntensity ? 4 : 0) + (this._octHasClassification ? 1 : 0);
+      const bytesPerPoint = this._octBytesPerPoint();
       const visibleBytes = Math.max(0, Number(visiblePoints) || 0) * bytesPerPoint;
-      // Keep the current view plus a bounded 128 MiB working set for nearby
-      // camera positions, while never retaining an unbounded GPU copy of the
-      // entire disk-backed cloud after a long orbit/pan session.
-      const cacheLimitBytes = Math.max(visibleBytes, Math.min(visibleBytes + 128 * 1024 * 1024, 512 * 1024 * 1024));
-      let cachedBytes = 0;
+      // Всё, что уже загружено, остаётся в видеопамяти (повороты камеры не перечитывают диск), пока не упрёмся в предел:
+      // память видеокарты (по ошибке OUT_OF_MEMORY) или предел пользователя. Тогда вытесняются давно не виденные узлы.
+      let resLimit = this._octVramBytes > 0 ? this._octVramBytes : Infinity;
+      if (this._octIdleLimit > 0) resLimit = Math.min(resLimit, this._octIdleLimit * bytesPerPoint * 1.5);
+      if (this._octAll === false) resLimit = Math.min(resLimit, Math.min(visibleBytes + 128 * 1024 * 1024, 512 * 1024 * 1024));
+      const cacheLimitBytes = Math.max(visibleBytes, resLimit);
+      let cachedBytes = 0, cachedPoints = 0;
       const evict = [];
       cache.forEach((entry, key) => {
         if (!entry || !entry.buf) return;
         const bytes = Number(entry.buf.bytes) ||
           (Number(entry.buf.count) || 0) *
             (12 + (entry.buf.cb ? 12 : 0) + (entry.buf.ib ? 4 : 0) + (entry.buf.kb ? 1 : 0));
-        cachedBytes += bytes;
+        cachedBytes += bytes; cachedPoints += Number(entry.buf.count) || 0;
         if (!selSet.has(key)) evict.push({ key, bytes, lastUsed: Number(entry.lastUsed) || 0 });
       });
+      this._octResPoints = cachedPoints;
       if (cachedBytes <= cacheLimitBytes) return;
       evict.sort((a, b) => a.lastUsed - b.lastUsed);
       for (const item of evict) {
         if (cachedBytes <= cacheLimitBytes) break;
         const entry = cache.get(item.key);
         if (entry && entry.buf) {
-          gl.deleteVertexArray(entry.buf.vao);
-          gl.deleteBuffer(entry.buf.pb);
-          if (entry.buf.cb) gl.deleteBuffer(entry.buf.cb);
-          if (entry.buf.ib) gl.deleteBuffer(entry.buf.ib);
-          if (entry.buf.kb) gl.deleteBuffer(entry.buf.kb);
+          this._octFreeBuf(entry.buf);
           cache.delete(item.key);
           cachedBytes -= item.bytes;
+          this._octResPoints = Math.max(0, (this._octResPoints || 0) - (Number(entry.buf.count) || 0));
         }
       }
     }

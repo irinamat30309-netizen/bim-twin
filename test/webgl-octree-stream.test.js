@@ -137,6 +137,7 @@ test('GPU octree cache evicts least-recently-used non-visible buffers by byte bu
     deleteVertexArray(id) { deleted.push(['vao', id]); },
     deleteBuffer(id) { deleted.push(['buffer', id]); }
   };
+  viewer._octAll = false;   // старый режим «рабочий набор вокруг видимого»: бюджет вытеснения считается по видимым точкам (r9: по умолчанию в покое хранится всё загруженное)
   viewer._octHasColor = true;
   viewer._octHasIntensity = true;
   viewer._octHasClassification = true;

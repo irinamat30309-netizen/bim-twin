@@ -58,3 +58,14 @@ test('панель «Загружено точек» в потоке говор�
   assert.match(s, /bim-octree-stats/);
   assert.match(s, /streamLoadedText/);
 });
+
+test('ревизия 10: в «Виде облака» есть «При движении» и «В покое», настройки сохраняются, предупреждение о видеопамяти', () => {
+  const h = read('renderer/index.html'), s = read('renderer/app.js');
+  assert.match(h, /id="qMove"/); assert.match(h, /id="qIdle"/);
+  assert.match(h, /Все точки/);
+  assert.match(s, /bim\.stream\.move/); assert.match(s, /bim\.stream\.idle/);
+  assert.match(s, /setOctreeMovePercent/); assert.match(s, /setOctreeIdleLimit/);
+  assert.match(s, /bim-octree-vram-limit/);
+  const w = read('renderer/webgl-viewer.js');
+  assert.match(w, /uQScale/); assert.match(w, /_octAll/);
+});
