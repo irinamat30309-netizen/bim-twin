@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BIM Twin — Проекты</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="ui/fonts.css?v=1300">
+  <link rel="stylesheet" href="ui/tokens.css?v=1300">
+  <link rel="stylesheet" href="ui/base.css?v=1300">
+  <link rel="stylesheet" href="ui/components.css?v=1300">
+  <link rel="stylesheet" href="ui/motion.css?v=1300">
+  <link rel="stylesheet" href="startup.css?v=1300">
+</head>
+<body>
+  <header class="st-title">
+    <div class="st-brand"><span class="st-mark" data-ico="box"></span><b>BIM Twin</b><span class="st-ver badge" id="stVersion" hidden></span></div>
+    <div class="st-drag"></div>
+    <button id="theme" class="icon-btn" type="button" data-tip="Сменить тему" aria-label="Сменить тему"><span id="themeIco" data-ico="sun"></span></button>
+    <div class="st-win">
+      <button id="min" class="st-winbtn" type="button" aria-label="Свернуть"><span data-ico="minus"></span></button>
+      <button id="max" class="st-winbtn" type="button" aria-label="Развернуть"><span data-ico="square" data-ico-size="13"></span></button>
+      <button id="close" class="st-winbtn close" type="button" aria-label="Закрыть"><span data-ico="x"></span></button>
+    </div>
+  </header>
+
+  <div class="st-shell">
+    <aside class="st-side" aria-label="Разделы">
+      <div class="st-logo">
+        <span class="st-logo-mark" data-ico="box" data-ico-size="20"></span>
+        <div><b>BIM Twin</b><span>Облака точек и BIM</span></div>
+      </div>
+      <nav class="st-nav-list">
+        <button id="navProjects" class="st-nav" type="button" aria-current="page"><span data-ico="folder-open"></span><span>Проекты</span></button>
+        <button id="navSettings" class="st-nav" type="button"><span data-ico="settings"></span><span>Настройки</span></button>
+      </nav>
+      <div class="st-side-foot"><span data-ico="hard-drive" data-ico-size="14"></span><span>Локальная рабочая область</span></div>
+    </aside>
+
+    <main class="st-main">
+      <section id="viewProjects" class="st-view" aria-labelledby="hProjects">
+        <div class="st-scroll">
+          <div class="st-head">
+            <div>
+              <h1 id="hProjects">Проекты</h1>
+              <p>Выберите проект, чтобы перейти в рабочую область, или создайте новый.</p>
+            </div>
+            <div class="st-actions">
+              <label class="st-search" id="searchWrap" hidden><span data-ico="search" data-ico-size="15"></span><input id="search" type="search" placeholder="Поиск проекта" aria-label="Поиск проекта" autocomplete="off" spellcheck="false"></label>
+              <button id="newProject" class="btn primary" type="button"><span data-ico="plus"></span>Новый проект</button>
+            </div>
+          </div>
+          <div id="state" class="st-state" role="status" hidden></div>
+          <div id="projects" class="st-grid" role="radiogroup" aria-label="Проекты" aria-busy="true"></div>
+        </div>
+        <footer class="st-foot">
+          <div id="selection" class="st-sel" aria-live="polite">Проект не выбран</div>
+          <label class="st-opt" title="Проверить распределение облаков по этажам при открытии проекта"><input id="autoFloors" class="lx-switch" type="checkbox" checked><span>Проверять этажи при открытии</span></label>
+          <button id="openProject" class="btn primary" type="button" disabled><span>Открыть проект</span><span data-ico="arrow-right"></span></button>
+        </footer>
+      </section>
+
+      <section id="viewSettings" class="st-view" aria-labelledby="hSettings" hidden>
+        <div class="st-scroll">
+          <div class="st-head">
+            <div>
+              <h1 id="hSettings">Настройки</h1>
+              <p>Общие параметры приложения. Остальные настройки доступны внутри открытого проекта.</p>
+            </div>
+          </div>
+          <div class="st-set">
+            <div class="st-set-row">
+              <div class="st-set-txt"><b>Тема оформления</b><span>Тёмная тема удобнее при работе с облаками точек.</span></div>
+              <div class="st-seg" role="group" aria-label="Тема оформления">
+                <button type="button" id="themeDark" data-theme-set="dark"><span data-ico="moon" data-ico-size="14"></span>Тёмная</button>
+                <button type="button" id="themeLight" data-theme-set="light"><span data-ico="sun" data-ico-size="14"></span>Светлая</button>
+              </div>
+            </div>
+            <div class="st-set-row">
+              <div class="st-set-txt"><b>Хранилище данных</b><span id="storeMode">Режим хранения определяется при запуске.</span><code id="storePath" class="st-path" hidden></code></div>
+              <button id="openData" class="btn sm" type="button" hidden><span data-ico="folder-open"></span>Открыть папку</button>
+            </div>
+            <div class="st-set-row">
+              <div class="st-set-txt"><b>Версия</b><span id="aboutVersion">BIM Twin</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="icons.js?v=1300"></script>
+  <script src="ui/kit.js?v=1300"></script>
+  <script src="startup.js?v=1300"></script>
+</body>
+</html>
