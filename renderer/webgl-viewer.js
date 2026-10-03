@@ -2400,7 +2400,7 @@
     interactivePointBudget(total) { return this._interPts ? Math.min(total, Math.round(this._interPts)) : total; }
     _renderNow() {
       const gl = this.gl; if (!gl) return;
-      const probe = !!this._interacting && !this._octActive && ((this._probeN = (this._probeN | 0) + 1) & 1) === 0, probeT0 = probe ? performance.now() : 0;
+      const probe = !!this._interacting && ((this._probeN = (this._probeN | 0) + 1) & 1) === 0, probeT0 = probe ? performance.now() : 0;
       this._probeDrawn = 0;
       try { this._renderNowInner(); } finally {
         if (probe && this._probeDrawn > 0) { try { gl.finish(); this._adaptInter(performance.now() - probeT0, this._probeDrawn, this._probeTotal); } catch (e) { } }
@@ -3685,7 +3685,7 @@
       const cloudRecord=this._cloudRecord;this._setBase([]);this._cloudRecord=cloudRecord;
       this._octIndex = opts.index; this._octFetch = opts.fetchNode;
       this._octCache = new Map(); this._octFrame = 0; this._octActive = true;
-      this._octFailures = new Map();
+      this._octFailures = new Map(); this._octLod = null; this._octSel = null; this._octInflight = 0; this._octStats = null;
       this._octHasColor = !!opts.index.hasColor;
       this._octHasIntensity = opts.index.hasIntensity === true;
       this._octHasClassification = opts.index.hasClassification === true;
@@ -3711,7 +3711,8 @@
         ? Math.floor(configuredBudget)
         : 4000000;
       this._octBudget = Math.min(pc, safeBudget);
-      this._frame(); this.render();
+      if (!opts.preserveView) this._frame();
+      this.render();
       return true;
     }
     clearOctreeStream(restoreColorMode) {
@@ -3720,7 +3721,7 @@
       const fallback = this._octFallbackColorMode;
       this._octGeneration = (this._octGeneration || 0) + 1;
       this._octCache = null; this._octIndex = null; this._octFetch = null; this._octActive = false;
-      this._octFailures = null;
+      this._octFailures = null; this._octLod = null; this._octSel = null; this._octInflight = 0; this._octStats = null;
       this._octHasColor = false; this._octHasIntensity = false; this._octHasClassification = false;
       this._octFallbackColorMode = null;
       if (restoreColorMode !== false && fallback && this.getAvailableColorModes().includes(fallback)) {
@@ -3729,10 +3730,11 @@
       }
     }
     octreeActive() { return !!this._octActive; }
-    _mkPtBuf(pos, col, intensity, classification) {
+    _mkPtBuf(pos, col, intensity, classification, rgba) {
       const count = pos && pos.length / 3;
       if (!(pos instanceof Float32Array) || !Number.isSafeInteger(count) || count < 1 ||
           (col && (!(col instanceof Float32Array) || col.length !== count * 3)) ||
+          (rgba && (!(rgba instanceof Uint8Array) || rgba.length !== count * 4)) ||
           (intensity && (!(intensity instanceof Float32Array) || intensity.length !== count)) ||
           (classification && (!(classification instanceof Uint8Array) || classification.length !== count))) {
         throw new RangeError('octree node attribute arrays do not match the point count');
@@ -3742,6 +3744,7 @@
       gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
       let cb = null;
       if (col && this.aColor >= 0) { cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, col, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, gl.FLOAT, false, 0, 0); }
+      else if (rgba && this.aColor >= 0) { cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, rgba, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, gl.UNSIGNED_BYTE, true, 4, 0); }
       let ib = null, kb = null;
       if (intensity && this.aIntensity >= 0) {
         ib = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ib);
@@ -3758,7 +3761,7 @@
       gl.bindVertexArray(null);
       return {
         vao, pb, cb, ib, kb, count,
-        bytes: pos.byteLength + (col ? col.byteLength : 0) +
+        bytes: pos.byteLength + (col ? col.byteLength : 0) + (!col && rgba ? rgba.byteLength : 0) +
           (intensity ? intensity.byteLength : 0) +
           (classification ? classification.byteLength : 0)
       };
@@ -3782,76 +3785,122 @@
       }
       return detail;
     }
+    // Потолок точек на кадр в покое: пользовательский бюджет, но не больше разумного для одного кадра (профиль «Максимум» — больше).
+    _octFrameCap() { return Math.min(this._octBudget || Infinity, this._perfProfile === 'max' ? 60000000 : 30000000); }
+    // Ревизия 9: LOD по экранной плотности. Узлы выбираются так, чтобы расстояние между точками на экране было ≈1 пиксель (при движении — 1,7):
+    // видно всё, что способен показать экран, остальные точки остаются в индексе и появляются при приближении. Загрузка — с ограниченным числом
+    // одновременных чтений, грубые узлы раньше мелких; пока узел грузится, рисуется его родитель (дыр нет).
     _drawOctree() {
-      const gl = this.gl; if (!gl || !this._octActive || typeof window === 'undefined' || !window.OctreeStore || !this._octCache) return;
+      const gl = this.gl, OS = typeof window !== 'undefined' ? window.OctreeStore : null;
+      if (!gl || !this._octActive || !OS || !OS.selectLod || !this._octCache) return;
       const M = this._lastVP || this._vp(); const eye = this._eye(); const self = this;
       const streamGeneration = this._octGeneration;
       this._octFrame++;
-      const sel = window.OctreeStore.selectNodes(this._octIndex, {
-        budget: this._octBudget || Infinity,
-        isVisible: (b6) => !self._cellOutside(M, [b6[0], b6[1], b6[2]], [b6[3], b6[4], b6[5]]),
-        distance: (b6) => { const cx = (b6[0] + b6[3]) / 2, cy = (b6[1] + b6[4]) / 2, cz = (b6[2] + b6[5]) / 2; return (cx - eye[0]) * (cx - eye[0]) + (cy - eye[1]) * (cy - eye[1]) + (cz - eye[2]) * (cz - eye[2]); }
-      });
+      if (!this._octLod) this._octLod = OS.prepareLod(this._octIndex);
+      const lod = this._octLod;
+      const vh = gl.canvas.height || 600;
+      const focal = vh * 0.5 / Math.tan(this._fov / 2);
+      const cap = this._octFrameCap(), inter = !!this._interacting;
+      const budget = inter ? Math.min(cap, Math.max(1500000, this._interPts ? Math.round(this._interPts) : 6000000)) : cap;
+      const view = {
+        vp: M, eye, f: focal, ortho: !!this._ortho, ppu: this._ortho ? focal / Math.max(1e-6, this.dist) : 0,
+        tPx: inter ? 1.7 : 1.0, budget, maxNodes: 6000
+      };
+      const sel = OS.selectLod(lod, view, this._octSel || (this._octSel = {}));
       gl.uniform1f(this.u.uUnlit, 1); gl.uniform1f(this.u.uUseVColor, this._octHasColor ? 1 : 0);
       gl.uniform1f(this.u.uRound, this._roundPoints ? 1 : 0); gl.uniform1f(this.u.uAmbient, 1);
-      const vh = gl.canvas.height || 600;
-      const scale = (this._octSpacing || 0) * (vh * 0.5 / Math.tan(this._fov / 2)) * 1.15;
-      gl.uniform1f(this.u.uAttenuate, scale > 0 ? 1 : 0); gl.uniform1f(this.u.uPtScale, scale);
+      // размер точки задаётся самим LOD (расстоянием между точками узла на экране), а не расстоянием до камеры
+      gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uPtScale, 0);
       gl.uniform1f(this.u.uPtMin, 1.0); gl.uniform1f(this.u.uPtMax, this._octPtMax || 8.0);
-      gl.uniform1f(this.u.uPointSize, this._cloudDisplay.pointSize || 2.2);
-      if(this._cloudDisplay.pointSize)gl.uniform1f(this.u.uAttenuate,0);
-      gl.uniform1f(this.u.uCloudPass,1);gl.uniform1f(this.u.uElevMode,this._ptElev?1:0);
+      const basePt = this._cloudDisplay.pointSize || 1.4;
+      gl.uniform1f(this.u.uPointSize, basePt);
+      gl.uniform1f(this.u.uCloudPass, 1); gl.uniform1f(this.u.uElevMode, this._ptElev ? 1 : 0);
       const streamMode = this.getColorMode();
       const streamAttrMode = streamMode === 'intensity' ? 2 :
         streamMode === 'classification' ? 3 : 0;
       gl.uniform1f(this.u.uAttrMode, streamAttrMode);
-      const cb=this._clipBounds();gl.uniform1f(this.u.uClipOn,this._clipActive()?1:0);if(cb){gl.uniform3fv(this.u.uClipMin,cb.mn);gl.uniform3fv(this.u.uClipMax,cb.mx);}
+      const cb = this._clipBounds(); gl.uniform1f(this.u.uClipOn, this._clipActive() ? 1 : 0); if (cb) { gl.uniform3fv(this.u.uClipMin, cb.mn); gl.uniform3fv(this.u.uClipMax, cb.mx); }
       if (!this._octHasColor) gl.uniform3fv(this.u.uColor, new Float32Array([0.82, 0.86, 0.93]));
-      const selSet = new Set(sel.keys);
-      for (const key of sel.keys) {
-        let e = this._octCache.get(key);
-        if (e && e.buf) { e.lastUsed = this._octFrame; gl.bindVertexArray(e.buf.vao); gl.drawArrays(gl.POINTS, 0, e.buf.count); continue; }
+      const selSet = new Set();
+      const missing = [];
+      const now0 = typeof this._octNow === 'function' ? this._octNow() : Date.now();
+      let drawn = 0, drawnNodes = 0, lastSize = basePt;
+      for (let i = 0; i < sel.n; i++) {
+        const key = lod.keys[sel.ids[i]];
+        selSet.add(key);
+        const e = this._octCache.get(key);
+        if (e && e.buf) {
+          e.lastUsed = this._octFrame;
+          // грубые узлы (пока дети не загружены) рисуем крупнее, чтобы не было «решета»
+          const size = Math.min(basePt * 2.5, Math.max(basePt, sel.sp[i] * 0.9));
+          if (size !== lastSize) { gl.uniform1f(this.u.uPointSize, size); lastSize = size; }
+          gl.bindVertexArray(e.buf.vao); gl.drawArrays(gl.POINTS, 0, e.buf.count);
+          drawn += e.buf.count; drawnNodes++;
+          continue;
+        }
         if (e && e.loading) continue;
         const failure = this._octFailures && this._octFailures.get(key);
-        const now = typeof this._octNow === 'function' ? this._octNow() : Date.now();
-        if (failure && failure.retryAt > now) continue;
-        this._octCache.set(key, { buf: null, loading: true, lastUsed: this._octFrame });
-        (function (k) {
-          Promise.resolve().then(function () { return self._octFetch(k); }).then(function (res) {
-            if (self._octGeneration !== streamGeneration || !self._octActive) return;
-            const ent = self._octCache && self._octCache.get(k);
-            if (!ent) return;
-            try {
-              if (!res || !res.pos || !res.pos.length) throw new Error('empty octree node response');
-              ent.buf = self._mkPtBuf(res.pos, res.col || null,
-                res.intensity || null, res.classification || null);
-              if (self._octFailures) self._octFailures.delete(k);
-            } catch (error) {
-              if (self._octCache) self._octCache.delete(k);
-              self._recordOctreeNodeFailure(k, error);
-            } finally {
-              const current = self._octCache && self._octCache.get(k);
-              if (current === ent) {
-                ent.loading = false;
-                ent.lastUsed = self._octFrame;
-              }
-            }
-            self.render();
-          }).catch(function (error) {
-            if (self._octGeneration !== streamGeneration || !self._octActive) return;
-            if (self._octCache) self._octCache.delete(k);
-            self._recordOctreeNodeFailure(k, error);
-            self.render();
-          });
-        })(key);
+        if (failure && failure.retryAt > now0) continue;
+        missing.push(i);
+      }
+      if (missing.length) {
+        missing.sort((a, b) => (lod.level[sel.ids[a]] - lod.level[sel.ids[b]]) || (sel.sp[b] - sel.sp[a]));
+        const slots = (inter ? 3 : 6) - (this._octInflight || 0);
+        for (let m = 0; m < missing.length && m < slots; m++) this._octStartFetch(lod.keys[sel.ids[missing[m]]], streamGeneration);
+      }
+      this._octStats = {
+        nodes: sel.n, drawnNodes, points: sel.points, drawn, missing: missing.length,
+        inflight: this._octInflight || 0, tPx: view.tPx, budget, cap, total: Number(this._octIndex && this._octIndex.pointCount) || 0
+      };
+      this._probeDrawn = (this._probeDrawn || 0) + drawn; this._probeTotal = (this._probeTotal || 0) + cap;
+      // панель «Свойства облака» показывает, сколько точек на экране прямо сейчас (не чаще 4 раз в секунду)
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function' && now0 - (this._octEvT || 0) > 250) {
+        this._octEvT = now0;
+        try { window.dispatchEvent(new CustomEvent('bim-octree-stats', { detail: Object.assign({}, this._octStats) })); } catch (_) {}
       }
       gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.bindVertexArray(null);
       this._trimOctreeGpuCache(selSet, sel.points);
     }
+    getOctreeStats() { return this._octActive && this._octStats ? Object.assign({}, this._octStats) : null; }
+    _octStartFetch(k, streamGeneration) {
+      const self = this;
+      this._octCache.set(k, { buf: null, loading: true, lastUsed: this._octFrame });
+      this._octInflight = (this._octInflight || 0) + 1;
+      let settled = false;
+      const settle = () => { if (!settled) { settled = true; if (self._octGeneration === streamGeneration) self._octInflight = Math.max(0, (self._octInflight || 0) - 1); } };
+      Promise.resolve().then(function () { return self._octFetch(k); }).then(function (res) {
+        settle();
+        if (self._octGeneration !== streamGeneration || !self._octActive) return;
+        const ent = self._octCache && self._octCache.get(k);
+        if (!ent) return;
+        try {
+          if (!res || !res.pos || !res.pos.length) throw new Error('empty octree node response');
+          ent.buf = self._mkPtBuf(res.pos, res.col || null,
+            res.intensity || null, res.classification || null, res.rgba || null);
+          if (self._octFailures) self._octFailures.delete(k);
+        } catch (error) {
+          if (self._octCache) self._octCache.delete(k);
+          self._recordOctreeNodeFailure(k, error);
+        } finally {
+          const current = self._octCache && self._octCache.get(k);
+          if (current === ent) {
+            ent.loading = false;
+            ent.lastUsed = self._octFrame;
+          }
+        }
+        self.render();
+      }).catch(function (error) {
+        settle();
+        if (self._octGeneration !== streamGeneration || !self._octActive) return;
+        if (self._octCache) self._octCache.delete(k);
+        self._recordOctreeNodeFailure(k, error);
+        self.render();
+      });
+    }
     _trimOctreeGpuCache(selSet, visiblePoints) {
       const gl = this.gl, cache = this._octCache;
       if (!gl || !cache) return;
-      const bytesPerPoint = 12 + (this._octHasColor ? 12 : 0) +
+      const bytesPerPoint = 12 + (this._octHasColor ? 4 : 0) +
         (this._octHasIntensity ? 4 : 0) + (this._octHasClassification ? 1 : 0);
       const visibleBytes = Math.max(0, Number(visiblePoints) || 0) * bytesPerPoint;
       // Keep the current view plus a bounded 128 MiB working set for nearby

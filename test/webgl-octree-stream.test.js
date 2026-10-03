@@ -429,7 +429,7 @@ test('failed node reads use bounded exponential backoff instead of retrying on e
   global.CustomEvent = class CustomEvent {
     constructor(type, options) { this.type = type; this.detail = options && options.detail; }
   };
-  global.window = { OctreeStore, dispatchEvent(event) { events.push(event); } };
+  global.window = { OctreeStore, dispatchEvent(event) { if (event.type === 'bim-octree-node-error') events.push(event); } };
   try {
     const { viewer } = makeRenderHarnessViewer();
     let now = 1000;
