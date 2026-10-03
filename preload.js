@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   getMode: () => inv('bim:getMode'),
   readFile: (p) => inv('bim:readFile', p),
   readPicked: (p) => inv('bim:readPicked', p),
-  parseCloud: (p, jobId) => inv('bim:parseCloud', jobId ? { path: p, jobId } : p),
+  parseCloud: (p, jobId, opts) => inv('bim:parseCloud', jobId ? { path: p, jobId, preview: !!(opts && opts.preview) } : p),
   readCloudChunk: (a) => inv('bim:readCloudChunk', a),
   releaseCloud: (a) => inv('bim:releaseCloud', a),
   onCloudParseProgress: (jobId, callback) => {

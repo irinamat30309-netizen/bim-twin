@@ -196,7 +196,7 @@
     if (d.mode === 'elev') drawHist(info);
     if (info.streaming) $('cpHistNote').textContent = 'Гистограмма недоступна в потоковом режиме';
     $('cpTotal').textContent = Number.isSafeInteger(info.sourceCount) ? info.sourceCount.toLocaleString('ru-RU') : 'Неизвестно';
-    $('cpLoaded').textContent = info.streaming ? 'Потоковый режим' : info.loadedCount.toLocaleString('ru-RU');
+    $('cpLoaded').textContent = info.streaming ? streamLoadedText(info, lastStats) : info.loadedCount.toLocaleString('ru-RU');
     {
       // Загружена только часть точек файла (доля в настройках или предел памяти): показываем процент и куда идти за всеми точками
       const part = !info.streaming && Number.isSafeInteger(info.sourceCount) && info.sourceCount > info.loadedCount && info.loadedCount > 0;
@@ -215,7 +215,20 @@
     $('cpColorNote').textContent = info.hasRGB ? '' : 'В исходнике нет RGB: используется цвет парсера. Доступна окраска по высоте.';
   }
 
-  window.__lxCloudUI = { sync, closeMenu, select };
+  // Ревизия 9: в потоковом режиме показываем, что индекс содержит все точки файла, и сколько из них рисуется в этом кадре
+  let lastStats = null;
+  const mln = (n) => (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace('.', ',') + ' млн';
+  function streamLoadedText(info, st) {
+    const indexed = st && st.total ? st.total : 0, src = Number(info.sourceCount) || 0;
+    const head = indexed && src && indexed < src * 0.999 ? 'Индекс: ' + mln(indexed) + ' из ' + mln(src) : 'Все точки файла';
+    return head + (st ? ' · на экране ' + mln(st.drawn) : ' · потоковый режим');
+  }
+  window.addEventListener('bim-octree-stats', (e) => {
+    lastStats = e && e.detail || null;
+    const v = V(), info = v && v.getCloudInfo && v.getCloudInfo(), el = $('cpLoaded');
+    if (info && info.streaming && el) el.textContent = streamLoadedText(info, lastStats);
+  });
+  window.__lxCloudUI = { sync, closeMenu, select, streamLoadedText };
   ['bim-cloud-change', 'bim-app-ready', 'lx-scene-built'].forEach(e => window.addEventListener(e, sync));
   if (document.readyState !== 'loading') sync(); else window.addEventListener('DOMContentLoaded', () => setTimeout(sync, 200));
 })();

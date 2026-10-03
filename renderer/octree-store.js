@@ -494,6 +494,131 @@
     return { keys: keys, points: used };
   }
 
+  // ---- ревизия 9: LOD по экранной плотности (как в Potree), без разбора index.json в каждом кадре ----
+  // Узел хранит выборку точек своей ячейки; дети — остальные точки. Узел «достаточно плотен», если расстояние между его точками на экране
+  // не больше tPx пикселей: тогда глубже не идём. Рисуется ровно то, что экран способен разрешить, а все точки остаются в индексе и появляются
+  // при приближении. Выбор best-first по «разреженности» узла (самые грубые уточняются первыми) в пределах бюджета точек и числа узлов.
+  function prepareLod(index) {
+    var nodes = (index && index.nodes) || [], n = nodes.length, i, k;
+    var keyToId = new Map(), keys = new Array(n);
+    for (i = 0; i < n; i++) { keys[i] = nodes[i].key; keyToId.set(nodes[i].key, i); }
+    var mn = new Float64Array(n * 3), mx = new Float64Array(n * 3), cnt = new Float64Array(n);
+    var level = new Uint8Array(n), ext = new Float64Array(n), cs = new Int32Array(n + 1), kids = [];
+    for (i = 0; i < n; i++) {
+      var nd = nodes[i], ex = 0;
+      for (k = 0; k < 3; k++) {
+        mn[i * 3 + k] = Number(nd.mn[k]); mx[i * 3 + k] = Number(nd.mx[k]);
+        ex = Math.max(ex, mx[i * 3 + k] - mn[i * 3 + k]);
+      }
+      ext[i] = ex > 1e-9 ? ex : 1e-9;
+      cnt[i] = Number(nd.count) || 0;
+      level[i] = Math.min(255, nd.level | 0);
+      cs[i] = kids.length;
+      var ck = nd.childKeys || [];
+      for (k = 0; k < ck.length; k++) { var cid = keyToId.get(ck[k]); if (cid !== undefined) kids.push(cid); }
+    }
+    cs[n] = kids.length;
+    var root = index && keyToId.has(index.root) ? keyToId.get(index.root) : 0;
+    return { n: n, keys: keys, keyToId: keyToId, mn: mn, mx: mx, cnt: cnt, level: level, ext: ext, cs: cs, kids: Int32Array.from(kids), root: root };
+  }
+
+  // view: { vp:[16] (столбцами, как в WebGL) | null, eye:[x,y,z], f: фокус в пикселях (высота/2/tan(fov/2)), ortho:bool, ppu: пикселей на метр (ортогональная),
+  //         tPx: допустимое расстояние между точками на экране, budget: потолок точек, maxNodes }
+  // out: { ids:[], sp:[], points, n } — индексы узлов и «расстояние между точками узла» в пикселях (для размера точки и очереди загрузки)
+  function selectLod(lod, view, out) {
+    out = out || {};
+    var ids = out.ids || (out.ids = []), sp = out.sp || (out.sp = []);
+    ids.length = 0; sp.length = 0; out.points = 0; out.n = 0;
+    if (!lod || !lod.n) return out;
+    var mn = lod.mn, mx = lod.mx, cnt = lod.cnt, ext = lod.ext, cs = lod.cs, kids = lod.kids;
+    var eye = view.eye || [0, 0, 0], ex = eye[0], ey = eye[1], ez = eye[2];
+    var ortho = !!view.ortho, f = view.f > 0 ? view.f : 800, ppu = view.ppu > 0 ? view.ppu : 1;
+    var t = view.tPx > 0 ? view.tPx : 1, budget = view.budget > 0 ? view.budget : Infinity;
+    var maxNodes = view.maxNodes > 0 ? view.maxNodes : 6000;
+    var pl = null, M = view.vp;
+    if (M && M.length >= 16) {
+      pl = new Float64Array(24);
+      var rows = [[3, 0, 1], [3, 0, -1], [3, 1, 1], [3, 1, -1], [3, 2, 1], [3, 2, -1]];
+      for (var q = 0; q < 6; q++) {
+        var a = rows[q][0], b = rows[q][1], sg = rows[q][2];
+        pl[q * 4] = M[a] + sg * M[b]; pl[q * 4 + 1] = M[4 + a] + sg * M[4 + b];
+        pl[q * 4 + 2] = M[8 + a] + sg * M[8 + b]; pl[q * 4 + 3] = M[12 + a] + sg * M[12 + b];
+      }
+    }
+    function outside(i) {
+      if (!pl) return false;
+      var o = i * 3;
+      for (var p = 0; p < 24; p += 4) {
+        var A = pl[p], B = pl[p + 1], C = pl[p + 2];
+        if (A * (A >= 0 ? mx[o] : mn[o]) + B * (B >= 0 ? mx[o + 1] : mn[o + 1]) + C * (C >= 0 ? mx[o + 2] : mn[o + 2]) + pl[p + 3] < 0) return true;
+      }
+      return false;
+    }
+    function spacing(i) {
+      var px;
+      if (ortho) px = ext[i] * ppu;
+      else {
+        var o = i * 3;
+        var dx = Math.max(mn[o] - ex, 0, ex - mx[o]), dy = Math.max(mn[o + 1] - ey, 0, ey - mx[o + 1]), dz = Math.max(mn[o + 2] - ez, 0, ez - mx[o + 2]);
+        var d = Math.sqrt(dx * dx + dy * dy + dz * dz), dmin = ext[i] * 0.02;
+        px = ext[i] * f / (d > dmin ? d : dmin);
+      }
+      return px / Math.sqrt(Math.max(1, cnt[i]) * 1.15);
+    }
+    var hp = [], hi = [];
+    function push(pri, id) {
+      var k = hp.length; hp.push(pri); hi.push(id);
+      while (k > 0) { var par = (k - 1) >> 1; if (hp[par] >= pri) break; hp[k] = hp[par]; hi[k] = hi[par]; k = par; }
+      hp[k] = pri; hi[k] = id;
+    }
+    function pop() {
+      var top = hi[0], lp = hp.pop(), li = hi.pop(), n = hp.length;
+      if (n) {
+        var k = 0;
+        for (;;) {
+          var c = 2 * k + 1; if (c >= n) break;
+          if (c + 1 < n && hp[c + 1] > hp[c]) c++;
+          if (hp[c] <= lp) break;
+          hp[k] = hp[c]; hi[k] = hi[c]; k = c;
+        }
+        hp[k] = lp; hi[k] = li;
+      }
+      return top;
+    }
+    var root = lod.root, pts = 0;
+    if (!outside(root)) push(Infinity, root);
+    while (hp.length && pts < budget && ids.length < maxNodes) {
+      var id = pop(), s = spacing(id);
+      ids.push(id); sp.push(s); pts += cnt[id];
+      if (s > t) for (var c = cs[id]; c < cs[id + 1]; c++) { var ch = kids[c]; if (!outside(ch)) push(s, ch); }
+    }
+    out.points = pts; out.n = ids.length;
+    return out;
+  }
+
+  // Быстрый разбор узла для видеокарты: позиции float32 + цвет RGBA8 (4 байта вместо 12) [+ интенсивность float32] [+ класс uint8].
+  function decodeNodeGpu(bytes, count, format) {
+    var layout = getNodePointLayout(format);
+    if (!layout) throw new Error('invalid octree node point layout');
+    var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), stride = layout.stride;
+    if (!Number.isSafeInteger(count) || count < 0 || u8.byteLength !== count * stride) {
+      throw new RangeError('octree node byte length does not match its point count and layout');
+    }
+    var dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    var pos = new Float32Array(count * 3);
+    var rgba = layout.hasColor ? new Uint8Array(count * 4) : null;
+    var inten = layout.hasIntensity ? new Float32Array(count) : null;
+    var cls = layout.hasClassification ? new Uint8Array(count) : null;
+    var io = layout.intensityOffset, co = layout.classificationOffset;
+    for (var i = 0, off = 0, j = 0; i < count; i++, off += stride, j += 3) {
+      pos[j] = dv.getFloat32(off, true); pos[j + 1] = dv.getFloat32(off + 4, true); pos[j + 2] = dv.getFloat32(off + 8, true);
+      if (rgba) { var k = i * 4; rgba[k] = u8[off + 12]; rgba[k + 1] = u8[off + 13]; rgba[k + 2] = u8[off + 14]; rgba[k + 3] = 255; }
+      if (inten) inten[i] = dv.getFloat32(off + io, true);
+      if (cls) cls[i] = u8[off + co];
+    }
+    return { pos: pos, col: null, rgba: rgba, intensity: inten, classification: cls };
+  }
+
   var api = {
     buildOctree: buildOctree,
     sampleNodePositions: sampleNodePositions,
@@ -503,7 +628,10 @@
     deserializeNodePoints: deserializeNodePoints,
     getNodePointLayout: getNodePointLayout,
     validateOctreeIndex: validateOctreeIndex,
-    selectNodes: selectNodes
+    selectNodes: selectNodes,
+    prepareLod: prepareLod,
+    selectLod: selectLod,
+    decodeNodeGpu: decodeNodeGpu
   };
   if (typeof window !== 'undefined') window.OctreeStore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -1022,6 +1022,17 @@ function registerIpc() {
   // Parse in a dedicated worker so long scans do not block project saves or
   // window controls; progress and cancellation are scoped to the initiating
   // WebContents and job id.
+  // Число точек в заголовке LAS/PLY/PCD без чтения самих точек (0 — неизвестно или формат без потокового чтения)
+  function peekSourcePointCount(abs) {
+    try {
+      const ext = path.extname(abs).toLowerCase();
+      let info = null;
+      if (ext === '.las' && typeof cloud.getOutOfCoreLasPointFileInfo === 'function') info = cloud.getOutOfCoreLasPointFileInfo(abs);
+      else if (ext === '.ply' && typeof cloud.getOutOfCorePlyPointFileInfo === 'function') info = cloud.getOutOfCorePlyPointFileInfo(abs);
+      else if (ext === '.pcd' && typeof cloud.getOutOfCorePcdPointFileInfo === 'function') info = cloud.getOutOfCorePcdPointFileInfo(abs);
+      return info ? Number(info.pointCount || info.vertexCount) || 0 : 0;
+    } catch (_) { return 0; }
+  }
   ipcMain.handle('bim:parseCloud', async (event, payload) => {
     const requested = String(payload && typeof payload === 'object' ? payload.path || '' : payload || '');
     const jobId = payload && typeof payload === 'object' ? payload.jobId : null;
@@ -1030,9 +1041,16 @@ function registerIpc() {
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
       const s = readSettings();
-      const maxPoints = APP_CFG.resolvePointBudget(s);
+      let maxPoints = APP_CFG.resolvePointBudget(s);
       // Доля точек файла (Настройки → Облака точек): 100 % — все точки; иначе каждая k-я
       const pointShare = APP_CFG.resolvePointShare(s);
+      // Ревизия 9: огромный файл (> STREAM_FIRST_POINTS) открывается быстрым предпросмотром — 6 млн точек за секунды вместо минут чтения 100+ млн;
+      // индекс всех точек окно строит в фоне и включает потоковый режим само. Только для открытия файла пользователем (payload.preview) и без явной доли точек.
+      let previewOnly = false;
+      if (payload && typeof payload === 'object' && payload.preview === true && pointShare >= 1 && s.streamFirst !== false) {
+        const peek = peekSourcePointCount(abs);
+        if (peek > (APP_CFG.STREAM_FIRST_POINTS || 50000000)) { maxPoints = Math.min(maxPoints, APP_CFG.PREVIEW_POINTS || 6000000); previewOnly = true; }
+      }
       const controller = new AbortController();
       const key = jobId ? cloudJobKey(event && event.sender, jobId) : null;
       if (key && activeCloudParseJobs.has(key)) return { ok: false, message: 'duplicate_job_id' };
@@ -1054,6 +1072,7 @@ function registerIpc() {
         if (result && result.ok) {
           const loaded = result.count || (result.pos && result.pos.length / 3) || 0;
           if (pointShare < 1) result.pointShare = pointShare;
+          if (previewOnly) result.previewOnly = true;
           // Крупное облако — в окно кусками (одно сообщение на 1–1,5 ГБ роняло процесс окна)
           if (result.kind !== 'mesh' && ArrayBuffer.isView(result.pos) && result.pos.length / 3 > (APP_CFG.IPC_INLINE_POINTS || 6000000) && sender && sender.id != null) {
             onProgress({ phase: 'transfer', fraction: 0, pointsLoaded: loaded });
@@ -1558,6 +1577,8 @@ function registerIpc() {
   // Каталог хранилищ octree внутри userData; читать/писать разрешено только здесь.
   function octreeBaseDir() { return path.join(app.getPath('userData'), 'octrees'); }
   const octreeIndexCache = new Map();
+  const octreeBinSizes = new Map();        // размер nodes.bin по каталогу (stat один раз)
+  const octreeNodeMaps = new WeakMap();    // index -> Map(key -> узел)
   const octreeDirOwners = new Map();
   function safeOctreeDir(dir) {
     const base = path.resolve(octreeBaseDir());
@@ -1568,6 +1589,41 @@ function registerIpc() {
       if (fs.lstatSync(base).isSymbolicLink() || fs.lstatSync(rd).isSymbolicLink() || !fs.lstatSync(rd).isDirectory()) return null;
     } catch (_) { return null; }
     return rd;
+  }
+  // ---- Кэш готовых индексов (ревизия 9): каталоги c-<16 hex> в каталоге индексов; готовым считается каталог с index.json (он пишется последним) ----
+  const activeCacheBuilds = new Set();
+  function loadCachedOctree(dir) {
+    try {
+      const idxPath = path.join(dir, 'index.json'), binPath = path.join(dir, 'nodes.bin');
+      if (!fs.existsSync(idxPath) || !fs.existsSync(binPath)) return null;
+      const idxStat = fs.statSync(idxPath), binStat = fs.statSync(binPath);
+      if (!idxStat.isFile() || idxStat.size > 64 * 1024 * 1024 || !binStat.isFile()) return null;
+      const index = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+      if (!index || !Array.isArray(index.nodes) || !octreeStore.validateOctreeIndex(index, binStat.size)) { fs.rmSync(dir, { recursive: true, force: true }); return null; }
+      const now = new Date(); try { fs.utimesSync(idxPath, now, now); } catch (_) {}   // «последнее использование» для вытеснения
+      return { index, bytes: binStat.size };
+    } catch (_) { return null; }
+  }
+  function pruneOctreeCache(base, keep) {
+    try {
+      const items = [];
+      for (const e of fs.readdirSync(base, { withFileTypes: true })) {
+        if (!e.isDirectory() || !/^c-[a-f0-9]{16}$/.test(e.name)) continue;
+        const dir = path.join(base, e.name);
+        if (activeCacheBuilds.has(dir)) continue;
+        let t = 0, done = false;
+        try { t = fs.statSync(path.join(dir, 'index.json')).mtimeMs; done = true; } catch (_) { try { t = fs.statSync(dir).mtimeMs; } catch (_) {} }
+        items.push({ dir, t, done });
+      }
+      items.sort((x, y) => y.t - x.t);
+      let kept = 0;
+      for (const it of items) {
+        if (it.done && kept < keep) { kept++; continue; }
+        if (!it.done && Date.now() - it.t < 3600 * 1000) continue;     // недавний недостроенный — возможно, строит другое окно
+        try { fs.rmSync(it.dir, { recursive: true, force: true }); } catch (_) {}
+        octreeIndexCache.delete(path.resolve(it.dir)); octreeBinSizes.delete(path.resolve(it.dir));
+      }
+    } catch (_) {}
   }
   octreeCleanupOnQuit = function cleanupOctreeStoresOnQuit() {
     for (const job of activeOctreeBuildJobs.values()) {
@@ -1587,7 +1643,7 @@ function registerIpc() {
         if (dir) fs.rmSync(dir, { recursive: true, force: true });
       }
     } catch (_) {}
-    octreeIndexCache.clear();
+    octreeIndexCache.clear(); octreeBinSizes.clear();
     octreeDirOwners.clear();
   };
 
@@ -1641,6 +1697,35 @@ function registerIpc() {
       if (useOutOfCore && Number.isSafeInteger(sourcePointCount) && sourcePointCount > maxPoints) {
         maxPoints = Math.min(APP_CFG.OCTREE_MAX_POINTS || 2000000000, sourcePointCount);
       }
+      let sourceTransform;
+      if (a.sourceTransform != null) {
+        const candidate = a.sourceTransform;
+        if (!candidate || !['zup', 'yup'].includes(candidate.axis) ||
+            !Array.isArray(candidate.t) || candidate.t.length < 3 ||
+            !candidate.t.slice(0, 3).every(value => Number.isFinite(Number(value)) && Math.abs(Number(value)) <= 1e12)) {
+          return { ok: false, error: 'invalid_source_transform' };
+        }
+        sourceTransform = { axis: candidate.axis, t: candidate.t.slice(0, 3).map(Number) };
+      }
+      // Ревизия 9: готовый индекс этого же файла (путь, размер, время изменения, параметры) берётся из кэша — повторное открытие мгновенное.
+      const cacheOn = useOutOfCore && readSettings().octreeCache !== false && (APP_CFG.OCTREE_CACHE_KEEP || 2) > 0;
+      let cacheDir = null;
+      if (cacheOn) {
+        try {
+          const st = fs.statSync(abs);
+          const fp = crypto.createHash('sha256').update(JSON.stringify(['r9', abs, st.size, Math.round(st.mtimeMs), nodeCapacity, maxPoints, sourceTransform || null, outOfCoreRecordStride])).digest('hex').slice(0, 16);
+          cacheDir = path.join(octreeBaseDir(), 'c-' + fp);
+          const hit = loadCachedOctree(cacheDir);
+          if (hit) {
+            const canonicalDir = path.resolve(cacheDir);
+            octreeIndexCache.set(canonicalDir, hit.index); octreeBinSizes.set(canonicalDir, hit.bytes);
+            octreeDirOwners.set(canonicalDir, sender.id);
+            while (octreeIndexCache.size > 8) octreeIndexCache.delete(octreeIndexCache.keys().next().value);
+            return { ok: true, dir: canonicalDir, index: hit.index, meta: hit.index.sourceMeta || {}, bytes: hit.bytes, sourcePointCount: hit.index.sourcePointCount || hit.index.pointCount, indexedPointCount: hit.index.pointCount, outOfCore: true, cached: true };
+          }
+          if (activeCacheBuilds.has(cacheDir)) return { ok: false, error: 'already_building', message: 'Индекс этого файла уже строится' };
+        } catch (_) { cacheDir = null; }
+      }
       const estimatePointCount = Number.isSafeInteger(sourcePointCount) && sourcePointCount > 0
         ? Math.min(sourcePointCount, maxPoints)
         : null;
@@ -1661,6 +1746,8 @@ function registerIpc() {
       }
       const base = octreeBaseDir();
       fs.mkdirSync(base, { recursive: true });
+      // новый индекс займёт место ещё одного — освобождаем самый давний, чтобы в кэше оставалось не больше OCTREE_CACHE_KEEP
+      if (cacheDir) pruneOctreeCache(base, Math.max(0, (APP_CFG.OCTREE_CACHE_KEEP || 2) - 1));
       if (estimatePointCount !== null) {
         const pcdLzfScratchBytes = useOutOfCore && sourceExtension === '.pcd' &&
           sourcePreflightInfo.mode === 'binary_compressed'
@@ -1690,17 +1777,8 @@ function registerIpc() {
           };
         }
       }
-      let sourceTransform;
-      if (a.sourceTransform != null) {
-        const candidate = a.sourceTransform;
-        if (!candidate || !['zup', 'yup'].includes(candidate.axis) ||
-            !Array.isArray(candidate.t) || candidate.t.length < 3 ||
-            !candidate.t.slice(0, 3).every(value => Number.isFinite(Number(value)) && Math.abs(Number(value)) <= 1e12)) {
-          return { ok: false, error: 'invalid_source_transform' };
-        }
-        sourceTransform = { axis: candidate.axis, t: candidate.t.slice(0, 3).map(Number) };
-      }
-      const outputDir = path.join(base, Date.now() + '-' + crypto.randomBytes(8).toString('hex'));
+      const outputDir = cacheDir || path.join(base, Date.now() + '-' + crypto.randomBytes(8).toString('hex'));
+      if (cacheDir) { try { fs.rmSync(cacheDir, { recursive: true, force: true }); } catch (_) {} activeCacheBuilds.add(cacheDir); }
       const worker = new Worker(path.join(__dirname, 'octree-build-worker.js'), {
         workerData: { sourcePath: abs, outputDir, maxPoints, nodeCapacity, sourceTransform, sourcePreflightInfo }
       });
@@ -1711,6 +1789,7 @@ function registerIpc() {
           settled = true;
           job.finished = true;
           activeOctreeBuildJobs.delete(key);
+          if (cacheDir) activeCacheBuilds.delete(cacheDir);
           try { sender.removeListener('destroyed', job.onSenderDestroyed); } catch (_) {}
           if (!result || !result.ok) {
             try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch (_) {}
@@ -1721,6 +1800,7 @@ function registerIpc() {
             const canonicalDir = path.resolve(outputDir);
             octreeIndexCache.set(canonicalDir, result.index);
             octreeDirOwners.set(canonicalDir, sender.id);
+            if (cacheDir) { result.cached = false; result.cacheDir = true; }
             while (octreeIndexCache.size > 8) octreeIndexCache.delete(octreeIndexCache.keys().next().value);
           }
           resolve(result);
@@ -1762,9 +1842,9 @@ function registerIpc() {
       if (!dir) return { ok: false, error: 'denied' };
       const idxPath = path.join(dir, 'index.json');
       const binPath = path.join(dir, 'nodes.bin');
-      if (!fs.existsSync(idxPath) || !fs.existsSync(binPath)) return { ok: false, error: 'not_found' };
       let index = octreeIndexCache.get(dir);
       if (!index) {
+        if (!fs.existsSync(idxPath) || !fs.existsSync(binPath)) return { ok: false, error: 'not_found' };
         const idxStat = fs.statSync(idxPath);
         if (!idxStat.isFile() || idxStat.size > 64 * 1024 * 1024) return { ok: false, error: 'index_too_large' };
         index = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
@@ -1776,16 +1856,21 @@ function registerIpc() {
           return { ok: false, error: 'invalid_index' };
         }
         octreeIndexCache.set(dir, index);
+        octreeBinSizes.set(dir, dataStat.size);
       }
       if (typeof a.key !== 'string' || !/^r[0-7]*$/.test(a.key)) return { ok: false, error: 'invalid_node_key' };
-      const node = index.nodes.find(x => x.key === a.key);
+      // ревизия 9: поиск узла по ключу — через Map (раньше линейный проход по всем узлам на каждое чтение)
+      let byKey = octreeNodeMaps.get(index);
+      if (!byKey) { byKey = new Map(); for (const nd of index.nodes) byKey.set(nd.key, nd); octreeNodeMaps.set(index, byKey); }
+      const node = byKey.get(a.key);
       if (!node) return { ok: false, error: 'no_node' };
       if (!Number.isSafeInteger(node.count) || node.count < 0 ||
           !Number.isSafeInteger(node.offset) || node.offset < 0 ||
           !Number.isSafeInteger(node.byteLength) || node.byteLength !== node.count * index.stride ||
           node.byteLength > 16 * 1024 * 1024) return { ok: false, error: 'invalid_node_range' };
-      const binStat = fs.statSync(binPath);
-      if (!binStat.isFile() || node.offset + node.byteLength > binStat.size) return { ok: false, error: 'node_out_of_bounds' };
+      let binSize = octreeBinSizes.get(dir);
+      if (!(binSize >= 0)) { const binStat = fs.statSync(binPath); if (!binStat.isFile()) return { ok: false, error: 'not_found' }; binSize = binStat.size; octreeBinSizes.set(dir, binSize); }
+      if (node.offset + node.byteLength > binSize) return { ok: false, error: 'node_out_of_bounds' };
       fd = fs.openSync(binPath, 'r');
       const buf = Buffer.alloc(node.byteLength);
       const read = fs.readSync(fd, buf, 0, node.byteLength, node.offset);
@@ -1808,8 +1893,10 @@ function registerIpc() {
       if (!dir) return { ok: false, error: 'denied' };
       const sender = event && event.sender;
       if (!sender || octreeDirOwners.get(dir) !== sender.id) return { ok: false, error: 'denied' };
+      // каталог из кэша индексов не удаляем при выключении потока: он нужен для мгновенного повторного открытия (вытесняется по OCTREE_CACHE_KEEP)
+      if (/^c-[a-f0-9]{16}$/.test(path.basename(dir))) { octreeDirOwners.delete(dir); return { ok: true, deleted: false, kept: true }; }
       await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-      octreeIndexCache.delete(dir);
+      octreeIndexCache.delete(dir); octreeBinSizes.delete(dir);
       octreeDirOwners.delete(dir);
       return { ok: true, deleted: true };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
