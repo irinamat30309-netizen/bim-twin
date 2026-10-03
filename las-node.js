@@ -481,14 +481,14 @@ function prepareLasOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
       const worldX = rawX * H.scale.x + H.offset.x;
       const worldY = rawY * H.scale.y + H.offset.y;
       const worldZ = rawZ * H.scale.z + H.offset.z;
-      if (![worldX, worldY, worldZ].every(Number.isFinite)) {
+      if (!(Number.isFinite(worldX) && Number.isFinite(worldY) && Number.isFinite(worldZ))) {
         invalidCount++;
         return;
       }
       if (!selected) return;
       if (!haveShift) { shX = worldX; shY = worldY; shZ = worldZ; haveShift = true; }
       const x = worldX - shX, y = worldY - shY, z = worldZ - shZ;
-      if (![x, y, z].every(Number.isFinite)) { invalidCount++; return; }
+      if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))) { invalidCount++; return; }
       mnx = Math.min(mnx, x); mny = Math.min(mny, y); mnz = Math.min(mnz, z);
       mxx = Math.max(mxx, x); mxy = Math.max(mxy, y); mxz = Math.max(mxz, z);
       validCount++;
@@ -551,25 +551,21 @@ function prepareLasOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
       const worldX = rawX * H.scale.x + H.offset.x;
       const worldY = rawY * H.scale.y + H.offset.y;
       const worldZ = rawZ * H.scale.z + H.offset.z;
-      if (![worldX, worldY, worldZ].every(Number.isFinite)) return;
+      if (!(Number.isFinite(worldX) && Number.isFinite(worldY) && Number.isFinite(worldZ))) return;
       const relX = Math.fround(worldX - shX), relY = Math.fround(worldY - shY);
       const relZ = Math.fround(worldZ - shZ);
-      const xyz = [
-        Math.fround(relX - centerX),
-        Math.fround(relZ - centerZ),
-        Math.fround(-(relY - centerY))
-      ];
-      if (!xyz.every(Number.isFinite)) {
+      const ox = Math.fround(relX - centerX), oy = Math.fround(relZ - centerZ), oz = Math.fround(-(relY - centerY));
+      if (!(Number.isFinite(ox) && Number.isFinite(oy) && Number.isFinite(oz))) {
         throw new Error('LAS viewer coordinates exceed the Float32 streaming range');
       }
-      for (let axis = 0; axis < 3; axis++) {
-        outputBounds.mn[axis] = Math.min(outputBounds.mn[axis], xyz[axis]);
-        outputBounds.mx[axis] = Math.max(outputBounds.mx[axis], xyz[axis]);
-      }
+      const bmn = outputBounds.mn, bmx = outputBounds.mx;
+      if (ox < bmn[0]) bmn[0] = ox; if (ox > bmx[0]) bmx[0] = ox;
+      if (oy < bmn[1]) bmn[1] = oy; if (oy > bmx[1]) bmx[1] = oy;
+      if (oz < bmn[2]) bmn[2] = oz; if (oz > bmx[2]) bmx[2] = oz;
       const offset = outputPosition;
-      outputBuffer.writeFloatLE(xyz[0], offset);
-      outputBuffer.writeFloatLE(xyz[1], offset + 4);
-      outputBuffer.writeFloatLE(xyz[2], offset + 8);
+      outputBuffer.writeFloatLE(ox, offset);
+      outputBuffer.writeFloatLE(oy, offset + 4);
+      outputBuffer.writeFloatLE(oz, offset + 8);
       if (colored) {
         const c = base + H.colorOff;
         outputBuffer[offset + 12] = clampByte(Math.fround(buffer.readUInt16LE(c) / colorDiv));

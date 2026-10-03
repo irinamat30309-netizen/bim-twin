@@ -66,6 +66,7 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
     const maxDepth = 14; // fixed deterministic safety bound
     const readRecords = Math.max(1, Math.floor(8 * 1024 * 1024 / recordStride));
     const readBuffer = Buffer.alloc(readRecords * recordStride);
+    const readView = new DataView(readBuffer.buffer, readBuffer.byteOffset, readBuffer.length);
     const partBuffer = Buffer.alloc(CANONICAL_PARTITION_BUFFER_RECORDS * recordStride);
 
     function writeNodeBytes(key, level, mn, mx, childKeys, splitMode, bytes, count) {
@@ -169,7 +170,8 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
             const globalRecord = record + i;
             const src = i * recordStride;
             if (nextSelected < ownCount && selected[nextSelected] === globalRecord) {
-              readBuffer.copy(ownBytes, nextSelected * recordStride, src, src + recordStride);
+              // запись 15–20 байт: цикл быстрее вызова Buffer.copy (r9)
+              for (let b = 0, dst = nextSelected * recordStride; b < recordStride; b++) ownBytes[dst + b] = readBuffer[src + b];
               nextSelected++;
               continue;
             }
@@ -179,7 +181,7 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
               octant = Math.min(7, Math.floor(restOrdinal * 8 / remainingCount));
               restOrdinal++;
             } else {
-              const x = readBuffer.readFloatLE(src), y = readBuffer.readFloatLE(src + 4), z = readBuffer.readFloatLE(src + 8);
+              const x = readView.getFloat32(src, true), y = readView.getFloat32(src + 4, true), z = readView.getFloat32(src + 8, true);
               octant = (x >= cx ? 1 : 0) | (y >= cy ? 2 : 0) | (z >= cz ? 4 : 0);
             }
             let sink = sinks[octant];
@@ -189,7 +191,7 @@ function buildCanonicalPointOctreeToDisk(source, targetDir, maxPoints, nodeCapac
               const fd = fs.openSync(partPath, 'wx', 0o600);
               sink = sinks[octant] = { key: childKey, path: partPath, fd, buffer: Buffer.from(partBuffer), used: 0, position: 0, count: 0 };
             }
-            readBuffer.copy(sink.buffer, sink.used, src, src + recordStride);
+            { const sb = sink.buffer; for (let b = 0, dst = sink.used; b < recordStride; b++) sb[dst + b] = readBuffer[src + b]; }
             sink.used += recordStride;
             sink.count++;
             bucketCounts[octant]++;

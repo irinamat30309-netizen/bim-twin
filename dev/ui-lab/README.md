@@ -138,6 +138,18 @@ FACADE_POS=участок.pos node facade-eval.js                               
 `facade-eval.js` принимает участок стены без земли и крыши — Float32 `x y z` подряд, ось Y вверх (его вырезают из большого LAS любым скриптом по координатному окну; сам скан в репозиторий не входит). Плоскость подбирается устойчиво по главному слою, затем считаются MAD, ширина p10–p90 и p2–p98 остатков и доля точек в ±5 мм.
 Потоковый индекс (без окна): `buildOctreeToDisk(src, outDir, { maxPoints: 2e9, nodeCapacity: 120000, sourcePreflightInfo: getOutOfCoreLasPointFileInfo(src) })` из `octree-build-core.js` — время и пик памяти на реальных данных см. «Ревизия 8» в `RELEASE-1.2.0-rc.3.md`.
 
+## Потоковый режим на готовом индексе (ревизия 9)
+
+```bash
+# 1) тестовый индекс (синтетический LAS или свой): в Node, без окна
+node -e "const {buildOctreeToDisk}=require('./octree-build-core');buildOctreeToDisk('скан.las','/tmp/oct',{nodeCapacity:120000,sourceTransform:{axis:'zup',t:[25,-20,25]}})"
+# 2) стенд: страница читает узлы через перехват /__oct/<ключ> (как приложение читает их через IPC)
+LAB_OCT=/tmp/oct [LAB_W=800 LAB_H=500 LAB_CAP=3000000] sh /data/ui-lab/run.sh dev/ui-lab/stream-perf.js
+```
+
+`stream-perf.js` печатает для видов overview / mid / near / close: время до первых точек и до полной подгрузки, число чтений и байт, число узлов, выбранные и нарисованные точки; затем при вращении — выбор по кадрам, JS-часть кадра (`_drawOctree`) и длинные задачи основного потока. Снимки — `stream_*.png`.
+В среде без видеокарты (SwiftShader) отрисовка идёт на процессоре, поэтому время кадра GPU стенд не показывает — только число точек, чтения и нагрузку JS. Размер выборки за кадр ограничивает `LAB_CAP`.
+
 ## Режим Electron-API
 
 По умолчанию `stub.js` повторяет полный список методов `bimAPI` из `preload.js` (через `ownKeys/has/getOwnPropertyDescriptor`), поэтому рабочая область ведёт себя как в Electron: бейдж «JSON», кнопки окна, автосохранение. `LAB_DEMO=1` возвращает демо-режим без `bimAPI` (бейдж «Демо»). Критерий прохождения: все сценарии `ok`, `errors: 0` и ни одного замечания аудита.
