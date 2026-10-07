@@ -2054,7 +2054,7 @@
         _dlg.className = 'modal open';
         _dlg.innerHTML = `
           <div class="modal-card sm conv-card">
-            <div class="modal-head"><span class="conv-title">${ICON('sparkles', 16)}PLY → 3DGS конвертация</span></div>
+            <div class="modal-head"><span class="conv-title">${ICON('sparkles', 16)}PLY → 3DGS конвертация</span><button class="x icon-btn" id="_convX" type="button" aria-label="Закрыть">${ICON('x', 16)}</button></div>
             <div class="panel-body conv-body">
               <div id="_convMsg" class="conv-msg">Подготовка…</div>
               <div class="lx-bar"><i id="_convBar"></i></div>
@@ -2106,7 +2106,7 @@
           _lastSplatName = (window._lastLidarPlyName || 'cloud').replace(/\.ply$/i, '') + '-3dgs.splat';
           _lastConvertedSplat = result.buffer;
           setTimeout(() => {
-            _dlg.style.display = 'none';
+            _dlg.classList.remove('open'); _dlg.style.display = 'none';
             if (!window.SplatViewer) { toast('Модуль 3DGS-вьюера не загружен'); return; }
             if (stageEl) window.SplatViewer.mount(stageEl);
             try {
@@ -2122,7 +2122,11 @@
           _converting = false;
         }
       };
-      if (closeBtn) closeBtn.onclick = () => { if (!_converting) _dlg.style.display = 'none'; };
+      // Закрытие: кнопки «Закрыть» и ×, Esc и клик по фону (через closeTopModal) ведут сюда. Во время расчёта окно сворачивается, но расчёт не обрывается:
+      // результат всё равно загрузится в 3DGS-вьюер. Класс open снимается вместе с display, иначе Esc считал бы окно открытым.
+      const hideConv = () => { _dlg.classList.remove('open'); _dlg.style.display = 'none'; if (_converting) toast('Конвертация продолжается в фоне — 3DGS откроется сам'); };
+      if (closeBtn) closeBtn.onclick = hideConv;
+      const xBtn = document.getElementById('_convX'); if (xBtn) xBtn.onclick = hideConv;
     });
     const tsSplatTop = $('tsSplatTop');
     if (tsSplatTop) tsSplatTop.addEventListener('click', openSplatPicker);
