@@ -292,6 +292,7 @@
     if (ob.type === 'pair' && /room-/.test(keys)) return 'помещение';
     if (state.kind && fam && (fam === ob.family || (fam === 'box' && ob.family === 'panel'))) return state.kind;
     if (ob.type === 'opening') return /Дверн/.test(ob.title) ? 'дверь' : 'проём';
+    if (ob.type === 'duct') return 'воздуховод';
     if (ob.type === 'cylinder' || ob.type === 'pipes') return 'труба';
     if (/inner-width/.test(keys)) return 'лоток';
     if (/slab-thickness/.test(keys)) return 'перекрытие';

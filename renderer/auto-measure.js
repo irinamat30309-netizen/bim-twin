@@ -1091,6 +1091,106 @@
     return { a: md.a, c: md.c, r: prm[4], rms: sgm, cov: cov, tiltRaw: [prm[2], prm[3]], basis: [e1, e2] };
   }
 
+
+  /* ---------- Форма сечения: окружность или прямоугольник ----------
+   * Труба и воздуховод на скане одинаково «похожи на цилиндр»: подгонка окружности берёт только точки у самой окружности (допуск 12 % радиуса),
+   * поэтому у прямоугольного короба при шуме 8–12 мм «набирается» дуга 260° и рождается ложная труба. Здесь проверяются ВСЕ точки рядом с
+   * найденной осью, в том числе отброшенные подгонкой: у настоящей трубы они лежат на окружности, у короба — на двух-четырёх прямых сторонах.
+   * Возврат: { shape: 'circle'|'rect', rmsC, rmsR, extra (доля «лишних» точек), rect? } — rect: ширина и высота по сторонам и их видимость. */
+  function crossSection(P, n, sel, fin, bs, t0, t1, spacing) {
+    var r = fin.r, a = fin.a, c = fin.c, i, k, selMark = new Uint8Array(n), cell = Math.max(0.03, 3 * spacing), grid = new Map();
+    // все точки рядом с осью (в «трубке» радиуса 2,2·r + 3 см и по длине найденного участка); от выбранных точек сращиваем СВЯЗНУЮ область: так к ним
+    // добавляются и отброшенные подгонкой части короба (углы, грани), а не относящиеся к нему соседи (потолок, стена) — нет
+    var dMax = 2.2 * r + 0.03, tLo = t0 - 0.02, tHi = t1 + 0.02, tube = [], R3 = [];
+    function ckey(ix, iy, iz) { return ((ix + 4096) * 8192 + (iy + 4096)) * 8192 + (iz + 4096); }
+    for (k = 0; k < sel.length; k++) selMark[sel[k]] = 1;
+    for (i = 0; i < n; i++) {
+      var q = i * 3, wx = P[q] - c[0], wy = P[q + 1] - c[1], wz = P[q + 2] - c[2], t = wx * a[0] + wy * a[1] + wz * a[2];
+      if (t < tLo || t > tHi) continue;
+      var rx = wx - t * a[0], ry = wy - t * a[1], rz = wz - t * a[2], d2 = rx * rx + ry * ry + rz * rz;
+      if (!selMark[i] && (d2 > dMax * dMax || d2 < 0.16 * r * r)) continue;
+      tube.push(i); R3.push(rx, ry, rz);
+      var ck = ckey(Math.floor(P[q] / cell), Math.floor(P[q + 1] / cell), Math.floor(P[q + 2] / cell)), lst = grid.get(ck);
+      if (lst) lst.push(tube.length - 1); else grid.set(ck, [tube.length - 1]);
+    }
+    var inSet = new Uint8Array(tube.length), qx = [], qy = [], qz = [], head = 0, seenCell = new Set();
+    for (k = 0; k < tube.length; k++) if (selMark[tube[k]]) {
+      inSet[k] = 1; var q1 = tube[k] * 3, ix1 = Math.floor(P[q1] / cell), iy1 = Math.floor(P[q1 + 1] / cell), iz1 = Math.floor(P[q1 + 2] / cell), ck1 = ckey(ix1, iy1, iz1);
+      if (!seenCell.has(ck1)) { seenCell.add(ck1); qx.push(ix1); qy.push(iy1); qz.push(iz1); }
+    }
+    while (head < qx.length) {
+      var cx = qx[head], cy = qy[head], cz = qz[head]; head++;
+      for (var ax = -1; ax <= 1; ax++) for (var ay = -1; ay <= 1; ay++) for (var az = -1; az <= 1; az++) {
+        var nk = ckey(cx + ax, cy + ay, cz + az);
+        if (seenCell.has(nk)) continue;
+        var lst2 = grid.get(nk); if (!lst2) continue;
+        seenCell.add(nk); qx.push(cx + ax); qy.push(cy + ay); qz.push(cz + az); for (var li = 0; li < lst2.length; li++) inSet[lst2[li]] = 1;
+      }
+    }
+    var pp = [], qq = [], isSel = [], members = [];
+    for (k = 0; k < tube.length; k++) if (inSet[k]) {
+      var rr3 = k * 3; pp.push(R3[rr3] * bs.u[0] + R3[rr3 + 1] * bs.u[1] + R3[rr3 + 2] * bs.u[2]); qq.push(R3[rr3] * bs.v[0] + R3[rr3 + 1] * bs.v[1] + R3[rr3 + 2] * bs.v[2]); isSel.push(selMark[tube[k]] ? 1 : 0); members.push(tube[k]);
+    }
+    var m = pp.length, nSel = sel.length, extra = m > 0 ? (m - nSel) / m : 0;
+    if (m < 40) return { shape: 'circle', rmsC: fin.rms, rmsR: Infinity, extra: extra, n: m };
+    // окружность — отклонение ВСЕХ точек от найденной окружности (с центром, пересчитанным по облаку точек сечения)
+    var sx = 0, sy = 0; for (k = 0; k < m; k++) { sx += pp[k]; sy += qq[k]; }
+    var ss = 0; for (k = 0; k < m; k++) { var dd = Math.hypot(pp[k], qq[k]) - r; ss += dd * dd; }
+    var rmsC = Math.sqrt(ss / m);
+    // окружность описывает ВСЕ точки сечения не хуже порога — это труба, прямоугольник не нужен (дешёвый выход)
+    if (!(rmsC > Math.max(0.05 * r, 1.5 * fin.rms + 0.003))) return { shape: 'circle', rmsC: rmsC, rmsR: Infinity, extra: extra, n: m };
+    // для подбора сторон хватает нескольких тысяч точек: берём каждую k-ю
+    if (m > 6000) { var stp = Math.ceil(m / 6000), p2 = [], q2 = []; for (k = 0; k < m; k += stp) { p2.push(pp[k]); q2.push(qq[k]); } pp = p2; qq = q2; m = pp.length; }
+    // прямоугольник: перебор поворота; стороны — по квантилям 1…99 % в повёрнутых осях; ошибка — расстояние до ближайшей из четырёх сторон
+    function rectAt(phi) {
+      var co = Math.cos(phi), si = Math.sin(phi), xs = new Float64Array(m), ys = new Float64Array(m), j, it;
+      for (j = 0; j < m; j++) { xs[j] = pp[j] * co + qq[j] * si; ys[j] = -pp[j] * si + qq[j] * co; }
+      var sx2 = Float64Array.from(xs).sort(), sy2 = Float64Array.from(ys).sort(), lo = Math.floor(0.01 * (m - 1)), hi = Math.ceil(0.99 * (m - 1));
+      var E = [sx2[lo], sx2[hi], sy2[lo], sy2[hi]], tolr = Math.max(0.015, 0.1 * Math.min(E[1] - E[0], E[3] - E[2])), rms = 0;
+      function err() { var e2 = 0; for (var jj = 0; jj < m; jj++) { var dm = Math.min(Math.abs(xs[jj] - E[0]), Math.abs(xs[jj] - E[1]), Math.abs(ys[jj] - E[2]), Math.abs(ys[jj] - E[3])); e2 += dm * dm; } return Math.sqrt(e2 / m); }
+      // стороны — это не крайние точки (их выбрасывает шум наружу), а середина слоя точек на стороне: медиана точек у стороны
+      for (it = 0; it < 4; it++) {
+        for (var e = 0; e < 4; e++) {
+          var pos = e < 2 ? xs : ys, al = e < 2 ? ys : xs, a0 = e < 2 ? E[2] : E[0], a1 = e < 2 ? E[3] : E[1], v = [], vEnd = [], mid = 0, lo2 = a0 + 0.2 * (a1 - a0), hi2 = a1 - 0.2 * (a1 - a0);
+          for (j = 0; j < m; j++) {
+            var dj = Math.abs(pos[j] - E[e]);
+            if (dj <= tolr && al[j] >= a0 - tolr && al[j] <= a1 + tolr) { v.push(pos[j]); if (al[j] >= lo2 && al[j] <= hi2) mid++; }
+            if (dj <= 3 * tolr + 0.01 && al[j] >= a0 - tolr && al[j] <= a1 + tolr) vEnd.push(pos[j]);
+          }
+          if (mid >= 20 && v.length >= 20) { v.sort(function (x, y) { return x - y; }); E[e] = v[v.length >> 1]; }          // грань видна: её середина — медиана слоя точек
+          else if (vEnd.length >= 20) { vEnd.sort(function (x, y) { return x - y; }); E[e] = e % 2 === 0 ? vEnd[Math.floor(0.01 * (vEnd.length - 1))] : vEnd[Math.ceil(0.99 * (vEnd.length - 1))]; }   // грани нет: ребро — торцы соседних граней, у них координата без шума
+        }
+        rms = err(); tolr = Math.max(0.008, Math.min(tolr, 2.5 * rms));
+      }
+      return { phi: phi, x1: E[0], x2: E[1], y1: E[2], y2: E[3], rms: rms, xs: xs, ys: ys };
+    }
+    var best = null, ph;
+    for (ph = 0; ph < 90; ph += 3) { var rc = rectAt(ph * DEG); if (!best || rc.rms < best.rms) best = rc; }
+    var b0 = best.phi / DEG; for (ph = b0 - 3; ph <= b0 + 3; ph += 0.75) { var rc2 = rectAt(ph * DEG); if (rc2.rms < best.rms) best = rc2; }
+    var rw = best.x2 - best.x1, rh = best.y2 - best.y1;
+    var boxy = rmsC > Math.max(0.05 * r, 1.5 * fin.rms + 0.003) && best.rms < 0.6 * rmsC && Math.min(rw, rh) >= 0.09 && Math.max(rw, rh) <= 8 * Math.min(rw, rh);
+    var out = { shape: boxy ? 'rect' : 'circle', rmsC: rmsC, rmsR: best.rms, extra: extra, n: m, members: boxy ? members : null };
+    if (boxy) {
+      // видимость сторон: точки в пределах допуска от стороны и их разброс вдоль стороны
+      var tol = Math.max(0.008, 2.5 * best.rms), sides = [
+        { name: 'x1', v: best.x1, pos: best.xs, along: best.ys, lo: best.y1, hi: best.y2 }, { name: 'x2', v: best.x2, pos: best.xs, along: best.ys, lo: best.y1, hi: best.y2 },
+        { name: 'y1', v: best.y1, pos: best.ys, along: best.xs, lo: best.x1, hi: best.x2 }, { name: 'y2', v: best.y2, pos: best.ys, along: best.xs, lo: best.x1, hi: best.x2 }];
+      sides.forEach(function (sd) {
+        var cnt = 0, mn = Infinity, mx = -Infinity;
+        for (var j = 0; j < m; j++) if (Math.abs(sd.pos[j] - sd.v) <= tol) { cnt++; var al = sd.along[j]; if (al < mn) mn = al; if (al > mx) mx = al; }
+        sd.count = cnt; sd.cover = cnt > 0 ? (mx - mn) / Math.max(1e-6, sd.hi - sd.lo) : 0; sd.vis = cnt >= Math.max(25, 0.12 * m) && sd.cover >= 0.5;
+      });
+      var cph = Math.cos(best.phi), sph = Math.sin(best.phi);
+      // углы прямоугольника обратно в плоскость сечения (p,q)
+      function back2(x, y) { return [x * cph - y * sph, x * sph + y * cph]; }
+      out.rect = { phi: best.phi, w: best.x2 - best.x1, h: best.y2 - best.y1, sides: sides.map(function (sd) { return { name: sd.name, vis: sd.vis, count: sd.count, cover: sd.cover }; }),
+        corners: [back2(best.x1, best.y1), back2(best.x2, best.y1), back2(best.x2, best.y2), back2(best.x1, best.y2)], tol: tol,
+        // ширина (по x') надёжна, если видна сторона вдоль x' (y1 или y2): её концы — углы короба; высота — аналогично, по стороне x1 или x2
+        wOk: sides[2].vis || sides[3].vis, hOk: sides[0].vis || sides[1].vis };
+    }
+    return out;
+  }
+
   /* Одна труба по её слоям и точкам. */
   function buildCylinder(S, F, circles, usedPts, o) {
     var P = S.P, n = S.n, a0 = F.dir, i, k;
@@ -1159,6 +1259,12 @@
     var sigR = Math.sqrt(corr * covrr * fin.rms * fin.rms + Math.pow(0.28 * fin.rms, 2) + SIGMA_SYS * SIGMA_SYS);
     var tiltSigma = fin.cov ? Math.sqrt(corr * Math.max(0, fin.cov[2][2] + fin.cov[3][3])) * fin.rms : null;
     if (sigR / fin.r > 0.06) return null;                       // радиус не определён (дуга слишком короткая/шумная) — не выдаём «трубу» с мусорным диаметром
+    // форма сечения: прямоугольный воздуховод/короб не должен становиться «трубой» с подогнанной окружностью
+    var xs = crossSection(P, n, sel, fin, bs2, t0, t1, S.spacing || 0.01);
+    if (xs.shape === 'rect' && xs.rect) {
+      for (k = 0; k < xs.members.length; k++) usedPts[xs.members[k]] = 1;   // весь короб занят: следующие подгонки не берут его грани заново
+      return { type: 'box', a: ax, c: fin.c, r: fin.r, count: sel.length, arc: arc.deg, t0: tt0, t1: tt1, length: tt1 - tt0, ids: sel, basis: bs2, section: xs, rms: fin.rms, slabs: circles.length };
+    }
     return {
       type: 'cylinder', a: ax, c: fin.c, r: fin.r, sigmaR: sigR, rms: fin.rms, count: sel.length, arc: arc.deg, gapDeg: arc.gapDeg,
       t0: tt0, t1: tt1, length: tt1 - tt0, slabs: circles.length, tiltSigma: tiltSigma, ids: sel,
@@ -1197,7 +1303,7 @@
     if (seeds.length < 40) return res;
     var pseudo = { m: seeds.length, N: Float32Array.from(axes) }, flat = new Uint8Array(seeds.length).fill(1);
     var fams = clusterDirections(pseudo, flat, { minMembers: 30, minShare: 0.03, coneDeg: 6, maxDirs: 6 });
-    var used = new Uint8Array(n), all = [];
+    var used = new Uint8Array(n), all = [], boxes = [];
     var Ls = o.slab || 0.3;
     fams.forEach(function (fam, fi) {
       var dir = fam.dir, bs = planeBasis(dir), e1 = bs.u, e2 = bs.v;
@@ -1244,11 +1350,11 @@
       }
       tracks.forEach(function (tr) { tr.score = tr.reduce(function (s, c) { return s + c.inl.length * Math.min(1, c.arc / 180); }, 0); });
       tracks.sort(function (a, b) { return b.score - a.score; });
-      var S2 = { P: P, n: n, ln: ln };
+      var S2 = { P: P, n: n, ln: ln, spacing: S.spacing };
       tracks.forEach(function (tr) {
         if (tr.score < 40) return;
         var cyl = buildCylinder(S2, F, tr, used, { maxAxial: 1e9 });
-        if (cyl) { cyl.family = fi; cyl.score = tr.score; all.push(cyl); }
+        if (cyl) { cyl.family = fi; cyl.score = tr.score; if (cyl.type === 'box') boxes.push(cyl); else all.push(cyl); }
       });
     });
     all.sort(function (a, b) { return b.count * Math.min(1, b.arc / 180) - a.count * Math.min(1, a.arc / 180); });
@@ -1257,14 +1363,15 @@
     all.forEach(function (c) {
       for (var q = 0; q < outC.length; q++) {
         var d = outC[q];
-        if (angleBetween(c.a, d.a) < 3 * DEG && Math.abs(c.r - d.r) < 0.01) {
+        if (angleBetween(c.a, d.a) < 3 * DEG && (Math.abs(c.r - d.r) < 0.01 || Math.abs(c.r - d.r) < 0.3 * Math.max(c.r, d.r))) {
           var w = sub(c.c, d.c), t = dot(w, d.a), rad = len(sub(w, mul(d.a, t)));
-          if (rad < 0.015) return;
+          if (rad < 0.015 || rad < 0.3 * Math.min(c.r, d.r)) return;   // одна труба: оси совпадают (две соседние трубы разнесены минимум на сумму радиусов)
         }
       }
       outC.push(c);
     });
     res.cylinders = outC;
+    res.boxes = boxes;
     return res;
   }
 
@@ -1431,6 +1538,47 @@
     return { type: 'cylinder', guess: 'pipe', title: 'Труба Ø' + Math.round(d * 1000) + ' мм', dims: dims, notes: [], center: mid, pointsUsed: cy.count, score: 0.5 + 0.3 * Math.min(1, cy.count / 1500) + 0.2 * Math.min(1, cy.arc / 270) - (oblique ? 0.2 : 0), cylinder: cy, index: idx, skew: skew };
   }
 
+
+  /* Прямоугольный воздуховод (короб): размеры сечения по сторонам, а не диаметр. Ширина/высота считаются по видимым граням: размер надёжен, если
+   * видна грань вдоль него (её концы — рёбра короба); иначе это лишь нижняя оценка, и уверенность снижается. */
+  function ductObject(bx, idx, ctx) {
+    var sec = bx.section, R = sec.rect, a = bx.a, c = bx.c, bs = bx.basis, dims = [], i;
+    var cph = Math.cos(R.phi), sph = Math.sin(R.phi);
+    // центр сечения в плоскости (p,q): середина прямоугольника в повёрнутых осях → обратно
+    var cx = 0, cy2 = 0; R.corners.forEach(function (q) { cx += q[0] / 4; cy2 += q[1] / 4; });
+    var cen = add(c, add(mul(bs.u, cx), mul(bs.v, cy2)));
+    // единичные направления сторон x' и y' в 3D
+    var ex = unit(add(mul(bs.u, cph), mul(bs.v, sph))), ey = unit(add(mul(bs.u, -sph), mul(bs.v, cph)));
+    var tm = 0.5 * (bx.t0 + bx.t1), mid = add(cen, mul(a, tm));
+    var sides = [{ dir: ex, size: R.w, ok: R.wOk }, { dir: ey, size: R.h, ok: R.hOk }];
+    // «ширина» — более горизонтальная сторона, «высота» — более вертикальная (для вертикального короба — «ширина» и «глубина» по размеру)
+    var vertical = Math.abs(a[1]) > 0.8;
+    if (!vertical && Math.abs(sides[0].dir[1]) > Math.abs(sides[1].dir[1])) sides.reverse();
+    else if (vertical && sides[1].size > sides[0].size) sides.reverse();
+    var spacing = ctx.S.spacing, base = 0.82;
+    var vis = R.sides.filter(function (sd) { return sd.vis; }).length;
+    if (vis < 2) base -= 0.25;
+    var defs = vertical ? [['duct-width', 'width', 'Ширина воздуховода'], ['duct-depth', 'depth', 'Глубина воздуховода']] : [['duct-width', 'width', 'Ширина воздуховода'], ['duct-height', 'height', 'Высота воздуховода']];
+    sides.forEach(function (sd, k) {
+      var half = 0.5 * sd.size, pa = sub(mid, mul(sd.dir, half)), pb = add(mid, mul(sd.dir, half)), conf = sd.ok ? base : Math.min(0.3, base - 0.3);
+      var sg = Math.sqrt(Math.pow(0.5 * R.tol, 2) + Math.pow(2 * spacing, 2) + SIGMA_SYS * SIGMA_SYS), notes = [];
+      if (!sd.ok) notes.push('Грань вдоль этого размера не видна целиком — значение нижняя оценка по видимой части. Обведите короб так, чтобы была видна сторона целиком.');
+      if (vis < 2) notes.push('Видна только одна сторона короба: сечение по ней определяется грубо.');
+      dims.push(makeDim({ key: defs[k][0], dimension: defs[k][1], label: defs[k][2], value: sd.size, sigma: sg, method: 'fit', how: 'по сторонам прямоугольного сечения', confidence: conf, a: pa, b: pb, kind: 'linear', notes: notes,
+        evidence: { points: bx.count, rmsRect: sec.rmsR, rmsCircle: sec.rmsC, sidesVisible: vis } }));
+    });
+    if (bx.length >= 0.3) {
+      var ea = add(cen, mul(a, bx.t0)), eb = add(cen, mul(a, bx.t1));
+      dims.push(makeDim({ key: 'length', dimension: 'length', label: 'Видимая длина воздуховода', value: bx.length, sigma: Math.max(0.01, 4 * spacing), method: 'extent', how: 'по оси, ограничена рамкой', confidence: 0.3, a: ea, b: eb, notes: ['Длина обрезана рамкой выделения — это не длина всего воздуховода.'] }));
+    }
+    var mm0 = function (v) { return Math.round(v * 1000); };
+    var title = 'Воздуховод ' + mm0(Math.max(sides[0].size, sides[1].size)) + '×' + mm0(Math.min(sides[0].size, sides[1].size)) + ' мм';
+    var half2 = 0.5 * Math.hypot(R.w, R.h), okAll = sides[0].ok && sides[1].ok;
+    return { type: 'duct', guess: 'duct', title: title, dims: dims, notes: ['Сечение прямоугольное: окружность не подгоняется (отклонение прямоугольника ' + (sec.rmsR * 1000).toFixed(1) + ' мм против ' + (sec.rmsC * 1000).toFixed(1) + ' мм у окружности).'],
+      center: mid, pointsUsed: bx.count, score: 0.5 + 0.3 * Math.min(1, bx.count / 1500) + (okAll ? 0.15 : 0) - (vis < 2 ? 0.2 : 0), index: idx,
+      duct: { a: a, c: cen, t0: bx.t0, t1: bx.t1, ex: ex, ey: ey, w: R.w, h: R.h, rad: half2 } };
+  }
+
   /* Параллельные трубы: расстояние между осями и просвет. */
   function pipePairs(cyls, objs) {
     var out = [];
@@ -1470,7 +1618,7 @@
   };
   function roleOf(ob) {
     if (ob.type === 'opening') return 'opening';
-    if (ob.type === 'cylinder' || ob.type === 'pipes') return 'pipe';
+    if (ob.type === 'cylinder' || ob.type === 'pipes' || ob.type === 'duct') return 'pipe';
     var k = ob.dims && ob.dims[0] && ob.dims[0].key;
     return k === 'room-height' ? 'room-height' : k === 'room-width' ? 'room-width' : k === 'slab-thickness' ? 'slab' : k === 'inner-width' ? 'tray' : k === 'wall-thickness' ? 'wall' : 'other';
   }
@@ -1500,6 +1648,7 @@
   /* Расстояние от точки до объекта (0 — точка на/внутри объекта): труба — до оси минус радиус, пара плоскостей — до ближайшего куска, остальное — до габарита размеров. */
   function distToObject(ob, p, ctx) {
     if (ob.cylinder) { var c = ob.cylinder; return Math.max(0, distPointSegment(p, add(c.c, mul(c.a, c.t0)), add(c.c, mul(c.a, c.t1))) - c.r); }
+    if (ob.duct) { var dc = ob.duct; return Math.max(0, distPointSegment(p, add(dc.c, mul(dc.a, dc.t0)), add(dc.c, mul(dc.a, dc.t1))) - dc.rad); }
     if (ob.surfaces) {
       var best = Infinity; ob.surfaces.forEach(function (id) { var sf = ctx.surfaces[id]; if (sf) best = Math.min(best, distPointPatch(sf, p)); }); return best;
     }
@@ -1524,6 +1673,13 @@
         for (j = 0; j <= 24; j++) { var th = j / 24 * 2 * Math.PI, q = add(m, add(mul(bs.u, c.r * Math.cos(th)), mul(bs.v, c.r * Math.sin(th)))); if (prev) out.push(prev, q); prev = q; }
       });
       for (k = 0; k < 4; k++) { var th2 = k * Math.PI / 2, off = add(mul(bs.u, c.r * Math.cos(th2)), mul(bs.v, c.r * Math.sin(th2))); out.push(add(A, off), add(B, off)); }
+    } else if (ob.duct) {
+      var dd = ob.duct, hw = 0.5 * dd.w, hh = 0.5 * dd.h, ring = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+      [dd.t0, 0.5 * (dd.t0 + dd.t1), dd.t1].forEach(function (t) {
+        var m0 = add(dd.c, mul(dd.a, t)), cs = ring.map(function (q) { return add(m0, add(mul(dd.ex, q[0]), mul(dd.ey, q[1]))); });
+        for (k = 0; k < 4; k++) out.push(cs[k], cs[(k + 1) % 4]);
+      });
+      ring.forEach(function (q) { var off = add(mul(dd.ex, q[0]), mul(dd.ey, q[1])); out.push(add(add(dd.c, mul(dd.a, dd.t0)), off), add(add(dd.c, mul(dd.a, dd.t1)), off)); });
     } else if (ob.surfaces) {
       ob.surfaces.forEach(function (id) { if (ctx.surfaces[id]) patchOutline(ctx.surfaces[id], out); });
     } else if (ob.type === 'opening') {
@@ -1613,7 +1769,7 @@
   /* ---------- Главный вход ---------- */
   /* Типы объектов из инспектора → семейство гипотез. Тип, выбранный человеком, поднимает «свои» находки и опускает чужие (но не прячет). */
   var KIND_FAMILY = { 'проём': 'opening', 'дверь': 'opening', 'окно': 'opening', 'труба': 'pipe', 'воздуховод': 'pipe', 'стена': 'panel', 'перекрытие': 'panel', 'пол': 'panel', 'потолок': 'panel', 'колонна': 'box', 'балка': 'box', 'оборудование': 'box', 'лоток': 'box' };
-  function familyOf(ob) { return ob.type === 'opening' ? 'opening' : (ob.type === 'cylinder' || ob.type === 'pipes') ? 'pipe' : 'panel'; }
+  function familyOf(ob) { return ob.type === 'opening' ? 'opening' : (ob.type === 'cylinder' || ob.type === 'pipes' || ob.type === 'duct') ? 'pipe' : 'panel'; }
 
   function findFloor(surfaces, P, n) {
     var ymin = Infinity, ymax = -Infinity, i;
@@ -1696,7 +1852,26 @@
       info.ghosts = consensusPipes(cobj) + implausibleCylinders(cobj, S.P, S.n);
       var rejected = cobj.filter(function (ob) { return ob.ghost; });
       cobj = cobj.filter(function (ob) { return !ob.ghost; });
+      // прямоугольные воздуховоды: по одному на ось и размер (подгонка окружности дала бы ложную «трубу»)
+      var dobj = [];
+      (cy.boxes || []).map(function (bx, i) { return ductObject(bx, i, ctx); }).sort(function (a, b) { return b.score - a.score; }).forEach(function (ob) {
+        for (var q = 0; q < dobj.length; q++) {   // тот же короб: оси почти совпадают (угол и расстояние от центра до оси другого)
+          var d0 = dobj[q].duct, d1 = ob.duct, w0 = sub(ob.center, d0.c), tt = dot(w0, d0.a), perp = len(sub(w0, mul(d0.a, tt)));
+          if (angleBetween(d0.a, d1.a) < 9 * DEG && perp < 0.6 * Math.max(d0.rad, d1.rad) + 0.05) return;
+        }
+        // «короб» внутри настоящей трубы — обрывок подгонки той же трубы, а не воздуховод
+        var inPipe = cobj.some(function (cb) { var cc = cb.cylinder, w1 = sub(ob.center, cc.c), t1 = dot(w1, cc.a), pp1 = len(sub(w1, mul(cc.a, t1))); return angleBetween(cc.a, ob.duct.a) < 9 * DEG && pp1 < 0.8 * cc.r && Math.max(ob.duct.w, ob.duct.h) <= 2.6 * cc.r; });
+        if (inPipe) return;
+        dobj.push(ob);
+      });
+      // труба, ось которой лежит внутри прямоугольника воздуховода, — обрывок подгонки по его граням, а не отдельная труба
+      cobj = cobj.filter(function (cb) {
+        var cc = cb.cylinder;
+        return !dobj.some(function (db) { var d = db.duct, w1 = sub(cc.c, d.c), t1 = dot(w1, d.a), q = sub(w1, mul(d.a, t1)); return angleBetween(cc.a, d.a) < 9 * DEG && Math.abs(dot(q, d.ex)) <= 0.5 * d.w + 0.01 && Math.abs(dot(q, d.ey)) <= 0.5 * d.h + 0.01; });
+      });
       cobj.forEach(function (ob) { objects.push(ob); });
+      info.ducts = dobj.length;
+      dobj.forEach(function (ob) { objects.push(ob); });
       pipePairs(cobj, cobj).slice(0, 6).forEach(function (ob) { objects.push(ob); });
       pairObjects(ctx, usedPairs).sort(function (a, b) { return b.score - a.score; }).slice(0, 6).forEach(function (ob) { objects.push(ob); });
       // Чьи это размеры. 1) Тип, выбранный человеком, пропускает только свои находки (остальные — «другое в рамке», не главные и не сохраняются).
@@ -1717,6 +1892,7 @@
         ob.id = i; ob.center = back(ob.center); ob.offType = !ob.onType;
         ob.dims.forEach(function (d) { d.a = back(d.a); d.b = back(d.b); d.objectId = i; });
         if (ob.cylinder) { ob.cylinder.c = back(ob.cylinder.c); }
+        if (ob.duct) { ob.duct.c = back(ob.duct.c); }
         if (ob.outline) ob.outline = ob.outline.map(back);
         delete ob.raw;
       });

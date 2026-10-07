@@ -893,6 +893,38 @@
     for (k = 0; k < q80 && k < nc; k++) { sp2 += ep[k] * ep[k]; sc2 += ec[k] * ec[k]; }
     return Math.sqrt(sp2) / Math.max(Math.sqrt(sc2), 1e-12);
   }
+
+  /* Сечение — прямоугольник, а не окружность? Короб (воздуховод, лоток, колонна с гранями) при шуме 8–12 мм даёт окружность с дугой 200–260°,
+   * потому что подгонка берёт только точки у самой окружности. Здесь берутся ВСЕ точки вокруг оси (0,5…1,8 R) и сравниваются две модели:
+   * расстояние до окружности и до ближайшей из четырёх сторон прямоугольника (поворот перебирается). pu, pv — координаты в плоскости сечения. */
+  function sectionIsBox(pu, pv, R, fitRms) {
+    var m = pu.length, k;
+    if (m < 80) return null;
+    if (m > 4000) { var st = Math.ceil(m / 4000), a2 = [], b2 = []; for (k = 0; k < m; k += st) { a2.push(pu[k]); b2.push(pv[k]); } pu = a2; pv = b2; m = pu.length; }
+    var ss = 0; for (k = 0; k < m; k++) { var dd = Math.sqrt(pu[k] * pu[k] + pv[k] * pv[k]) - R; ss += dd * dd; }
+    var rmsC = Math.sqrt(ss / m);
+    if (!(rmsC > Math.max(0.05 * R, 1.5 * fitRms + 0.002))) return { box: false, rmsC: rmsC };
+    function rectAt(phi) {
+      var co = Math.cos(phi), si = Math.sin(phi), xs = new Float64Array(m), ys = new Float64Array(m), j, it, e;
+      for (j = 0; j < m; j++) { xs[j] = pu[j] * co + pv[j] * si; ys[j] = -pu[j] * si + pv[j] * co; }
+      var sx = Float64Array.from(xs).sort(), sy = Float64Array.from(ys).sort(), lo = Math.floor(0.01 * (m - 1)), hi = Math.ceil(0.99 * (m - 1));
+      var E = [sx[lo], sx[hi], sy[lo], sy[hi]], tol = Math.max(0.01, 0.1 * Math.min(E[1] - E[0], E[3] - E[2])), rms = 0;
+      for (it = 0; it < 3; it++) {
+        for (e = 0; e < 4; e++) {
+          var pos = e < 2 ? xs : ys, al = e < 2 ? ys : xs, a0 = e < 2 ? E[2] : E[0], a1 = e < 2 ? E[3] : E[1], v = [], mid = 0, l2 = a0 + 0.2 * (a1 - a0), h2 = a1 - 0.2 * (a1 - a0);
+          for (j = 0; j < m; j++) if (Math.abs(pos[j] - E[e]) <= tol && al[j] >= a0 - tol && al[j] <= a1 + tol) { v.push(pos[j]); if (al[j] >= l2 && al[j] <= h2) mid++; }
+          if (mid >= 15 && v.length >= 15) { v.sort(function (x, y) { return x - y; }); E[e] = v[v.length >> 1]; }
+        }
+        var e2 = 0; for (j = 0; j < m; j++) { var dm = Math.min(Math.abs(xs[j] - E[0]), Math.abs(xs[j] - E[1]), Math.abs(ys[j] - E[2]), Math.abs(ys[j] - E[3])); e2 += dm * dm; }
+        rms = Math.sqrt(e2 / m); tol = Math.max(0.006, Math.min(tol, 2.5 * rms));
+      }
+      return { rms: rms, w: E[1] - E[0], h: E[3] - E[2] };
+    }
+    var best = null, ph;
+    for (ph = 0; ph < 90; ph += 5) { var rc = rectAt(ph * DEG); if (!best || rc.rms < best.rms) best = rc; }
+    return { box: best.rms < 0.6 * rmsC && Math.min(best.w, best.h) >= 0.06, rmsC: rmsC, rmsR: best.rms, w: best.w, h: best.h };
+  }
+
   function detectCylinder(Q, m, sp, radius, planes, o) {
     o = o || {};
     var W = function (why) { if (o.why) o.why.r = why; return null; };
@@ -942,6 +974,17 @@
     var cont = normalsContinuity(Q, N, NI, fit.a, fit.c);
     if (o.why) o.why.cont = cont;
     if (cont.dev50 > 11 * DEG || cont.dev80 > 18 * DEG || cont.gap > Math.max(12 * DEG, 0.3 * cont.spread)) return W('normals-jump');
+    // сечение целиком: прямоугольник описывает все точки вокруг оси заметно лучше окружности — это короб, а не труба
+    var bu = [], bv = [], bb = basisFor(fit.a), cxs = fit.c;
+    for (i = 0; i < m; i++) {
+      var wx = Q[i * 3] - cxs[0], wy = Q[i * 3 + 1] - cxs[1], wz = Q[i * 3 + 2] - cxs[2], tq = wx * fit.a[0] + wy * fit.a[1] + wz * fit.a[2];
+      var qx = wx - tq * fit.a[0], qy = wy - tq * fit.a[1], qz = wz - tq * fit.a[2], dq = Math.sqrt(qx * qx + qy * qy + qz * qz);
+      if (dq < 0.5 * fit.R || dq > 1.8 * fit.R) continue;
+      bu.push(qx * bb[0][0] + qy * bb[0][1] + qz * bb[0][2]); bv.push(qx * bb[1][0] + qy * bb[1][1] + qz * bb[1][2]);
+    }
+    var sb = sectionIsBox(bu, bv, fit.R, fit.rms);
+    if (o.why && sb) o.why.box = sb;
+    if (sb && sb.box) return W('box-section');
     if (planes && planes.length >= 2) { cont.mr = modelRatio(Q, m, core, nc, planes, fit.a, fit.c, fit.R); if (cont.mr < 0.62) return W('planes-fit-better'); }
     var d0 = len(sub([0, 0, 0], fit.c)), tt = dot(sub([0, 0, 0], fit.c), fit.a), rho = Math.sqrt(Math.max(0, d0 * d0 - tt * tt));
     if (Math.abs(rho - fit.R) > Math.max(2 * fit.tau, 0.5 * radius)) return W('seed-far');    // курсор далеко от поверхности — это не «его» цилиндр
@@ -961,12 +1004,23 @@
     if (fit.count < 0.8 * cyl.count || Math.abs(fit.R - cyl.R) > 0.3 * cyl.R || Math.acos(clamp(Math.abs(dot(fit.a, cyl.a)), 0, 1)) > 10 * DEG) return null;
     var arc = arcOf(Q, fit.inliers, fit.inliers.length, fit.a, fit.c);
     if (fit.rms > 0.75 * fit.tau) return null;
+    // по всей выросшей области видно, что сечение — прямоугольник (короб): это не труба
+    var bu = [], bv = [], bb = basisFor(fit.a), k2;
+    for (k2 = 0; k2 < m; k2++) {
+      var wx = Q[k2 * 3] - fit.c[0], wy = Q[k2 * 3 + 1] - fit.c[1], wz = Q[k2 * 3 + 2] - fit.c[2], tq = wx * fit.a[0] + wy * fit.a[1] + wz * fit.a[2];
+      var qx = wx - tq * fit.a[0], qy = wy - tq * fit.a[1], qz = wz - tq * fit.a[2], dq = Math.sqrt(qx * qx + qy * qy + qz * qz);
+      if (dq < 0.5 * fit.R || dq > 1.8 * fit.R) continue;
+      bu.push(qx * bb[0][0] + qy * bb[0][1] + qz * bb[0][2]); bv.push(qx * bb[1][0] + qy * bb[1][1] + qz * bb[1][2]);
+    }
+    var sb = sectionIsBox(bu, bv, fit.R, fit.rms);
+    if (sb && sb.box) return { box: true };
     return { a: fit.a, c: add(fit.c, seed), R: fit.R, rms: fit.rms, count: fit.count, tau: fit.tau, arc: arc, grown: true };
   }
   function curveResult(out, cyl, seed, index, sp, opts) {
     var raw = out.raw, abs = { a: cyl.a.slice(), c: add(cyl.c, seed), R: cyl.R, rms: cyl.rms, count: cyl.count, tau: cyl.tau, arc: cyl.arc, coreFrac: cyl.coreFrac };
     if (opts.grow) {
       var g = null; try { g = growCylinder(index, abs, seed, sp, opts); } catch (e) { g = null; }
+      if (g && g.box) return null;   // выросшая область — короб с прямоугольным сечением
       if (g) { abs = g; out.grown = true; }
     }
     var d = sub(raw, abs.c), t = dot(d, abs.a), q = sub(d, mul(abs.a, t)), rho = len(q);
