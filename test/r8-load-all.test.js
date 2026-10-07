@@ -61,8 +61,9 @@ test('потоковый индекс: LAS целиком, без прорежи
 test('окно: после загрузки части точек предлагается потоковый режим (диалог, кнопка vtStream)', () => {
   const a = R_('renderer', 'app.js');
   assert.match(a, /function offerFullCloud\(filePath, result\)/);
-  assert.match(a, /Показать все точки файла\?/);
+  assert.match(a, /индекс всех точек строится/);
+  assert.match(a, /window\.__lxPreview = /);
   assert.match(a, /sb0\.click\(\)/);
-  assert.ok(!/\b(confirm|prompt|alert)\(/.test(a.slice(a.indexOf('function streamOfferText'), a.indexOf('async function parseCloudWithProgress'))));
+  assert.ok(!/\b(confirm|prompt|alert)\(/.test(a.slice(a.indexOf('function offerFullCloud'), a.indexOf('async function parseCloudWithProgress'))));
   assert.match(R_('renderer', 'lixel-cloud-ui.js'), /кнопка «Потоковый LOD»/);
 });

@@ -3918,7 +3918,7 @@
           gl.finish();
           const ms = Math.max(0.3, pn() - t0), ppms = drawn / ms;
           this._octAccPpms = this._octAccPpms ? this._octAccPpms * 0.6 + ppms * 0.4 : ppms;
-          this._octAccSliceBudget = acc.slice = Math.max(300000, Math.min(2000000000, Math.round(this._octAccPpms * (this._perfProfile === 'max' ? 22 : 14))));
+          this._octAccSliceBudget = acc.slice = Math.max(300000, Math.min(60000000, Math.round(this._octAccPpms * (this._perfProfile === 'max' ? 22 : 14))));
         } catch (_) {}
       }
       this._octQueue = missing;

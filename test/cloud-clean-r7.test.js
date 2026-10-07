@@ -157,7 +157,7 @@ test('окно: умное подавление шума идёт в ворке�
   assert.match(X, /big \? 'warn' : ''/, 'при удалении > 5 % облака панель предупреждает');
   assert.match(X, /e\.key === 'Escape'/);
   assert.match(V, /previewPoints\(pos, opts\)/); assert.match(V, /clearPreview\(silent\)/);
-  assert.equal((V.match(/\.concat\(this\._prevObj \? \[this\._prevObj\] : \[\]\)/g) || []).length, 2, 'предпросмотр рисуется в обоих списках отрисовки');
+  assert.equal((V.match(/\.concat\(this\._prevObj \? \[this\._prevObj\] : \[\]\)/g) || []).length, 3, 'предпросмотр рисуется во всех списках отрисовки (обычный кадр, оверлеи, накопительный кадр потока)');
   assert.ok(fs.readFileSync(R('renderer', 'ui', 'tools.css'), 'utf8').includes('.lx-confirmbar'));
   assert.match(V, /if \(o\._isPreview\) \{ gl\.disable\(gl\.DEPTH_TEST\); gl\.depthMask\(false\); \}/, 'красные точки предпросмотра рисуются поверх облака');
   assert.match(X, /opPeople: opPeople/); assert.match(X, /op: 'people'/);

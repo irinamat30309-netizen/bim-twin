@@ -47,7 +47,8 @@ python3 sheet.py out.png shots/a.png shots/b.png   # склейка снимко
 | `hover-perf.js` | лаг курсора: сколько больших draw-вызовов, точек и проходов выбора точки приходится на шаг движения мыши — «до» (кэши выключены) и «после» |
 | `mknoisyroom.js` | шумная синтетическая комната для обработки облака (`OUT`, `SIGMA`=0,006, `DOUBLE`=0,04, `SPACING`=0,02, `FLYING`=600 «летающих» точек) → `/data/work/noisy-room.ply`, 126 200 точек |
 | `process-lab.js` | вкладка «Облако → Обработка»: ресэмплирование, подавление шума, сглаживание, «Выровнять поверхности/пол/стену», прогресс, отмена Esc, Ctrl+Z; толщина слоя стены и пола (MAD·1,4826) до и после; `CANCEL_ONLY=1` и `CANCEL_R` — только проверка отмены на большом облаке |
-| `share-lab.js` | «Доля точек файла»: Настройки → «Облака точек», панель «Вид облака» → «Доля точек», перечитывание облака; main-процесс имитируется (`parseCloud` отдаёт `chunked`, `readCloudChunk` — куски из массивов страницы) |
+| `accum-lab.js` | накопительный кадр потока (ревизия 12): сравнение с прямой отрисовкой, малая видеопамять (12 МБ), цена перерисовки в покое; нужен `LAB_OCT` (индекс из `mkscan.js` + `octree-build-core`) |
+| `mkscan.js` | синтетический LAS-скан (пол, стены, колонны) любого размера для проверки потока |
 
 Снимки складываются в `shots/`: `p-<тема>-<ширина>-<сценарий>.png` (рабочая область), `st-<тема>-<ширина>-<сценарий>.png`
 (стартовый экран). После каждого сценария печатается результат `audit`.
@@ -104,7 +105,7 @@ node gt-eval.js /tmp/real-e2e.json /путь/gt-targets.json    # ошибка �
 cd dev/ui-lab
 node mknoisyroom.js                                   # /data/work/noisy-room.ply — комната с шумом 6 мм, двойной стеной и «летающими» точками
 LAB_CLOUD=/data/work/noisy-room.ply node process-lab.js    # обработка: числа «до/после», снимки proc-*.png
-LAB_CLOUD=/data/work/noisy-room.ply node share-lab.js      # доля точек: 100 % → 25 % → 100 %, снимки share-*.png
+node mkscan.js 8000000 /data/work/r12/scan8.las              # синтетический LAS-скан (для accum-lab.js и проверки потока)
 OUT=/data/work/audit.ply node mkaudit.js                   # облако 1,77 млн точек для проверки отмены
 CANCEL_ONLY=1 CANCEL_R=0.012 LAB_CLOUD=/data/work/audit.ply node process-lab.js
 ```
