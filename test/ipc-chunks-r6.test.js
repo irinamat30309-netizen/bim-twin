@@ -9,7 +9,7 @@ const CFG = require('../app-config.js');
 const R_ = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
 
 test('бюджет проекта остаётся 200 млн, лимита IPC на число точек нет, кусок < 300 МБ', () => {
-  assert.equal(CFG.resolvePointBudget({}), 200000000);
+  assert.equal(CFG.resolvePointBudget({}), 2000000000);
   assert.equal(CFG.IPC_MAX_POINTS, undefined);
   assert.ok(CFG.IPC_CHUNK_POINTS * (12 + 12 + 4 + 1) < 300 * 1048576, 'pos+col+intensity+class одного куска');
 });

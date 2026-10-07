@@ -2410,6 +2410,7 @@
     }
     _renderNowInner() {
       const gl = this.gl; if (!gl) return;
+      if (this._octAccUsable()) { try { this._renderOctAcc(); return; } catch (e) { console.warn('накопительный кадр отключён', e); this._octAccBroken = true; this._octAcc = null; gl.bindFramebuffer(gl.FRAMEBUFFER, null); } }
       const _edlOn = this._edl && this._edlReady && !!(this.base[0] && this.base[0].points);
       if (!_edlOn && this._sceneCacheUsable()) { try { this._renderCached(); return; } catch (e) { console.warn('кэш сцены отключён', e); this._scBroken = true; gl.bindFramebuffer(gl.FRAMEBUFFER, null); } }
       if (_edlOn) { if (this._edlW !== this.canvas.width || this._edlH !== this.canvas.height) this._edlResize(); gl.bindFramebuffer(gl.FRAMEBUFFER, this._edlFbo); }
@@ -3682,7 +3683,7 @@
     setOctreeStream(opts) {
       opts = opts || {};
       if (!opts.index || typeof opts.fetchNode !== 'function' || typeof window === 'undefined' || !window.OctreeStore) return false;
-      this.clearOctreeStream();
+      this.clearOctreeStream(); this._octAcc = null;
       // отключаем обычное облако/модель, чтобы не дублировать геометрию
       const cloudRecord=this._cloudRecord;this._setBase([]);this._cloudRecord=cloudRecord;
       this._octIndex = opts.index; this._octFetch = opts.fetchNode;
@@ -3722,7 +3723,7 @@
       const gl = this.gl;
       if (this._octCache && gl) { this._octCache.forEach(e => { if (e.buf) { gl.deleteVertexArray(e.buf.vao); gl.deleteBuffer(e.buf.pb); if (e.buf.cb) gl.deleteBuffer(e.buf.cb); if (e.buf.ib) gl.deleteBuffer(e.buf.ib); if (e.buf.kb) gl.deleteBuffer(e.buf.kb); } }); }
       const fallback = this._octFallbackColorMode;
-      this._octGeneration = (this._octGeneration || 0) + 1;
+      this._octGeneration = (this._octGeneration || 0) + 1; this._octAcc = null;
       this._octCache = null; this._octIndex = null; this._octFetch = null; this._octActive = false;
       this._octFailures = null; this._octLod = null; this._octSel = null; this._octInflight = 0; this._octStats = null; this._octQueue = null; this._octResPoints = 0; this._octMark = null;
       if (this._octRT) { clearTimeout(this._octRT); this._octRT = 0; }
@@ -3807,6 +3808,138 @@
     setOctreeMovePercent(p) { p = Number(p); this._octMovePct = (p > 0 && p <= 100) ? p : 0; this.render(); return this._octMovePct; }
     setOctreeIdleLimit(n) { n = Number(n); this._octIdleLimit = n > 0 ? Math.floor(n) : 0; this.render(); return this._octIdleLimit; }
     setOctreeAllPoints(on) { this._octAll = on !== false; this.render(); return this._octAll; }
+    // общие uniform-ы рисования узлов октодерева (потоковый кадр и накопительный кадр); возвращает базовый размер точки
+    _octCloudUniforms() {
+      const gl = this.gl;
+      gl.uniform1f(this.u.uUnlit, 1); gl.uniform1f(this.u.uUseVColor, this._octHasColor ? 1 : 0);
+      gl.uniform1f(this.u.uRound, this._roundPoints ? 1 : 0); gl.uniform1f(this.u.uAmbient, 1);
+      // размер точки задаётся самим LOD (расстоянием между точками узла на экране), а не расстоянием до камеры
+      gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uPtScale, 0);
+      gl.uniform1f(this.u.uPtMin, 1.0); gl.uniform1f(this.u.uPtMax, this._octPtMax || 8.0);
+      const basePt = this._cloudDisplay.pointSize || 1.4;
+      gl.uniform1f(this.u.uPointSize, basePt);
+      gl.uniform1f(this.u.uCloudPass, 1); gl.uniform1f(this.u.uElevMode, this._ptElev ? 1 : 0);
+      const streamMode = this.getColorMode();
+      const streamAttrMode = streamMode === 'intensity' ? 2 :
+        streamMode === 'classification' ? 3 : 0;
+      gl.uniform1f(this.u.uAttrMode, streamAttrMode);
+      const cb = this._clipBounds(); gl.uniform1f(this.u.uClipOn, this._clipActive() ? 1 : 0); if (cb) { gl.uniform3fv(this.u.uClipMin, cb.mn); gl.uniform3fv(this.u.uClipMax, cb.mx); }
+      if (!this._octHasColor) gl.uniform3fv(this.u.uColor, new Float32Array([0.82, 0.86, 0.93]));
+      return basePt;
+    }
+    // ---------- Ревизия 12: накопительный кадр потока (все точки без потерь даже при малой видеопамяти) ----------
+    // Пока камера стоит, облако дорисовывается ПОРЦИЯМИ в текстуру цвета/глубины (та же, что у кэша сцены): каждый кадр — узлы, которые
+    // успели загрузиться и помещаются в бюджет времени (~14 мс), уже нарисованные узлы можно выгрузить из видеопамяти. Поэтому нехватка
+    // видеопамяти не отбрасывает точки (раньше «рисуется сколько влезло»), а лишь растягивает сборку картинки на несколько кадров.
+    // Когда всё нарисовано, любое событие (наведение, измерение, выделение) стоит только копирование текстуры + оверлей — облако не перерисовывается.
+    setOctreeAccum(on) { this._octAccOff = on === false; this._octAcc = null; this.render(); return !this._octAccOff; }
+    invalidateOctreeAccum() { this._octAcc = null; this.render(); }
+    getOctreeAccum() { const a = this._octAcc; return a ? { active: true, remaining: a.remaining, nodes: a.n, drawnPoints: a.drawnPts, totalPoints: a.totalPts, frames: a.frames } : { active: false }; }
+    _octAccUsable() { return !!(this._octActive && this._octCache && this._octIndex && this.cloudVisible !== false && !this._interacting && !this._octAccBroken && !this._octAccOff && window.OctreeStore && window.OctreeStore.selectLod); }
+    _octAccKey(vp) {
+      const D = this._cloudDisplay || {}, G = this._grade || {}, cb = this._clipActive() ? this._clipBounds() : null;
+      return [vp.join(','), this.canvas.width, this.canvas.height, this._octGeneration, this._ptBright, this._ptElev ? 1 : 0, this.getColorMode(), this._roundPoints ? 1 : 0, this._ortho ? 1 : 0, this._fov, this.dist,
+        D.pointSize, D.min, D.max, D.palette, D.opacity, D.hideOutside ? 1 : 0, G.on ? 1 : 0, G.exposure, G.contrast, G.saturation, G.gamma, G.tone, cb ? cb.mn.join(',') + ';' + cb.mx.join(',') : '', this._octPtMax, this._octAccRev | 0].join('|');
+    }
+    _octAccBegin(vp, key) {
+      const gl = this.gl, OS = window.OctreeStore;
+      if (!this._octLod) this._octLod = OS.prepareLod(this._octIndex);
+      const lod = this._octLod, vh = gl.canvas.height || 600, focal = vh * 0.5 / Math.tan(this._fov / 2);
+      const sel = OS.selectLod(lod, { vp, eye: this._eye(), f: focal, ortho: !!this._ortho, ppu: this._ortho ? focal / Math.max(1e-6, this.dist) : 0, tPx: 0.0001, budget: Infinity, maxNodes: lod.n }, {});
+      const n = sel.n, keys = new Array(n), keySet = new Set();
+      for (let i = 0; i < n; i++) { keys[i] = lod.keys[sel.ids[i]]; keySet.add(keys[i]); }
+      this._octAccSeq = (this._octAccSeq | 0) + 1;
+      return { id: this._octAccSeq, key, gen: this._octGeneration, lod, n, ids: Int32Array.from(sel.ids), sp: Float32Array.from(sel.sp), keys, keySet, flag: new Uint8Array(n),
+        remaining: n, drawnPts: 0, drawnNodes: 0, totalPts: sel.points, fresh: true, frames: 0, slice: Math.max(2000000, this._octAccSliceBudget || 0, this._interPts || 0) };
+    }
+    _renderOctAcc() {
+      const gl = this.gl;
+      this._scInit();
+      if (this._scW !== this.canvas.width || this._scH !== this.canvas.height) this._scResize();
+      const vp = this._vp(); this._lastVP = vp;
+      const key = this._octAccKey(vp);
+      let acc = this._octAcc;
+      if (!acc || acc.key !== key || acc.gen !== this._octGeneration) acc = this._octAcc = this._octAccBegin(vp, key);
+      this._edlOnThisFrame = false; this._scRev = -1;
+      let more = false;
+      if (acc.remaining > 0) more = this._octAccSlice(acc, vp);
+      // показ: копия накопленной картинки + оверлеи (маркеры, измерения, подсказки)
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.useProgram(this._scProg); gl.bindVertexArray(this._scVao);
+      gl.depthFunc(gl.ALWAYS); gl.depthMask(true);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this._scColTex); gl.uniform1i(this._scU.uCol, 0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this._scDepTex); gl.uniform1i(this._scU.uDep, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindVertexArray(null); gl.depthFunc(gl.LESS); gl.activeTexture(gl.TEXTURE0);
+      this._setFrameUniforms(vp);
+      this._drawList(this.base.concat(this.overlay).concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []).concat(this._prevObj ? [this._prevObj] : []).concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []));
+      if (this.measuring && this._measLabels && this._measLabels.length) this._renderMeasLabels();
+      if (more) this._queueFrame();
+    }
+    // Рисует очередную порцию узлов в накопительную текстуру; возвращает true, если есть готовые, но ещё не нарисованные узлы (нужен следующий кадр)
+    _octAccSlice(acc, vp) {
+      const gl = this.gl, lod = acc.lod, cache = this._octCache, self = this;
+      const nowFn = () => (typeof self._octNow === 'function' ? self._octNow() : Date.now());
+      const now0 = nowFn(), pn = (typeof performance !== 'undefined' && performance.now) ? () => performance.now() : nowFn, t0 = pn();
+      this._octFrame++; acc.frames++;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this._scFbo);
+      if (acc.fresh) { gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); acc.fresh = false; }
+      this._setFrameUniforms(vp);
+      const basePt = this._octCloudUniforms();
+      let drawn = 0, lastSize = basePt, qOn = false, more = false, minRetry = Infinity;
+      const missing = [];
+      for (let i = 0; i < acc.n; i++) {
+        if (acc.flag[i]) continue;
+        const key = acc.keys[i], e = cache.get(key);
+        if (e && e.buf) {
+          if (drawn >= acc.slice) { more = true; continue; }
+          const buf = e.buf, id = acc.ids[i];
+          // листья (у узла нет детей) при редком расположении на экране рисуются крупнее; внутренние узлы — обычным размером (их «дыры» закрывают дети)
+          const size = lod.cs[id] === lod.cs[id + 1] ? Math.min(basePt * 2.5, Math.max(basePt, acc.sp[i] * 0.9)) : basePt;
+          if (size !== lastSize) { gl.uniform1f(this.u.uPointSize, size); lastSize = size; }
+          if (buf.q) { gl.uniform3f(this.u.uQScale, buf.q.scale[0], buf.q.scale[1], buf.q.scale[2]); gl.uniform3f(this.u.uQOff, buf.q.off[0], buf.q.off[1], buf.q.off[2]); qOn = true; }
+          else if (qOn) { gl.uniform3f(this.u.uQScale, 1, 1, 1); gl.uniform3f(this.u.uQOff, 0, 0, 0); qOn = false; }
+          gl.bindVertexArray(buf.vao); gl.drawArrays(gl.POINTS, 0, buf.count);
+          acc.flag[i] = 1; acc.remaining--; acc.drawnPts += buf.count; acc.drawnNodes++; drawn += buf.count;
+          e.drawnGen = acc.id; e.lastUsed = this._octFrame;
+          continue;
+        }
+        if (e && e.loading) continue;
+        const failure = this._octFailures && this._octFailures.get(key);
+        if (failure && failure.retryAt > now0) { if (failure.retryAt < minRetry) minRetry = failure.retryAt; continue; }
+        missing.push(key);
+      }
+      if (qOn) { gl.uniform3f(this.u.uQScale, 1, 1, 1); gl.uniform3f(this.u.uQOff, 0, 0, 0); }
+      gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uPointSize, basePt); gl.bindVertexArray(null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      // бюджет порции подстраиваем под скорость видеокарты: кадр ≈ 14 мс (профиль «Максимум» — 22 мс), интерфейс остаётся отзывчивым
+      if (drawn > 0) {
+        try {
+          gl.finish();
+          const ms = Math.max(0.3, pn() - t0), ppms = drawn / ms;
+          this._octAccPpms = this._octAccPpms ? this._octAccPpms * 0.6 + ppms * 0.4 : ppms;
+          this._octAccSliceBudget = acc.slice = Math.max(300000, Math.min(2000000000, Math.round(this._octAccPpms * (this._perfProfile === 'max' ? 22 : 14))));
+        } catch (_) {}
+      }
+      this._octQueue = missing;
+      this._octPump(this._octGeneration);
+      if (acc.remaining > 0 && !more && !missing.length && !(this._octInflight > 0) && minRetry < Infinity) {
+        if (this._octAccRetryT) clearTimeout(this._octAccRetryT);
+        this._octAccRetryT = setTimeout(() => { self._octAccRetryT = 0; if (self._octActive) self.render(); }, Math.max(30, minRetry - nowFn() + 5));
+      }
+      this._octStats = {
+        nodes: acc.n, drawnNodes: acc.drawnNodes, points: acc.totalPts, drawn: acc.drawnPts, missing: missing.length,
+        inflight: this._octInflight || 0, tPx: 0.0001, budget: Number(this._octIndex.pointCount) || 0, cap: Number(this._octIndex.pointCount) || 0, total: Number(this._octIndex.pointCount) || 0,
+        resident: this._octResPoints || 0, movePct: this._octMovePct || 0, vramLimited: this._octVramBytes > 0, interacting: false,
+        accumulating: acc.remaining > 0, accRemaining: acc.remaining
+      };
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function' && (now0 - (this._octEvT || 0) > 250 || acc.remaining === 0)) {
+        this._octEvT = now0;
+        try { window.dispatchEvent(new CustomEvent('bim-octree-stats', { detail: Object.assign({}, this._octStats) })); } catch (_) {}
+      }
+      this._trimOctreeGpuCache(acc.keySet, acc.totalPts, acc.id);
+      return more;
+    }
     // Выбор узлов по экранной плотности (OctreeStore.selectLod). В покое порог плотности ~0 и бюджет = все точки: берутся все узлы в пирамиде видимости до листьев;
     // при движении — тот же выбор, ограниченный бюджетом (грубые узлы первыми, т. е. равномерная «доля» всего облака). Загрузка — очередь с ограниченным числом чтений.
     _drawOctree() {
@@ -3831,20 +3964,7 @@
         tPx: (inter && !pctMode) ? 1.7 : 0.0001, budget, maxNodes: inter ? 6000 : 400000
       };
       const sel = OS.selectLod(lod, view, this._octSel || (this._octSel = {}));
-      gl.uniform1f(this.u.uUnlit, 1); gl.uniform1f(this.u.uUseVColor, this._octHasColor ? 1 : 0);
-      gl.uniform1f(this.u.uRound, this._roundPoints ? 1 : 0); gl.uniform1f(this.u.uAmbient, 1);
-      // размер точки задаётся самим LOD (расстоянием между точками узла на экране), а не расстоянием до камеры
-      gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uPtScale, 0);
-      gl.uniform1f(this.u.uPtMin, 1.0); gl.uniform1f(this.u.uPtMax, this._octPtMax || 8.0);
-      const basePt = this._cloudDisplay.pointSize || 1.4;
-      gl.uniform1f(this.u.uPointSize, basePt);
-      gl.uniform1f(this.u.uCloudPass, 1); gl.uniform1f(this.u.uElevMode, this._ptElev ? 1 : 0);
-      const streamMode = this.getColorMode();
-      const streamAttrMode = streamMode === 'intensity' ? 2 :
-        streamMode === 'classification' ? 3 : 0;
-      gl.uniform1f(this.u.uAttrMode, streamAttrMode);
-      const cb = this._clipBounds(); gl.uniform1f(this.u.uClipOn, this._clipActive() ? 1 : 0); if (cb) { gl.uniform3fv(this.u.uClipMin, cb.mn); gl.uniform3fv(this.u.uClipMax, cb.mx); }
-      if (!this._octHasColor) gl.uniform3fv(this.u.uColor, new Float32Array([0.82, 0.86, 0.93]));
+      const basePt = this._octCloudUniforms();
       const selSet = new Set();
       const missing = [];
       const now0 = typeof this._octNow === 'function' ? this._octNow() : Date.now();
@@ -3916,10 +4036,11 @@
     _octRenderSoon() {
       const nowFn = () => (typeof this._octNow === 'function' ? this._octNow() : Date.now());
       const now = nowFn(), busy = (this._octQueue && this._octQueue.length) || (this._octInflight > 0);
-      if (!busy || now - (this._octLastR || 0) >= 250) { this._octLastR = now; this.render(); return; }
+      const gap = (this._octAcc && this._octAcc.remaining > 0 && !this._interacting) ? 40 : 250;   // накопительный кадр дорисовывает только новые узлы — можно чаще
+      if (!busy || now - (this._octLastR || 0) >= gap) { this._octLastR = now; this.render(); return; }
       if (this._octRT) return;
       const self = this;
-      this._octRT = setTimeout(() => { self._octRT = 0; self._octLastR = nowFn(); if (self._octActive) self.render(); }, Math.max(10, 250 - (now - (this._octLastR || 0))));
+      this._octRT = setTimeout(() => { self._octRT = 0; self._octLastR = nowFn(); if (self._octActive) self.render(); }, Math.max(10, gap - (now - (this._octLastR || 0))));
     }
     _octFreeBuf(buf) {
       const gl = this.gl; if (!gl || !buf) return;
@@ -3980,7 +4101,7 @@
         self.render();
       });
     }
-    _trimOctreeGpuCache(selSet, visiblePoints) {
+    _trimOctreeGpuCache(selSet, visiblePoints, accId) {
       const gl = this.gl, cache = this._octCache;
       if (!gl || !cache) return;
       const bytesPerPoint = this._octBytesPerPoint();
@@ -3990,7 +4111,9 @@
       let resLimit = this._octVramBytes > 0 ? this._octVramBytes : Infinity;
       if (this._octIdleLimit > 0) resLimit = Math.min(resLimit, this._octIdleLimit * bytesPerPoint * 1.5);
       if (this._octAll === false) resLimit = Math.min(resLimit, Math.min(visibleBytes + 128 * 1024 * 1024, 512 * 1024 * 1024));
-      const cacheLimitBytes = Math.max(visibleBytes, resLimit);
+      let cacheLimitBytes = Math.max(visibleBytes, resLimit);
+      // накопительный кадр: уже нарисованные узлы в видеопамяти не нужны — предел только по памяти видеокарты (OUT_OF_MEMORY) или мягкий 1 ГиБ
+      if (accId) cacheLimitBytes = this._octVramBytes > 0 ? this._octVramBytes : (this._octSoftResBytes || 1073741824);
       let cachedBytes = 0, cachedPoints = 0;
       const evict = [];
       cache.forEach((entry, key) => {
@@ -3999,7 +4122,7 @@
           (Number(entry.buf.count) || 0) *
             (12 + (entry.buf.cb ? 12 : 0) + (entry.buf.ib ? 4 : 0) + (entry.buf.kb ? 1 : 0));
         cachedBytes += bytes; cachedPoints += Number(entry.buf.count) || 0;
-        if (!selSet.has(key)) evict.push({ key, bytes, lastUsed: Number(entry.lastUsed) || 0 });
+        if (!selSet.has(key) || (accId && entry.drawnGen === accId)) evict.push({ key, bytes, lastUsed: Number(entry.lastUsed) || 0 });
       });
       this._octResPoints = cachedPoints;
       if (cachedBytes <= cacheLimitBytes) return;

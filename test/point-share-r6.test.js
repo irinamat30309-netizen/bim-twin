@@ -34,20 +34,11 @@ function writeLas(file, n) {
 }
 const countOf = (r) => r.pos.length / 3;
 
-test('resolvePointShare: по умолчанию 100 %, допустимы только доли 1/k', () => {
-  assert.equal(CFG.resolvePointShare({}), 1);
+test('resolvePointShare (ревизия 12): доля точек больше не режет облако — всегда 100 %, сохранённые значения игнорируются', () => {
+  for (const v of [undefined, 0, 10, 25, 33, 50, 100, 150, -5, 'abc']) assert.equal(CFG.resolvePointShare({ pointShare: v }), 1);
   assert.equal(CFG.resolvePointShare(null), 1);
-  assert.equal(CFG.resolvePointShare({ pointShare: 100 }), 1);
-  assert.equal(CFG.resolvePointShare({ pointShare: 50 }), 0.5);
-  assert.equal(CFG.resolvePointShare({ pointShare: 25 }), 0.25);
-  assert.ok(Math.abs(CFG.resolvePointShare({ pointShare: 33 }) - 1 / 3) < 1e-12);
-  assert.equal(CFG.resolvePointShare({ pointShare: 10 }), 0.1);
-  assert.equal(CFG.resolvePointShare({ pointShare: 0 }), 1);
-  assert.equal(CFG.resolvePointShare({ pointShare: -5 }), 1);
-  assert.equal(CFG.resolvePointShare({ pointShare: 150 }), 1);
-  assert.equal(CFG.resolvePointShare({ pointShare: 'abc' }), 1);
-  for (const p of CFG.POINT_SHARES) { const sh = CFG.resolvePointShare({ pointShare: p }); assert.equal(Math.round(sh * 100), p); assert.ok(Number.isInteger(Math.round(1 / sh))); }
-  assert.equal(CFG.POINT_SHARES[0], 100);
+  assert.equal(CFG.resolvePointShare({}), 1);
+  assert.equal(CFG.POINT_SHARES, undefined, 'список долей из настроек убран');
 });
 
 test('PLY: 100 % = все точки, 50 % и 20 % — каждая 2-я и 5-я, бюджет остаётся верхним пределом', () => {
@@ -107,7 +98,7 @@ test('лимита IPC в 20 млн точек больше нет: куски �
   const m = R_('main.js');
   assert.ok(!/IPC_MAX_POINTS/.test(m) && !/ipcLimited/.test(m));
   assert.ok(/bim:readCloudChunk/.test(m) && /bim:releaseCloud/.test(m));
-  assert.ok(/resolvePointShare\(s\)/.test(m) && /pointShare/.test(m));
+  assert.ok(/const pointShare = 1;/.test(m) && /pointShare/.test(m));
   const pre = R_('preload.js');
   assert.ok(/readCloudChunk:\s*\(a\)\s*=>\s*inv\('bim:readCloudChunk'/.test(pre) && /releaseCloud:\s*\(a\)\s*=>\s*inv\('bim:releaseCloud'/.test(pre));
   assert.ok(!/ipcLimited/.test(R_('renderer', 'app.js')));
@@ -197,16 +188,15 @@ test('CloudChunks.resolve: нехватка памяти окна даёт по�
   const api = fakeApi(store, 5);
   const out = await CloudChunks.resolve(api, light, {});
   assert.equal(out.ok, false); assert.equal(out.outOfMemory, true);
-  assert.match(out.message, /Доля точек|доля точек|долю точек/i);
+  assert.match(out.message, /потоком|LAS или PLY/);
   assert.deepEqual(api.calls.map(c => c[0]), ['release']);
 });
 
-test('интерфейс: доля точек в Настройках и в «Вид облака», по умолчанию 100 %', () => {
+test('интерфейс (ревизия 12): ни «Доли точек», ни «Предела, млн», ни «В покое: до N млн» — точек на экране всегда столько, сколько в файле', () => {
   const app = R_('renderer', 'app.js'), html = R_('renderer', 'index.html');
-  assert.ok(/secC = section\('Облака точек'\)/.test(app) && /'Доля точек файла'/.test(app));
-  assert.ok(/id="qShare"/.test(html) && /id="qDensity"[^>]*max="300"[^>]*value="200"/.test(html));
-  assert.ok(/100 % — все точки файла/.test(app));
-  assert.ok(/applyPointShare\(st\.pointShare\)/.test(app));
+  assert.ok(!/id="qShare"/.test(html) && !/id="qDensity"/.test(html) && !/id="qIdle"/.test(html));
+  assert.ok(!/'Доля точек файла'/.test(app) && !/applyPointShare/.test(app) && !/qDensity/.test(app) && !/setOctreeIdleLimit/.test(app));
+  assert.ok(/id="qMove"/.test(html), 'доля точек только на время движения камеры остаётся');
   const ui = R_('renderer', 'lixel-cloud-ui.js');
-  assert.ok(/cpShareNote/.test(ui) && /Настройки → Облака точек/.test(ui));
+  assert.ok(/cpShareNote/.test(ui) && /Индекс всех точек строится в фоне/.test(ui) && /bim-preview-state/.test(ui));
 });

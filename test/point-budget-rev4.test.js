@@ -22,24 +22,10 @@ test('конфиг: дефолт и минимум бюджета — 200 млн
   assert.ok(cfg.MIN_SAFE_PREVIEW_POINTS >= 1000000);
 });
 
-test('resolvePointBudget: дефолт, одноразовая миграция, ручное значение, потолок', () => {
+test('resolvePointBudget (ревизия 12): бюджет больше не режет облако — всегда «без ограничения», сохранённые значения игнорируются', () => {
   const r = cfg.resolvePointBudget;
-  assert.strictEqual(r({}), 200000000);
-  assert.strictEqual(r(null), 200000000);
-  assert.strictEqual(r(undefined), 200000000);
-  assert.strictEqual(r({ pointBudget: 'мусор' }), 200000000);
-  assert.strictEqual(r({ pointBudget: -5 }), 200000000);
-  assert.strictEqual(r({ pointBudget: NaN }), 200000000);
-  // старое сохранённое значение (без пометки «выбрано вручную») поднимается до 200 млн
-  assert.strictEqual(r({ pointBudget: 3000000 }), 200000000);
-  assert.strictEqual(r({ pointBudget: 120000000 }), 200000000);
-  // значение выше минимума сохраняется
-  assert.strictEqual(r({ pointBudget: 250000000 }), 250000000);
-  // выбранное вручную значение уважается (можно уменьшить)
-  assert.strictEqual(r({ pointBudget: 3000000, pointBudgetCustom: true }), 3000000);
-  // потолок
-  assert.strictEqual(r({ pointBudget: 900000000, pointBudgetCustom: true }), cfg.MAX_POINT_BUDGET);
-  assert.strictEqual(r({ pointBudget: 900000000 }), cfg.MAX_POINT_BUDGET);
+  for (const st of [{}, null, undefined, { pointBudget: 'мусор' }, { pointBudget: -5 }, { pointBudget: 3000000 }, { pointBudget: 3000000, pointBudgetCustom: true }, { pointBudget: 900000000, pointBudgetCustom: true }]) assert.strictEqual(r(st), cfg.ALL_POINTS);
+  assert.ok(cfg.ALL_POINTS >= 2000000000);
 });
 
 test('maxCloudPreviewPoints: монотонность и разумные пределы', () => {
@@ -113,7 +99,7 @@ test('parseCloudFileAsync: при нехватке памяти облако п�
 });
 
 
-test('подключение: main.js / renderer используют единый бюджет 200 млн', () => {
+test('подключение (ревизия 12): main.js берёт единый «безлимитный» бюджет, ползунка «Предел» в интерфейсе нет', () => {
   const main = read('main.js');
   const app = read('renderer/app.js');
   const html = read('renderer/index.html');
@@ -122,6 +108,5 @@ test('подключение: main.js / renderer используют едины
   assert.ok(!/\b120000000\b/.test(main), 'в main.js не осталось жёсткого 120 млн');
   assert.match(app, /function lodDrawBudget\(/);
   assert.match(app, /resolvePointBudget/);
-  assert.match(app, /pointBudgetCustom/);
-  assert.match(html, /id="qDensity"[^>]*max="300"[^>]*value="200"/);
+  assert.ok(!/id="qDensity"/.test(html) && !/qDensity/.test(app));
 });
