@@ -436,23 +436,36 @@
     }
     var res = opt.inPlace ? pos : new Float32Array(pos), cellId = G.cellId, m0 = bb.mn[0], m1 = bb.mn[1], m2 = bb.mn[2];
     var moved = 0, sumSq = 0, maxShift = 0, used = new Uint8Array(P);
+    // «волосы»: редкие точки в полосе (допуск … hairBand) рядом с плоскостью. Плотные скопления (трубы, рейки, второй слой стены) не трогаются:
+    // точка считается волосом, только если таких точек в ячейке не больше hairRatio от числа точек на самой плоскости.
+    var hairBand = opt.hairBand > 0 ? Math.max(+opt.hairBand, tol * 1.5) : 0, hairRatio = opt.hairRatio > 0 ? +opt.hairRatio : 0.12;
+    var offMark = hairBand ? new Uint8Array(n) : null, inCnt = hairBand ? new Uint32Array(cells) : null, offCnt = hairBand ? new Uint32Array(cells) : null;
     for (var i = 0, j = 0; i < n; i++, j += 3) {
       var id = cellId[i]; if (id < 0) continue;
       if ((i & 0xFFFFF) === 0 && i) prog(ctl, 0.65 + 0.33 * (i / n), 'Выравнивание точек…');
-      var x = pos[j] - m0, y = pos[j + 1] - m1, z = pos[j + 2] - m2, best = -1, bd = tol, bsd = 0, o2 = id * SL;
+      var x = pos[j] - m0, y = pos[j + 1] - m1, z = pos[j + 2] - m2, best = -1, bd = tol, bsd = 0, o2 = id * SL, bdAny = Infinity;
       for (var s2 = 0; s2 < SL; s2++) {
         var pp = cand[o2 + s2]; if (pp < 0) break;
         var p3 = pp * 3, d = (x - pcn[p3]) * pn[p3] + (y - pcn[p3 + 1]) * pn[p3 + 1] + (z - pcn[p3 + 2]) * pn[p3 + 2], ad = d < 0 ? -d : d;
         if (ad <= bd) { bd = ad; best = pp; bsd = d; }
+        if (ad < bdAny) bdAny = ad;
       }
-      if (best < 0) continue;
+      if (best < 0) { if (hairBand && bdAny <= hairBand) { offMark[i] = 1; offCnt[id]++; } continue; }
+      if (hairBand) inCnt[id]++;
       var sh = strength * bsd, b4 = best * 3;
       res[j] = pos[j] - sh * pn[b4]; res[j + 1] = pos[j + 1] - sh * pn[b4 + 1]; res[j + 2] = pos[j + 2] - sh * pn[b4 + 2];
       used[best] = 1; moved++; sumSq += sh * sh; var as = sh < 0 ? -sh : sh; if (as > maxShift) maxShift = as;
     }
     var usedN = 0; for (k = 0; k < P; k++) usedN += used[k];
+    var hair = null;
+    if (hairBand) {
+      var hc = 0, hi;
+      for (hi = 0; hi < n; hi++) if (offMark[hi]) { var hid = cellId[hi]; if (inCnt[hid] >= 20 && offCnt[hid] <= hairRatio * inCnt[hid]) hc++; else offMark[hi] = 0; }
+      hair = new Uint32Array(hc); hc = 0;
+      for (hi = 0; hi < n; hi++) if (offMark[hi]) hair[hc++] = hi;
+    }
     prog(ctl, 1, 'Готово');
-    return { pos: res, count: n, moved: moved, rmsShift: moved ? Math.sqrt(sumSq / moved) : 0, maxShift: maxShift, planes: usedN, planarCells: nplanar, curvedCells: curved, cells: cells };
+    return { pos: res, count: n, hair: hair, moved: moved, rmsShift: moved ? Math.sqrt(sumSq / moved) : 0, maxShift: maxShift, planes: usedN, planarCells: nplanar, curvedCells: curved, cells: cells };
   }
 
   // ---------------------------------------------------------------- подавление шума

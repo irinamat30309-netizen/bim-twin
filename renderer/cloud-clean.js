@@ -209,9 +209,9 @@
   // предыдущего. soft — только заведомый мусор; medium (по умолчанию) — островки до 40 точек размахом до 1 м; strong — до 150 точек и 2 м.
   // rho (отсев «вне поверхности») на сцене давал +1 % шума ценой десятков полезных точек — в пресеты не входит (0 = выключен).
   var DENOISE_PRESETS = {
-    soft:   { tau: 0.04, iso: 3, nIsland: 8,   extIsland: 0.5, rho: 0, link: 24 },
-    medium: { tau: 0.04, iso: 3, nIsland: 40,  extIsland: 1.0, rho: 0, link: 24 },
-    strong: { tau: 0.08, iso: 4, nIsland: 150, extIsland: 2.0, rho: 0, link: 24 }
+    soft:   { tau: 0.04, iso: 3, nIsland: 8,   extIsland: 0.5, rho: 0, link: 24, sparse: 0 },
+    medium: { tau: 0.04, iso: 3, nIsland: 40,  extIsland: 1.0, rho: 0, link: 24, sparse: 0, sparseRel: 0.002 },
+    strong: { tau: 0.08, iso: 4, nIsland: 150, extIsland: 2.0, rho: 0, link: 24, sparse: 0, sparseRel: 0.004 }
   };
 
   function* denoiseGen(pos, n, opt, ctl) {
@@ -221,7 +221,7 @@
     var i, id, c, q, dx, dy, dz;
     if (!F) return { remove: new Uint32Array(0), removed: 0, count: n, stats: { islands: 0, isolated: 0, offSurface: 0, invalid: 0 }, params: P };
     var L0 = F.L0, cells = F.cells, cid = F.cid, levels = F.levels, LEN = F.LEN, h0 = F.h0, s0 = F.s0, ncell = cells;
-    var bad = new Uint8Array(cells), stat = { islands: 0, isolated: 0, offSurface: 0, invalid: 0 }, core = opt.core || null;
+    var bad = new Uint8Array(cells), stat = { islands: 0, isolated: 0, sparse: 0, offSurface: 0, invalid: 0 }, core = opt.core || null;
     // --- 1. острова: связность считается в масштабе самого места — радиус связи = link·(шаг окружения), а не один радиус на всю сцену
     prog(ctl, 0.34, 'Поиск мелких островков…'); yield 0.34;
     var comps = [], lvOf = new Uint8Array(cells), used = new Uint8Array(LEN + 1);
@@ -309,6 +309,26 @@
       var b0 = blockSum(id, P.iso);
       if (b0 <= P.iso && b0 <= P.tau * E) { bad[id] = 1; stat.isolated += L0.cnt[id]; }
       if ((id & 262143) === 262143) yield 0.45;
+    }
+    // --- 2б. разреженные «облачка» в пустоте (отражения от стёкол, парящая пыль): в крупной ячейке (≥ 0,6 м) точек не больше доли sparseRel от
+    // плотных мест сцены (90-й процентиль по ячейкам). Настоящая далёкая стена или крона даёт в ячейке сотни точек и остаётся.
+    if ((P.sparse > 0 || P.sparseRel > 0) && LEN > 1) {
+      var LXs = levels[Lc], sparseC = new Uint8Array(LXs.n);
+      var smp = new Float64Array(Math.min(LXs.n, 50000)), sst = LXs.n / smp.length;
+      for (c = 0; c < smp.length; c++) smp[c] = LXs.cnt[Math.floor(c * sst)];
+      smp.sort(); var refD = smp[Math.min(smp.length - 1, Math.floor(0.9 * smp.length))], thrS = Math.max(P.sparse || 0, (P.sparseRel || 0) * refD);
+      for (c = 0; c < LXs.n; c++) if (LXs.cnt[c] <= thrS) {
+        // «облачко» — это ещё и пустота вокруг: во всех 27 соседних ячейках вместе не больше 6·порога (далёкая редкая поверхность тянется цепочкой ячеек и остаётся)
+        var bs = 0, qx = LXs.cx[c], qy = LXs.cy[c], qz = LXs.cz[c], dx, dy, dz, fq;
+        for (dx = -1; dx <= 1 && bs <= 6 * thrS; dx++) for (dy = -1; dy <= 1; dy++) for (dz = -1; dz <= 1; dz++) { fq = LXs.find(qx + dx, qy + dy, qz + dz); if (fq >= 0) bs += LXs.cnt[fq]; }
+        if (bs <= 6 * thrS) sparseC[c] = 1;
+      }
+      stat.sparseThr = thrS; stat.sparseRef = refD;
+      for (id = 0; id < cells; id++) {
+        if (bad[id]) continue;
+        var cs2 = LXs.find(L0.cx[id] >> Lc, L0.cy[id] >> Lc, L0.cz[id] >> Lc);
+        if (cs2 >= 0 && sparseC[cs2]) { bad[id] = 1; stat.sparse += L0.cnt[id]; }
+      }
     }
     // --- 3. вне поверхности
     var ptBad = null;
@@ -684,17 +704,174 @@
     return { remove: rem.slice(0, cnt), found: found, stats: { peaks: cand, rejected: rejected, cell: cs } };
   }
 
+  // ---- третий способ поиска людей (v1180, проверен на реальном скане): «опорные столбцы» и связные группы столбцов.
+  // Настоящие люди на SLAM-скане — это не чистые силуэты, а плотное туловище, рядом «призрачные» копии и разреженные хвосты шагов.
+  // Поэтому форма отдельных вокселов не используется. Над землёй строятся столбцы 10×10 см, каждый — цепочка занятых слоёв по 10 см от земли
+  // (разрыв до 30 см допустим). Высокие столбцы (1,1…2,6 м, над ними пусто) склеиваются в группы; группа — человек (или несколько рядом), если
+  //  • её размах ≤ 1,4 м (одиночка) или ≤ 2,8 м и площадь ≤ 3 м² (группа), не тоньше 22 см и не «линейка» (стенка, лист, знак);
+  //  • вокруг (кольцо 30…80 см) почти нет других высоких столбцов — иначе это стена, машина, куча, кусты, строительные леса;
+  //  • точек достаточно, чтобы это не был сухой «шип» шума.
+  // Удаляются все точки группы, расширенной на 20 см (хвосты и «двойники» движения), от 3 см над землёй до макушки + 15 см.
+  function* peopleV2Gen(pos, n, opt, ctl) {
+    opt = opt || {};
+    var level = PEOPLE_LEVELS[opt.level] ? opt.level : 'normal';
+    var Q = { strict: { ring: 0.08, maxExt: 1.0, maxArea: 0.3, maxS: 0.3, fill: 0.8, minPts: 400, taper: 0.85, minArea: 0.1 }, normal: { ring: 0.15, maxExt: 1.5, maxArea: 0.6, maxS: 0.5, fill: 0.74, minPts: 150, taper: 0.92, minArea: 0.09 }, loose: { ring: 0.25, maxExt: 1.6, maxArea: 0.7, maxS: 0.5, fill: 0.66, minPts: 80, taper: 1.01, minArea: 0.08 } }[level];
+    var minH = opt.minH != null ? +opt.minH : PEOPLE_DEFAULTS.minH, maxH = opt.maxH != null ? +opt.maxH : PEOPLE_DEFAULTS.maxH;
+    if (opt.sitting) minH = Math.min(minH, 0.9); maxH = Math.max(maxH, minH + 0.2);
+    var empty = { remove: new Uint32Array(0), removed: 0, count: n, found: [], stats: { groups: 0, accepted: 0, rejected: {} } };
+    var box = robustBox(pos, n); if (!box || n < 200) return empty;
+    var est = CP && CP.estimate ? CP.estimate(pos, n) : { spacing: 0.03 }, sp = est.spacing > 0 ? est.spacing : 0.03;
+    var occN = clamp(Math.round(0.04 * (0.1 / sp) * (0.1 / sp)), 1, 3);   // сколько точек в слое 10×10×10 см считать «занято» (на плотном скане — 3, на редком — 1)
+    var G = yield* groundGen(pos, n, box, ctl), gr = G.gr, gcell = G.gcell, minX = G.minX, minZ = G.minZ, GX = G.GX, GZ = G.GZ;
+    var cs = 0.1, spanX = box.mx[0] - minX, spanZ = box.mx[2] - minZ, i, c;
+    while ((spanX / cs + 3) * (spanZ / cs + 3) > 12e6) cs *= 1.25;
+    var NXc = Math.ceil(spanX / cs) + 2, NZc = Math.ceil(spanZ / cs) + 2, NC = NXc * NZc, SLH = 0.1, SMAX = 31;
+    var A = new Uint32Array(NC), B = new Uint32Array(NC), C3 = new Uint32Array(NC), cntCol = new Uint32Array(NC);
+    prog(ctl, 0.2, 'Люди: столбцы…'); yield 0.2;
+    for (i = 0; i < n; i++) {
+      var X = pos[i * 3], Y = pos[i * 3 + 1], Z = pos[i * 3 + 2];
+      if ((X - X) + (Y - Y) + (Z - Z) !== 0) continue;
+      var gx = Math.floor((X - minX) / gcell), gz = Math.floor((Z - minZ) / gcell);
+      if (gx < 0 || gz < 0 || gx >= GX || gz >= GZ) continue;
+      var h = Y - gr[gz * GX + gx];
+      if (!(h >= 0.03 && h < 3.2) || Y < box.mn[1] || Y > box.mx[1]) continue;
+      var ix = Math.floor((X - minX) / cs), iz = Math.floor((Z - minZ) / cs); if (ix < 0 || iz < 0 || ix >= NXc || iz >= NZc) continue;
+      var col = iz * NXc + ix, bit = 1 << Math.min(SMAX, Math.floor(h / SLH));
+      C3[col] |= B[col] & bit; B[col] |= A[col] & bit; A[col] |= bit; cntCol[col]++;
+      if ((i & 1048575) === 1048575) { prog(ctl, 0.2 + 0.25 * i / n, 'Люди: столбцы…'); yield 0.2 + 0.25 * i / n; }
+    }
+    var mask = occN >= 3 ? C3 : (occN === 2 ? B : A);
+    // высота цепочки столбца: от самого низкого занятого слоя (не выше 40 см), разрывы до 3 слоёв
+    var top = new Uint8Array(NC), over = new Uint8Array(NC), s;
+    for (c = 0; c < NC; c++) {
+      var mk = mask[c]; if (!mk) continue;
+      var s0 = 31 - Math.clz32(mk & -mk); if (s0 > 4) continue;
+      var last = s0, gap = 0;
+      for (s = s0 + 1; s <= SMAX; s++) { if (mk & (1 << s)) { last = s; gap = 0; } else if (++gap > 3) break; }
+      top[c] = last + 1;
+      var hi = 0; for (s = last + 5; s <= SMAX; s++) if (mk & (1 << s)) hi++;   // что-то над головой (+0,4 м и выше) — крона, навес, стена
+      over[c] = hi;
+    }
+    var tMin = Math.max(3, Math.round(0.85 * minH / SLH)), tMax = Math.round((maxH + 0.4) / SLH), tallCell = new Uint8Array(NC), any = 0;
+    for (c = 0; c < NC; c++) if (top[c] >= tMin && top[c] <= tMax && over[c] < 2) { tallCell[c] = 1; any++; }
+    var anyTall = new Uint8Array(NC);   // «высокий предмет» для проверки кольца (любой столбец ≥ 70 см)
+    for (c = 0; c < NC; c++) if (top[c] >= 7) anyTall[c] = 1;
+    if (!any) { prog(ctl, 1, 'Готово'); return empty; }
+    // группы: окно 5×5 (пропуск одного столбца)
+    prog(ctl, 0.5, 'Люди: группы…'); yield 0.5;
+    var par = new Int32Array(NC); for (c = 0; c < NC; c++) par[c] = c;
+    function fnd(a) { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; }
+    var zz, xx, dx, dz;
+    for (zz = 2; zz < NZc - 2; zz++) for (xx = 2; xx < NXc - 2; xx++) {
+      c = zz * NXc + xx; if (!tallCell[c]) continue;
+      for (dz = 0; dz <= 2; dz++) for (dx = -2; dx <= 2; dx++) {
+        if (dz === 0 && dx <= 0) continue;
+        var c2 = c + dz * NXc + dx; if (!tallCell[c2]) continue;
+        var r1 = fnd(c), r2 = fnd(c2); if (r1 !== r2) par[r1] = r2;
+      }
+    }
+    var comps = {}, roots = [];
+    for (zz = 0; zz < NZc; zz++) for (xx = 0; xx < NXc; xx++) {
+      c = zz * NXc + xx; if (!tallCell[c]) continue;
+      var rt = fnd(c), cm = comps[rt];
+      if (!cm) { cm = comps[rt] = { cells: [], x0: xx, x1: xx, z0: zz, z1: zz, top: 0, pts: 0, sx: 0, sz: 0 }; roots.push(rt); }
+      cm.cells.push(c); if (xx < cm.x0) cm.x0 = xx; if (xx > cm.x1) cm.x1 = xx; if (zz < cm.z0) cm.z0 = zz; if (zz > cm.z1) cm.z1 = zz;
+      if (top[c] > cm.top) cm.top = top[c]; cm.pts += cntCol[c]; cm.sx += xx; cm.sz += zz;
+    }
+    var rejList = [];
+    var rej = { size: 0, thin: 0, crowded: 0, few: 0, height: 0, sparse: 0, low: 0 }, accepted = [], ri, k;
+    var ringIn = Math.round(0.3 / cs), ringOut = Math.round(0.8 / cs);
+    for (ri = 0; ri < roots.length; ri++) {
+      var cm2 = comps[roots[ri]], nc0 = cm2.cells.length;
+      // ядро группы: клетки, где точек не меньше 30 % от верхней четверти (отсекает ореол и «хвосты» вокруг плотного тела)
+      var cv = new Float64Array(nc0); for (k = 0; k < nc0; k++) cv[k] = cntCol[cm2.cells[k]];
+      var srt = Float64Array.from(cv).sort(), q75 = srt[Math.min(nc0 - 1, Math.floor(0.75 * nc0))], thrC = 0.3 * q75, core = [];
+      for (k = 0; k < nc0; k++) if (cv[k] >= thrC) core.push(cm2.cells[k]);
+      var nc = core.length, cx0 = 1e9, cx1 = -1, cz0 = 1e9, cz1 = -1, csx = 0, csz = 0;
+      for (k = 0; k < nc; k++) { var cq = core[k], qx = cq % NXc, qz = (cq / NXc) | 0; if (qx < cx0) cx0 = qx; if (qx > cx1) cx1 = qx; if (qz < cz0) cz0 = qz; if (qz > cz1) cz1 = qz; csx += qx; csz += qz; }
+      var ext = Math.max(cx1 - cx0, cz1 - cz0) * cs + cs, area = nc * cs * cs, ctop = cm2.top * SLH;
+      if (ctop < minH || ctop > maxH + 0.05) { rej.height++; if (opt.debug) rejList.push(['height', cm2, ext, area, ctop]); continue; }
+      if (ext > Q.maxExt || area > Q.maxArea) { rej.size++; if (opt.debug) rejList.push(['size', cm2, ext, area, ctop]); continue; }
+      if (ext < 0.22 || area < Q.minArea) { rej.thin++; continue; }
+      // разброс по главным осям: у стенки, листа, знака — вытянутая «линейка», у человека — компактное пятно
+      var mx = csx / nc, mz = csz / nc, sxx = 0, szz = 0, sxz = 0;
+      for (k = 0; k < nc; k++) { var cc2 = core[k], px = cc2 % NXc - mx, pz = (cc2 / NXc | 0) - mz; sxx += px * px; szz += pz * pz; sxz += px * pz; }
+      sxx /= nc; szz /= nc; sxz /= nc;
+      var tr = sxx + szz, dt = Math.sqrt(Math.max(0, (sxx - szz) * (sxx - szz) / 4 + sxz * sxz)), l1 = tr / 2 + dt, l2 = Math.max(0, tr / 2 - dt);
+      var sMinM = Math.sqrt(l2) * cs, sMaxM = Math.sqrt(l1) * cs;
+      if (sMaxM > Q.maxS) { rej.size++; if (opt.debug) rejList.push(['smax', cm2, ext, area, ctop, sMaxM]); continue; }
+      if (cm2.pts < Q.minPts) { rej.few++; continue; }
+      // кольцо 30…80 см вокруг группы (по Чебышёву от её клеток): доля клеток с высоким предметом
+      var ringN = 0, ringTall = 0, rx0 = Math.max(0, cm2.x0 - ringOut), rx1 = Math.min(NXc - 1, cm2.x1 + ringOut), rz0 = Math.max(0, cm2.z0 - ringOut), rz1 = Math.min(NZc - 1, cm2.z1 + ringOut);
+      var wL = rx1 - rx0 + 1, hL = rz1 - rz0 + 1, loc = new Uint8Array(wL * hL);   // 1 — клетка группы, 2 — в пределах 30 см
+      for (k = 0; k < nc0; k++) { var cc3 = cm2.cells[k]; loc[((cc3 / NXc | 0) - rz0) * wL + (cc3 % NXc - rx0)] = 1; }
+      var dist = new Uint8Array(wL * hL).fill(255), q0 = [];
+      for (k = 0; k < loc.length; k++) if (loc[k] === 1) { dist[k] = 0; q0.push(k); }
+      for (var layer = 1; layer <= ringOut; layer++) {   // расстояние Чебышёва — послойное расширение
+        var nq = [];
+        for (k = 0; k < q0.length; k++) { var pz2 = (q0[k] / wL) | 0, px2 = q0[k] % wL;
+          for (dz = -1; dz <= 1; dz++) for (dx = -1; dx <= 1; dx++) { var az = pz2 + dz, ax = px2 + dx; if (az < 0 || ax < 0 || az >= hL || ax >= wL) continue; var li = az * wL + ax; if (dist[li] !== 255) continue; dist[li] = layer; nq.push(li); } }
+        q0 = nq;
+      }
+      for (k = 0; k < dist.length; k++) { var dv = dist[k]; if (dv < ringIn || dv > ringOut || dv === 255) continue; ringN++; if (anyTall[(rz0 + ((k / wL) | 0)) * NXc + rx0 + k % wL]) ringTall++; }
+      if (ringN && ringTall / ringN > Q.ring) { rej.crowded++; continue; }
+      var fillSum = 0; for (k = 0; k < nc; k++) { var mk3 = mask[core[k]], tp3 = top[core[k]], pcnt = 0; mk3 &= tp3 >= 31 ? 0xFFFFFFFF : ((1 << tp3) - 1); while (mk3) { mk3 &= mk3 - 1; pcnt++; } fillSum += pcnt / tp3; }
+      var fill = fillSum / nc;
+      if (fill < Q.fill) { rej.sparse++; continue; }
+      // эффективная высота: слой, где занято не меньше 35 % клеток ядра (отсекает ёмкости, бочки, кусты с шумом над макушкой)
+      var effTop = 0; for (s = 0; s <= SMAX; s++) { var cc5 = 0; for (k = 0; k < nc; k++) if (mask[core[k]] & (1 << s)) cc5++; if (cc5 >= 0.35 * nc) effTop = (s + 1) * SLH; }
+      if (effTop < minH - 0.1) { rej.low++; continue; }
+      // «макушка»: у человека верхние слои (голова) заметно уже, чем в середине; ровная колонна, ящик, бочка до самого верха держат ту же ширину
+      var tpL = cm2.top, pf = []; for (s = 0; s < tpL; s++) { var pc3 = 0; for (k = 0; k < nc; k++) if (mask[core[k]] & (1 << s)) pc3++; pf.push(pc3); }
+      var pfs = pf.slice().sort(function (a, b) { return a - b; }), pmed = pfs[pfs.length >> 1] || 1, ptop = tpL >= 4 ? (pf[tpL - 2] + pf[tpL - 3]) / 2 : pf[0]   /* самый верхний слой неполный — пропускаем */, taper = ptop / pmed;
+      if (taper > Q.taper) { rej.low++; if (opt.debug) rejList.push(['taper', cm2, ext, area, ctop, taper]); continue; }
+      var prof = []; if (opt.debug) { for (s = 0; s < 27; s++) { var pc2 = 0; for (k = 0; k < nc; k++) if (mask[core[k]] & (1 << s)) pc2++; prof.push(pc2); } }
+      accepted.push({ prof: prof, root: roots[ri], cm: cm2, ext: ext, top: ctop, area: area, sMin: sMinM, sMax: sMaxM, fill: fill, ringFrac: ringN ? ringTall / ringN : 0 });
+    }
+    var found = [];
+    for (k = 0; k < accepted.length; k++) { var ac = accepted[k], cmm = ac.cm; found.push({ cx: (cmm.sx / cmm.cells.length) * cs + minX + cs / 2, cz: (cmm.sz / cmm.cells.length) * cs + minZ + cs / 2, h: ac.top, w: ac.ext, points: cmm.pts, via: 'v2' }); }
+    var stats = { groups: roots.length, accepted: accepted.length, rejected: rej, cell: cs, occN: occN, spacing: sp };
+    if (opt.debug) stats.rejList = rejList.map(function (r) { var c0 = r[1]; return { why: r[0], x: c0.sx / c0.cells.length * cs + minX, z: c0.sz / c0.cells.length * cs + minZ, ext: r[2], area: r[3], top: r[4], s: r[5], pts: c0.pts }; });
+    if (opt.debug) stats.debug = accepted.map(function (a) { return { x: (a.cm.sx / a.cm.cells.length) * cs + minX, z: (a.cm.sz / a.cm.cells.length) * cs + minZ, top: a.top, ext: a.ext, area: a.area, sMin: a.sMin, sMax: a.sMax, ring: a.ringFrac, fill: a.fill, pts: a.cm.pts, cells: a.cm.cells.length, prof: a.prof }; });
+    if (!accepted.length) { prog(ctl, 1, 'Готово'); return { remove: new Uint32Array(0), removed: 0, count: n, found: [], stats: stats }; }
+    // клетки удаления: клетки групп, расширенные на 20 см; высота ограничивается макушкой группы + 15 см
+    var ownerTop = new Float32Array(NC), DIL = Math.round(0.2 / cs);
+    for (k = 0; k < accepted.length; k++) {
+      var cm3 = accepted[k].cm, tp = accepted[k].top + 0.15;
+      for (var m = 0; m < cm3.cells.length; m++) {
+        var cc4 = cm3.cells[m], cz4 = (cc4 / NXc) | 0, cx4 = cc4 % NXc;
+        for (dz = -DIL; dz <= DIL; dz++) for (dx = -DIL; dx <= DIL; dx++) { var az2 = cz4 + dz, ax2 = cx4 + dx; if (az2 < 0 || ax2 < 0 || az2 >= NZc || ax2 >= NXc) continue; var id2 = az2 * NXc + ax2; if (tp > ownerTop[id2]) ownerTop[id2] = tp; }
+      }
+    }
+    prog(ctl, 0.8, 'Люди: отбор точек…'); yield 0.8;
+    var rem = new Uint32Array(1 << 16), capR = rem.length, cnt = 0;
+    for (i = 0; i < n; i++) {
+      X = pos[i * 3]; Y = pos[i * 3 + 1]; Z = pos[i * 3 + 2];
+      if ((X - X) + (Y - Y) + (Z - Z) !== 0) continue;
+      ix = Math.floor((X - minX) / cs); iz = Math.floor((Z - minZ) / cs); if (ix < 0 || iz < 0 || ix >= NXc || iz >= NZc) continue;
+      var tpv = ownerTop[iz * NXc + ix]; if (!tpv) continue;
+      gx = Math.floor((X - minX) / gcell); gz = Math.floor((Z - minZ) / gcell); if (gx < 0 || gz < 0 || gx >= GX || gz >= GZ) continue;
+      h = Y - gr[gz * GX + gx]; if (!(h >= 0.03 && h <= tpv)) continue;
+      if (cnt >= capR) { capR *= 2; var nr = new Uint32Array(capR); nr.set(rem); rem = nr; }
+      rem[cnt++] = i;
+      if ((i & 1048575) === 1048575) { prog(ctl, 0.8 + 0.19 * i / n, 'Люди: отбор точек…'); yield 0.8 + 0.19 * i / n; }
+    }
+    prog(ctl, 1, 'Готово');
+    return { remove: rem.slice(0, cnt), removed: cnt, count: n, found: found, stats: stats };
+  }
+
   function* peopleGen(pos, n, opt, ctl) {
     opt = opt || {}; n = n | 0;
     var top = 0, sub = function (a, b) { return ctl && typeof ctl.progress === 'function' ? { progress: function (f, l) { var v = Math.max(top, a + (b - a) * f); top = v; ctl.progress(v, l); } } : null; };
-    var A = yield* peopleAGen(pos, n, opt, sub(0, 0.5));
+    var A = yield* peopleAGen(pos, n, opt, sub(0, 0.35));
     if (opt.mode === 'shape' || n < 200) { prog(ctl, 1, 'Готово'); return A; }
     var box = robustBox(pos, n); if (!box) { prog(ctl, 1, 'Готово'); return A; }
-    var B = yield* peopleColsGen(pos, n, opt, A.params, box, sub(0.5, 0.97));
+    var B = yield* peopleColsGen(pos, n, opt, A.params, box, sub(0.35, 0.65));
+    var V = yield* peopleV2Gen(pos, n, opt, sub(0.65, 0.97));
     // объединение: флаги по индексам точек (бит на точку)
     var flag = new Uint8Array((n >> 3) + 1), i, cnt = 0, rem;
     function mark(arr) { for (var k = 0; k < arr.length; k++) { var j = arr[k]; flag[j >> 3] |= 1 << (j & 7); } }
-    mark(A.remove); mark(B.remove);
+    mark(A.remove); mark(B.remove); mark(V.remove);
     for (i = 0; i < n; i++) if (flag[i >> 3] & (1 << (i & 7))) cnt++;
     rem = new Uint32Array(cnt); var w = 0;
     for (i = 0; i < n; i++) if (flag[i >> 3] & (1 << (i & 7))) rem[w++] = i;
@@ -704,16 +881,65 @@
       for (var g = 0; g < A.found.length && !dup; g++) if (Math.hypot(A.found[g].cx - bf.cx, A.found[g].cz - bf.cz) < 0.6) dup = true;
       if (!dup) found.push(bf);
     }
-    var stats = Object.assign({}, A.stats, { cols: B.stats, foundShape: A.found.length, foundCols: B.found.length });
+    for (var f2 = 0; f2 < V.found.length; f2++) {
+      var vf = V.found[f2], dup2 = false;
+      for (var g2 = 0; g2 < found.length && !dup2; g2++) if (Math.hypot(found[g2].cx - vf.cx, found[g2].cz - vf.cz) < 0.6) dup2 = true;
+      if (!dup2) found.push(vf);
+    }
+    var stats = Object.assign({}, A.stats, { cols: B.stats, v2: V.stats, foundShape: A.found.length, foundCols: B.found.length, foundV2: V.found.length });
     prog(ctl, 1, 'Готово');
     return { remove: rem, removed: cnt, count: n, found: found, stats: stats, params: A.params };
   }
 
   function people(pos, n, opt, ctl) { return run(peopleGen(pos, n, opt, ctl)); }
 
+  // ---------------------------------------------------------------- автоматическая чистка (всё сразу)
+  /**
+   * Автоматическая чистка: шум → люди → выравнивание плоскостей и «волосы» около них. Каждый этап работает над результатом предыдущего:
+   * найденные «летающие» точки и люди не искажают подбор плоскостей, а плоскости подбираются уже по чистому облаку.
+   * opt: level ('soft'|'medium'|'strong' — шум), people (bool), peopleLevel, minH, maxH, sitting, flatten (bool), facade (bool — толстый слой), tol (м), hair (bool).
+   * Возврат: { remove (Uint32Array, по возрастанию), pos (Float32Array n·3 — новые координаты, у удаляемых точек исходные), stats }.
+   */
+  function* autoCleanGen(pos, n, opt, ctl) {
+    opt = opt || {}; n = n | 0;
+    var CPm = CP, stats = { noise: 0, people: 0, peopleFound: 0, hair: 0, moved: 0, planes: 0, rmsShift: 0 };
+    var gone = new Uint8Array(n), i;
+    var useNoise = opt.noise !== false, usePeople = opt.people !== false, useFlat = opt.flatten !== false && !!CPm && !!CPm.flatten;
+    var w = (useNoise ? 0.35 : 0) + (usePeople ? 0.3 : 0) + (useFlat ? 0.35 : 0) || 1, done = 0;
+    function sub(frac) { var a = done / w, b = (done + frac) / w; done += frac; return { progress: function (f, l) { prog(ctl, a + (b - a) * f, l); } }; }
+    if (useNoise) {
+      var r1 = yield* denoiseGen(pos, n, { level: opt.level || 'medium' }, sub(0.35));
+      for (i = 0; i < r1.remove.length; i++) gone[r1.remove[i]] = 1;
+      stats.noise = r1.removed;
+    }
+    if (usePeople) {
+      var r2 = yield* peopleGen(pos, n, { level: opt.peopleLevel || 'normal', minH: opt.minH, maxH: opt.maxH, sitting: opt.sitting, col: opt.col }, sub(0.3));
+      for (i = 0; i < r2.remove.length; i++) { if (!gone[r2.remove[i]]) stats.people++; gone[r2.remove[i]] = 1; }
+      stats.peopleFound = r2.found.length;
+    }
+    var out = new Float32Array(pos);   // копия: результат — новые координаты
+    if (useFlat) {
+      var kept = 0; for (i = 0; i < n; i++) if (!gone[i]) kept++;
+      var cp = new Float32Array(kept * 3), map = new Uint32Array(kept), k = 0;
+      for (i = 0; i < n; i++) if (!gone[i]) { cp[k * 3] = pos[i * 3]; cp[k * 3 + 1] = pos[i * 3 + 1]; cp[k * 3 + 2] = pos[i * 3 + 2]; map[k++] = i; }
+      var est = CPm.estimate(cp, kept), fac = !!opt.facade, tol = opt.tol > 0 ? +opt.tol : (fac ? 0.12 : 0.03);
+      prog(ctl, (done) / w, 'Выравнивание плоскостей…'); yield 0;
+      var fr = CPm.flatten(cp, kept, { tol: tol, strength: opt.strength == null ? 1 : opt.strength, spacing: est.spacing, cell: fac ? 0.6 : undefined, inPlace: true, hairBand: opt.hair === false ? 0 : Math.min(0.15, Math.max(3 * tol, 0.06)) }, null);
+      prog(ctl, 1, 'Готово');
+      for (k = 0; k < kept; k++) { var o = map[k] * 3; out[o] = cp[k * 3]; out[o + 1] = cp[k * 3 + 1]; out[o + 2] = cp[k * 3 + 2]; }
+      stats.moved = fr.moved; stats.planes = fr.planes; stats.rmsShift = fr.rmsShift || 0;
+      if (fr.hair) { for (k = 0; k < fr.hair.length; k++) { var gi = map[fr.hair[k]]; if (!gone[gi]) { gone[gi] = 1; stats.hair++; } } }
+    } else prog(ctl, 1, 'Готово');
+    var cnt = 0; for (i = 0; i < n; i++) if (gone[i]) cnt++;
+    var rem = new Uint32Array(cnt), q = 0; for (i = 0; i < n; i++) if (gone[i]) rem[q++] = i;
+    stats.removed = cnt;
+    return { remove: rem, removed: cnt, count: n, pos: out, stats: stats };
+  }
+  function autoClean(pos, n, opt, ctl) { return run(autoCleanGen(pos, n, opt, ctl)); }
+
   /** Декодирует код 0..255 в шаг, м. */
   function decodeSpacing(code, sMin, sMax) { return sMin * Math.pow(sMax / sMin, code / 255); }
 
-  return { spacingGen: spacingGen, spacingField: spacingField, decodeSpacing: decodeSpacing, denoiseGen: denoiseGen, denoise: denoise, DENOISE_PRESETS: DENOISE_PRESETS, peopleGen: peopleGen, people: people, PEOPLE_LEVELS: PEOPLE_LEVELS, run: run,
+  return { spacingGen: spacingGen, spacingField: spacingField, decodeSpacing: decodeSpacing, denoiseGen: denoiseGen, denoise: denoise, DENOISE_PRESETS: DENOISE_PRESETS, peopleGen: peopleGen, people: people, peopleV2Gen: peopleV2Gen, autoCleanGen: autoCleanGen, autoClean: autoClean, PEOPLE_LEVELS: PEOPLE_LEVELS, run: run,
     _internal: { CellMap: CellMap, hash3: hash3, robustBox: robustBox } };
 });
