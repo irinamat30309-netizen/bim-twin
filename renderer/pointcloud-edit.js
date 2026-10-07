@@ -1209,12 +1209,18 @@
   // Объединить: конкатенация нескольких облаков в одно.
   function mergeClouds(clouds){
     clouds=(clouds||[]).filter(function(c){return c&&c.pos&&c.pos.length;});
-    var total=0,anyCol=false;
-    clouds.forEach(function(c){total+=c.pos.length/3;if(c.col&&c.col.length)anyCol=true;});
-    var pos=new Float32Array(total*3);var col=anyCol?new Uint8Array(total*3):null;var o=0;
+    var total=0,anyCol=false,anyFloat=false;
+    clouds.forEach(function(c){total+=c.pos.length/3;if(c.col&&c.col.length){anyCol=true;if(!(c.col instanceof Uint8Array||c.col instanceof Uint8ClampedArray))anyFloat=true;}});
+    // Цвет облака в просмотрщике — Float32 0…1; байтовые 0…255 приводятся к той же шкале (раньше дробные значения обрезались до 0 и облако чернело)
+    var pos=new Float32Array(total*3);var col=anyCol?(anyFloat?new Float32Array(total*3):new Uint8Array(total*3)):null;var o=0;
     clouds.forEach(function(c){
       var n=c.pos.length/3;pos.set(c.pos.subarray?c.pos.subarray(0,n*3):c.pos,o*3);
-      if(col){if(c.col&&c.col.length>=n*3)col.set(c.col.subarray(0,n*3),o*3);else{for(var k=0;k<n*3;k++)col[o*3+k]=200;}}
+      if(col){
+        var has=c.col&&c.col.length>=n*3,isByte=has&&(c.col instanceof Uint8Array||c.col instanceof Uint8ClampedArray);
+        if(has&&isByte===!anyFloat)col.set(c.col.subarray(0,n*3),o*3);
+        else if(has){for(var k=0;k<n*3;k++)col[o*3+k]=isByte?c.col[k]/255:c.col[k];}
+        else{var gray=anyFloat?0.78:200;for(var k2=0;k2<n*3;k2++)col[o*3+k2]=gray;}
+      }
       o+=n;
     });
     return { pos:pos, col:col, count:total, clouds:clouds.length };

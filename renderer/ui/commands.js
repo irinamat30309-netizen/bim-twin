@@ -76,11 +76,6 @@
       ]),
       G('process', 'Обработка', [
         I('opResample', 'grid-3x3', 'Ресэмплирование', { call: OPS_T + 'opResample', needs: 'cloud', tip: 'Понизить плотность облака: случайно (в процентах) или по сетке (шаг в метрах)' }),
-        I('opDenoise', 'cloud-fog', 'Подавление шума', { call: OPS_T + 'opDenoise', needs: 'cloud', tip: 'Убрать «летающие» точки: у точки меньше заданного числа соседей в радиусе поиска' }),
-        I('opPeople', 'user-round-x', 'Удалить людей', { call: OPS_T + 'opPeople', needs: 'cloud', tip: 'Найти по форме и убрать прохожих: рост, ширина, голова и опора на землю; колонны, столбы и машины остаются. Перед удалением — предпросмотр' }),
-        I('opFlatten', 'flatten', 'Выровнять поверхности', { call: OPS_T + 'opFlatten', needs: 'cloud', tip: 'Стены, пол и потолок становятся ровными плоскостями, двойные слои склеиваются — измерения точнее' }),
-        I('opFloor', 'arrow-down-to-line', 'Выровнять пол', { call: OPS_T + 'opLevel', args: ['floor', [0, 1, 0], 'Выравнивание'], needs: 'cloud', tip: 'Повернуть облако так, чтобы доминантная плоскость пола стала горизонтальной' }),
-        I('opWall', 'move-vertical', 'Выровнять стену', { call: OPS_T + 'opVertical', needs: 'cloud', tip: 'Сделать выбранную стену вертикальной' }),
         I('opMerge', 'merge', 'Объединить', { call: OPS_T + 'opMerge', needs: 'cloud', tip: 'Объединить с другим облаком в одно' }),
         I('opOverlay', 'layers-2', 'Наложение', { call: OPS_T + 'opOverlay', needs: 'cloud', tip: 'Наложить второе облако поверх текущего' })
       ]),
@@ -99,9 +94,6 @@
         I('opGeoref', 'map-pin', 'Геопривязка', { call: OPS_S + 'opGeoref', needs: 'cloud', tip: 'Привязка по опорным точкам GCP (Гельмерт 3D)' }),
         I('opGcpTemplate', 'file-spreadsheet', 'Шаблон GCP', { call: OPS_S + 'opGcpTemplate', tip: 'Скачать шаблон таблицы GCP (CSV)' })
       ]),
-      G('perf', 'Производительность', [
-        I('vtMem', 'gauge', 'Макс. память', { sel: '#vtMem', tip: 'Профиль «максимум памяти и качества»: предзагрузка облаков, больший кэш octree' })
-      ])
     ] },
 
     { id: 'floors', label: 'Этажи', groups: [
@@ -186,7 +178,6 @@
       ]),
       G('fromcloud', 'Из облака', [
         I('draw.sect', 'scan-line', 'Сечение', { slot: 1, needs: 'cloud' }),
-        I('draw.ai', 'wand-sparkles', 'AI-извлечение', { call: OPS_D + 'doAIExtract', needs: 'cloud', tip: 'RANSAC-прямые по сечению облака (слой AI)' }),
         I('opWalls', 'brick-wall', 'Стены → DXF', { call: OPS_S + 'opWalls', needs: 'cloud', tip: 'Детекция стен и план этажа в DXF' })
       ]),
       G('dxf', 'DXF', [
@@ -237,7 +228,6 @@
       ]),
       G('photo', 'Фото-тур', [
         I('tsPhoto', 'camera', 'Фото-тур', { sel: '#tsPhoto', tip: 'Панорамы 360° со сканера и manifest.json со станциями — как в CoCloud, но офлайн' }),
-        I('tsPhotoDemo', 'circle-play', 'Демо', { sel: '#tsPhotoDemo', tip: 'Сгенерированный фото-тур для проверки режима' })
       ])
     ] },
 
@@ -263,7 +253,6 @@
       ]),
       { id: 'cloudfmt', label: 'Облако точек', dynamic: 'cloud', items: [] },
       G('cloudextra', 'Прочее', [
-        I('opRCP', 'file-box', 'LAS → RCP', { call: OPS_T + 'opExportRCP', needs: 'cloud', tip: 'Autodesk ReCap RCP (нужен установленный ReCap)' }),
         I('opMesh', 'shapes', 'Mesh (OBJ)', { call: OPS_T + 'opMesh', needs: 'cloud', tip: 'Построить поверхность и сохранить OBJ' })
       ]),
       { id: 'bimfmt', label: 'BIM-модель', dynamic: 'bim', items: [] },

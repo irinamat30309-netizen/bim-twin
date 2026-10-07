@@ -1626,6 +1626,14 @@
       let pr = null;
       try { pr = await parseCloudWithProgress(localPath, file.name); } catch (e) { console.warn('parseCloud', e); }
       if (pr && pr.ok) {
+        // В проекте уже есть облако: новое можно добавить к нему (все облака на экране), а не заменять
+        if (pr.kind !== 'mesh') {
+          const TX = window.__lxToolsExt, have = (TX && TX.addableCount && viewer._cloudRecord) ? TX.addableCount() : 0;
+          if (have > 0 && window.__lxKit && window.__lxKit.ask) {
+            const add = await window.__lxKit.ask({ title: 'Открыть ещё одно облако', message: 'В проекте уже открыто облако (' + have.toLocaleString('ru') + ' точек). Добавить «' + file.name + '» к нему, чтобы видеть все облака вместе, или заменить текущее?', hint: 'Новое облако совмещается по координатам файла. Чтобы все облака остались в проекте, сохраните его (Ctrl+S).', okLabel: 'Добавить к проекту', cancelLabel: 'Заменить текущее' });
+            if (add) { await TX.addParsedCloud(pr, localPath || file.name); return; }
+          }
+        }
         try { if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else { viewer.loadCloud(pr, {sourceName:localPath || file.name}); cacheCloud(localPath, pr); } r = { ok: true, kind: pr.kind, meta: pr.meta }; lastCloudOffset = (pr.meta && pr.meta.offset) || null; lastCloudPath = localPath; lastCloudCount = (pr.meta && pr.meta.points) || 0; }
         catch (e) { console.warn('render-cloud', e); toast('Ошибка 3D: ' + (e && e.message ? e.message : 'не удалось показать')); return; }
       } else if (pr && pr.fallback) { /* PLY mesh: use the full renderer parser below. */ }

@@ -248,7 +248,6 @@ const scenarios = {
   async newproject(page) { await cmd(page, 'btnNewProject', 800); },
   async compare(page) { await cmd(page, 'btnCompare', 800); },
   async drafts(page) { await cmd(page, 'drafts', 600); },
-  async memory(page) { await cmd(page, 'vtMem', 600); },
   async draw(page) { await cmd(page, 'draw.pline', 700); },
   async palette(page) { await page.keyboard.press('Control+k'); await page.waitForTimeout(500); await page.keyboard.type('изме'); await page.waitForTimeout(400); },
   async console(page) { await page.click('#vtLog'); await page.waitForTimeout(500); },

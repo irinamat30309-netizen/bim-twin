@@ -66,6 +66,11 @@
     setPct && setPct(0.3, 'Чтение файла…');
     var pr = await t.api().parseCloud(f.path);
     if (!pr || !pr.ok || !pr.pos) { toast('Не удалось прочитать облако'); return null; }
+    return alignSecond(pr, f, opts);
+  }
+  // Привести разобранное облако к системе координат текущего (мировой сдвиг srcXform + проверка CRS)
+  async function alignSecond(pr, f, opts) {
+    var t = T();
     var base = t.getSourceTransform && t.getSourceTransform(), other = pr.meta && pr.meta.srcXform, points = pr.pos;
     var baseCrs=t.getSourceCrs?t.getSourceCrs():null,otherCrs=pr.meta&&pr.meta.crsWkt||null;
     var crsStatus=window.Georef&&window.Georef.compareCrsWkt?window.Georef.compareCrsWkt(baseCrs,otherCrs):'unknown';
@@ -482,6 +487,28 @@
     toast('Наложение: показаны оба облака (' + nfmt(r.count) + ' точек). Для точного совмещения используйте «Совмещение» (ICP).');
   }); }
 
+  /** Открыть ещё одно облако в этом же проекте: старое остаётся на экране, новое добавляется в той же системе координат.
+   *  Возвращает true, если облако добавлено (иначе вызывающий код может заменить облако как раньше). */
+  async function addParsedCloud(pr, path) {
+    var ok = false;
+    await run('Добавление облака…', async function (setPct) {
+      var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+      var c2 = await alignSecond(pr, { path: path }, { requireComparable: true }); if (!c2) return;
+      setPct(0.7, 'Слияние облаков…'); await yieldFrame();
+      var r = P.mergeClouds([c, c2]); setPct(0.9, 'Показываю все облака…'); await yieldFrame();
+      T().loadCloud({ pos: r.pos, col: r.col, count: r.count }, 'add-cloud', { operation: 'cloud.add', parameters: { sourceCloud: path || null, sourceCount: c2.count, outputCount: r.count, frameCheck: c2.frameCheck || null } });
+      setPct(1, 'Готово'); ok = true;
+      try { var vw = window.__viewer; if (vw && vw.resetView) vw.resetView(); } catch (e) {}   // показать все облака целиком
+      toast('Облако добавлено к проекту: теперь на экране ' + nfmt(r.count) + ' точек');
+    });
+    return ok;
+  }
+  /** Сколько точек сейчас в обычном (не потоковом) облаке: 0 — добавлять не к чему. */
+  function addableCount() {
+    var t = T(); if (!t || (t.isOctreeStreamActive && t.isOctreeStreamActive())) return 0;
+    var c = getCloud(); return c ? c.count : 0;
+  }
+
   function opExportE57() { return run('Экспорт в E57…', async function (setPct) {
     var c = needCloud(); if (!c) return; var EH = window.ExportHub; if (!EH || !EH.exportE57) { toast('Модуль экспорта недоступен'); return; }
     setPct(0.5, 'Формирование бинарного E57 (ASTM)…'); await yieldFrame();
@@ -576,7 +603,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opAutoClean: opAutoClean, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });

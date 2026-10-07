@@ -162,7 +162,7 @@ test('окно: умное подавление шума идёт в ворке�
   assert.match(V, /if \(o\._isPreview\) \{ gl\.disable\(gl\.DEPTH_TEST\); gl\.depthMask\(false\); \}/, 'красные точки предпросмотра рисуются поверх облака');
   assert.match(X, /opPeople: opPeople/); assert.match(X, /op: 'people'/);
   assert.match(W, /m\.op === 'people'/);
-  assert.ok(fs.readFileSync(R('renderer', 'ui', 'commands.js'), 'utf8').includes("I('opPeople', 'user-round-x', 'Удалить людей'"));
+  assert.ok(fs.readFileSync(R('renderer', 'ui', 'commands.js'), 'utf8').includes("I('opAutoClean', 'sparkles', 'Автоочистка'"), 'людей убирает «Автоочистка» (с предпросмотром)');
 });
 
 // ---------- Удаление людей: форма, а не радиус ----------

@@ -84,15 +84,15 @@ test('каждая кнопка лежит на вкладке по своей �
   const PLACE = {
     project: ['save', 'saveAs', 'autosave', 'btnProjectUndo', 'btnProjectRedo', 'drafts', 'btnNewProject', 'btnBackup', 'btnSettings', 'btnUsers', 'btnSync'],
     import: ['btnOpenCloud', 'vtStream', 'opPotree', 'modelInput', 'ifcInput', 'docInput'],
-    cloud: ['vtQuality', 'opAutoClean', 'vtEdit', 'opResample', 'opDenoise', 'opPeople', 'opFlatten', 'opFloor', 'opWall', 'opMerge', 'opOverlay', 'vtConvert', 'vtGeom', 'opDSM', 'opDTM', 'opContours', 'opGround', 'opGeoref'],
+    cloud: ['vtQuality', 'opAutoClean', 'vtEdit', 'opResample', 'opMerge', 'opOverlay', 'vtConvert', 'vtGeom', 'opDSM', 'opDTM', 'opContours', 'opGround', 'opGeoref'],
     floors: ['floorAdd', 'floorIsolate', 'floorSlice', 'floorAttach', 'floorReport', 'btnBackRoom', 'btnEdit'],
     measure: ['btnMeasure', 'mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmDiameter', 'mmPlane', 'mmDeviation', 'mmCorner', 'mmSnap', 'mmList', 'mmCsv', 'mmQaReport', 'mmNotion', 'vfOpen', 'lxObjInspectBtn'],
-    draw: ['draw.pline', 'draw.line', 'draw.rect', 'draw.circle', 'draw.arc', 'draw.point', 'draw.dim', 'draw.text', 'draw.door', 'draw.window', 'draw.extend', 'draw.split', 'draw.snap', 'draw.ortho', 'draw.top', 'draw.sect', 'draw.ai', 'opWalls', 'draw.imp', 'draw.dxf'],
+    draw: ['draw.pline', 'draw.line', 'draw.rect', 'draw.circle', 'draw.arc', 'draw.point', 'draw.dim', 'draw.text', 'draw.door', 'draw.window', 'draw.extend', 'draw.split', 'draw.snap', 'draw.ortho', 'draw.top', 'draw.sect', 'opWalls', 'draw.imp', 'draw.dxf'],
     bim: ['lxScan2BimBtn', 'lxScan2BimAiBtn', 'lxObjExtractBtn'],
     view: ['btnReset', 'view.top', 'view.front', 'view.side', 'view.iso', 'view.ortho', 'view.xray', 'btnSection', 'btnIsolate', 'btnLOD'],
-    tour: ['tsSplatTop', 'tsSplatLcc2', 'tsMesh', 'tsConv3dgs', 'vtTour', 'tsPhoto', 'tsPhotoDemo'],
+    tour: ['tsSplatTop', 'tsSplatLcc2', 'tsMesh', 'tsConv3dgs', 'vtTour', 'tsPhoto'],
     qa: ['btnAI', 'btnVerify', 'btnCompare', 'vfOpenQa', 'opVolume', 'opCompareVolumes', 'opClosedVolume'],
-    export: ['btnExport', 'opRCP', 'opMesh', 'opIFC4', 'opIFC']
+    export: ['btnExport', 'opMesh', 'opIFC4', 'opIFC']
   };
   const wrong = [];
   for (const [tab, ids] of Object.entries(PLACE)) for (const id of ids) if (!C.byId[id] || C.byId[id].tab !== tab) wrong.push(`${id}: ожидалась вкладка ${tab}, а не ${C.byId[id] && C.byId[id].tab}`);
@@ -102,8 +102,8 @@ test('каждая кнопка лежит на вкладке по своей �
 });
 
 test('операции над облаком неактивны, пока облако не загружено', () => {
-  for (const id of ['vtQuality', 'opAutoClean', 'vtEdit', 'opResample', 'opDenoise', 'opPeople', 'opFlatten', 'opFloor', 'opWall', 'opMerge', 'opOverlay', 'vtGeom', 'opDSM', 'opDTM', 'opContours',
-    'opGround', 'opGeoref', 'floorSlice', 'opVolume', 'opCompareVolumes', 'opClosedVolume', 'opIFC4', 'opIFC', 'opRCP', 'opMesh']) {
+  for (const id of ['vtQuality', 'opAutoClean', 'vtEdit', 'opResample', 'opMerge', 'opOverlay', 'vtGeom', 'opDSM', 'opDTM', 'opContours',
+    'opGround', 'opGeoref', 'floorSlice', 'opVolume', 'opCompareVolumes', 'opClosedVolume', 'opIFC4', 'opIFC', 'opMesh']) {
     assert.equal(C.byId[id].needs, 'cloud', id + ' требует облако');
   }
   assert.match(RIBBON, /aria-disabled/, 'недоступная команда объясняется, а не молча не работает');
@@ -202,4 +202,10 @@ test('адаптивность: ниже 1280 и 1100 px боковые пане
   assert.match(shell, /@media \(max-width: 1100px\)/);
   assert.match(read('ui/tools.css'), /@media \(max-width: 900px\)/);
   assert.match(read('ui/tools.css'), /\.stage-side-l\s*\{[^}]*max-height:\s*calc\(100%/s, 'плавающие панели не выходят за экран');
+});
+
+test('r11: лишние и вводящие в заблуждение команды убраны из ленты', () => {
+  // чистка — одна «Автоочистка»; «AI-извлечение» было RANSAC-прямыми, «LAS → RCP» подменял формат, «Демо» и «Макс. память» — не рабочие инструменты
+  for (const id of ['vtClean', 'opSmooth', 'opDenoise', 'opPeople', 'opFlatten', 'opFloor', 'opWall', 'draw.ai', 'opRCP', 'tsPhotoDemo', 'vtMem']) assert.equal(C.byId[id], undefined, id + ' не должна быть в ленте');
+  assert.ok(C.byId.opAutoClean, 'Автоочистка на месте');
 });

@@ -150,3 +150,16 @@ test('lixel-tools-ext.js и lixel-draw-ext.js валидны и содержат
   assert.ok(/window\.__lxDrawExt/.test(de), '__lxDrawExt экспорт');
   assert.ok(/doAIExtract/.test(de), 'AI-извлечение есть');
 });
+
+test('mergeClouds сохраняет цвета: Float32 0…1 не обнуляется, байты приводятся к той же шкале (r11)', () => {
+  const f = { pos: new Float32Array([0, 0, 0, 1, 0, 0]), col: new Float32Array([0.8, 0.4, 0.2, 0.1, 0.5, 0.9]), count: 2 };
+  const u = { pos: new Float32Array([2, 0, 0]), col: new Uint8Array([255, 128, 0]), count: 1 };
+  const r = PCEdit.mergeClouds([f, u]);
+  assert.ok(r.col instanceof Float32Array);
+  assert.ok(Math.abs(r.col[0] - 0.8) < 1e-6 && Math.abs(r.col[4] - 0.5) < 1e-6);
+  assert.ok(Math.abs(r.col[6] - 1) < 1e-6 && Math.abs(r.col[7] - 128 / 255) < 1e-6);
+  const nocol = PCEdit.mergeClouds([f, { pos: new Float32Array([3, 0, 0]), col: null, count: 1 }]);
+  assert.ok(nocol.col[6] > 0.5, 'облако без цвета получает серый, а не чёрный');
+  const bytes = PCEdit.mergeClouds([u, { pos: new Float32Array([4, 0, 0]), col: new Uint8Array([1, 2, 3]), count: 1 }]);
+  assert.ok(bytes.col instanceof Uint8Array && bytes.col[3] === 1);
+});
