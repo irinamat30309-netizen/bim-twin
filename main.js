@@ -1041,15 +1041,21 @@ function registerIpc() {
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
       const s = readSettings();
+      // Ревизия 12: облако открывается ЦЕЛИКОМ — ни бюджета точек, ни доли файла (сохранённые «Доля»/«Плотность» старых версий игнорируются).
+      // Если файл не помещается в свободную память (или он очень большой), он открывается быстрым предпросмотром (PREVIEW_POINTS),
+      // а индекс ВСЕХ точек окно строит в фоне и затем показывает их все. Прореживание остаётся только по явному согласию пользователя
+      // (payload.allowReduced) для форматов без потокового чтения (E57/LAZ/XYZ…), которые не помещаются в память.
       let maxPoints = APP_CFG.resolvePointBudget(s);
-      // Доля точек файла (Настройки → Облака точек): 100 % — все точки; иначе каждая k-я
-      const pointShare = APP_CFG.resolvePointShare(s);
-      // Ревизия 9: огромный файл (> STREAM_FIRST_POINTS) открывается быстрым предпросмотром — 6 млн точек за секунды вместо минут чтения 100+ млн;
-      // индекс всех точек окно строит в фоне и включает потоковый режим само. Только для открытия файла пользователем (payload.preview) и без явной доли точек.
+      const pointShare = 1;
       let previewOnly = false;
-      if (payload && typeof payload === 'object' && payload.preview === true && pointShare >= 1 && s.streamFirst !== false) {
+      const allowReduced = !!(payload && typeof payload === 'object' && payload.allowReduced === true);
+      if (payload && typeof payload === 'object' && payload.preview === true && s.streamFirst !== false) {
         const peek = peekSourcePointCount(abs);
-        if (peek > (APP_CFG.STREAM_FIRST_POINTS || 50000000)) { maxPoints = Math.min(maxPoints, APP_CFG.PREVIEW_POINTS || 6000000); previewOnly = true; }
+        if (peek > 0) {
+          let fits = true;
+          try { fits = cloud.effectivePointBudget(peek, {}) >= peek; } catch (_) { fits = true; }
+          if (peek > (APP_CFG.STREAM_FIRST_POINTS || 25000000) || !fits) { maxPoints = Math.min(maxPoints, APP_CFG.PREVIEW_POINTS || 6000000); previewOnly = true; }
+        }
       }
       const controller = new AbortController();
       const key = jobId ? cloudJobKey(event && event.sender, jobId) : null;
@@ -1069,6 +1075,11 @@ function registerIpc() {
       };
       try {
         const result = await cloud.parseCloudFileAsync(abs, { maxPoints, pointShare, signal: controller.signal, onProgress });
+        if (result && result.ok && !previewOnly && !allowReduced && result.pointBudget && result.pointBudget.memoryLimited) {
+          // не помещается в память целиком, а у формата нет потокового чтения: молча урезать нельзя — сообщаем и предлагаем выбор
+          const pb = result.pointBudget;
+          return { ok: false, tooBig: true, total: pb.total, canLoad: pb.applied, message: 'Файл (' + (pb.total / 1e6).toFixed(1) + ' млн точек) не помещается в свободную память целиком, а этот формат не читается потоком. Сконвертируйте его в LAS или PLY (тогда откроются все точки) либо освободите память.' };
+        }
         if (result && result.ok) {
           const loaded = result.count || (result.pos && result.pos.length / 3) || 0;
           if (pointShare < 1) result.pointShare = pointShare;
@@ -1696,6 +1707,9 @@ function registerIpc() {
       // OCTREE_MAX_POINTS; нехватку места на диске и памяти ловят проверки ниже. Для форматов без потокового чтения остаётся бюджет проекта.
       if (useOutOfCore && Number.isSafeInteger(sourcePointCount) && sourcePointCount > maxPoints) {
         maxPoints = Math.min(APP_CFG.OCTREE_MAX_POINTS || 2000000000, sourcePointCount);
+      }
+      if (!useOutOfCore && Number.isSafeInteger(sourcePointCount) && sourcePointCount > 40000000) {
+        return { ok: false, error: 'format_not_streamable', message: 'Индекс на диске по всем точкам строится только для LAS, PLY и PCD (без сжатия). Файл ' + sourceExtension.replace('.', '').toUpperCase() + ' на ' + (sourcePointCount / 1e6).toFixed(1) + ' млн точек сконвертируйте в LAS или PLY — тогда будут показаны все точки.' };
       }
       let sourceTransform;
       if (a.sourceTransform != null) {

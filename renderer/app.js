@@ -159,40 +159,35 @@
   }
   // Бюджет чтения (200 млн) и бюджет рисования потока октодерева за кадр — разные вещи: рисуем не больше LOD_DRAW_BUDGET точек.
   function lodDrawBudget(budget) { const cap = Number(window.APP_CONFIG && window.APP_CONFIG.LOD_DRAW_BUDGET) || 80000000; return Math.max(1000000, Math.min(Number(budget) || cap, cap)); }
-  // Ревизия 8: файл не поместился в память целиком (например, 271 млн точек → показано 90 млн) — предлагаем потоковый режим:
-  // индекс строится на диске по ВСЕМ точкам файла, на экране рисуется то, что нужно кадру. Вопрос задаём, когда облако уже на экране.
+  // Ревизия 12: на экране всегда ВСЕ точки файла. Большой файл (или не помещающийся в память) сначала открывается быстрым
+  // предпросмотром, а индекс всех точек строится в фоне и включается сам; прогресс индекса виден в панели «Свойства облака».
   const __offeredStream = new Set();
-  function streamOfferText(tot, got) {
-    const pct = Math.round(got / tot * 100), mins = Math.max(1, Math.round(tot / 1.0e6 / 60)), gb = Math.max(0.1, tot * 40 / 1073741824);
-    return 'В файле ' + (tot / 1e6).toFixed(1).replace('.', ',') + ' млн точек, в память поместилось ' + (got / 1e6).toFixed(1).replace('.', ',') + ' млн (' + pct + ' %). ' +
-      'Потоковый режим построит индекс на диске по всем точкам и будет показывать нужные части при просмотре. ' +
-      'Построение разовое: около ' + mins + ' мин на быстром диске, на время работы нужно до ' + gb.toFixed(1).replace('.', ',') + ' ГБ свободного места.';
-  }
+  const fmtMln = (n) => (n / 1e6).toFixed(1).replace('.', ',');
   function offerFullCloud(filePath, result) {
     const tot = Number(result && result.meta && result.meta.total) || 0, got = Number(result && result.count) || (result && result.pos && result.pos.length / 3) || 0;
     if (!(tot > got * 1.02) || !got || !API || !API.buildOctree || !/\.(las|ply|pcd)$/i.test(String(filePath))) return;
-    if (result.pointShare && result.pointShare < 1) return;                       // долю точек выбрал сам пользователь в настройках
     if (__offeredStream.has(filePath)) return; __offeredStream.add(filePath);
-    // Ревизия 9: огромный файл открыт быстрым предпросмотром — индекс всех точек строится сам, в фоне, без вопросов; вид переключится, когда он готов
-    if (result.previewOnly) {
-      setTimeout(() => {
-        const sb0 = $('vtStream'); if (!sb0 || sb0.classList.contains('on') || lastCloudPath !== filePath) return;
-        window.__lxStreamBg = true;
-        toast('Файл большой (' + (tot / 1e6).toFixed(1).replace('.', ',') + ' млн точек): показан быстрый просмотр ' + (got / 1e6).toFixed(1).replace('.', ',') + ' млн. Индекс всех точек строится в фоне — вид переключится сам');
-        sb0.click();
-      }, 800);
-      return;
-    }
-    setTimeout(async () => {
-      const k = window.__lxKit; if (!k || !k.ask || lastCloudPath !== filePath) return;
-      const sb0 = $('vtStream'); if (!sb0 || sb0.classList.contains('on')) return;
-      let yes = false;
-      try { yes = await k.ask({ title: 'Показать все точки файла?', message: streamOfferText(tot, got), okLabel: 'Построить индекс' }); } catch (_) { yes = false; }
-      if (yes && lastCloudPath === filePath) sb0.click();
-      else toast('Все точки можно включить позже: кнопка «Потоковый LOD»');
-    }, 1500);
+    window.__lxPreview = { path: filePath, total: tot, shown: got, fraction: 0, state: 'building' };
+    setTimeout(() => {
+      const sb0 = $('vtStream'); if (!sb0 || sb0.classList.contains('on') || lastCloudPath !== filePath) return;
+      window.__lxStreamBg = true;
+      toast('В файле ' + fmtMln(tot) + ' млн точек. Для быстрого старта показано ' + fmtMln(got) + ' млн — индекс всех точек строится в фоне (ход — в панели «Свойства облака»). Когда он будет готов, вид переключится сам и на экране окажутся все ' + fmtMln(tot) + ' млн точек');
+      try { window.dispatchEvent(new CustomEvent('bim-preview-state')); } catch (_) {}
+      sb0.click();
+    }, 800);
   }
   async function parseCloudWithProgress(filePath, label) {
+    const first = await parseCloudWithProgressOnce(filePath, label, false);
+    if (!(first && first.tooBig)) return first;
+    // Формат без потокового чтения и файл не помещается в память: решает пользователь — по умолчанию ничего не урезаем молча
+    const k = window.__lxKit; let yes = false;
+    if (k && k.ask) {
+      try { yes = await k.ask({ title: 'Файл не помещается в память целиком', message: first.message + '\n\nМожно открыть не все точки (примерно ' + fmtMln(first.canLoad) + ' из ' + fmtMln(first.total) + ' млн) — только по вашему согласию.', okLabel: 'Открыть часть точек', cancelLabel: 'Отмена' }); } catch (_) { yes = false; }
+    }
+    if (!yes) return { ok: false, cancelled: true, message: first.message };
+    return await parseCloudWithProgressOnce(filePath, label, true);
+  }
+  async function parseCloudWithProgressOnce(filePath, label, allowReduced) {
     if (!API || typeof API.parseCloud !== 'function') return { ok: false, message: 'Импорт облака недоступен' };
     if (typeof API.onCloudParseProgress !== 'function' || typeof API.cancelCloudParse !== 'function') {
       return await API.parseCloud(filePath);
@@ -205,17 +200,15 @@
       panel.update(event);
     });
     try {
-      const result = await API.parseCloud(filePath, jobId, { onProgress: (f) => panel.update({ phase: 'transfer', fraction: f }), preview: true });
+      const result = await API.parseCloud(filePath, jobId, { onProgress: (f) => panel.update({ phase: 'transfer', fraction: f }), preview: true, allowReduced: !!allowReduced });
       if (result && result.ok) panel.update({ phase: 'done', fraction: 1, pointsLoaded: result.count || (result.pos && result.pos.length / 3) || 0 });
       else if (result && result.cancelled) panel.update({ phase: 'cancelled', fraction: 0 });
+      else if (result && result.tooBig) panel.update({ phase: 'cancelled', fraction: 0 });
       else if (result && result.message) panel.update({ phase: 'error', fraction: latest && latest.fraction || 0, message: result.message });
       // Keep completion/error visible briefly so fast jobs still give feedback.
       await new Promise(resolve => setTimeout(resolve, 260));
-      if (result && result.ok && result.pointShare && result.pointShare < 1) {
-        try { const tot = Number(result.meta && result.meta.total) || 0, got = Number(result.count) || (result.pos && result.pos.length / 3) || 0; toast('Открыто ' + Math.round(result.pointShare * 100 * 10) / 10 + ' % точек файла' + (tot ? ' (' + (got / 1e6).toFixed(1) + ' из ' + (tot / 1e6).toFixed(1) + ' млн)' : '') + '. Все точки: Настройки → Облака точек → «100 %».'); } catch (_) {}
-      }
       if (result && result.ok && result.pointBudget && result.pointBudget.memoryLimited) {
-        try { const pb = result.pointBudget; toast('Свободной памяти хватает на ~' + Math.round(pb.applied / 1e6) + ' млн точек из ' + (pb.total / 1e6).toFixed(1) + ' млн в файле: облако открыто прореженным (все точки — через потоковый режим).'); } catch (_) {}
+        try { const pb = result.pointBudget; toast('По вашему согласию открыто ~' + Math.round(pb.applied / 1e6) + ' млн точек из ' + (pb.total / 1e6).toFixed(1) + ' млн: свободной памяти не хватает на весь файл. Чтобы увидеть все точки, сконвертируйте файл в LAS или PLY.'); } catch (_) {}
       }
       try { offerFullCloud(filePath, result); } catch (_) {}
       return result;
@@ -781,21 +774,8 @@
     }
   }
 
-  // ---- Доля точек файла (ревизия 6) ----
-  // 100 % — все точки файла (по умолчанию); меньшая доля — каждая k-я точка (1/k). Выбирается в Настройки → Облака точек и в «Вид облака».
-  const POINT_SHARE_LABELS = { 100: '100 % — все точки файла', 50: '50 % — каждая 2-я точка', 33: '33 % — каждая 3-я точка', 25: '25 % — каждая 4-я точка', 20: '20 % — каждая 5-я точка', 10: '10 % — каждая 10-я точка', 5: '5 % — каждая 20-я точка', 2: '2 % — каждая 50-я точка', 1: '1 % — каждая 100-я точка' };
-  function pointShareList() { const l = window.APP_CONFIG && window.APP_CONFIG.POINT_SHARES; return Array.isArray(l) && l.length ? l : [100, 50, 33, 25, 20, 10, 5, 2, 1]; }
-  function currentPointSharePercent() {
-    const sh = (window.APP_CONFIG && window.APP_CONFIG.resolvePointShare) ? window.APP_CONFIG.resolvePointShare(SETTINGS) : 1;
-    return Math.max(1, Math.round(sh * 100));
-  }
-  function fillPointShareSelect(sel) {
-    if (!sel) return;
-    sel.replaceChildren();
-    pointShareList().forEach((pc) => { const o = document.createElement('option'); o.value = String(pc); o.textContent = POINT_SHARE_LABELS[pc] || (pc + ' %'); sel.appendChild(o); });
-    sel.value = String(currentPointSharePercent());
-  }
-  function syncPointShareControls() { const q = $('qShare'); if (q) { if (!q.options.length) fillPointShareSelect(q); else q.value = String(currentPointSharePercent()); } }
+  // Ревизия 12: «Доля точек» и «Плотность» убраны — облако всегда показывается целиком (все точки файла).
+  function syncPointShareControls() {}
   const CLOUD_FILE_RE = /\.(las|laz|ply|e57|ptx|pcd|xyz|pts|txt|csv|xyzrgb)$/i;
   // Перечитать последнее открытое облако (после смены доли или предела): правки облака теряются так же, как при смене «Плотности»
   async function reloadLastCloud(progressLabel, startMsg) {
@@ -813,20 +793,6 @@
     } catch (e) { toast('Ошибка перечитывания: ' + (e && e.message || e)); }
     return false;
   }
-  async function applyPointShare(pct) {
-    const percent = Math.max(1, Math.min(100, Math.round(Number(pct)) || 100));
-    const prev = currentPointSharePercent();
-    SETTINGS.pointShare = percent;
-    const saved = await persistSettings({ pointShare: percent });
-    syncPointShareControls();
-    if (saved && saved.ok === false) { toast('Не удалось сохранить настройку: ' + saved.error); return; }
-    if (percent === prev) return;
-    try { cloudCacheMap.clear(); cloudCacheBytes = 0; } catch (_) {}
-    if (lastCloudPath && API && API.parseCloud && CLOUD_FILE_RE.test(lastCloudPath)) {
-      await reloadLastCloud('Перезагрузка: ' + percent + ' % точек файла', percent === 100 ? 'Загружаю все точки файла…' : 'Загружаю ' + percent + ' % точек файла…');
-    } else toast(percent === 100 ? 'Будут загружаться все точки файла' : 'Будет загружаться ' + percent + ' % точек файла — применится при открытии облака');
-  }
-
   async function openSettings() {
     let s = SETTINGS || {};
     if (CAN_VERIFY) { try { s = Object.assign({}, s, (await API.getSettings()) || {}); SETTINGS = s; } catch (e) {} }
@@ -842,10 +808,8 @@
       llmRemoteConsent: s.llmRemoteConsent === true,
       llmDocumentCharLimit: Number.isSafeInteger(Number(s.llmDocumentCharLimit)) ? Number(s.llmDocumentCharLimit) : 6000,
       ocrLang: s.ocrLang || 'rus+ukr+eng',
-      autoVerify: s.autoVerify !== false,
-      pointShare: currentPointSharePercent()
+      autoVerify: s.autoVerify !== false
     };
-    const initialShare = st.pointShare;
     const p = modalPanel(T('settings.title'));
     p.body.classList.add('settings-body');
     const section = (title) => { const sec = mk('div', 'set-sec'); sec.appendChild(mk('div', 'set-h', esc(title))); p.body.appendChild(sec); return sec; };
@@ -876,11 +840,6 @@
     const secA = section(T('settings.appearance'));
     rowSelect(secA, T('settings.theme'), [['light', T('settings.theme.light')], ['dark', T('settings.theme.dark')]], st.theme, v => { st.theme = v; applyTheme(v); });
     rowSelect(secA, T('settings.lang'), (window.I18N ? window.I18N.langs : ['ru']).map(l => [l, (window.I18N && window.I18N.label[l]) || l]), st.lang, v => { st.lang = v; applyLang(v); p.close(); openSettings(); });
-
-    // Облака точек (ревизия 6): доля точек файла
-    const secC = section('Облака точек');
-    rowSelect(secC, 'Доля точек файла', pointShareList().map(pc => [String(pc), POINT_SHARE_LABELS[pc] || (pc + ' %')]), String(st.pointShare), v => { st.pointShare = Number(v) || 100; });
-    secC.appendChild(mk('div', 'set-hint', 'По умолчанию загружаются все точки файла (100 %). Меньшая доля берёт каждую 2-ю, 3-ю … 100-ю точку: облако открывается быстрее и легче для памяти и видеокарты. Если облако открыто, оно перечитается сразу при сохранении. Формат E57 читается целиком. Если свободной памяти не хватает, приложение само прореживает облако и сообщает об этом.'));
 
     // AI & verification
     const secAI = section(T('settings.ai'));
@@ -975,7 +934,6 @@
       }
       applyTheme(st.theme); applyLang(st.lang);
       p.close(); toast(T('settings.save'), { tone: 'ok' });
-      if (st.pointShare !== initialShare) applyPointShare(st.pointShare);
     };
     bar.appendChild(save); p.body.appendChild(bar);
   }
@@ -1870,24 +1828,19 @@
     if (qDense) qDense.addEventListener('click', () => { if (!viewer || !viewer.setDenseFill) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setDenseFill(!qDense.classList.contains('on')); qDense.classList.toggle('on', on); const qA = $('qAtten'); if (qA && viewer.attenuateOn) { const a = viewer.attenuateOn(); qA.classList.toggle('on', a); } toast(on ? 'Плотная заливка включена — без чёрных промежутков при приближении' : 'Плотная заливка выключена'); });
     const qFrame = $('qFrame');
     if (qFrame) qFrame.addEventListener('click', () => { if (!viewer || !viewer.setFrame) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setFrame(!qFrame.classList.contains('on')); qFrame.classList.toggle('on', on); toast(on ? 'Чёрные рамки точек включены' : 'Чёрные рамки точек выключены'); });
-    const qShare = $('qShare');
-    if (qShare) { fillPointShareSelect(qShare); qShare.addEventListener('change', () => applyPointShare(Number(qShare.value))); }
-    // Ревизия 9: потоковый режим — доля точек при движении и предел в покое (по умолчанию в покое рисуются ВСЕ точки файла)
+    // Ревизия 12: потоковый режим — доля точек только ПОКА камера движется; в покое всегда рисуются ВСЕ точки файла (предела в покое больше нет)
     (function setupStreamPrefs() {
-      const qMove = $('qMove'), qIdle = $('qIdle'); if (!qMove || !qIdle) return;
+      const qMove = $('qMove'); if (!qMove) return;
       const lsGet = (k, d) => { try { const v = window.localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
       const lsSet = (k, v) => { try { window.localStorage.setItem(k, String(v)); } catch (_) {} };
       [['0', 'Авто (под видеокарту)'], ['50', '50 % точек'], ['25', '25 % точек'], ['10', '10 % точек'], ['5', '5 % точек'], ['2', '2 % точек']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; qMove.appendChild(o); });
-      [['0', 'Все точки файла'], ['150000000', 'до 150 млн'], ['100000000', 'до 100 млн'], ['50000000', 'до 50 млн'], ['30000000', 'до 30 млн']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; qIdle.appendChild(o); });
       qMove.value = lsGet('bim.stream.move', '0'); if (qMove.value !== lsGet('bim.stream.move', '0')) qMove.value = '0';
-      qIdle.value = lsGet('bim.stream.idle', '0'); if (qIdle.value !== lsGet('bim.stream.idle', '0')) qIdle.value = '0';
       const rows = Array.from(document.querySelectorAll('.q-stream'));
       const apply = () => {
         if (!viewer) return;
-        try { if (viewer.setOctreeMovePercent) viewer.setOctreeMovePercent(Number(qMove.value) || 0); if (viewer.setOctreeIdleLimit) viewer.setOctreeIdleLimit(Number(qIdle.value) || 0); } catch (_) {}
+        try { if (viewer.setOctreeMovePercent) viewer.setOctreeMovePercent(Number(qMove.value) || 0); } catch (_) {}
       };
-      qMove.addEventListener('change', () => { lsSet('bim.stream.move', qMove.value); apply(); toast(Number(qMove.value) ? 'При движении рисуется ' + qMove.value + ' % точек файла, в покое — все' : 'При движении число точек подбирается под видеокарту, в покое рисуются все'); });
-      qIdle.addEventListener('change', () => { lsSet('bim.stream.idle', qIdle.value); apply(); toast(Number(qIdle.value) ? 'В покое рисуется не больше ' + (Number(qIdle.value) / 1e6) + ' млн точек' : 'В покое рисуются все точки файла'); });
+      qMove.addEventListener('change', () => { lsSet('bim.stream.move', qMove.value); apply(); toast(Number(qMove.value) ? 'При движении рисуется ' + qMove.value + ' % точек файла; когда камера остановилась, на экране все точки' : 'При движении число точек подбирается под видеокарту; когда камера остановилась, на экране все точки'); });
       window.addEventListener('bim-octree-state', (e) => {
         const on = !!(e && e.detail && e.detail.active);
         rows.forEach((r) => { r.hidden = !on; });
@@ -1897,19 +1850,9 @@
       window.addEventListener('bim-octree-vram-limit', (e) => {
         const now = Date.now(); if (now - lastVram < 15000) return; lastVram = now;
         const pts = e && e.detail && e.detail.points;
-        toast('Видеопамяти не хватает на все точки сразу: в покое рисуется ≈ ' + (pts ? (pts / 1e6).toFixed(0) + ' млн' : 'часть') + '. Остальные остаются в индексе и появляются при приближении.');
+        toast('Видеопамяти мало для всех точек сразу (≈ ' + (pts ? (pts / 1e6).toFixed(0) + ' млн' : 'часть') + '): когда камера стоит, точки дорисовываются порциями — на экране окажутся все, картинка просто собирается на несколько секунд дольше.');
       });
     })();
-    const qDensity = $('qDensity');
-    if (qDensity) qDensity.addEventListener('change', async () => {
-      const mln = Math.max(1, parseInt(qDensity.value, 10) || 12); const budget = mln * 1000000;
-      try { if (window.PointCloud && window.PointCloud.setBudget) window.PointCloud.setBudget(budget); } catch (e) { }
-      try { if (viewer && viewer.setLodBudget) viewer.setLodBudget(lodDrawBudget(budget)); } catch (e) { }
-      if (API && API.setSettings) { try { SETTINGS.pointBudget = budget; SETTINGS.pointBudgetCustom = true; await API.setSettings({ pointBudget: budget, pointBudgetCustom: true }); } catch (e) { } }
-      if (lastCloudPath && API && API.parseCloud && CLOUD_FILE_RE.test(lastCloudPath)) {
-        await reloadLastCloud('Перезагрузка с бюджетом ' + mln + ' млн точек', 'Плотность: ' + mln + ' млн точек — перечитываю облако…');
-      } else { toast('Плотность ' + mln + ' млн — применится при следующей загрузке облака'); }
-    });
     const wb = $('vtWalk'); if (wb) wb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setWalk) { toast('Прогулка доступна в 3D‑режиме (WebGL)'); return; } const v = !wb.classList.contains('on'); wb.classList.toggle('on', v); viewer.setWalk(v); { const qP = $('qPhoto'); if (qP && viewer.photoOn) { const on = viewer.photoOn(); qP.classList.toggle('on', on); } const qE = $('qEDL'); if (qE) { const e = !!viewer._edl; qE.classList.toggle('on', e); } } toast(v ? 'Прогулка: W/A/S/D — движение, мышь — осмотр, Q/E — вниз/вверх, колесо — вперёд/назад, Esc — выход' : 'Обычный режим'); });
     const tb = $('vtTour'); if (tb) tb.addEventListener('click', () => { if (!toolsOK()) return; if (!viewer.setTour) { toast('Экскурсия доступна в 3D-режиме (WebGL)'); return; } const v = !tb.classList.contains('on'); tb.classList.toggle('on', v); if (v && wb && wb.classList.contains('on')) { wb.classList.remove('on'); viewer.setWalk(false); } viewer.setTour(v); toast(v ? 'Экскурсия: клик по облаку — телепорт к ближайшей станции, N — следующая станция вперёд, мышь — осмотр' : 'Обычный режим'); });
     if (!window.__tourKeys) { window.__tourKeys = true; window.addEventListener('keydown', e => { const k = (e.key || '').toLowerCase(); if ((k === 'n' || k === 'т') && viewer && viewer.tour && viewer.tourNext) viewer.tourNext(); }); }
@@ -2963,6 +2906,7 @@
       let octreeProgressOff = null, octreeCancelListener = null, cancelOctreeRequested = false;
       if (API.onOctreeProgress) octreeProgressOff = API.onOctreeProgress(jobId, p => {
         if (!p || !stopOctreeProgress) return;
+        if (bgBuild && window.__lxPreview && Number.isFinite(p.fraction)) { const pv = window.__lxPreview, f = Math.max(0, Math.min(1, p.fraction)); if (Math.abs(f - (pv.fraction || 0)) >= 0.01) { pv.fraction = f; try { window.dispatchEvent(new CustomEvent('bim-preview-state')); } catch (_) {} } }
         if (Number.isFinite(p.fraction) && stopOctreeProgress.set) {
           const label = p.phase === 'octree-write'
             ? 'Запись узлов: ' + (p.nodesWritten || 0) + ' / ' + (p.nodeCount || 0)
@@ -3010,8 +2954,9 @@
         try { if (stopOctreeProgress) stopOctreeProgress(); } catch (_) {}
       }
       if (!res || !res.ok) {
-        if (cancelOctreeRequested || (res && res.cancelled)) toast('Построение octree отменено');
-        else toast('Не удалось построить octree: ' + ((res && (res.message || res.error)) || 'ошибка'));
+        if (bgBuild && window.__lxPreview) { window.__lxPreview.state = 'failed'; window.__lxPreview.message = (res && (res.message || res.error)) || 'ошибка'; try { window.dispatchEvent(new CustomEvent('bim-preview-state')); } catch (_) {} }
+        if (cancelOctreeRequested || (res && res.cancelled)) toast('Построение octree отменено' + (bgBuild ? ' — на экране остаётся быстрый предпросмотр, не все точки файла' : ''));
+        else toast('Не удалось построить индекс всех точек: ' + ((res && (res.message || res.error)) || 'ошибка') + (bgBuild ? ' На экране остаётся быстрый предпросмотр — это НЕ все точки файла.' : ''));
         return;
       }
       const dir = res.dir, index = res.index;
@@ -3063,6 +3008,7 @@
       if (okset) {
         if (typeof window.__bimRefreshQuality === 'function') window.__bimRefreshQuality();
         activeOctreeDir = dir;
+        if (window.__lxPreview) { window.__lxPreview.state = 'done'; window.__lxPreview.fraction = 1; try { window.dispatchEvent(new CustomEvent('bim-preview-state')); } catch (_) {} }
         sb.classList.toggle('on', !!(viewer.octreeActive && viewer.octreeActive()));
         if (wb) { wb.classList.remove('on'); if (viewer.setWalk) viewer.setWalk(false); }
         if (tb) tb.classList.remove('on');
@@ -3083,8 +3029,7 @@
         const attributeNote = streamedAttributeOmissions.length
           ? ' · в LOD пока нет ' + streamedAttributeOmissions.join('/')
           : '';
-        toast((res.cached ? 'Индекс из кэша — открыто сразу · ' : '') + 'Стриминг octree включён · ' + mln + ' млн индексированных точек · узлов: ' + (index.nodeCount || 0) +
-          (sampled ? ' · выборка из ' + sourceMln + ' млн (' + decimationInfo + ')' : '') +
+        toast((res.cached ? 'Индекс из кэша — открыто сразу · ' : '') + (sampled ? 'Внимание: индекс содержит ' + mln + ' млн из ' + sourceMln + ' млн точек файла (' + decimationInfo + ') — формат не позволяет проиндексировать все · ' : 'Готово: на экране ВСЕ ' + mln + ' млн точек файла · ') + 'узлов: ' + (index.nodeCount || 0) +
           (overlapFallbackCount ? ' · предупреждение: перекрывающиеся LOD-границы в ветвях: ' + overlapFallbackCount : '') +
           attributeNote);
       } else {
@@ -5456,9 +5401,6 @@
     const initialPointBudget = (window.APP_CONFIG && window.APP_CONFIG.resolvePointBudget) ? window.APP_CONFIG.resolvePointBudget(SETTINGS) : (Number(SETTINGS.pointBudget) > 0 ? Number(SETTINGS.pointBudget) : defaultPointBudget);
     try { window.__POINT_BUDGET__ = initialPointBudget; if (window.PointCloud && window.PointCloud.setBudget) window.PointCloud.setBudget(initialPointBudget); } catch (_) {}
     try { if (viewer && viewer.setLodBudget) viewer.setLodBudget(lodDrawBudget(initialPointBudget)); } catch (_) {}
-    const densityControl = $('qDensity');
-    if (densityControl) densityControl.value = String(Math.max(1, Math.min(300, Math.round(initialPointBudget / 1000000))));
-    try { syncPointShareControls(); } catch (_) {}
     try { decorateIcons(); } catch (e) { console.warn('icons', e); }
     applyLang(SETTINGS.lang || (window.I18N && window.I18N.lang) || 'ru');
     // v0.9.19: одноразовый переход на новую светлую тему claude.ai (сбрасывает старую тёмную один раз)
