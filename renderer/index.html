@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' http://127.0.0.1:8765 http://localhost:8765; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'" />
+  <title>BIM Twin</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="styles.css?v=1300" />
+  <link rel="stylesheet" href="vendor/univer.bundle.css" />
+  <link rel="stylesheet" href="vendor/superdoc.bundle.css?v=1078" />
+  <link rel="stylesheet" href="ui/fonts.css?v=1300" />
+  <link rel="stylesheet" href="ui/tokens.css?v=1300" />
+  <link rel="stylesheet" href="ui/base.css?v=1300" />
+  <link rel="stylesheet" href="ui/components.css?v=1300" />
+  <link rel="stylesheet" href="ui/shell.css?v=1300" />
+  <link rel="stylesheet" href="ui/panels.css?v=1300" />
+  <link rel="stylesheet" href="ui/tools.css?v=1300" />
+  <link rel="stylesheet" href="ui/verify.css?v=1300" />
+  <link rel="stylesheet" href="ui/viewers.css?v=1300" />
+  <link rel="stylesheet" href="ui/motion.css?v=1300" />
+</head>
+<body class="lx-booting">
+  <!-- Экран загрузки: плавно скрывается после bim-app-ready (ui/chrome.js) -->
+  <div id="workspaceBoot" class="lx-boot" role="status" aria-live="polite">
+    <div class="lx-boot-card">
+      <span class="lx-boot-mark" data-ico="box" data-ico-size="30"></span>
+      <b class="lx-boot-title">BIM Twin</b>
+      <span class="lx-boot-sub" id="workspaceBootSub">Подготовка рабочей области…</span>
+      <div class="lx-boot-bar"><i></i></div>
+    </div>
+  </div>
+  <div id="lxTopProgress" class="lx-topprogress" role="progressbar" aria-label="Фоновая операция" hidden><i></i></div>
+
+  <header id="titlebar" class="titlebar">
+    <div class="tb-left">
+      <button class="tb-btn" id="tbSide" type="button" data-ico="panel-left" aria-pressed="true" aria-label="Панель проекта" title="Панель проекта"></button>
+      <div class="tb-brand"><span class="tb-mark" data-ico="box" data-ico-size="16"></span><span class="tb-title">BIM Twin</span></div>
+      <span class="tb-sep" aria-hidden="true"></span>
+      <label class="tb-proj" title="Активный проект">
+        <span class="tb-proj-ico" data-ico="folder-open" data-ico-size="15"></span>
+        <select id="projSelect" class="projsel" aria-label="Активный проект"></select>
+      </label>
+    </div>
+    <div class="tb-center">
+      <button class="tb-cmd" id="tbCmd" type="button" aria-label="Поиск команд (Ctrl+K)">
+        <span data-ico="search" data-ico-size="14"></span><span class="tb-cmd-t">Поиск команд</span><kbd>Ctrl K</kbd>
+      </button>
+    </div>
+    <div class="tb-right">
+      <span class="tb-room" id="tbRoom"></span>
+      <button class="tb-btn" id="tbTheme" type="button" data-ico="sun" aria-label="Тема оформления" title="Светлая / тёмная тема"></button>
+      <button class="tb-btn" id="tbInspector" type="button" data-ico="panel-right" aria-pressed="true" aria-label="Панель свойств" title="Панель свойств"></button>
+      <div class="tb-winbtns" id="tbWinBtns">
+        <button class="tb-wb" id="tbMin" type="button" data-ico="minus" data-i18n-title="win.min" title="Свернуть" aria-label="Свернуть"></button>
+        <button class="tb-wb" id="tbMax" type="button" data-ico="square" data-ico-size="14" data-i18n-title="win.max" title="Развернуть" aria-label="Развернуть"></button>
+        <button class="tb-wb close" id="tbClose" type="button" data-ico="x" data-i18n-title="win.close" title="Закрыть" aria-label="Закрыть"></button>
+      </div>
+    </div>
+  </header>
+
+  <nav id="lxTabs" class="lx-tabs" role="tablist" aria-label="Разделы"></nav>
+  <div id="lxRibbon" class="lx-ribbon" role="region" aria-label="Инструменты"></div>
+
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Структура проекта">
+      <div class="sb-head">
+        <span class="sb-title">Структура</span>
+        <span class="mode" id="modeLabel">режим: …</span>
+      </div>
+      <label class="sb-search">
+        <span data-ico="search" data-ico-size="15"></span>
+        <input id="search" class="search" type="search" data-i18n-ph="search.ph" placeholder="Поиск по структуре…" autocomplete="off" />
+      </label>
+      <div class="filters" role="group" aria-label="Фильтр по статусу">
+        <button type="button" class="fchip active" aria-pressed="true" data-f="all" data-i18n="filter.all">Все</button>
+        <button type="button" class="fchip" aria-pressed="false" data-f="err" data-i18n="filter.err">Ошибки</button>
+        <button type="button" class="fchip" aria-pressed="false" data-f="warn" data-i18n="filter.warn">Проверка</button>
+        <button type="button" class="fchip" aria-pressed="false" data-f="ok" data-i18n="filter.ok">ОК</button>
+      </div>
+      <div id="tree" class="tree"></div>
+      <div class="sb-skeleton" id="treeSkeleton" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+    </aside>
+
+    <main class="center">
+      <div class="stage" id="stage">
+        <canvas id="viewer" aria-label="3D-вид"></canvas>
+
+        <div class="stage-hd">
+          <div class="ttitle" id="roomTitle" data-i18n="room.pick">Выберите помещение</div>
+          <div id="elbar" class="elbar" aria-label="Элементы помещения"></div>
+        </div>
+
+        <!-- Навигация по сцене -->
+        <div class="nav-rail" id="viewTools" role="toolbar" aria-label="Навигация по сцене">
+          <button class="nav-btn" id="vtFit" type="button" data-ico="scan" title="Показать всё" aria-label="Показать всё"></button>
+          <button class="nav-btn" id="vtZoomIn" type="button" data-ico="zoom-in" title="Приблизить" aria-label="Приблизить"></button>
+          <button class="nav-btn" id="vtZoomOut" type="button" data-ico="zoom-out" title="Отдалить" aria-label="Отдалить"></button>
+          <span class="nav-sep" aria-hidden="true"></span>
+          <button class="nav-btn" id="vtWalk" type="button" data-ico="footprints" title="Прогулка: WASD и мышь" aria-label="Прогулка" aria-pressed="false"></button>
+          <button class="nav-btn" id="vtFull" type="button" data-ico="maximize-2" title="Полный экран" aria-label="Полный экран"></button>
+        </div>
+
+        <!-- Куб видов -->
+        <div class="viewcube" id="viewCube" role="group" aria-label="Куб видов" title="Куб видов: нажмите грань или ось">
+          <svg class="lx-viewcube-svg" viewBox="0 0 128 128" aria-hidden="true">
+            <g class="vc lx-vface lx-vtop" data-view="top" role="button" tabindex="0" aria-label="Вид сверху"><polygon points="35,34 68,16 103,35 68,54"/><text x="68" y="36">ВЕРХ</text></g>
+            <g class="vc lx-vface lx-vfront" data-view="front" role="button" tabindex="0" aria-label="Вид спереди"><polygon points="35,34 68,54 68,91 35,70"/><text x="52" y="65">ФАС</text></g>
+            <g class="vc lx-vface lx-vright" data-view="right" role="button" tabindex="0" aria-label="Вид справа"><polygon points="68,54 103,35 103,72 68,91"/><text x="86" y="65">ПРАВО</text></g>
+            <g class="vc lx-vcenter" data-view="iso" role="button" tabindex="0" aria-label="Изометрический вид"><circle cx="68" cy="54" r="5"/><title>Изометрия</title></g>
+            <g class="lx-axis lx-axis-x"><line x1="68" y1="92" x2="116" y2="98"/><circle class="vc" data-view="right" cx="116" cy="98" r="8"/><text x="113" y="102">+X</text><line x1="35" y1="70" x2="19" y2="86"/><circle class="vc" data-view="left" cx="19" cy="86" r="8"/><text x="15" y="90">−X</text></g>
+            <g class="lx-axis lx-axis-y"><line x1="68" y1="16" x2="68" y2="5"/><circle class="vc" data-view="top" cx="68" cy="7" r="8"/><text x="64" y="10">+Y</text><line x1="68" y1="92" x2="68" y2="116"/><circle class="vc" data-view="bottom" cx="68" cy="117" r="8"/><text x="64" y="120">−Y</text></g>
+            <g class="lx-axis lx-axis-z"><line x1="35" y1="70" x2="16" y2="109"/><circle class="vc" data-view="front" cx="16" cy="109" r="8"/><text x="12" y="113">+Z</text><line x1="103" y1="35" x2="116" y2="18"/><circle class="vc" data-view="back" cx="116" cy="18" r="8"/><text x="112" y="22">−Z</text></g>
+          </svg>
+        </div>
+
+                        <div class="stage-side stage-side-r" id="stageSideR">
+          <section id="measureListPanel" class="fpanel fp-right" aria-label="Сохранённые измерения">
+          <header class="fpanel-head">
+              <span class="fpanel-ico" data-ico="list"></span><h3>Измерения</h3>
+              <div class="fpanel-actions">
+                <button class="icon-btn" type="button" data-close="measureListPanel" data-ico="x" title="Закрыть" aria-label="Закрыть"></button>
+              </div>
+            </header>
+          <div class="fpanel-toolbar">
+            <button id="mlAutoCompare" class="btn sm" type="button" title="Автоматически разобрать документы помещений и сопоставить все измерения"><span data-ico="scale" data-ico-size="15"></span><span class="lbl">Сверить всё</span></button>
+            <button id="mlOpenVerify" class="btn sm" type="button" title="Таблица сверки: требования из документов, отклонения, источники"><span data-ico="clipboard-check" data-ico-size="15"></span><span class="lbl">Таблица</span></button>
+            <button id="mlClearAll" class="btn sm ghost danger" type="button" title="Очистить список"><span data-ico="trash-2" data-ico-size="15"></span><span class="lbl">Очистить</span></button>
+          </div>
+          <div id="measureListBody" class="fpanel-body"></div>
+        </section>
+        </div>
+
+        
+        
+        <!-- Нижняя док-зона сцены: подсказка и панель активного инструмента; блоки не накладываются друг на друга -->
+        <div class="hud-dock" id="hudDock">
+          <div id="measureReadout" class="hud-readout" role="status" aria-live="polite"></div>
+          <section id="measureBar" class="hud hud-measure" aria-label="Измерение">
+            <div class="hud-title"><span class="hud-ico" id="hudMeasureIco" data-ico="ruler"></span><span class="hud-name" id="hudMeasureName">Расстояние</span></div>
+            <div class="hud-actions">
+              <button id="mmFinish" class="hbtn" type="button" title="Завершить текущую полилинию или площадь и начать новую"><span data-ico="check"></span><span class="lbl">Завершить</span></button>
+              <button id="mmSave" class="hbtn" type="button" title="Сохранить текущее измерение в список"><span data-ico="list-plus"></span><span class="lbl">В список</span></button>
+              <button id="mmClear" class="hbtn" type="button" title="Очистить текущее измерение"><span data-ico="rotate-ccw"></span><span class="lbl">Сбросить</span></button>
+              <button id="mmExit" class="hbtn hbtn-quiet" type="button" title="Выключить измерение (Esc)"><span data-ico="x"></span><span class="lbl">Выйти</span><kbd>Esc</kbd></button>
+            </div>
+          </section>
+          <section id="editBar" class="hud hud-edit" aria-label="Правка облака">
+            <div class="hud-title"><span class="hud-ico" data-ico="lasso-select"></span><span class="hud-name">Правка облака</span><span id="editCount" class="hud-hint">Обведите мусор мышью, затем «Удалить». Камера — ПКМ и колесо</span></div>
+            <div class="hud-tools">
+              <div class="seg-group" role="group" aria-label="Выделение">
+                <button id="edMode" class="hbtn" type="button" title="Лассо — обвести произвольный контур; рамка — прямоугольная область"><span data-ico="lasso-select"></span><span class="lbl">Лассо</span></button>
+                <button id="edThrough" class="hbtn" type="button" title="Насквозь — удаляет все точки внутри контура по всей глубине. Только спереди — лишь видимая поверхность"><span data-ico="layers-2"></span><span class="lbl">Насквозь</span></button>
+                <button id="edProtect" class="hbtn" type="button" title="Защита пола и стен: RANSAC-плоскости не удаляются"><span data-ico="shield"></span><span class="lbl">Защита пола и стен</span></button>
+                <button id="edWand" class="hbtn" type="button" title="Волшебная палочка: клик по мусору"><span data-ico="wand-sparkles"></span><span class="lbl">Палочка</span></button>
+                <button id="edDrop" class="hbtn" type="button" title="Пипетка: клик по цвету"><span data-ico="pipette"></span><span class="lbl">Пипетка</span></button>
+                <button id="edSOR" class="hbtn" type="button" title="Statistical Outlier Removal — убрать шум"><span data-ico="brush-cleaning"></span><span class="lbl">SOR-шум</span></button>
+              </div>
+              <div class="seg-group" role="group" aria-label="Действия с выделением">
+                <button id="edClear" class="hbtn" type="button" title="Очистить текущее выделение (Esc)"><span data-ico="circle-slash"></span><span class="lbl">Сбросить выбор</span></button>
+                <button id="edInvert" class="hbtn" type="button" title="Инвертировать выделение"><span data-ico="contrast"></span><span class="lbl">Инвертировать</span></button>
+                <button id="edCrop" class="hbtn" type="button" title="Оставить только выделенное"><span data-ico="crop"></span><span class="lbl">Оставить</span></button>
+                <button id="edDelete" class="hbtn danger" type="button" title="Удалить выделенные точки"><span data-ico="trash-2"></span><span class="lbl">Удалить</span></button>
+                <button id="edForceDelete" class="hbtn danger" type="button" title="Обрезка без защит: удаляет ВСЕ выделенные точки принудительно — без защиты пола и стен и без латания дыр"><span data-ico="scissors"></span><span class="lbl">Без защит</span></button>
+              </div>
+              <div class="seg-group" role="group" aria-label="История и сохранение">
+                <button id="edUndo" class="hbtn" type="button" title="Отменить последнее удаление"><span data-ico="undo-2"></span><span class="lbl">Отменить</span></button>
+                <button id="edSave" class="hbtn" type="button" title="Сохранить облако в PLY"><span data-ico="save"></span><span class="lbl">Сохранить .ply</span></button>
+                <button id="edExit" class="hbtn hbtn-quiet" type="button" title="Выйти из правки облака (Esc)"><span data-ico="x"></span><span class="lbl">Выйти</span><kbd>Esc</kbd></button>
+              </div>
+            </div>
+          </section>
+          <section id="tourBar" class="hud hud-tour" aria-label="Экскурсия по станциям">
+            <div class="hud-title"><span class="hud-ico" data-ico="route"></span><span class="hud-name">Станции</span><span id="tsCount" class="hud-count">0 ст.</span></div>
+            <div class="hud-actions">
+              <button id="tsImport" class="hbtn" type="button" title="Импорт станций сканера из E57 или JSON"><span data-ico="file-up"></span><span class="lbl">Импорт</span></button>
+              <button id="tsAdd" class="hbtn" type="button" title="Расставить станции кликом по сцене"><span data-ico="plus"></span><span class="lbl">Станция</span></button>
+              <button id="tsDel" class="hbtn" type="button" title="Удалять станции кликом"><span data-ico="minus"></span><span class="lbl">Станция</span></button>
+              <button id="tsReset" class="hbtn" type="button" title="Пересоздать станции автоматически"><span data-ico="wand-sparkles"></span><span class="lbl">Авто</span></button>
+              <button id="tsExport" class="hbtn" type="button" title="Экспорт станций в JSON"><span data-ico="file-down"></span><span class="lbl">Экспорт</span></button>
+              <button id="tsExit" class="hbtn hbtn-quiet" type="button" title="Выйти из режима станций (Esc)"><span data-ico="x"></span><span class="lbl">Выйти</span><kbd>Esc</kbd></button>
+            </div>
+          </section>
+        </div>
+
+        <!-- Панели слева: вид облака, секущий бокс (создаётся скриптом), свойства элемента -->
+        <div class="stage-side stage-side-l" id="stageSideL">
+          <section id="qualityBar" class="fpanel fp-left" aria-label="Вид облака">
+            <div class="fpanel-inner">
+              <header class="fpanel-head">
+                <span class="fpanel-ico" data-ico="palette"></span><h3>Вид облака</h3>
+                <div class="fpanel-actions"><button class="icon-btn" type="button" data-close="qualityBar" data-ico="x" title="Закрыть" aria-label="Закрыть"></button></div>
+              </header>
+              <div class="fpanel-body q-body">
+                <div class="q-row q-row-btn"><span class="q-lbl">Окраска</span><button id="qColor" class="btn sm" type="button" title="Переключение режимов: RGB, высота, интенсивность, классификация"><span class="lbl">RGB</span></button></div>
+                <label class="q-row"><span class="q-lbl">Яркость</span><input id="qBright" type="range" min="0.4" max="2.5" step="0.05" value="1.3" /></label>
+                <label class="q-row"><span class="q-lbl">Размер точки</span><input id="qSize" type="range" min="0.5" max="3" step="0.1" value="1" /></label>
+                <label class="q-row q-stream" hidden title="Потоковый режим: какая часть точек рисуется, пока вы вращаете или приближаете облако. Авто — подбирается под видеокарту. Когда движение закончилось, рисуются все точки файла"><span class="q-lbl">При движении</span><select id="qMove" aria-label="Доля точек при движении"></select></label>
+                <div class="q-toggles">
+                  <button id="qEDL" class="tgl" type="button" aria-pressed="false" title="Eye-Dome Lighting — объём и резкость облака"><span class="tgl-sw"></span><span class="lbl">EDL</span></button>
+                  <button id="qPhoto" class="tgl" type="button" aria-pressed="false" title="Фото-качество: EDL и крупные круглые сплэты — максимально чёткая картинка при экскурсии"><span class="tgl-sw"></span><span class="lbl">Фото-качество</span></button>
+                  <button id="qGrade" class="tgl on" type="button" aria-pressed="true" title="Фотореализм: цветокоррекция (экспозиция, откат пересветов, контраст, насыщенность). Клик — настройки"><span class="tgl-sw"></span><span class="lbl">Реализм</span></button>
+                  <button id="qAtten" class="tgl" type="button" aria-pressed="false" title="Точки растут при приближении. Выключено — постоянный размер на экране, как в CloudCompare"><span class="tgl-sw"></span><span class="lbl">Размер растёт при зуме</span></button>
+                  <button id="qDense" class="tgl" type="button" aria-pressed="false" title="Плотная заливка: точки растут при приближении и перекрываются — без чёрных промежутков при сильном зуме"><span class="tgl-sw"></span><span class="lbl">Плотная заливка</span></button>
+                  <button id="qFrame" class="tgl" type="button" aria-pressed="false" title="Чёрные рамки точек: каждая точка — квадрат с чёрной обводкой. Помогает различать отдельные точки"><span class="tgl-sw"></span><span class="lbl">Рамки точек</span></button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div id="elProps" class="elprops"></div>
+        </div>
+
+        <div id="devConsole" class="devconsole">
+          <div class="dc-head"><span class="dc-title"><span data-ico="terminal" data-ico-size="15"></span>Консоль действий</span><div class="dc-actions"><button id="dcCopy" class="dc-btn" type="button" title="Скопировать весь лог">Копировать</button><button id="dcClear" class="dc-btn" type="button" title="Очистить">Очистить</button><button id="dcClose" class="dc-btn" type="button" title="Свернуть / развернуть" aria-label="Свернуть или развернуть"><span data-ico="chevrons-up-down" data-ico-size="15"></span></button></div></div>
+          <div class="dc-body" id="dcBody"></div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="inspector" id="inspector" aria-label="Свойства">
+      <div class="insp-seg" role="tablist" aria-label="Панель свойств">
+        <button type="button" class="seg-b active" role="tab" aria-selected="true" data-pane="scene" id="segScene"><span data-ico="layers" data-ico-size="15"></span><span class="lbl">Сцена</span></button>
+        <button type="button" class="seg-b" role="tab" aria-selected="false" data-pane="docs" id="segDocs"><span data-ico="file-text" data-ico-size="15"></span><span class="lbl">Документы</span></button>
+      </div>
+      <div class="insp-pane" id="inspScene" data-pane="scene" role="tabpanel"></div>
+      <div class="insp-pane" id="inspDocs" data-pane="docs" role="tabpanel" hidden>
+        <div class="insp-head">
+          <div class="insp-title" id="inspTitle">—</div>
+          <div class="insp-sub" id="inspSub"></div>
+        </div>
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" data-tab="docs" data-ico-lead="file-text" data-i18n="tab.docs"><span class="lbl">Документы</span></button>
+          <button type="button" class="tab" data-tab="props" data-ico-lead="sliders-horizontal" data-i18n="tab.props"><span class="lbl">Свойства</span></button>
+          <button type="button" class="tab" data-tab="ai" data-ico-lead="sparkles" data-i18n="tab.ai"><span class="lbl">Нейросеть</span></button>
+          <button type="button" class="tab" data-tab="dash" data-ico-lead="layout-dashboard" data-i18n="tab.dash"><span class="lbl">Сводка</span></button>
+          <button type="button" class="tab" data-tab="disc" data-ico-lead="message-circle" data-i18n="tab.disc"><span class="lbl">Обсуждения</span></button>
+        </div>
+        <div id="tabbody" class="tabbody"></div>
+      </div>
+    </aside>
+  </div>
+
+  <footer id="lxStatus" class="lx-status" role="contentinfo">
+    <div class="st-mode" id="lxMode" data-mode="view"><i></i><span id="lxModeText">Обзор</span></div>
+    <div class="st-coord" title="Координаты последней отмеченной точки, м">
+      <span class="lx-axis">X</span><span class="lx-val" id="lxX">—</span>
+      <span class="lx-axis">Y</span><span class="lx-val" id="lxY">—</span>
+      <span class="lx-axis">Z</span><span class="lx-val" id="lxZ">—</span>
+    </div>
+    <span class="lx-spacer"></span>
+    <span class="st-info" id="lxCloudInfo" hidden></span>
+    <span class="st-info" id="lxInfo">СК: локальная · ед.: м</span>
+    <div class="st-save" id="lxSaveState" data-state="idle" title="Состояние сохранения"><i></i><span id="lxSaveText">Готово</span></div>
+    <button id="vtLog" class="st-btn" type="button" title="Консоль действий: журнал нажатий, вызовов и ошибок"><span data-ico="terminal" data-ico-size="15"></span><span class="lbl">Консоль</span></button>
+  </footer>
+
+  <!-- Исходные элементы команд: ui/ribbon.js переносит их в ленту вместе с обработчиками -->
+  <div id="lxLegacy" class="lx-legacy" hidden>
+    <button type="button" id="btnNewProject" data-i18n-title="newproject.title" title="Новый проект">Новый проект</button>
+    <button type="button" id="btnProjectUndo" title="Отменить последнее сохранение состояния проекта" aria-label="Отменить изменения проекта" disabled>Отменить</button>
+    <button type="button" id="btnProjectRedo" title="Повторить отменённое изменение состояния проекта" aria-label="Повторить изменения проекта" disabled>Повторить</button>
+    <button type="button" id="btnBackup" data-hidden data-i18n="tb.backup" data-i18n-title="tip.backup">Бэкап</button>
+    <button type="button" id="btnSettings" data-i18n="tb.settings" data-i18n-title="tip.settings">Настройки</button>
+    <button type="button" id="btnUsers" data-i18n="side.users" data-i18n-title="tip.users">Команда</button>
+    <button type="button" id="btnSync" data-i18n="side.sync" data-i18n-title="tip.sync">Синхр.</button>
+    <button type="button" id="btnExport" data-i18n="side.export" data-i18n-title="tip.export">Экспорт</button>
+
+    <button type="button" id="btnOpenCloud" title="Открыть облако точек: сохранённое для помещения или выбрать файл LAS/LAZ/E57/PLY">Открыть облако</button>
+    <button type="button" id="vtStream" title="Дисковый octree/LOD: поддерживаемые uncompressed LAS point formats 0–10, scalar-property ASCII/binary LE/BE PLY и ASCII/interleaved-binary/LZF binary_compressed PCD индексируются потоково. Для PCD LZF временно создаётся полный planar store на диске — учитывайте дополнительное место. PLY mesh, compressed LAS/LAZ и остальные форматы используют обычный parse-путь. Узлы хранят XYZ, RGB8 и при наличии исходника intensity/classification; переключатель цвета показывает RGB, высоту, intensity и класс. Полные операции, требующие весь массив, в streaming LOD ограничены; произвольные extra dimensions не сохраняются. Индекс — до 40 млн точек; требуются место на диске и запас RAM">Поток LOD</button>
+    <label for="modelInput" data-i18n="tb.model" data-i18n-title="tip.model">Модель</label>
+    <input id="modelInput" type="file" accept=".glb,.gltf,.obj,.stl,.ply,.las,.laz,.e57,.ptx,.pcd,.xyz,.pts,.txt,.csv,.xyzrgb" hidden />
+    <label for="ifcInput" data-i18n="tb.ifc" data-i18n-title="tip.ifc">Импорт IFC</label>
+    <input id="ifcInput" type="file" accept=".ifc" hidden />
+    <label for="docInput" data-i18n="tb.doc" data-i18n-title="tip.doc">Документ</label>
+    <input id="docInput" type="file" hidden />
+
+    <button type="button" id="vtQuality" title="Качество облака: цвет, яркость, размер точки, EDL">Вид облака</button>
+    <button type="button" id="vtTools" title="Чистка облака: убрать шум/выбросы/«лучи» и выделить мусор">Чистка</button>
+    <button type="button" id="vtEdit" data-hidden title="Редактирование облака (рамка → удаление)">Правка облака</button>
+    <button type="button" id="vtClean" data-hidden title="Очистить облако: убрать шум/выбросы/«лучи» (Open3D сайдкар; если не установлен — быстрый NumPy-фильтр)">Очистить</button>
+    <button type="button" id="vtConvert" title="Конвертировать LAS/LAZ/E57 → PLY (для 3D-экскурсии). Работает прямо с диска, без загрузки всего облака в память">LAS/E57 → PLY</button>
+    <button type="button" id="vtGeom" title="Геометрия: отклонения скан↔модель, совмещение (ICP), построение поверхности, PDAL">Геометрия</button>
+    <button type="button" id="vtMem" title="Профиль «Максимум памяти/качество» — предзагрузка облаков, больший кеш octree (32 ГБ + RTX 5070)">Макс. память</button>
+
+    <button type="button" id="btnBackRoom" data-hidden data-i18n="tb.backroom" data-i18n-title="tip.backroom">К помещению</button>
+    <button type="button" id="btnEdit" data-i18n="tb.edit" data-i18n-title="tip.edit">Правка</button>
+
+    <button type="button" id="btnMeasure" data-i18n="tb.measure" data-i18n-title="tip.measure">Измерение</button>
+    <button type="button" id="mmDistance" data-mm="distance" title="Расстояние между двумя точками (3D + горизонт./верт. составляющие)">Расстояние</button>
+    <button type="button" id="mmPoint" data-mm="point" title="Координаты точки X/Y/Z">Точка</button>
+    <button type="button" id="mmPolyline" data-mm="polyline" title="Ломаная: суммарная длина по сегментам (вентканалы, трубы)">Полилиния</button>
+    <button type="button" id="mmAngle" data-mm="angle" title="Угол по трём точкам (вершина — вторая точка)">Угол</button>
+    <button type="button" id="mmArea" data-mm="area" title="Площадь плоского многоугольника (метод Ньюэлла)">Площадь</button>
+    <button type="button" id="mmDiameter" data-mm="diameter" title="Диаметр трубы: один клик по трубе — ось и радиус по всей видимой дуге и длине (точнее, чем две точки по краям на круглой поверхности)">Диаметр</button>
+    <button type="button" id="mmPlane" data-mm="plane" title="Плоскость: клик по стене/потолку → RANSAC-подгонка, размеры (ДхШ), наклон, RMS">Плоскость</button>
+    <button type="button" id="mmDeviation" data-mm="deviation" title="Точка→плоскость: 1-й клик — опорная плоскость, дальше — зазор/отклонение (со знаком)">Зазор</button>
+    <button type="button" id="mmCorner" data-mm="corner" title="Ребро/Угол: 2 плоскости → точное ребро комнаты (пересечение) + двугранный угол; 3 плоскости → точная точка угла">Ребро / угол</button>
+    <button type="button" id="mmSnap" title="Привязка к рёбрам/углам/плоскостям: уточняет точку клика по локальной геометрии">Привязка</button>
+    <button type="button" id="mmList" title="Показать/скрыть список измерений">Список</button>
+    <button type="button" id="mmCsv" title="Экспорт всех измерений в CSV">CSV</button>
+    <button type="button" id="mmQaReport" title="Экспорт JSON-отчёта измерений с метаданными источника и параметрами контроля">QA JSON</button>
+    <button type="button" id="mmNotion" title="В Notion: готовая Markdown-таблица копируется в буфер обмена (вставить Ctrl+V) + сохраняется .md">Notion</button>
+
+    <button type="button" id="btnReset" data-i18n="tb.reset" data-i18n-title="tip.reset">Сброс вида</button>
+    <button type="button" id="btnSection" data-i18n="tb.section" data-i18n-title="tip.section">Сечение</button>
+    <input id="sectionRange" class="trange" type="range" min="0" max="100" value="100" />
+    <button type="button" id="btnIsolate" data-i18n="tb.isolate" data-i18n-title="tip.isolate">Изоляция</button>
+    <button type="button" id="btnLOD" data-i18n="tb.lod" data-i18n-title="tip.lod">LOD</button>
+
+    <button type="button" id="tsSplatTop" title="3D-тур: открыть .ply / .splat в 3DGS-вьюере — ходьба по сцене, маршрут, экспорт видео с титрами и логотипом">3DGS-тур</button>
+    <input type="file" id="lcc2FolderInput" webkitdirectory multiple hidden />
+    <label id="tsSplatLcc2" for="lcc2FolderInput" title="LCC2: войдите внутрь lcc2-result → Загрузить">LCC2</label>
+    <button type="button" id="tsMesh" title="Открыть треугольный меш glTF/GLB/PLY; точное горизонтальное или вертикальное сечение доступно в DXF. Точечный PLY без граней не является мешем. ЛКМ — осмотр, WASD — ходьба">Меш</button>
+    <button type="button" id="tsConv3dgs" data-hidden title="Преобразовать загруженное LiDAR-облако точек (.ply) в фотореалистичный 3D Gaussian Splatting — каждая точка становится цветным эллипсоидом, закрывающим дыры между точками">PLY → 3DGS</button>
+    <button type="button" id="vtTour" title="Экскурсия по станциям сканера: импорт станций E57/JSON, расстановка вручную, экспорт">Станции</button>
+    <button type="button" id="tsPhoto" title="Локальный фото-тур: загрузить 360°-панорамы (JPG) со сканера + manifest.json с координатами станций и ходить по ним, как в CoCloud, но офлайн">Фото-тур</button>
+    <button type="button" id="tsPhotoDemo" title="Демо фото-тур (сгенерирован) — проверить режим без своих панорам">Демо</button>
+
+    <button type="button" id="btnAI" data-i18n="tb.ai" data-i18n-title="tip.ai">Подсветка НС</button>
+    <button type="button" id="btnVerify" data-i18n="tb.verify" data-i18n-title="tip.verify">Проверить НС</button>
+    <button type="button" id="btnCompare" data-i18n="tb.compare" data-i18n-title="tip.compare">Сравнить</button>
+  </div>
+
+  <!-- Модальные окна -->
+  <div id="cmpModal" class="modal" role="dialog" aria-modal="true" aria-label="Сравнение помещений">
+    <div class="modal-card">
+      <div class="modal-head"><span>Сравнение помещений</span><button class="x icon-btn" id="cmpClose" type="button" data-ico="x" aria-label="Закрыть"></button></div>
+      <div id="cmpPick" class="cmp-pick"></div>
+      <div id="cmpResult" class="cmp-result"></div>
+    </div>
+  </div>
+
+  <div id="formModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="formTitle">
+    <div class="modal-card sm">
+      <div class="modal-head"><span id="formTitle">Форма</span></div>
+      <div id="formBody" class="form-body"></div>
+      <div class="form-actions">
+        <button class="btn" id="formCancel" type="button" data-i18n="form.cancel">Отмена</button>
+        <button class="btn primary" id="formOk" type="button" data-i18n="form.ok">ОК</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="onboard" class="onboard" role="dialog" aria-modal="true" aria-labelledby="onbTitle">
+    <div class="onboard-card">
+      <div class="onboard-logo" data-ico="box" data-ico-size="28"></div>
+      <h2 id="onbTitle" data-i18n="onb.title">Добро пожаловать в BIM Twin</h2>
+      <p class="onboard-lead" data-i18n="onb.lead">Цифровой двойник помещений: 3D, документы и ПРОВЕРКА ИИ — оффлайн.</p>
+      <div class="onboard-steps-title" data-i18n="onb.stepsTitle">Как это работает — 4 шага</div>
+      <ol class="onboard-steps">
+        <li><span class="os-n">1</span><div class="os-b"><b data-i18n="onb.s1t">Создайте помещение</b><span data-i18n="onb.s1">Проект → этаж → помещение.</span></div></li>
+        <li><span class="os-n">2</span><div class="os-b"><b data-i18n="onb.s2t">Загрузите документы</b><span data-i18n="onb.s2">Сметы, ТЗ, чертежи и фото.</span></div></li>
+        <li><span class="os-n">3</span><div class="os-b"><b data-i18n="onb.s3t">Загрузите 3D-модель</b><span data-i18n="onb.s3">.glb/.gltf/.obj/.stl или импорт IFC.</span></div></li>
+        <li><span class="os-n">4</span><div class="os-b"><b data-i18n="onb.s4t">Запустите проверку ИИ</b><span data-i18n="onb.s4">Сверка документов и 3D.</span></div></li>
+      </ol>
+      <div class="onboard-langs" id="onboardLangs"></div>
+      <div class="onboard-actions">
+        <button class="btn" id="onbSkip" type="button" data-i18n="onb.skip">Пропустить</button>
+        <button class="btn" id="onbDemo" type="button" data-i18n="onb.demo">Загрузить демо-проект</button>
+        <button class="btn primary" id="onbStart" type="button" data-i18n="onb.start">Начать</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="data.js"></script>
+  <script src="findings.js"></script>
+  <script src="ifc-import.js"></script>
+  <script src="viewer3d.js?v=1078"></script>
+  <script src="pointcloud-octree.js?v=1078"></script>
+  <script src="octree-store.js?v=1081"></script>
+  <script src="measure.js?v=1156"></script>
+  <script src="measurement-doc-compare.js?v=2"></script>
+  <script src="cloud-display.js?v=1090"></script>
+  <script src="precision-snap.js?v=1300"></script>
+  <script src="webgl-viewer.js?v=1230"></script>
+  <script src="lixel-object-extract.js?v=1218"></script>
+  <script src="auto-measure.js?v=1160"></script>
+  <script src="lixel-object-inspector.js?v=1154"></script>
+  <script src="scan2bim.js?v=1231"></script>
+  <script src="lixel-scan2bim-ui.js?v=1220"></script>
+  <script src="scan2bim-ai-client.js?v=1220"></script>
+  <script src="lixel-smart-save.js?v=1226"></script>
+  <script src="realview.js?v=1078"></script>
+  <script src="e57-stations.js?v=1078"></script>
+  <script src="phototour.js?v=1078"></script>
+  <script src="splatviewer.js?v=1148"></script>
+  <script src="mesh-importers.js?v=1224"></script>
+  <script src="meshviewer.js?v=1227"></script>
+  <script src="cloudconvert.js?v=1078"></script>
+  <script src="vendor/pcsplat.bundle.js?v=1078"></script>
+  <script src="vendor/potree.bundle.js?v=1078"></script>
+  <script src="pointcloud-edit.js?v=1150"></script>
+  <script src="vendor/laz.bundle.js?v=1078"></script>
+  <script src="../app-config.js?v=1219"></script>
+  <script src="../las-core.js?v=1218"></script>
+  <script src="../e57-core.js?v=1223"></script>
+  <script src="pointcloud.js?v=1219"></script>
+  <script src="i18n.js?v=1089"></script>
+  <script src="icons.js?v=1300"></script>
+  <script src="ui/commands.js?v=1300"></script>
+  <script src="ui/kit.js?v=1300"></script>
+  <script src="design-intent.js"></script>
+  <script src="verify-demo.js"></script>
+  <script src="vendor/univer.bundle.js?v=1078"></script>
+  <script src="vendor/dxf.bundle.js?v=1078"></script>
+  <script src="vendor/pdf.bundle.js?v=1078"></script>
+  <script src="vendor/docx.bundle.js?v=1078"></script>
+  <script src="vendor/superdoc.bundle.js?v=1078"></script>
+  <script src="vendor/dwg.bundle.js?v=1078"></script>
+  <script src="app-utils.js?v=1079"></script>
+  <script src="cloud-chunks.js?v=1160"></script>
+  <script src="project-state.js?v=stage2-1"></script>
+  <script src="tool-manager.js?v=1"></script>
+  <script src="ui/ribbon.js?v=1300"></script>
+  <script src="app.js?v=1300"></script>
+  <script src="lixel-scene.js?v=1090"></script>
+  <script src="dxf.js?v=1087"></script>
+  <script src="draw2d.js?v=1172"></script>
+  <script src="lixel-geom2d.js?v=1150"></script>
+  <script src="snap.js?v=1087"></script>
+  <script src="dxfparse.js?v=1087"></script>
+  <script src="section.js?v=1233"></script>
+  <script src="lixel-draw.js?v=1232"></script>
+  <script src="lixel-draw-ext.js?v=1150"></script>
+  <script src="lixel-workspace.js?v=1233"></script>
+  <script src="lixel-cloud-ui.js?v=1090"></script>
+  <script src="multicloud.js?v=1092"></script>
+  <script src="xray-view.js?v=1091"></script>
+  <script src="tin-volume.js?v=1215"></script>
+  <script src="wall-detect.js?v=1216"></script>
+  <script src="terrain.js?v=1223"></script>
+  <script src="georef.js?v=1216"></script>
+  <script src="ifc-export.js?v=1220"></script>
+  <script src="export-hub.js?v=1227"></script>
+  <script src="cloud-process.js?v=1160"></script>
+  <script src="cloud-clean.js?v=1170"></script>
+  <script src="lixel-tools-ext.js?v=1160"></script>
+  <script src="potree-loader.js?v=1091"></script>
+  <script src="lixel-sprints-ext.js?v=1224"></script>
+  <script src="ply-to-splat.js?v=1091"></script>
+  <script src="convert-hub.js?v=1091"></script>
+  <script src="xgrids-tour.js?v=1092"></script>
+  <script src="lcc2-loader.js?v=1216"></script>
+  <script src="ui/modes.js?v=1300"></script>
+  <script src="ui/verify.js?v=1300"></script>
+  <script src="ui/chrome.js?v=1300"></script>
+</body>
+</html>

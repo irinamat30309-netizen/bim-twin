@@ -1,0 +1,163 @@
+/* BIM Twin — дизайн-токены. Одна палитра: нейтральный графит + один акцент.
+ * Тёмная тема по умолчанию; светлая включается атрибутом html[data-theme="light"].
+ * Класс .theme-dark заново применяет тёмную палитру к поддереву (3D-просмотры всегда на тёмном фоне).
+ * Старые имена переменных (--panel, --muted, …) оставлены как алиасы: контентные блоки
+ * styles.css и динамическая разметка в JS продолжают работать без правок. */
+:root,
+html[data-theme="dark"],
+.theme-dark {
+  color-scheme: dark;
+  --bg-0: #0e1013;
+  --bg-1: #14171c;
+  --bg-2: #1a1e24;
+  --bg-3: #21262e;
+  --bg-4: #2a303a;
+  --line: #262c36;
+  --line-strong: #363e4b;
+  --txt: #e9edf3;
+  --txt-2: #a5afbf;
+  --txt-3: #838ea1;
+  --accent: #5a8dff;
+  --accent-hi: #7aa3ff;
+  --accent-fill: #3b6fe6;
+  --accent-fill-hi: #4c7ef0;
+  --on-accent: #ffffff;
+  --accent-soft: rgba(90, 141, 255, .16);
+  --accent-line: rgba(90, 141, 255, .5);
+  --ok: #3ecf8e;
+  --warn: #f5b544;
+  --err: #f0616d;
+  --ok-soft: rgba(62, 207, 142, .14);
+  --warn-soft: rgba(245, 181, 68, .14);
+  --err-soft: rgba(240, 97, 109, .14);
+  --overlay: rgba(6, 8, 11, .62);
+  --glass: rgba(20, 23, 28, .95);
+  --track: #3d4658;
+  --knob-off: #aeb8c8;
+  --glass-line: rgba(255, 255, 255, .08);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, .42), 0 1px 0 rgba(255, 255, 255, .03) inset;
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, .55);
+  --scroll: #333b47;
+  --scroll-hi: #465061;
+  --viewport-a: #12151a;
+  --viewport-b: #0b0d10;
+  --draw-line: #ff9d3d;
+  --draw-line-fill: rgba(255, 157, 61, .10);
+  --draw-sect: #5ad1ff;
+  --draw-sect-fill: rgba(90, 209, 255, .12);
+  --draw-draft: #ffd27a;
+  --draw-circ: #7ea6ff;
+  --draw-pt: #6b8ae0;
+  --draw-dim: #34d399;
+  --draw-dimtxt: #b8f2d8;
+  --draw-halo: rgba(14, 16, 19, .9);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg-0: #eef1f5;
+  --bg-1: #ffffff;
+  --bg-2: #f6f8fb;
+  --bg-3: #eceff4;
+  --bg-4: #e1e6ed;
+  --line: #dde2ea;
+  --line-strong: #c6cedb;
+  --txt: #141a24;
+  --txt-2: #465264;
+  --txt-3: #5d697b;
+  --accent: #2a5fdd;
+  --accent-hi: #1f4fc4;
+  --accent-fill: #2a5fdd;
+  --accent-fill-hi: #2554c8;
+  --on-accent: #ffffff;
+  --accent-soft: rgba(42, 95, 221, .1);
+  --accent-line: rgba(42, 95, 221, .45);
+  --ok: #0b7a52;
+  --warn: #9a5b00;
+  --err: #c62f43;
+  --ok-soft: rgba(11, 122, 82, .1);
+  --warn-soft: rgba(154, 91, 0, .1);
+  --err-soft: rgba(198, 47, 67, .09);
+  --overlay: rgba(20, 26, 36, .38);
+  --glass: rgba(255, 255, 255, .96);
+  --track: #bcc6d4;
+  --knob-off: #ffffff;
+  --glass-line: rgba(20, 26, 36, .08);
+  --shadow-1: 0 1px 2px rgba(20, 26, 36, .08);
+  --shadow-2: 0 8px 24px rgba(20, 26, 36, .14), 0 1px 0 rgba(255, 255, 255, .6) inset;
+  --shadow-3: 0 18px 48px rgba(20, 26, 36, .22);
+  --scroll: #c6cedb;
+  --scroll-hi: #a9b4c4;
+  --viewport-a: #f4f6f9;
+  --viewport-b: #e9edf2;
+  --draw-line: #d4600a;
+  --draw-line-fill: rgba(212, 96, 10, .10);
+  --draw-sect: #0a78a8;
+  --draw-sect-fill: rgba(10, 120, 168, .12);
+  --draw-draft: #a8760a;
+  --draw-circ: #2f5bd8;
+  --draw-pt: #3b5fc7;
+  --draw-dim: #0c8f63;
+  --draw-dimtxt: #0a5c40;
+  --draw-halo: rgba(255, 255, 255, .92);
+}
+
+:root {
+  --font: "Inter Variable", "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Roboto", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", "JetBrains Mono", Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --r-1: 6px;
+  --r-2: 8px;
+  --r-3: 12px;
+  --r-4: 16px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+  --t-fast: 120ms;
+  --t-med: 180ms;
+  --t-slow: 280ms;
+  --h-title: 38px;
+  --h-tabs: 36px;
+  --h-ribbon: 96px;
+  --h-status: 26px;
+  --w-side: 264px;
+  --w-insp: 320px;
+
+  /* слои */
+  --z-stage: 20;
+  --z-hud: 30;
+  --z-panel: 40;
+  --z-drawer: 60;
+  --z-modal: 200;
+  --z-pop: 300;
+  --z-tip: 400;
+  --z-toast: 500;
+  --z-boot: 900;
+
+  /* алиасы прежних имён */
+  --bg: var(--bg-0);
+  --bg-soft: var(--bg-2);
+  --panel: var(--bg-1);
+  --panel2: var(--bg-2);
+  --border: var(--line);
+  --text: var(--txt);
+  --fg: var(--txt);
+  --muted: var(--txt-2);
+  --neutral: var(--txt-3);
+  --accent-glow: var(--accent-soft);
+  --radius: var(--r-2);
+  --radius-lg: var(--r-3);
+  --shadow: var(--shadow-2);
+  --shadow-pop: var(--shadow-3);
+  --viewport1: var(--viewport-a);
+  --viewport2: var(--viewport-b);
+  --lx-blue: var(--accent);
+  --lx-green: var(--ok);
+  --lx-red: var(--err);
+  --lx-orange: var(--warn);
+  --lx-purple: #9b7bff;
+  --lx-neutral: var(--txt-3);
+}

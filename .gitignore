@@ -1,0 +1,40 @@
+# Dependencies and generated build outputs
+node_modules/
+dist/
+release/
+out/
+coverage/
+
+# Local data, user-supplied fixtures, and test artifacts
+QA-artifacts/
+qa-v1089/
+qa-v1090/
+BIM-TWIN-user-fixtures-*/
+
+# Local credentials and machine-specific files
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Runtime/test caches and local fixture/evidence bundles
+**/__pycache__/
+*.py[cod]
+test/fixtures/*
+!test/fixtures/
+!test/fixtures/README.md
+!test/fixtures/laz12-sample.laz.b64
+!test/fixtures/laz14-sample.laz.b64
+!test/fixtures/laz-decimation-200005.laz.b64
+scan2bim-ai-server/test_local.py
+QA-run-stage*-latest.log
+bim-twin-handoff-*.docx
+
+# Local previews and private sample documents, not required by the app
+/preview_c.png
+renderer/preview.png
+ai/samples/
+# UI-стенд: сгенерированные снимки и облако-заготовка
+dev/ui-lab/shots/
+dev/ui-lab/room.ply
