@@ -70,15 +70,14 @@
         I('vtQuality', 'palette', 'Вид облака', { sel: '#vtQuality', needs: 'cloud', tip: 'Цвет, яркость, размер точки, EDL и фотореализм' })
       ]),
       G('clean', 'Очистка', [
+        I('opAutoClean', 'sparkles', 'Автоочистка', { call: OPS_T + 'opAutoClean', needs: 'cloud', tip: 'Шум, «облачка» в пустоте, прохожие и «волоски» у стен убираются, стены, пол и потолок становятся ровными. Перед применением — предпросмотр красным' }),
         I('vtTools', 'brush-cleaning', 'Чистка', { sel: '#vtTools', menu: 1, needs: 'cloud', tip: 'Убрать шум, выбросы и «лучи», выделить мусор' }),
         I('vtEdit', 'lasso-select', 'Правка облака', { sel: '#vtEdit', needs: 'cloud', tip: 'Выделение лассо или рамкой и удаление точек' }),
-        I('vtClean', 'sparkles', 'Очистить (Open3D)', { sel: '#vtClean', needs: 'cloud', tip: 'Шум, выбросы, «лучи»: Open3D, а без него быстрый NumPy-фильтр' })
       ]),
       G('process', 'Обработка', [
         I('opResample', 'grid-3x3', 'Ресэмплирование', { call: OPS_T + 'opResample', needs: 'cloud', tip: 'Понизить плотность облака: случайно (в процентах) или по сетке (шаг в метрах)' }),
         I('opDenoise', 'cloud-fog', 'Подавление шума', { call: OPS_T + 'opDenoise', needs: 'cloud', tip: 'Убрать «летающие» точки: у точки меньше заданного числа соседей в радиусе поиска' }),
         I('opPeople', 'user-round-x', 'Удалить людей', { call: OPS_T + 'opPeople', needs: 'cloud', tip: 'Найти по форме и убрать прохожих: рост, ширина, голова и опора на землю; колонны, столбы и машины остаются. Перед удалением — предпросмотр' }),
-        I('opSmooth', 'waves', 'Сглаживание', { call: OPS_T + 'opSmooth', needs: 'cloud', tip: 'Подавить шум на плоских поверхностях: проекция на локальную плоскость, рёбра и трубы сохраняются' }),
         I('opFlatten', 'flatten', 'Выровнять поверхности', { call: OPS_T + 'opFlatten', needs: 'cloud', tip: 'Стены, пол и потолок становятся ровными плоскостями, двойные слои склеиваются — измерения точнее' }),
         I('opFloor', 'arrow-down-to-line', 'Выровнять пол', { call: OPS_T + 'opLevel', args: ['floor', [0, 1, 0], 'Выравнивание'], needs: 'cloud', tip: 'Повернуть облако так, чтобы доминантная плоскость пола стала горизонтальной' }),
         I('opWall', 'move-vertical', 'Выровнять стену', { call: OPS_T + 'opVertical', needs: 'cloud', tip: 'Сделать выбранную стену вертикальной' }),

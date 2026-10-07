@@ -16,6 +16,7 @@ self.onmessage = function (e) {
   try {
     var res, tr = [];
     if (m.op === 'denoise2') res = self.CloudClean.denoise(m.pos, (m.pos.length / 3) | 0, m.params || {}, ctl);   // умное подавление шума: список удаляемых точек
+    else if (m.op === 'autoclean') res = self.CloudClean.autoClean(m.pos, (m.pos.length / 3) | 0, m.params || {}, ctl);   // шум + люди + выравнивание плоскостей
     else if (m.op === 'people') res = self.CloudClean.people(m.pos, (m.pos.length / 3) | 0, m.params || {}, ctl);
     else res = self.CloudProcess.run(m.op, m.pos, m.params || {}, ctl);
     if (res.pos && res.pos.buffer) tr.push(res.pos.buffer);

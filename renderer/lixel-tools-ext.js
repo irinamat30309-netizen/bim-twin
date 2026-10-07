@@ -114,6 +114,7 @@
             var CC = window.CloudClean, n3 = pos.length / 3 | 0, ctl = { progress: onProgress };
             if (op === 'denoise2' && CC) resolve(CC.denoise(pos, n3, params, ctl));
             else if (op === 'people' && CC && CC.people) resolve(CC.people(pos, n3, params, ctl));
+            else if (op === 'autoclean' && CC && CC.autoClean) resolve(CC.autoClean(pos, n3, params, ctl));
             else resolve(CP.run(op, op === 'smooth' || op === 'flatten' ? pos.slice() : pos, params, ctl));
           } catch (e) { reject(e); }
         }, 0);
@@ -338,6 +339,50 @@
     });
   }
 
+  /**
+   * Автоматическая чистка одним действием (как «авто-очистка» в Lixel): шум и «облачка» в пустоте → люди → стены, пол и потолок ложатся
+   * на ровные плоскости, «волосы» около них убираются. Перед применением — предпросмотр удаляемого красным; Ctrl+Z возвращает облако.
+   */
+  function opAutoClean() {
+    var LV = { soft: 'мягко', medium: 'средне', strong: 'сильно' }, PL = { strict: 'строго', normal: 'обычно', loose: 'мягко' };
+    return processOp({
+      op: 'autoclean', label: 'Автоматическая чистка…', title: 'Автоматическая чистка',
+      message: 'Убирает «летающие» точки и облачка шума, прохожих и «волоски» вокруг стен, а стены, пол и потолок делает ровными плоскостями. Трубы, кабели, колонны и мелкие детали остаются. Людей ищет по форме (это эвристика, а не нейросеть): перед применением красным видно, что будет удалено.',
+      fields: function (d) {
+        return [
+          { key: 'level', label: 'Сила очистки от шума', type: 'select', value: 'medium', options: [{ value: 'soft', label: 'Мягко' }, { value: 'medium', label: 'Средне' }, { value: 'strong', label: 'Сильно' }],
+            hint: 'Мягко — только заведомый мусор; средне (рекомендуется); сильно — ещё и сгустки до 150 точек, но тонкие провода на редком скане могут пострадать.' },
+          { key: 'people', label: 'Людей', type: 'select', value: 'normal', options: [{ value: 'off', label: 'Не удалять' }, { value: 'strict', label: 'Только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Больше (риск задеть колонны)' }] },
+          { key: 'flatten', label: 'Выровнять стены, пол и потолок', type: 'checkbox', value: true },
+          { key: 'kind', label: 'Тип поверхностей', type: 'select', value: 'wall', options: [{ value: 'wall', label: 'Стены, пол, потолок (тонкий слой)' }, { value: 'facade', label: 'Фасад, стекло (толстый слой)' }], showIf: function (v) { return !!v.flatten; },
+            hint: 'Для сканов фасада сквозь стекло слой «размазан» на 5–10 см — выберите «Фасад, стекло».' },
+          { key: 'tol', label: 'Допуск (толщина слоя)', type: 'number', value: d.flattenTol, min: 0.002, max: 0.5, step: 'any', unit: 'м', showIf: function (v) { return !!v.flatten && v.kind === 'wall'; }, hint: 'Точки ближе допуска к плоскости ложатся на неё. Для SLAM-сканеров 0,03–0,06 м, для точных сканеров меньше.' },
+          { key: 'hair', label: 'Убрать «волоски» шума вокруг плоскостей', type: 'checkbox', value: true, showIf: function (v) { return !!v.flatten; } },
+          { key: 'preview', label: 'Показать удаляемое красным и спросить', type: 'checkbox', value: true }
+        ];
+      },
+      params: function (v, d) {
+        var fac = v.kind === 'facade';
+        return { level: v.level, people: v.people !== 'off', peopleLevel: v.people === 'off' ? 'normal' : v.people, flatten: !!v.flatten, facade: fac, tol: fac ? 0.12 : v.tol, hair: !!v.hair, strength: 1 };
+      },
+      review: function (res, c, v) {
+        if (!v.preview || !res.removed) return true;
+        return previewRemoval(c, res.remove, { noun: 'точек', color: '#ff3b4a', okLabel: 'Применить чистку', who: res.stats && res.stats.peopleFound ? res.stats.peopleFound : undefined });
+      },
+      finish: function (res, c, v) {
+        var st = res.stats || {}, moved = st.moved || 0;
+        if (!res.removed && !moved) { toast('Автоматическая чистка: ничего лишнего не найдено (шум: ' + (LV[v.level] || v.level) + ')'); return null; }
+        var keep = keptIndices(res.remove, c.count);
+        if (!keep.length) { toast('Удалились бы все точки — операция отменена'); return null; }
+        var cl = subsetCloud(c, keep);
+        if (res.pos && moved) cl.pos = engine().gather(res.pos, keep, 3);   // выровненные координаты оставшихся точек
+        return { cloud: cl, name: 'auto-clean',
+          details: { operation: 'cloud.autoClean', parameters: { algorithm: 'density-noise+people-shape+plane-flatten', level: v.level, people: v.people, flatten: !!v.flatten, surface: v.kind === 'facade' ? 'facade' : 'wall', tolerance: v.kind === 'facade' ? 0.12 : v.tol, hair: !!v.hair, noise: st.noise, peopleRemoved: st.people, peopleObjects: st.peopleFound, hairRemoved: st.hair, planes: st.planes, moved: moved, rmsShift: st.rmsShift, removed: res.removed, kept: keep.length } },
+          text: 'Автоочистка: удалено ' + nfmt(res.removed) + ' точек (' + num(res.removed / c.count * 100, res.removed / c.count < 0.01 ? 3 : 1) + ' %: шум ' + nfmt(st.noise || 0) + ', люди ' + nfmt(st.people || 0) + ', «волоски» ' + nfmt(st.hair || 0) + ')' + (moved ? '; выровнено плоскостей ' + nfmt(st.planes || 0) + ', сдвинуто ' + nfmt(moved) + ' точек, средний сдвиг ' + mm(st.rmsShift || 0) : '') };
+      }
+    });
+  }
+
   function opSmooth() {
     return processOp({
       op: 'smooth', label: 'Сглаживание…', title: 'Сглаживание',
@@ -531,7 +576,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { build: build, ops: { opResample: opResample, opAutoClean: opAutoClean, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });
