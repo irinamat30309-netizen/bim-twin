@@ -1055,10 +1055,15 @@ function registerIpc() {
       if (streamable && wantStream) {
         maxPoints = Math.min(maxPoints, APP_CFG.PREVIEW_POINTS || 6000000); previewOnly = true;
       } else if (streamable && !allowReduced) {
+        // Ревизия 14: файл читается ЦЕЛИКОМ всегда, когда это возможно. «Свободная память» больше не повод отказать (система сама
+        // освободит кэш/подкачку): отказ — только если файл не поместится в ОПЕРАТИВНУЮ память компьютера целиком или превышает
+        // один буфер видеокарты обычного режима (тогда все точки покажет только потоковый режим).
         let canLoad = peek;
-        try { canLoad = cloud.effectivePointBudget(peek, {}); } catch (_) { canLoad = peek; }
+        try { canLoad = cloud.effectivePointBudget(peek, { availableMemoryBytes: require('os').totalmem() }); } catch (_) { canLoad = peek; }
+        const singleCap = Number(APP_CFG.MAX_SINGLE_BUFFER_POINTS) || 170000000;
+        if (peek > singleCap) canLoad = Math.min(canLoad, singleCap);
         if (canLoad < peek) {
-          return { ok: false, tooBig: true, streamable: true, total: peek, canLoad, message: 'Файл (' + (peek / 1e6).toFixed(1) + ' млн точек) не помещается в свободную память целиком: сейчас помещается около ' + (canLoad / 1e6).toFixed(1) + ' млн.' };
+          return { ok: false, tooBig: true, streamable: true, total: peek, canLoad, message: 'Файл (' + (peek / 1e6).toFixed(1) + ' млн точек) слишком велик, чтобы показать все точки одним куском в обычном режиме: целиком помещается около ' + (canLoad / 1e6).toFixed(1) + ' млн.' };
         }
       }
       const controller = new AbortController();
@@ -1078,11 +1083,15 @@ function registerIpc() {
         } catch (_) {}
       };
       try {
-        const result = await cloud.parseCloudFileAsync(abs, { maxPoints, pointShare, signal: controller.signal, onProgress });
+        const result = await cloud.parseCloudFileAsync(abs, { maxPoints, pointShare, signal: controller.signal, onProgress, memoryGuard: (previewOnly || allowReduced) ? undefined : false });
+        if (result && result.ok === false && !result.cancelled && !previewOnly && !allowReduced && /out of memory|allocation failed|Array buffer allocation|Invalid typed array length|Invalid array length|Cannot create a (Buffer|string)|ERR_MEMORY|не хватает памяти|недостаточно.*памят/i.test(String(result.message || ''))) {
+          // реальный сбой выделения памяти: ничего не режем молча — окно предложит потоковый режим (все точки с диска)
+          return { ok: false, tooBig: true, streamable, total: peek || 0, canLoad: 0, message: 'Не хватило памяти, чтобы прочитать все точки сразу' + (peek ? ' (' + (peek / 1e6).toFixed(1) + ' млн)' : '') + '.' };
+        }
         if (result && result.ok && !previewOnly && !allowReduced && result.pointBudget && result.pointBudget.memoryLimited) {
           // не помещается в память целиком, а у формата нет потокового чтения: молча урезать нельзя — сообщаем и предлагаем выбор
           const pb = result.pointBudget;
-          return { ok: false, tooBig: true, streamable: false, total: pb.total, canLoad: pb.applied, message: 'Файл (' + (pb.total / 1e6).toFixed(1) + ' млн точек) не помещается в свободную память целиком, а этот формат не читается потоком. Сконвертируйте его в LAS или PLY (тогда откроются все точки) либо освободите память.' };
+          return { ok: false, tooBig: true, streamable: false, total: pb.total, canLoad: pb.applied, message: 'Файл (' + (pb.total / 1e6).toFixed(1) + ' млн точек) не помещается в память целиком, а этот формат не читается потоком. Сконвертируйте его в LAS или PLY (тогда откроются все точки) либо освободите память.' };
         }
         if (result && result.ok) {
           const loaded = result.count || (result.pos && result.pos.length / 3) || 0;
