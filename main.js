@@ -1041,20 +1041,24 @@ function registerIpc() {
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
       const s = readSettings();
-      // Ревизия 12: облако открывается ЦЕЛИКОМ — ни бюджета точек, ни доли файла (сохранённые «Доля»/«Плотность» старых версий игнорируются).
-      // Если файл не помещается в свободную память (или он очень большой), он открывается быстрым предпросмотром (PREVIEW_POINTS),
-      // а индекс ВСЕХ точек окно строит в фоне и затем показывает их все. Прореживание остаётся только по явному согласию пользователя
-      // (payload.allowReduced) для форматов без потокового чтения (E57/LAZ/XYZ…), которые не помещаются в память.
+      // Ревизия 13: облако открывается ЦЕЛИКОМ в обычном режиме — без бюджета точек, без доли файла и БЕЗ автоматического
+      // переключения в «Потоковый LOD». Потоковый режим включается только по явному согласию пользователя (payload.preview === true):
+      // тогда окно получает быстрый предпросмотр (PREVIEW_POINTS), а индекс всех точек строится в фоне.
+      // Если файл не помещается в свободную память, он НЕ режется молча: возвращаем { tooBig } и окно спрашивает пользователя.
       let maxPoints = APP_CFG.resolvePointBudget(s);
       const pointShare = 1;
       let previewOnly = false;
       const allowReduced = !!(payload && typeof payload === 'object' && payload.allowReduced === true);
-      if (payload && typeof payload === 'object' && payload.preview === true && s.streamFirst !== false) {
-        const peek = peekSourcePointCount(abs);
-        if (peek > 0) {
-          let fits = true;
-          try { fits = cloud.effectivePointBudget(peek, {}) >= peek; } catch (_) { fits = true; }
-          if (peek > (APP_CFG.STREAM_FIRST_POINTS || 25000000) || !fits) { maxPoints = Math.min(maxPoints, APP_CFG.PREVIEW_POINTS || 6000000); previewOnly = true; }
+      const wantStream = !!(payload && typeof payload === 'object' && payload.preview === true);
+      const peek = peekSourcePointCount(abs);
+      const streamable = peek > 0;
+      if (streamable && wantStream) {
+        maxPoints = Math.min(maxPoints, APP_CFG.PREVIEW_POINTS || 6000000); previewOnly = true;
+      } else if (streamable && !allowReduced) {
+        let canLoad = peek;
+        try { canLoad = cloud.effectivePointBudget(peek, {}); } catch (_) { canLoad = peek; }
+        if (canLoad < peek) {
+          return { ok: false, tooBig: true, streamable: true, total: peek, canLoad, message: 'Файл (' + (peek / 1e6).toFixed(1) + ' млн точек) не помещается в свободную память целиком: сейчас помещается около ' + (canLoad / 1e6).toFixed(1) + ' млн.' };
         }
       }
       const controller = new AbortController();
@@ -1078,7 +1082,7 @@ function registerIpc() {
         if (result && result.ok && !previewOnly && !allowReduced && result.pointBudget && result.pointBudget.memoryLimited) {
           // не помещается в память целиком, а у формата нет потокового чтения: молча урезать нельзя — сообщаем и предлагаем выбор
           const pb = result.pointBudget;
-          return { ok: false, tooBig: true, total: pb.total, canLoad: pb.applied, message: 'Файл (' + (pb.total / 1e6).toFixed(1) + ' млн точек) не помещается в свободную память целиком, а этот формат не читается потоком. Сконвертируйте его в LAS или PLY (тогда откроются все точки) либо освободите память.' };
+          return { ok: false, tooBig: true, streamable: false, total: pb.total, canLoad: pb.applied, message: 'Файл (' + (pb.total / 1e6).toFixed(1) + ' млн точек) не помещается в свободную память целиком, а этот формат не читается потоком. Сконвертируйте его в LAS или PLY (тогда откроются все точки) либо освободите память.' };
         }
         if (result && result.ok) {
           const loaded = result.count || (result.pos && result.pos.length / 3) || 0;
