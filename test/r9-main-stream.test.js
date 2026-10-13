@@ -15,13 +15,12 @@ test('конфиг: пороги быстрого предпросмотра и 
   assert.ok(c.PREVIEW_POINTS < c.STREAM_FIRST_POINTS);
 });
 
-test('main.js: предпросмотр включается только по запросу окна, при 100 % точек и настройке streamFirst', () => {
+test('main.js: предпросмотр включается только по явному запросу окна (ревизия 13: файл по умолчанию открывается целиком)', () => {
   const s = read('main.js');
   assert.match(s, /payload\.preview\s*===\s*true/);
   assert.match(s, /allowReduced/);
-  assert.match(s, /streamFirst\s*!==\s*false/);
   assert.match(s, /result\.previewOnly\s*=\s*true/);
-  assert.match(s, /peek\s*>\s*\(APP_CFG\.STREAM_FIRST_POINTS/);
+  assert.match(s, /streamable && wantStream/);
   assert.match(s, /tooBig:\s*true/);
 });
 
@@ -44,9 +43,9 @@ test('preload: parseCloud передаёт признак preview только �
   assert.match(s, /preview:\s*!!\(opts && opts\.preview\)/);
 });
 
-test('app.js: открытие файла просит предпросмотр, а огромный файл автоматически строит индекс в фоне', () => {
+test('app.js: предпросмотр просится только после согласия, а индекс в фоне строится сам, когда предпросмотр открыт', () => {
   const s = read('renderer/app.js');
-  assert.match(s, /API\.parseCloud\(filePath, jobId, \{ onProgress:[^\n]*preview: true, allowReduced:/);
+  assert.match(s, /API\.parseCloud\(filePath, jobId, \{ onProgress:[^\n]*preview: !!mode\.stream, allowReduced:/);
   assert.match(s, /window\.__lxPreview/);
   assert.match(s, /window\.__lxStreamBg = true/);
   assert.match(s, /preserveView:\s*bgBuild/);

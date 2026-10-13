@@ -307,7 +307,7 @@
       this._lodThreshold = Number.POSITIVE_INFINITY; // порог «до бесконечности»: обычная загрузка всегда рисует ВСЕ точки одним буфером
       // v1059: предел одного VBO поднят до 96 млн — облака до ~90 млн (вкл. текущие 78 млн) рисуются ЦЕЛИКОМ,
       // как в CloudCompare (на RTX 5070 / 32 ГБ памяти). Более крупные проекты аккуратно прорежаются до этого уровня (выглядит сплошным).
-      this._maxSingleBuffer = 96000000;
+      this._bigColorPoints = 12000000; this._maxSingleBuffer = 170000000; // ревизия 13: 170 млн × 12 Б = 2,0 ГБ — предел одного буфера WebGL (2^31−1 Б); всё, что меньше, рисуется ЦЕЛИКОМ
       this._initGL(); this._bind(); this._resize();
       // throttle resize по кадрам — иначе сильные зависания при тяге окна
       this._roRAF = 0;
@@ -347,13 +347,34 @@
     }
 
     // ---------- object upload ----------
+    // Ревизия 13: большие облака (десятки млн точек) загружаются в видеопамять порциями (bufferData(размер) + bufferSubData), без
+    // гигантской временной копии; цвет у больших облаков хранится как 3 байта (нормированный UNSIGNED_BYTE) вместо 12 — 102 млн точек:
+    // 1,23 ГБ позиции + 0,31 ГБ цвет вместо 2,5 ГБ. Картинка не меняется (8 бит на канал, как в файле).
+    _bigBufferData(data) {
+      const gl = this.gl, T = gl.ARRAY_BUFFER, CH = 8 * 1024 * 1024;
+      if (!data || data.length <= CH * 2) { gl.bufferData(T, data, gl.STATIC_DRAW); return; }
+      gl.bufferData(T, data.byteLength, gl.STATIC_DRAW);
+      for (let i = 0; i < data.length; i += CH) gl.bufferSubData(T, i * data.BYTES_PER_ELEMENT, data.subarray(i, Math.min(data.length, i + CH)));
+    }
+    _bigColorBuffer(col) {
+      const gl = this.gl, T = gl.ARRAY_BUFFER;
+      if (!(col instanceof Float32Array) || col.length < 3 * (this._bigColorPoints || 12000000)) { gl.bufferData(T, col, gl.STATIC_DRAW); return false; }
+      const CH = 3 * 2000000; gl.bufferData(T, col.length, gl.STATIC_DRAW);
+      const tmp = new Uint8Array(CH);
+      for (let i = 0; i < col.length; i += CH) {
+        const e = Math.min(col.length, i + CH), n = e - i;
+        for (let k = 0; k < n; k++) { const v = col[i + k] * 255 + 0.5; tmp[k] = v <= 0 ? 0 : v >= 255 ? 255 : v; }
+        gl.bufferSubData(T, i, n === CH ? tmp : tmp.subarray(0, n));
+      }
+      return true;
+    }
     _makeObj(o) {
       if (o._lodBuild) return this._makeLodObj(o);
       const gl = this.gl; const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
-      const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, o.pos, gl.STATIC_DRAW);
+      const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); this._bigBufferData(o.pos);
       gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
       if (o.nor) { const nb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nb); gl.bufferData(gl.ARRAY_BUFFER, o.nor, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aNormal); gl.vertexAttribPointer(this.aNormal, 3, gl.FLOAT, false, 0, 0); o._nb = nb; }
-      if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, o.col, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, gl.FLOAT, false, 0, 0); o._cb = cb; }
+if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); const u8 = this._bigColorBuffer(o.col); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, u8 ? gl.UNSIGNED_BYTE : gl.FLOAT, !!u8, 0, 0); o._cb = cb; }
       if (o.intensity && this.aIntensity >= 0) {
         const ib = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ib);
         gl.bufferData(gl.ARRAY_BUFFER, o.intensity, gl.STATIC_DRAW);
@@ -2392,20 +2413,25 @@
     // После остановки (≈160 мс) облако рисуется целиком. Профиль «Максимум» терпит 22 мс.
     _adaptInter(ms, drawn, total) {
       if (!(ms > 0) || !(drawn > 0)) return;
-      const tgt = this._perfProfile === 'max' ? 22 : 13, ppms = drawn / Math.max(0.5, ms);
+      const tgt = this._perfProfile === 'max' ? 22 : 16, ppms = drawn / Math.max(0.5, ms);
       this._ptsPerMs = this._ptsPerMs ? this._ptsPerMs * 0.6 + ppms * 0.4 : ppms;
       let want = this._ptsPerMs * tgt;
       if (ms < tgt * 0.7 && drawn >= (this._interPts || total)) want = Math.max(want, drawn * 1.25);   // запас есть — возвращаем точки
-      this._interPts = Math.max(1500000, Math.min(total, want));
+      // ревизия 13: срезаем только то, что видеокарта не успевает; но не меньше 2 % облака (и 1,5 млн) — картинка остаётся плотной
+      this._interPts = Math.max(Math.min(total, 1500000), Math.min(total, Math.max(want, total * 0.02)));
       this._interMs = ms;
     }
     interactivePointBudget(total) { return this._interPts ? Math.min(total, Math.round(this._interPts)) : total; }
     _renderNow() {
       const gl = this.gl; if (!gl) return;
-      const probe = !!this._interacting && ((this._probeN = (this._probeN | 0) + 1) & 1) === 0, probeT0 = probe ? performance.now() : 0;
-      this._probeDrawn = 0;
+      // ревизия 13: скорость видеокарты замеряется и на первом полном кадре в покое — первое же движение мыши по огромному облаку не «подвисает»
+      this._idleN = this._interacting ? (this._idleN | 0) : (this._idleN | 0) + 1;
+      const idleProbe = !this._interacting && !this._ptsPerMs && !this._octActive && this._idleN >= 3;   // не первый кадр: он включает загрузку буфера и компиляцию шейдеров
+      this._probeIdle = idleProbe;
+      const probe = idleProbe || (!!this._interacting && ((this._probeN = (this._probeN | 0) + 1) & 1) === 0), probeT0 = probe ? performance.now() : 0;
+      this._probeDrawn = 0; this._probeTotal = 0;
       try { this._renderNowInner(); } finally {
-        if (probe && this._probeDrawn > 0) { try { gl.finish(); this._adaptInter(performance.now() - probeT0, this._probeDrawn, this._probeTotal); } catch (e) { } }
+        if (probe && this._probeDrawn > (idleProbe ? 4000000 : 0)) { try { gl.finish(); this._adaptInter(performance.now() - probeT0, this._probeDrawn, this._probeTotal); } catch (e) { } }
       }
     }
     _renderNowInner() {
@@ -2452,7 +2478,7 @@
         const baseSize = fixedPx || ((o.pointSize || 2.2) * psm);
         // ревизия 8: при движении рисуем только часть точек (адаптивно по времени кадра); размер точек растёт на корень из доли пропущенного, чтобы поверхность не рассыпалась
         let dcI = o.count;
-        if (isCloud && this._interacting && o._shuffled && !o._lod) { const b = this._interBudget || 4000000; if (dcI > b) dcI = b; dcI = Math.min(dcI, this.interactivePointBudget(o.count)); }
+        if (isCloud && this._interacting && o._shuffled && !o._lod) { const b = this._interBudget || 4000000; if (dcI > b) dcI = b; dcI = Math.min(dcI, this._octMovePct > 0 ? Math.max(100000, Math.round(o.count * this._octMovePct / 100)) : this.interactivePointBudget(o.count)); }
         const compI = dcI < o.count ? Math.min(3, Math.sqrt(o.count / dcI)) : 1;
         const scale = (o._spacing || 0) * (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm * compI;
         // По умолчанию — адаптивный размер: вдали точки чёткие постоянного размера,
@@ -2482,7 +2508,7 @@
         else {
           const dc = dcI;
           gl.drawArrays(gl.POINTS, 0, dc);
-          if (isCloud && this._interacting) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + o.count; }
+          if (isCloud && (this._interacting || this._probeIdle)) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + o.count; }
         }
         gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); gl.bindVertexArray(null); return;
       }
