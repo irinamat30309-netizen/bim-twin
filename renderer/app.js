@@ -177,8 +177,8 @@
     }, 800);
   }
   async function parseCloudWithProgress(filePath, label) {
-    // Ревизия 13: файл всегда открывается ЦЕЛИКОМ в обычном режиме (без «Потокового LOD» и без урезания). Если файл не помещается
-    // в свободную память, решает пользователь — по умолчанию ничего не урезаем и ничего не включаем молча.
+    // Ревизия 13–14: файл всегда открывается ЦЕЛИКОМ в обычном режиме (без «Потокового LOD» и без урезания). Если файл не помещается
+    // в память компьютера/буфер видеокарты (или чтение целиком реально упало по памяти), решает пользователь — по умолчанию ничего не урезаем и ничего не включаем молча.
     const first = await parseCloudWithProgressOnce(filePath, label, { stream: false, allowReduced: false });
     if (!(first && first.tooBig)) return first;
     const k = window.__lxKit; let yes = false;
@@ -186,8 +186,8 @@
     if (k && k.ask) {
       try {
         yes = await k.ask(canStream
-          ? { title: 'Файл не помещается в память целиком', message: first.message + '\n\nОткрыть все ' + fmtMln(first.total) + ' млн точек можно в потоковом режиме: они читаются с диска по мере просмотра (сначала быстрый предпросмотр, затем индекс всех точек в фоне). Для обычного режима закройте другие программы и откройте файл снова.', okLabel: 'Открыть все точки (потоковый режим)', cancelLabel: 'Отмена' }
-          : { title: 'Файл не помещается в память целиком', message: first.message + '\n\nМожно открыть не все точки (примерно ' + fmtMln(first.canLoad) + ' из ' + fmtMln(first.total) + ' млн) — только по вашему согласию. Чтобы увидеть все точки, конвертируйте файл в LAS или PLY.', okLabel: 'Открыть часть точек', cancelLabel: 'Отмена' });
+          ? { title: 'Все точки не помещаются одним куском', message: first.message + '\n\nОткрыть все ' + fmtMln(first.total) + ' млн точек можно в потоковом режиме: они читаются с диска по мере просмотра (сначала быстрый предпросмотр, затем индекс всех точек в фоне). Для обычного режима закройте другие программы и откройте файл снова.', okLabel: 'Открыть все точки (потоковый режим)', cancelLabel: 'Отмена' }
+          : { title: 'Все точки не помещаются одним куском', message: first.message + '\n\nМожно открыть не все точки' + (first.canLoad > 0 && first.total > 0 ? ' (примерно ' + fmtMln(first.canLoad) + ' из ' + fmtMln(first.total) + ' млн)' : '') + ' — только по вашему согласию. Чтобы увидеть все точки, конвертируйте файл в LAS или PLY.', okLabel: 'Открыть часть точек', cancelLabel: 'Отмена' });
       } catch (_) { yes = false; }
     }
     if (!yes) return { ok: false, cancelled: true, message: first.message };
@@ -1840,14 +1840,15 @@
       const qMove = $('qMove'); if (!qMove) return;
       const lsGet = (k, d) => { try { const v = window.localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
       const lsSet = (k, v) => { try { window.localStorage.setItem(k, String(v)); } catch (_) {} };
-      [['0', 'Авто (срезать только лишнее)'], ['75', '75 % точек'], ['50', '50 % точек'], ['25', '25 % точек'], ['10', '10 % точек'], ['5', '5 % точек'], ['2', '2 % точек']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; qMove.appendChild(o); });
-      qMove.value = lsGet('bim.stream.move', '0'); if (qMove.value !== lsGet('bim.stream.move', '0')) qMove.value = '0';
+      [['100', 'Все точки (без срезания)'], ['0', 'Авто (срезать, если лагает)'], ['75', '75 % точек'], ['50', '50 % точек'], ['25', '25 % точек'], ['10', '10 % точек'], ['5', '5 % точек'], ['2', '2 % точек']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; qMove.appendChild(o); });
+      // ревизия 14: по умолчанию «Все точки» — ничего не срезается и при движении; прежнее сохранённое «Авто/%» (ключ bim.stream.move) не переносим
+      qMove.value = lsGet('bim.stream.move2', '100'); if (qMove.value !== lsGet('bim.stream.move2', '100')) qMove.value = '100';
       const rows = Array.from(document.querySelectorAll('.q-stream'));
       const apply = () => {
         if (!viewer) return;
         try { if (viewer.setOctreeMovePercent) viewer.setOctreeMovePercent(Number(qMove.value) || 0); } catch (_) {}
       };
-      qMove.addEventListener('change', () => { lsSet('bim.stream.move', qMove.value); apply(); toast(Number(qMove.value) ? 'При движении рисуется ' + qMove.value + ' % точек файла; когда камера остановилась, на экране все точки' : 'При движении число точек подбирается под видеокарту; когда камера остановилась, на экране все точки'); });
+      qMove.addEventListener('change', () => { lsSet('bim.stream.move2', qMove.value); apply(); toast(Number(qMove.value) >= 100 ? 'Всегда рисуются все точки, в том числе при движении (на очень больших облаках возможны подтормаживания)' : Number(qMove.value) ? 'При движении рисуется ' + qMove.value + ' % точек файла; когда камера остановилась, на экране все точки' : 'При движении число точек подбирается под видеокарту; когда камера остановилась, на экране все точки'); });
       // Ревизия 13: «При движении» работает в обычном режиме (облако целиком) и в потоковом
       rows.forEach((r) => { r.hidden = false; });
       apply();

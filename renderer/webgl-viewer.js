@@ -277,7 +277,7 @@
       this._fov = 50 * Math.PI / 180; this._run = false;
       this.showAI = true; this.selectedId = null;
       this.base = []; this.overlay = []; this.bbox = { mn: [-1, 0, -1], mx: [1, 3, 1] };
-      this._octActive = false; this._octIndex = null; this._octFetch = null; this._octCache = null; this._octBudget = Infinity; this._octAll = true; this._octMovePct = 0; this._octIdleLimit = 0; this._octVramBytes = 0;
+      this._octActive = false; this._octIndex = null; this._octFetch = null; this._octCache = null; this._octBudget = Infinity; this._octAll = true; this._octMovePct = 100; this._octIdleLimit = 0; this._octVramBytes = 0;
       this._octGeneration = 0; this._octFailures = null; this._octNow = null; // cancel stale node reads; bounded retry state
       this._interBudget = 128000000; this._perfProfile = 'balanced'; this._densityBoost = 1.8; // бюджет точек при движении камеры (порог плотности): 6 млн — без подвисаний на больших LAS
       this._selDepthMode = 0; this._selThrough = false; // режим глубины выделения: 0 тонко / 1 шире / 2 насквозь
@@ -2478,7 +2478,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const baseSize = fixedPx || ((o.pointSize || 2.2) * psm);
         // ревизия 8: при движении рисуем только часть точек (адаптивно по времени кадра); размер точек растёт на корень из доли пропущенного, чтобы поверхность не рассыпалась
         let dcI = o.count;
-        if (isCloud && this._interacting && o._shuffled && !o._lod) { const b = this._interBudget || 4000000; if (dcI > b) dcI = b; dcI = Math.min(dcI, this._octMovePct > 0 ? Math.max(100000, Math.round(o.count * this._octMovePct / 100)) : this.interactivePointBudget(o.count)); }
+        if (isCloud && this._interacting && o._shuffled && !o._lod && !(this._octMovePct >= 100)) { const b = this._interBudget || 4000000; if (dcI > b) dcI = b; dcI = Math.min(dcI, this._octMovePct > 0 ? Math.max(100000, Math.round(o.count * this._octMovePct / 100)) : this.interactivePointBudget(o.count)); }   // ревизия 14: «Все точки» (100) — при движении тоже рисуется всё облако
         const compI = dcI < o.count ? Math.min(3, Math.sqrt(o.count / dcI)) : 1;
         const scale = (o._spacing || 0) * (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm * compI;
         // По умолчанию — адаптивный размер: вдали точки чёткие постоянного размера,
@@ -3831,7 +3831,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       if (this._octAll === false) cap = Math.min(cap, this._octBudget || Infinity, this._perfProfile === 'max' ? 60000000 : 30000000);
       return cap;
     }
-    setOctreeMovePercent(p) { p = Number(p); this._octMovePct = (p > 0 && p <= 100) ? p : 0; this.render(); return this._octMovePct; }
+    setOctreeMovePercent(p) { p = Number(p); this._octMovePct = p >= 100 ? 100 : (p > 0 ? p : 0); this.render(); return this._octMovePct; }
     setOctreeIdleLimit(n) { n = Number(n); this._octIdleLimit = n > 0 ? Math.floor(n) : 0; this.render(); return this._octIdleLimit; }
     setOctreeAllPoints(on) { this._octAll = on !== false; this.render(); return this._octAll; }
     // общие uniform-ы рисования узлов октодерева (потоковый кадр и накопительный кадр); возвращает базовый размер точки
@@ -3979,15 +3979,15 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       const vh = gl.canvas.height || 600;
       const focal = vh * 0.5 / Math.tan(this._fov / 2);
       const total = Number(this._octIndex && this._octIndex.pointCount) || 0;
-      const cap = this._octFrameCap(), inter = !!this._interacting, pctMode = inter && this._octMovePct > 0;
+      const cap = this._octFrameCap(), inter = !!this._interacting, allMode = this._octMovePct >= 100, pctMode = inter && this._octMovePct > 0 && !allMode;   // allMode (ревизия 14): при движении — тот же полный кадр, что и в покое
       let budget = cap;
-      if (inter) {
+      if (inter && !allMode) {
         const want = pctMode ? Math.round(Math.max(1, total) * this._octMovePct / 100) : (this._interPts ? Math.round(this._interPts) : 6000000);
         budget = Math.min(cap, Math.max(pctMode ? 1000 : 1500000, want));
       }
       const view = {
         vp: M, eye, f: focal, ortho: !!this._ortho, ppu: this._ortho ? focal / Math.max(1e-6, this.dist) : 0,
-        tPx: (inter && !pctMode) ? 1.7 : 0.0001, budget, maxNodes: inter ? 6000 : 400000
+        tPx: (inter && !pctMode && !allMode) ? 1.7 : 0.0001, budget, maxNodes: (inter && !allMode) ? 6000 : 400000
       };
       const sel = OS.selectLod(lod, view, this._octSel || (this._octSel = {}));
       const basePt = this._octCloudUniforms();
