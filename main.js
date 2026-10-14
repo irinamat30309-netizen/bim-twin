@@ -20,6 +20,7 @@ const verify = require('./ai/verify');
 const llm = require('./ai/llm');
 const report = require('./ai/report');
 const cloud = require('./las-node');
+const cloudSegments = require('./cloud-segments');
 const APP_CFG = require('./app-config');
 const { writePlyBinaryToDisk: writePlyBinaryToDiskImpl } = require('./pointcloud-ply-io');
 const octreeStore = require('./renderer/octree-store');
@@ -1095,6 +1096,67 @@ function registerIpc() {
       }
     }
     catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  // Ревизия 16: облако крупнее CLOUD_PARTS_MIN_POINTS (LAS/PLY) читается ЧАСТЯМИ и целиком в памяти не живёт: окно просит часть за частью
+  // (bim:cloudPartsRead), каждая часть — готовые массивы (позиции Float32, цвет 3 байта, интенсивность uint16, класс uint8, рамки кирпичей)
+  // и уходит в окно кусками, как обычное облако. Отказ по памяти невозможен по построению: больше одной части ничего не выделяется.
+  const cloudPartSessions = new Map();
+  ipcMain.handle('bim:cloudPartsOpen', async (event, payload) => {
+    try {
+      const requested = String(payload && typeof payload === 'object' ? payload.path || '' : payload || '');
+      const jobId = payload && typeof payload === 'object' ? payload.jobId : null;
+      const sender = ipcSender(event);
+      if (!sender) return { ok: false, message: 'нет доступа' };
+      const abs = resolveAuthorizedFile(event, requested, CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, message: 'path_not_authorized' };
+      if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
+      const opened = cloudSegments.openSegmentSource(abs);
+      if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'формат читается целиком' };
+      const d = opened.desc;
+      const minPts = Number(APP_CFG.CLOUD_PARTS_MIN_POINTS) || 48000000;
+      if (!(payload && payload.force === true) && d.count <= minPts) return { ok: false, unsupported: true, small: true, total: d.count, message: 'облако небольшое — читается целиком' };
+      const token = crypto.randomBytes(12).toString('hex');
+      const controller = new AbortController();
+      const key = jobId ? cloudJobKey(sender, jobId) : null;
+      if (key) {
+        if (activeCloudParseJobs.has(key)) return { ok: false, message: 'duplicate_job_id' };
+        activeCloudParseJobs.set(key, { controller, senderId: sender.id });
+      }
+      cloudPartSessions.set(token, { senderId: sender.id, desc: d, controller, key });
+      try { sender.once('destroyed', () => { const ss = cloudPartSessions.get(token); if (ss) { try { ss.controller.abort(); } catch (_) {} cloudPartSessions.delete(token); if (ss.key) activeCloudParseJobs.delete(ss.key); } }); } catch (_) {}
+      return { ok: true, token, total: d.count, segPoints: d.segPoints, chunkPoints: d.chunkPoints, segments: Math.ceil(d.count / d.segPoints), bbox: d.bbox, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity, hasClassification: d.hasClassification };
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  ipcMain.handle('bim:cloudPartsRead', async (event, req) => {
+    try {
+      const sender = ipcSender(event);
+      const ss = sender && req && typeof req.token === 'string' ? cloudPartSessions.get(req.token) : null;
+      if (!ss || ss.senderId !== sender.id) return { ok: false, message: 'чтение облака уже закрыто' };
+      const k = Number(req.part);
+      const d = ss.desc;
+      if (!Number.isInteger(k) || k < 0 || k * d.segPoints >= d.count) return { ok: false, message: 'неверный номер части' };
+      const from = k * d.segPoints, count = Math.min(d.segPoints, d.count - from);
+      const res = await cloudSegments.readSegmentAsync(d, from, count, { signal: ss.controller.signal });
+      if (!res || res.ok === false) return res || { ok: false, message: 'часть облака не прочитана' };
+      if (ss.controller.signal.aborted) return { ok: false, cancelled: true, message: 'Импорт отменён' };
+      const light = pendingClouds.stash(sender.id, res, APP_CFG.IPC_CHUNK_POINTS || 4000000);
+      if (!pendingCloudSenders.has(sender.id)) {
+        pendingCloudSenders.add(sender.id);
+        try { sender.once('destroyed', () => { pendingClouds.releaseSender(sender.id); pendingCloudSenders.delete(sender.id); }); } catch (_) {}
+      }
+      return light;
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  ipcMain.handle('bim:cloudPartsClose', (event, req) => {
+    try {
+      const sender = ipcSender(event);
+      const ss = sender && req && typeof req.token === 'string' ? cloudPartSessions.get(req.token) : null;
+      if (!ss || ss.senderId !== sender.id) return false;
+      try { ss.controller.abort(); } catch (_) {}
+      cloudPartSessions.delete(req.token);
+      if (ss.key) activeCloudParseJobs.delete(ss.key);
+      return true;
+    } catch (_) { return false; }
   });
   ipcMain.handle('bim:readCloudChunk', (event, req) => {
     try {

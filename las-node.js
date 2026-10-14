@@ -2317,6 +2317,8 @@ async function parseCloudFileAsync(absPath, opts) {
 }
 
 module.exports = {
+  // ревизия 16: внутренние читалки для чтения облака по частям (cloud-segments.js)
+  _internal: { readLasHeaderInfo, readPlyHeader, binaryPlyPointLayout, plyRead, plyIntensityDiv, commentCrs, commentValue, commentUp },
   parseCloudFile, parseCloudFileAsync, effectivePointBudget, parseLASFile, parseLAZFile, parsePLYFile,
   parseE57File, parsePTXFile, parseTextCloudFile, parsePCDFile, finalizeWorldZup,
   getBinaryPlyPointFileInfo, sameBinaryPlyPointFileInfo,

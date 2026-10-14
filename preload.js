@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('bimAPI', {
   readPicked: (p) => inv('bim:readPicked', p),
   parseCloud: (p, jobId, opts) => inv('bim:parseCloud', jobId ? { path: p, jobId, preview: !!(opts && opts.preview), allowReduced: !!(opts && opts.allowReduced) } : p),
   readCloudChunk: (a) => inv('bim:readCloudChunk', a),
+  cloudPartsOpen: (p, jobId) => inv('bim:cloudPartsOpen', { path: p, jobId }),
+  cloudPartsRead: (a) => inv('bim:cloudPartsRead', a),
+  cloudPartsClose: (a) => inv('bim:cloudPartsClose', a),
   releaseCloud: (a) => inv('bim:releaseCloud', a),
   onCloudParseProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};

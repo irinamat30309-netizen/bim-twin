@@ -67,6 +67,8 @@
       "las-node.js",
       "las-core.js",
       "e57-core.js",
+      "cloud-segments.js",
+      "cloud-segment-worker.js",
       "renderer/octree-store.js",
       "db/atomic-file.js",
       "scan2bim-ai-server/**"
@@ -86,6 +88,8 @@
       "e57-core.js",
       "pcd-out-of-core.js",
       "las-node.js",
+      "cloud-segments.js",
+      "cloud-segment-worker.js",
       "pointcloud-ply-io.js",
       "db/**",
       "security/**",
