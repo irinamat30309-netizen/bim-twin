@@ -272,7 +272,7 @@ test('вьюер: код чтения по частям и защита опер
   for (const s of ['beginCloudStream(', 'addCloudStreamSegment(', 'endCloudStream(', 'isStreamedCloud()', '_segPointAt(', '_planChunks(', '_boxScreenArea(', '_drawPointSegs(', 'guardStreamedCloud', 'setMoveSmart(', "'bim-stream-limit'"]) assert.ok(w.includes(s), s);
   assert.match(w, /_shuffleChunks\(/);
   assert.match(w, /if \(o\._stream\) return o;/);
-  assert.match(w, /bo\._stream \|\| !bo\.pos\)|bo\._lod \|\| bo\._stream\) return null/);
+  assert.match(w, /bo\._stream \|\| !bo\.pos\)|bo\._lod \|\| bo\._stream\) return null|bo\._lod \|\| \(bo\._stream && bo\._stream\.cpu !== true\)\) return null/);   // r17: с копиями точек в памяти (cpu === true) выделение работает
 });
 
 test('сборка: новые файлы попадают в пакет и распаковываются (поток чтения не может жить внутри asar)', () => {

@@ -1052,6 +1052,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       const every = Math.max(1, Math.ceil(total / target)), cap = Math.max(1, Math.ceil(total / every));
       const st = { total, every, cap, filled: 0, pos: new Float32Array(cap * 3), col: new Float32Array(cap * 3),
         int: info.hasIntensity ? new Float32Array(cap) : null, cls: info.hasClassification ? new Uint8Array(cap) : null };
+      // ревизия 17: копии частей остаются в оперативной памяти (выделение, правка, чистка, классы, сохранение — renderer/big-cloud.js + webgl-viewer-big.js)
+      st.cpu = !!(this._bigInstalled && typeof window !== 'undefined' && window.BigCloud);
       const q = cloudQuality(Math.min(total || 1, 2000000000));
       const bb = info.bbox && info.bbox.mn && info.bbox.mx ? { mn: info.bbox.mn.slice(0, 3), mx: info.bbox.mx.slice(0, 3) } : { mn: [-1, 0, -1], mx: [1, 3, 1] };
       const bo = { id: null, points: true, pos: st.pos.subarray(0, 0), col: st.col.subarray(0, 0), intensity: null, classification: null,
@@ -1100,6 +1102,24 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       let boxes = seg.chunkBoxes && seg.chunkBoxes.length >= nc * 6 ? seg.chunkBoxes : null;
       if (!boxes) { boxes = new Float32Array(nc * 6); const P = seg.pos; for (let c = 0; c < nc; c++) { const i0 = c * CH * 3, i1 = Math.min(n, (c + 1) * CH) * 3; let a0 = Infinity, a1 = Infinity, a2 = Infinity, b0 = -Infinity, b1 = -Infinity, b2 = -Infinity; for (let i = i0; i < i1; i += 3) { const x = P[i], y = P[i + 1], z = P[i + 2]; if (x < a0) a0 = x; if (x > b0) b0 = x; if (y < a1) a1 = y; if (y > b1) b1 = y; if (z < a2) a2 = z; if (z > b2) b2 = z; } boxes.set([a0, a1, a2, b0, b1, b2], c * 6); } }
       const sg = { vao, pb, cb, ib: null, kb: null, start, n, boxes, chunk: CH, intensity: (seg.intensity && st.int) ? seg.intensity.subarray(0, n) : null, classification: (seg.classification && st.cls) ? seg.classification.subarray(0, n) : null };
+      if (st.cpu === true) {
+        // ревизия 17: массивы части не выбрасываются — они нужны для всех операций над облаком (позиции Float32, цвет 3 байта, интенсивность uint16, класс uint8)
+        try {
+          if (!(seg.pos instanceof Float32Array) || seg.pos.length < n * 3) throw new TypeError('позиции части не Float32');
+          sg.P = seg.pos;
+          const c0 = seg.col;
+          if (c0 && c0.length >= n * 3) {
+            if (c0 instanceof Uint8Array) sg.C = c0;
+            else if (c0 instanceof Uint8ClampedArray) sg.C = new Uint8Array(c0.buffer, c0.byteOffset, c0.length);
+            else { const u = new Uint8Array(n * 3), f = c0 instanceof Float32Array ? 255 : 1; for (let i = 0; i < n * 3; i++) { const v = c0[i] * f + 0.5; u[i] = v <= 0 ? 0 : v >= 255 ? 255 : v; } sg.C = u; }
+          } else sg.C = null;
+          sg.I = (seg.intensity instanceof Uint16Array && seg.intensity.length >= n) ? seg.intensity : null;
+          sg.K = (seg.classification instanceof Uint8Array && seg.classification.length >= n) ? seg.classification : null;
+        } catch (e) {
+          st.cpu = false; for (const s0 of bo._segs) { s0.P = null; s0.C = null; s0.I = null; s0.K = null; }
+          try { console.warn('[big] копии частей в памяти не сохранены, остаётся режим r16', e); } catch (_) {}
+        }
+      }
       bo._segs.push(sg); bo._gpuCount = start + n; bo.count = bo._gpuCount;
       if (bo._segs.length === 1) { bo._vao = vao; bo._pb = pb; bo._cb = cb; }
       // выборка для процессора: каждая every-я точка облака
@@ -3240,7 +3260,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     // Рендерит ID видимых точек в области и возвращает Set индексов (ближайших к камере в каждом пикселе).
     _gpuVisibleSet(bbox, poly) {
       const gl = this.gl; const bo = this.base && this.base[0];
-      if (!gl || !bo || !bo.points || !bo._pb || bo._lod || bo._stream) return null;   // облако по частям: выделение рамкой недоступно (все точки только в видеопамяти)
+      if (!gl || !bo || !bo.points || !bo._pb || bo._lod || (bo._stream && bo._stream.cpu !== true)) return null;   // облако по частям без копий в памяти (r16): выделение рамкой недоступно; с копиями (r17) — видимые точки берутся из GPU-прохода
       if (!this._pickReady) { this._pickInit(); if (!this._pickReady) return null; }
       if (this._pickW !== this.canvas.width || this._pickH !== this.canvas.height) this._pickResize();
       const cw = this.canvas.width, ch = this.canvas.height;

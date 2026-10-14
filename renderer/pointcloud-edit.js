@@ -873,6 +873,29 @@
     return out;
   }
 
+  // Ревизия 17: подбор плоскостей защиты по точкам локального окна lp (nlp точек, ldiag — диагональ окна); null — защищать нечего.
+  function protectFloorPlanes(lp, nlp, ldiag, sp, opts){
+    opts = opts || {}; sp = sp || 0;
+    var tol = opts.tol != null ? opts.tol : Math.max(sp*3, 0.02);
+    // minFrac высокий, чтобы защищать только КРУПНЫЕ поверхности (пол/стены), а не сам объект.
+    var planes = detectPlanes(lp, nlp, { maxPlanes: opts.maxPlanes!=null?opts.maxPlanes:3, minFrac: opts.minFrac!=null?opts.minFrac:0.10, tol: tol, iters: opts.iters!=null?opts.iters:150 });
+    if (!planes.length) return null;
+    // v1053: откат ориентационного деления v1052. Лейбл «пол/стена» по |nz|>0.7 ошибался на
+    // облаках с вертикалью по Y (пол считался стеной и наоборот) — поэтому то стены, то пол
+    // получали не ту полосу и срезались. Теперь защищаем ВСЕ крупные локальные плоскости
+    // единой полосой (независимо от осей): подгонка точная (tol), полоса защиты чуть шире (protTol);
+    // больше стен/пола/потолка ловим за счёт меньшего minFrac и большего maxPlanes.
+    // v1056: умная защита — отбрасываем «плоскости», которые на самом деле мусор/предмет
+    // (малый боковой размер), а не крупная поверхность. Так пол/стены защищены, а насыпь
+    // и предметы на полу можно удалять. Отключается тумблером «умная защита» (opts.smart=false).
+    if (opts.smart !== false) {
+      var structMinExtent = Math.max(ldiag * 0.35, sp * 15, 0.4);
+      planes = _p59structuralPlanes(lp, nlp, planes, tol, structMinExtent, 2.5);
+      if (!planes.length) return null;
+    }
+    var protTol = opts.protTol != null ? opts.protTol : Math.max(tol, sp*4, 0.05);
+    return { planes: planes, protTol: protTol };
+  }
   function protectFloorLocal(cloud, indices, opts){
     opts = opts || {};
     var pos = cloud && cloud.pos;
@@ -895,25 +918,9 @@
     var lp=new Float32Array(useIdx.length*3);
     for (var i=0;i<useIdx.length;i++){ var idx=useIdx[i]; lp[i*3]=pos[idx*3]; lp[i*3+1]=pos[idx*3+1]; lp[i*3+2]=pos[idx*3+2]; }
     var ldx=lmxx-lmnx,ldy=lmxy-lmny,ldz=lmxz-lmnz; var ldiag=Math.sqrt(ldx*ldx+ldy*ldy+ldz*ldz)||1;
-    var tol = opts.tol != null ? opts.tol : Math.max(sp*3, 0.02);
-    // minFrac высокий, чтобы защищать только КРУПНЫЕ поверхности (пол/стены), а не сам объект.
-    var planes = detectPlanes(lp, useIdx.length, { maxPlanes: opts.maxPlanes!=null?opts.maxPlanes:3, minFrac: opts.minFrac!=null?opts.minFrac:0.10, tol: tol, iters: opts.iters!=null?opts.iters:150 });
-    if (!planes.length) return arr;
-    // v1053: откат ориентационного деления v1052. Лейбл «пол/стена» по |nz|>0.7 ошибался на
-    // облаках с вертикалью по Y (пол считался стеной и наоборот) — поэтому то стены, то пол
-    // получали не ту полосу и срезались. Теперь защищаем ВСЕ крупные локальные плоскости
-    // единой полосой (независимо от осей): подгонка точная (tol), полоса защиты чуть шире (protTol);
-    // больше стен/пола/потолка ловим за счёт меньшего minFrac и большего maxPlanes.
-    // v1056: умная защита — отбрасываем «плоскости», которые на самом деле мусор/предмет
-    // (малый боковой размер), а не крупная поверхность. Так пол/стены защищены, а насыпь
-    // и предметы на полу можно удалять. Отключается тумблером «умная защита» (opts.smart=false).
-    if (opts.smart !== false) {
-      var structMinExtent = Math.max(ldiag * 0.35, sp * 15, 0.4);
-      planes = _p59structuralPlanes(lp, useIdx.length, planes, tol, structMinExtent, 2.5);
-      if (!planes.length) return arr;
-    }
-    var protTol = opts.protTol != null ? opts.protTol : Math.max(tol, sp*4, 0.05);
-    return protectPlanes(arr, pos, planes, protTol);
+    var pp = protectFloorPlanes(lp, useIdx.length, ldiag, sp, opts);
+    if (!pp) return arr;
+    return protectPlanes(arr, pos, pp.planes, pp.protTol);
   }
 
   // v1045: «Убрать мелкие островки» — Label Connected Components с адаптивным порогом
@@ -1109,10 +1116,10 @@
 
   // --- Phase 3: классификация конструктива (пол/стены/потолок) через RANSAC-плоскости. ---
   // labels: 0=прочее, 1=пол, 2=потолок, 3=стена.
-  function classifyStructure(cloud, opts){
-    opts=opts||{};var pos=cloud&&cloud.pos;var count=pos?pos.length/3:0;
-    if(!pos||count<16)return { labels:new Uint8Array(count), planes:[], counts:{floor:0,ceiling:0,wall:0,other:count|0} };
-    var b=_p56bounds(pos,count);var dx=b.mx[0]-b.mn[0],dy=b.mx[1]-b.mn[1],dz=b.mx[2]-b.mn[2];var diag=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
+  // Ревизия 17: поиск плоскостей вынесен отдельно — облака, прочитанные частями, ищут плоскости по выборке, а размечают все точки по сегментам.
+  function classifyPlanes(pos, count, b, opts){
+    opts=opts||{};
+    var dx=b.mx[0]-b.mn[0],dy=b.mx[1]-b.mn[1],dz=b.mx[2]-b.mn[2];var diag=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
     var tol=opts.tol!=null?opts.tol:Math.max(diag*0.01,1e-3);
     var up=opts.upAxis!=null?opts.upAxis:2;
     var planes=detectPlanes(pos,count,{maxPlanes:opts.maxPlanes!=null?opts.maxPlanes:6,minFrac:opts.minFrac!=null?opts.minFrac:0.03,tol:tol,iters:opts.iters!=null?opts.iters:150});
@@ -1121,6 +1128,13 @@
       if(nu>0.8){var acc=nrm[0]*cc[0]+nrm[1]*cc[1]+nrm[2]*cc[2];acc-=nrm[up]*cc[up];var h=(nrm[up]!==0)?(-(planes[p].d+acc)/nrm[up]):zmid;planes[p].cls=(h<=zmid)?1:2;planes[p].height=h;}
       else{planes[p].cls=3;}
     }
+    return { planes:planes, tol:tol };
+  }
+  function classifyStructure(cloud, opts){
+    opts=opts||{};var pos=cloud&&cloud.pos;var count=pos?pos.length/3:0;
+    if(!pos||count<16)return { labels:new Uint8Array(count), planes:[], counts:{floor:0,ceiling:0,wall:0,other:count|0} };
+    var b=_p56bounds(pos,count);
+    var cp=classifyPlanes(pos,count,b,opts),planes=cp.planes,tol=cp.tol;
     var labels=new Uint8Array(count);var counts={floor:0,ceiling:0,wall:0,other:0};
     for(var i=0;i<count;i++){var x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2];var lab=0;
       for(var p=0;p<planes.length;p++){var pl=planes[p];var d=Math.abs(pl.normal[0]*x+pl.normal[1]*y+pl.normal[2]*z+pl.d);if(d<=tol){lab=pl.cls;break;}}
@@ -1328,7 +1342,7 @@
     return { cut:cut, fill:fill, net:fill-cut, cell:cell, cells:cells };
   }
 
-  const API = { pointInPolygon, selectByRect, selectByPolygon, invertSelection, deleteByIndices, keepByIndices, clusterFront, toPLY, toPLYBinary, toPLYBinaryAsync, toLASBinary, toXYZText, cleanVoxelDensity, cleanClusters, detectPlanes, protectPlanes, protectFloorLocal, cleanIslands, magicWand, selectByColor, selectBySphere, selectByBox, cleanStatisticalOutliers, cleanAuto, fillPlaneHoles, cleanRadiusOutliers, noiseFilterLocalPlane, voxelDownsample, estimateNormals, classifyStructure, cropBox, sliceSection, measureDistance, pointToPlaneDistance, registerICP, meshHeightGrid, meshToOBJ, mergeClouds, smoothMLS, dominantPlane, levelCloud, closedVolume, compareVolumes };
+  const API = { pointInPolygon, selectByRect, selectByPolygon, invertSelection, deleteByIndices, keepByIndices, clusterFront, toPLY, toPLYBinary, toPLYBinaryAsync, toLASBinary, toXYZText, cleanVoxelDensity, cleanClusters, detectPlanes, protectPlanes, protectFloorLocal, protectFloorPlanes, cleanIslands, magicWand, selectByColor, selectBySphere, selectByBox, cleanStatisticalOutliers, cleanAuto, fillPlaneHoles, cleanRadiusOutliers, noiseFilterLocalPlane, voxelDownsample, estimateNormals, classifyStructure, classifyPlanes, _smallestEV3, cropBox, sliceSection, measureDistance, pointToPlaneDistance, registerICP, meshHeightGrid, meshToOBJ, mergeClouds, smoothMLS, dominantPlane, levelCloud, closedVolume, compareVolumes };
   if (typeof window !== 'undefined') window.PCEdit = API;
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
 })();
