@@ -83,7 +83,7 @@ test('реестр: вызываемые функции определены в 
 test('каждая кнопка лежит на вкладке по своей функции', () => {
   const PLACE = {
     project: ['save', 'saveAs', 'autosave', 'btnProjectUndo', 'btnProjectRedo', 'drafts', 'btnNewProject', 'btnBackup', 'btnSettings', 'btnUsers', 'btnSync'],
-    import: ['btnOpenCloud', 'vtStream', 'opPotree', 'modelInput', 'ifcInput', 'docInput'],
+    import: ['btnOpenCloud', 'opPotree', 'modelInput', 'ifcInput', 'docInput'],
     cloud: ['vtQuality', 'opAutoClean', 'vtEdit', 'opResample', 'opMerge', 'opOverlay', 'vtConvert', 'vtGeom', 'opDSM', 'opDTM', 'opContours', 'opGround', 'opGeoref'],
     floors: ['floorAdd', 'floorIsolate', 'floorSlice', 'floorAttach', 'floorReport', 'btnBackRoom', 'btnEdit'],
     measure: ['btnMeasure', 'mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmDiameter', 'mmPlane', 'mmDeviation', 'mmCorner', 'mmSnap', 'mmList', 'mmCsv', 'mmQaReport', 'mmNotion', 'vfOpen', 'lxObjInspectBtn'],

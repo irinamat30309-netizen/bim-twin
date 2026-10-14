@@ -66,13 +66,7 @@ test('a missing ordinary cloud keeps the existing actionable prompt', async () =
 test('built-in cloud-cleaning guards distinguish streamed LOD from an unopened cloud', () => {
   const app = fs.readFileSync(path.join(RENDERER, 'app.js'), 'utf8');
   const html = fs.readFileSync(path.join(RENDERER, 'index.html'), 'utf8');
-  assert.ok(html.includes('uncompressed LAS point formats 0–10') &&
-    html.includes('scalar-property ASCII/binary LE/BE PLY') &&
-    html.includes('при наличии исходника intensity/classification') &&
-    html.includes('произвольные extra dimensions не сохраняются'));
-  assert.match(app, /bim-octree-node-error/);
-  assert.match(app, /Не удалось подгрузить часть облака/);
-  assert.match(app, /octree node read failed/);
+  assert.ok(!html.includes('id="vtStream"'), 'ревизия 15: кнопки «Потоковый LOD» больше нет');
   assert.match(app, /function pointCloudArrayUnavailableMessage\(\)[\s\S]*?octreeActive/);
   assert.match(app, /isOctreeStreamActive:\s*\(\)\s*=>/);
   for (const operation of ['cleanIslandsInApp', 'cleanRadiusInApp', 'noiseFilterInApp', 'classifyInApp']) {

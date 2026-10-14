@@ -15,13 +15,12 @@ test('конфиг: пороги быстрого предпросмотра и 
   assert.ok(c.PREVIEW_POINTS < c.STREAM_FIRST_POINTS);
 });
 
-test('main.js: предпросмотр включается только по явному запросу окна (ревизия 13: файл по умолчанию открывается целиком)', () => {
+test('main.js (ревизия 15): предпросмотра и потокового режима в bim:parseCloud нет; файл читается целиком, tooBig — только при реальном сбое памяти', () => {
   const s = read('main.js');
-  assert.match(s, /payload\.preview\s*===\s*true/);
-  assert.match(s, /allowReduced/);
-  assert.match(s, /result\.previewOnly\s*=\s*true/);
-  assert.match(s, /streamable && wantStream/);
-  assert.match(s, /tooBig:\s*true/);
+  const h = s.slice(s.indexOf("ipcMain.handle('bim:parseCloud'"), s.indexOf("ipcMain.handle('bim:readCloudChunk'"));
+  assert.ok(!/payload\.preview/.test(h) && !/previewOnly/.test(h) && !/PREVIEW_POINTS/.test(h));
+  assert.match(h, /allowReduced/);
+  assert.match(h, /tooBig:\s*true/);
 });
 
 test('main.js: кэш индексов — отпечаток, вытеснение, защита от удаления', () => {
@@ -43,14 +42,10 @@ test('preload: parseCloud передаёт признак preview только �
   assert.match(s, /preview:\s*!!\(opts && opts\.preview\)/);
 });
 
-test('app.js: предпросмотр просится только после согласия, а индекс в фоне строится сам, когда предпросмотр открыт', () => {
+test('app.js (ревизия 15): без предпросмотра и фонового индекса', () => {
   const s = read('renderer/app.js');
-  assert.match(s, /API\.parseCloud\(filePath, jobId, \{ onProgress:[^\n]*preview: !!mode\.stream, allowReduced:/);
-  assert.match(s, /window\.__lxPreview/);
-  assert.match(s, /window\.__lxStreamBg = true/);
-  assert.match(s, /preserveView:\s*bgBuild/);
-  assert.match(s, /Индекс из кэша/);
-  assert.match(s, /decodeNodeGpu/);
+  assert.match(s, /API\.parseCloud\(filePath, jobId, \{ onProgress:[^\n]*allowReduced:/);
+  assert.ok(!/preview: !!mode\.stream/.test(s) && !/window\.__lxStreamBg = true/.test(s));
 });
 
 test('панель «Загружено точек» в потоке говорит «Все точки файла» и показывает, сколько на экране', () => {

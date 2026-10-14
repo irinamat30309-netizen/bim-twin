@@ -188,7 +188,7 @@ test('CloudChunks.resolve: нехватка памяти окна даёт по�
   const api = fakeApi(store, 5);
   const out = await CloudChunks.resolve(api, light, {});
   assert.equal(out.ok, false); assert.equal(out.outOfMemory, true);
-  assert.match(out.message, /потоком|LAS или PLY/);
+  assert.equal(out.tooBig, true); assert.match(out.message, /не хватило памяти/i);
   assert.deepEqual(api.calls.map(c => c[0]), ['release']);
 });
 
@@ -198,5 +198,5 @@ test('интерфейс (ревизия 12): ни «Доли точек», ни
   assert.ok(!/'Доля точек файла'/.test(app) && !/applyPointShare/.test(app) && !/qDensity/.test(app) && !/setOctreeIdleLimit/.test(app));
   assert.ok(/id="qMove"/.test(html), 'доля точек только на время движения камеры остаётся');
   const ui = R_('renderer', 'lixel-cloud-ui.js');
-  assert.ok(/cpShareNote/.test(ui) && /Индекс всех точек строится в фоне/.test(ui) && /bim-preview-state/.test(ui));
+  assert.ok(/cpShareNote/.test(ui) && /Показана часть точек файла/.test(ui) && !/bim-preview-state/.test(ui));
 });

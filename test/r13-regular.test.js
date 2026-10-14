@@ -5,28 +5,24 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
 
-test('main: без явной просьбы потоковый режим/предпросмотр не включается; нехватка памяти — вопрос, а не молчаливое урезание', () => {
+test('main (ревизия 13, дополнено в 15): потоковый режим/предпросмотр не включается; нехватка памяти — вопрос, а не молчаливое урезание', () => {
   const m = read('main.js');
-  const i = m.indexOf("ipcMain.handle('bim:parseCloud'"), j = m.indexOf("ipcMain.handle('bim:readCloudChunk'");
-  const h = m.slice(i, j);
-  assert.match(h, /const wantStream = !!\(payload && typeof payload === 'object' && payload\.preview === true\)/);
-  assert.match(h, /if \(streamable && wantStream\)/, 'предпросмотр только по явной просьбе окна');
-  assert.ok(!/STREAM_FIRST_POINTS/.test(h) && !/streamFirst/.test(h), 'порог «большой файл → предпросмотр» удалён');
-  assert.match(h, /tooBig: true, streamable: true/);
+  const h = m.slice(m.indexOf("ipcMain.handle('bim:parseCloud'"), m.indexOf("ipcMain.handle('bim:readCloudChunk'"));
+  assert.ok(!/wantStream/.test(h) && !/STREAM_FIRST_POINTS/.test(h) && !/streamFirst/.test(h));
+  assert.match(h, /tooBig: true/);
   assert.match(h, /pointShare = 1/);
 });
 
-test('окно: parseCloud сначала без потока; поток и «часть точек» — только после согласия в диалоге', () => {
+test('окно: parseCloud сначала без урезания; «максимум возможного» — только после согласия в диалоге', () => {
   const a = read('renderer/app.js');
-  assert.match(a, /parseCloudWithProgressOnce\(filePath, label, \{ stream: false, allowReduced: false \}\)/);
-  assert.match(a, /Открыть все точки \(потоковый режим\)/);
-  assert.match(a, /preview: !!mode\.stream, allowReduced: allowReduced/);
+  assert.match(a, /parseCloudWithProgressOnce\(filePath, label, \{ allowReduced: false \}\)/);
+  assert.match(a, /Открыть максимум возможного/);
   assert.ok(!/preview: true/.test(a.slice(a.indexOf('async function parseCloudWithProgressOnce'), a.indexOf('async function parseCloudWithProgressOnce') + 2500)));
 });
 
-test('вьюер: предел одного буфера 170 млн (102 млн точек больше не прореживаются вдвое), порционная загрузка, цвет 3 байта', () => {
+test('вьюер: порционная загрузка в видеопамять, цвет 3 байта; предела в 170 млн нет (ревизия 15: сегменты)', () => {
   const w = read('renderer/webgl-viewer.js');
-  assert.match(w, /this\._maxSingleBuffer = 170000000/);
+  assert.match(w, /this\._maxSingleBuffer = Number\.POSITIVE_INFINITY/);
   assert.match(w, /_bigBufferData\(data\)/); assert.match(w, /gl\.bufferSubData\(T, i \* data\.BYTES_PER_ELEMENT/);
   assert.match(w, /_bigColorBuffer\(col\)/); assert.match(w, /u8 \? gl\.UNSIGNED_BYTE : gl\.FLOAT, !!u8/);
 });

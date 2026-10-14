@@ -7,11 +7,10 @@ const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
 const cfg = require('../app-config.js');
 const cloud = require('../las-node.js');
 
-test('конфиг: предел обычного режима = предел одного буфера вьюера (170 млн), бюджет показа не ограничен', () => {
-  assert.equal(cfg.MAX_SINGLE_BUFFER_POINTS, 170000000);
-  assert.match(read('renderer/webgl-viewer.js'), new RegExp('this\\._maxSingleBuffer = ' + cfg.MAX_SINGLE_BUFFER_POINTS));
+test('конфиг: бюджет показа не ограничен', () => {
   assert.equal(cfg.resolvePointBudget({ pointBudget: 1000 }), 2000000000);
   assert.equal(cfg.resolvePointShare({ pointShare: 0.1 }), 1);
+  assert.equal(cfg.MAX_SINGLE_BUFFER_POINTS, undefined, 'предела 170 млн больше нет');
 });
 
 test('вьюер: по умолчанию при движении рисуются все точки (100 %), «Авто» и проценты — только по выбору', () => {
@@ -40,14 +39,12 @@ test('окно: «При движении» — «Все точки» по ум�
   assert.ok(!/lsGet\('bim\.stream\.move',/.test(a));
 });
 
-test('main: чтение целиком без «свободной памяти»; отказ — только если не влезает в ОЗУ/буфер или выделение памяти реально упало', () => {
+test('main: чтение целиком без «свободной памяти»; tooBig — только если выделение памяти реально упало', () => {
   const m = read('main.js');
   const h = m.slice(m.indexOf("ipcMain.handle('bim:parseCloud'"), m.indexOf("ipcMain.handle('bim:readCloudChunk'"));
-  assert.match(h, /availableMemoryBytes: require\('os'\)\.totalmem\(\)/);
-  assert.match(h, /APP_CFG\.MAX_SINGLE_BUFFER_POINTS/);
-  assert.match(h, /memoryGuard: \(previewOnly \|\| allowReduced\) \? undefined : false/);
+  assert.match(h, /memoryGuard: allowReduced \? undefined : false/);
   assert.match(h, /out of memory\|allocation failed/);
-  assert.ok(!/cloud\.effectivePointBudget\(peek, \{\}\)/.test(h), 'свободная память больше не повод отказать');
+  assert.ok(!/totalmem/.test(h) && !/MAX_SINGLE_BUFFER_POINTS/.test(h), 'ни свободная, ни полная память заранее отказом не служат');
 });
 
 test('1 млн и 3,3 млн точек читаются ЦЕЛИКОМ даже при «нулевой свободной памяти» (memoryGuard:false), ничего не урезается', async () => {
@@ -73,4 +70,27 @@ test('effectivePointBudget по ОЗУ: 1 млн и 40 млн точек на м
   assert.equal(cloud.effectivePointBudget(1000000, { availableMemoryBytes: 16 * GB }), 1000000);
   assert.equal(cloud.effectivePointBudget(40000000, { availableMemoryBytes: 16 * GB }), 40000000);
   assert.ok(cloud.effectivePointBudget(400000000, { availableMemoryBytes: 16 * GB }) < 400000000);
+});
+
+test('ревизия 15: потокового режима нет — ни кнопки, ни ленточной команды, ни предпросмотра', () => {
+  assert.ok(!/id="vtStream"/.test(read('renderer/index.html')));
+  assert.ok(!/vtStream/.test(read('renderer/ui/commands.js')));
+  const a = read('renderer/app.js');
+  assert.ok(!/\$\('vtStream'\)/.test(a) && !/offerFullCloud/.test(a) && !/__lxPreview/.test(a));
+  const m = read('main.js');
+  assert.ok(!/payload\.preview/.test(m));
+});
+
+test('ревизия 15: облако крупнее сегмента кладётся в несколько буферов видеопамяти (все точки, без прореживания)', () => {
+  const w = read('renderer/webgl-viewer.js');
+  assert.match(w, /this\._segPoints = 48000000/);
+  assert.match(w, /_makeSegObj\(o\) \{/);
+  assert.match(w, /return this\._makeSegObj\(o\)/);
+  assert.match(w, /gl\.getError\(\) === gl\.OUT_OF_MEMORY/, 'нехватка видеопамяти: рисуются поместившиеся сегменты и приходит сообщение');
+  assert.match(w, /bim-gpu-short/);
+  assert.match(w, /uniform uint uIdBase/);
+  assert.match(w, /vId = uint\(gl_VertexID\) \+ uIdBase \+ 1u/, 'выбор точки учитывает смещение сегмента');
+  assert.match(w, /this\._drawPickPoints\(bo\)/);
+  assert.match(w, /_drawPointSegs\(o, dc, attrMode\)/);
+  assert.match(read('renderer/app.js'), /addEventListener\('bim-gpu-short'/);
 });

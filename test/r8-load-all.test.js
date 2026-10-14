@@ -58,12 +58,11 @@ test('потоковый индекс: LAS целиком, без прорежи
   assert.equal(r.indexedPointCount, 9000); assert.equal(r.sourcePointCount, 9000);
 });
 
-test('окно: после загрузки части точек предлагается потоковый режим (диалог, кнопка vtStream)', () => {
+test('окно (ревизия 15): потокового режима нет — ни кнопки, ни предпросмотра; при нехватке памяти — «Открыть максимум возможного» только с согласия', () => {
   const a = R_('renderer', 'app.js');
-  assert.match(a, /function offerFullCloud\(filePath, result\)/);
-  assert.match(a, /индекс всех точек строится/);
-  assert.match(a, /window\.__lxPreview = /);
-  assert.match(a, /sb0\.click\(\)/);
-  assert.ok(!/\b(confirm|prompt|alert)\(/.test(a.slice(a.indexOf('function offerFullCloud'), a.indexOf('async function parseCloudWithProgress'))));
-  assert.match(R_('renderer', 'lixel-cloud-ui.js'), /кнопка «Потоковый LOD»/);
+  assert.ok(!/function offerFullCloud/.test(a) && !/window\.__lxPreview = /.test(a) && !/\$\('vtStream'\)/.test(a));
+  assert.ok(!/id="vtStream"/.test(R_('renderer', 'index.html')));
+  assert.match(a, /Открыть максимум возможного/);
+  assert.match(a, /parseCloudWithProgressOnce\(filePath, label, \{ allowReduced: true \}\)/);
+  assert.ok(!/\b(confirm|prompt|alert)\(/.test(a.slice(a.indexOf('async function parseCloudWithProgress('), a.indexOf('async function parseCloudWithProgressOnce'))));
 });

@@ -226,12 +226,12 @@
   // Кто впереди в пикселе, тот и попадает в выборку; перекрытые (за стеной/трубой) отбрасываются.
   const PICK_VS = `#version 300 es
   in vec3 aPos; uniform mat4 uMVP;
-  uniform float uPointSize; uniform float uAttenuate; uniform float uPtScale; uniform float uPtMin; uniform float uPtMax; uniform float uGrow;
+  uniform float uPointSize; uniform float uAttenuate; uniform float uPtScale; uniform float uPtMin; uniform float uPtMax; uniform float uGrow; uniform uint uIdBase;
   flat out uint vId; out vec3 vW;
   void main(){ vW=aPos; gl_Position = uMVP*vec4(aPos,1.0);
     float ps = uPointSize;
     if(uAttenuate>0.5){ ps = clamp(uPtScale/max(gl_Position.w,0.0001), uPtMin, uPtMax); }
-    gl_PointSize = ps + uGrow; vId = uint(gl_VertexID) + 1u; }`;
+    gl_PointSize = ps + uGrow; vId = uint(gl_VertexID) + uIdBase + 1u; }`;
   const PICK_FS = `#version 300 es
   precision highp float; precision highp int;
   uniform float uRound; uniform float uClipOn; uniform vec3 uClipMin; uniform vec3 uClipMax; flat in uint vId; in vec3 vW; out uvec4 frag;
@@ -307,7 +307,7 @@
       this._lodThreshold = Number.POSITIVE_INFINITY; // порог «до бесконечности»: обычная загрузка всегда рисует ВСЕ точки одним буфером
       // v1059: предел одного VBO поднят до 96 млн — облака до ~90 млн (вкл. текущие 78 млн) рисуются ЦЕЛИКОМ,
       // как в CloudCompare (на RTX 5070 / 32 ГБ памяти). Более крупные проекты аккуратно прорежаются до этого уровня (выглядит сплошным).
-      this._bigColorPoints = 12000000; this._maxSingleBuffer = 170000000; // ревизия 13: 170 млн × 12 Б = 2,0 ГБ — предел одного буфера WebGL (2^31−1 Б); всё, что меньше, рисуется ЦЕЛИКОМ
+      this._bigColorPoints = 12000000; this._segPoints = 48000000; this._maxSingleBuffer = Number.POSITIVE_INFINITY; // ревизия 15: облако крупнее _segPoints (48 млн) кладётся в НЕСКОЛЬКО буферов видеопамяти (по 576 МБ) и рисуется целиком — предела в 170 млн больше нет, прореживания нет
       this._initGL(); this._bind(); this._resize();
       // throttle resize по кадрам — иначе сильные зависания при тяге окна
       this._roRAF = 0;
@@ -368,8 +368,73 @@
       }
       return true;
     }
+    // Ревизия 15: облако крупнее _segPoints делится на сегменты — отдельные буферы видеопамяти (позиции Float32, цвет 3 байта; интенсивность и
+    // классы — лениво, только когда включён такой цвет). Рисуются все сегменты подряд: ВСЕ точки файла, сколько бы их ни было (ограничение
+    // в 2 ГБ на один буфер WebGL больше не мешает). Если видеопамяти не хватило — рисуются сегменты, которые поместились; об этом сообщается.
+    _makeSegObj(o) {
+      const gl = this.gl, T = gl.ARRAY_BUFFER, S = Math.max(1000000, this._segPoints | 0), n = Math.floor(o.pos.length / 3), segs = [];
+      let drawn = 0;
+      if (gl.getError) gl.getError();
+      for (let st = 0; st < n; st += S) {
+        const m = Math.min(S, n - st), vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+        const pb = gl.createBuffer(); gl.bindBuffer(T, pb); this._bigBufferData(o.pos.subarray(st * 3, (st + m) * 3));
+        gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
+        let cb = null, u8 = false;
+        if (o.col && this.aColor >= 0) { cb = gl.createBuffer(); gl.bindBuffer(T, cb); u8 = this._bigColorBuffer(o.col.subarray(st * 3, (st + m) * 3)); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, u8 ? gl.UNSIGNED_BYTE : gl.FLOAT, !!u8, 0, 0); }
+        gl.bindVertexArray(null);
+        if (gl.getError && gl.getError() === gl.OUT_OF_MEMORY) {
+          try { gl.deleteVertexArray(vao); gl.deleteBuffer(pb); if (cb) gl.deleteBuffer(cb); } catch (_) {}
+          break;
+        }
+        segs.push({ vao, pb, cb, ib: null, kb: null, start: st, n: m }); drawn += m;
+      }
+      if (!segs.length) throw new Error('Не хватило видеопамяти для облака (' + n.toLocaleString('ru-RU') + ' точек)');
+      o._segs = segs; o._gpuCount = drawn; o._vao = segs[0].vao; o._pb = segs[0].pb; o._cb = segs[0].cb; o.count = n;
+      if (drawn < n) { this._gpuShort = { drawn, total: n }; try { if (typeof window !== 'undefined' && window.dispatchEvent && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('bim-gpu-short', { detail: { drawn, total: n } })); } catch (_) {} }
+      else this._gpuShort = null;
+      let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity]; const P = o.pos;
+      for (let i = 0; i < P.length; i += 3) for (let k = 0; k < 3; k++) { const v = P[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; }
+      o.aabb = { mn, mx };
+      return o;
+    }
+    // ленивая загрузка интенсивности/классов в буферы сегментов (только при включённом таком цвете: 4 и 1 Б на точку видеопамяти)
+    _segEnsureAttr(o, kind) {
+      const gl = this.gl, T = gl.ARRAY_BUFFER, isI = kind === 'intensity';
+      const data = isI ? (o.intensity || this._intensityValues) : (this._classificationLabels || o.classification);
+      const loc = isI ? this.aIntensity : this.aClassification, key = isI ? 'ib' : 'kb';
+      if (!data || loc < 0) return;
+      for (const sg of o._segs) {
+        if (sg[key] || sg.start >= (o._gpuCount || 0)) continue;
+        const b = gl.createBuffer(); gl.bindVertexArray(sg.vao); gl.bindBuffer(T, b);
+        gl.bufferData(T, data.subarray(sg.start, sg.start + sg.n), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 1, isI ? gl.FLOAT : gl.UNSIGNED_BYTE, false, 0, 0);
+        gl.bindVertexArray(null); sg[key] = b;
+      }
+    }
+    _segDropAttr(o, kind) {
+      const gl = this.gl, key = kind === 'intensity' ? 'ib' : 'kb';
+      if (o._segs) for (const sg of o._segs) if (sg[key]) { try { gl.deleteBuffer(sg[key]); } catch (_) {} sg[key] = null; }
+    }
+    _drawPointSegs(o, dc, attrMode) {
+      const gl = this.gl;
+      if (attrMode === 2) this._segEnsureAttr(o, 'intensity'); else if (attrMode === 3) this._segEnsureAttr(o, 'classification');
+      const lim = Math.min(dc, o._gpuCount || dc);
+      for (const sg of o._segs) { if (sg.start >= lim) break; gl.bindVertexArray(sg.vao); gl.drawArrays(gl.POINTS, 0, Math.min(sg.n, lim - sg.start)); }
+      return lim;
+    }
+    _drawPickPoints(bo) {
+      const gl = this.gl, segs = bo._segs || [{ pb: bo._pb, start: 0, n: bo.count }];
+      for (const sg of segs) {
+        if (bo._gpuCount && sg.start >= bo._gpuCount) break;
+        gl.bindBuffer(gl.ARRAY_BUFFER, sg.pb); gl.enableVertexAttribArray(this._pickAPos); gl.vertexAttribPointer(this._pickAPos, 3, gl.FLOAT, false, 0, 0);
+        if (this._pickU.uIdBase) gl.uniform1ui(this._pickU.uIdBase, sg.start);
+        gl.drawArrays(gl.POINTS, 0, sg.n);
+      }
+      if (bo._segs && this._pickU.uIdBase) gl.uniform1ui(this._pickU.uIdBase, 0);
+    }
     _makeObj(o) {
       if (o._lodBuild) return this._makeLodObj(o);
+      if (o.points && !o.line && o.pos && o.pos.length / 3 > Math.max(1000000, this._segPoints | 0) && o.pos.subarray) return this._makeSegObj(o);
       const gl = this.gl; const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
       const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); this._bigBufferData(o.pos);
       gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
@@ -398,7 +463,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       }
       return o;
     }
-    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._kb) gl.deleteBuffer(o._kb); if (o._radVbo) { gl.deleteBuffer(o._radVbo); o._radVbo = null; o._rad = null; } } }
+    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._segs) { for (const sg of o._segs) { try { gl.deleteVertexArray(sg.vao); gl.deleteBuffer(sg.pb); if (sg.cb) gl.deleteBuffer(sg.cb); if (sg.ib) gl.deleteBuffer(sg.ib); if (sg.kb) gl.deleteBuffer(sg.kb); } catch (_) {} } o._segs = null; o._vao = null; o._pb = null; o._cb = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._kb) gl.deleteBuffer(o._kb); if (o._radVbo) { gl.deleteBuffer(o._radVbo); o._radVbo = null; o._rad = null; } } }
     _makeLodObj(o) {
       const gl = this.gl; const lb = o._lodBuild;
       const mkBuf = (pos, col) => {
@@ -447,6 +512,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     _setBase(objs) { if (this._prevObj) this.clearPreview(true); this._delObjs(this.base); this._psCache = null; this._psJob = null; this._yqCache = null; this._spTok = (this._spTok || 0) + 1; this.base = objs.map(o => this._makeObj(o)); this._recomputeBBox(); if (!this.base.some(o => o.points)) this._cloudRecord = null; this._notifyCloudChanged(); const _m = this.base[0]; if (_m && _m.points && !_m._lod && !_m._isSel && !_m._isStation && _m.count >= 20000) this._startSpacingField(_m); }
     // ревизия 7: локальный шаг точек (1 байт на точку) считается кусочками в простое — интерфейс не замирает, пока облако «дорисовывается»
     _startSpacingField(o) {
+      if (o._segs) return;   // ревизия 15: облако в нескольких буферах видеопамяти — локальный шаг точек не считаем (экономим память и время)
       const CC = (typeof window !== 'undefined' && window.CloudClean) || (typeof globalThis !== 'undefined' && globalThis.CloudClean);
       if (!CC || typeof CC.spacingGen !== 'function' || typeof setTimeout !== 'function') return;
       const tok = this._spTok, self = this; let gen = null;
@@ -463,7 +529,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       setTimeout(tick, 30);
     }
     _applySpacingField(o, f) {
-      const gl = this.gl; if (!gl || !o._vao || this.aRad < 0 || !f || !f.codes || f.codes.length !== o.count) return false;
+      const gl = this.gl; if (!gl || !o._vao || o._segs || this.aRad < 0 || !f || !f.codes || f.codes.length !== o.count) return false;
       const rb = gl.createBuffer(); if (!rb) return false;
       gl.bindVertexArray(o._vao); gl.bindBuffer(gl.ARRAY_BUFFER, rb); gl.bufferData(gl.ARRAY_BUFFER, f.codes, gl.STATIC_DRAW);
       gl.enableVertexAttribArray(this.aRad); gl.vertexAttribPointer(this.aRad, 1, gl.UNSIGNED_BYTE, true, 0, 0); gl.bindVertexArray(null);
@@ -834,7 +900,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       // classification color mode does not silently render every point as
       // the default generic-attribute value (class 0).
       const gl = this.gl;
-      if (gl && bo._vao && this.aClassification >= 0) {
+      if (gl && bo._segs) { this._segDropAttr(bo, 'classification'); }
+      else if (gl && bo._vao && this.aClassification >= 0) {
         const kb = gl.createBuffer();
         if (kb) {
           gl.bindVertexArray(bo._vao);
@@ -869,7 +936,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this._classificationLabels = null;
       bo.classification = null;
       const gl = this.gl;
-      if (gl && bo._vao && this.aClassification >= 0) {
+      if (gl && bo._segs) { for (const sg of bo._segs) { gl.bindVertexArray(sg.vao); gl.disableVertexAttribArray(this.aClassification); gl.vertexAttrib1f(this.aClassification, 0); gl.bindVertexArray(null); } this._segDropAttr(bo, 'classification'); }
+      else if (gl && bo._vao && this.aClassification >= 0) {
         gl.bindVertexArray(bo._vao);
         if (typeof gl.disableVertexAttribArray === 'function') gl.disableVertexAttribArray(this.aClassification);
         if (typeof gl.vertexAttrib1f === 'function') gl.vertexAttrib1f(this.aClassification, 0);
@@ -2506,8 +2574,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         if (!o.col) gl.uniform3fv(this.u.uColor, new Float32Array(o.color || [0.82, 0.86, 0.93]));
         if (o._lod) { this._drawLod(o); }
         else {
-          const dc = dcI;
-          gl.drawArrays(gl.POINTS, 0, dc);
+          let dc = dcI;
+          if (o._segs) dc = this._drawPointSegs(o, dc, attrMode); else gl.drawArrays(gl.POINTS, 0, dc);
           if (isCloud && (this._interacting || this._probeIdle)) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + o.count; }
         }
         gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); gl.bindVertexArray(null); return;
@@ -2768,7 +2836,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, PICK_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, PICK_FS)); gl.linkProgram(p);
         if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('pick link: ' + gl.getProgramInfoLog(p));
         this._pickProg = p; this._pickAPos = gl.getAttribLocation(p, 'aPos'); this._pickU = {};
-        for (const k of ['uMVP', 'uPointSize', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uRound', 'uGrow', 'uClipOn', 'uClipMin', 'uClipMax']) this._pickU[k] = gl.getUniformLocation(p, k);
+        for (const k of ['uMVP', 'uPointSize', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uRound', 'uGrow', 'uClipOn', 'uClipMin', 'uClipMax', 'uIdBase']) this._pickU[k] = gl.getUniformLocation(p, k);
         this._pickVao = gl.createVertexArray();
         this._pickColTex = gl.createTexture(); this._pickDepRb = gl.createRenderbuffer(); this._pickFbo = gl.createFramebuffer();
         this._pickW = 0; this._pickH = 0; this._pickResize();
@@ -2845,10 +2913,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       gl.uniform1f(this._pickU.uClipOn, clipOn);
       if (_cb) { gl.uniform3f(this._pickU.uClipMin, _cb.mn[0], _cb.mn[1], _cb.mn[2]); gl.uniform3f(this._pickU.uClipMax, _cb.mx[0], _cb.mx[1], _cb.mx[2]); }
       gl.bindVertexArray(this._pickVao);
-      gl.bindBuffer(gl.ARRAY_BUFFER, bo._pb);
-      gl.enableVertexAttribArray(this._pickAPos);
-      gl.vertexAttribPointer(this._pickAPos, 3, gl.FLOAT, false, 0, 0);
-      gl.drawArrays(gl.POINTS, 0, bo.count);
+      this._drawPickPoints(bo);
       gl.bindVertexArray(null);
       this._pickKeys[slot] = { k: key, pb: bo._pb, count: bo.count };
       return fbo;
@@ -2932,10 +2997,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       gl.uniform1f(this._pickU.uGrow, grow);
       const cb=this._clipBounds();gl.uniform1f(this._pickU.uClipOn,this._clipActive()?1:0);if(cb){gl.uniform3fv(this._pickU.uClipMin,cb.mn);gl.uniform3fv(this._pickU.uClipMax,cb.mx);}
       gl.bindVertexArray(this._pickVao);
-      gl.bindBuffer(gl.ARRAY_BUFFER, bo._pb);
-      gl.enableVertexAttribArray(this._pickAPos);
-      gl.vertexAttribPointer(this._pickAPos, 3, gl.FLOAT, false, 0, 0);
-      gl.drawArrays(gl.POINTS, 0, bo.count);
+      this._drawPickPoints(bo);
       gl.bindVertexArray(null);
       const px = new Uint32Array(w * h);
       gl.readPixels(x, y, w, h, gl.RED_INTEGER, gl.UNSIGNED_INT, px);
