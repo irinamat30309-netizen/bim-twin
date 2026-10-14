@@ -64,6 +64,8 @@ const ROOM = path.join(__dirname, 'room.ply');
     r.pick = { tried, ok: okP, bad: badP, segmentsHit: segHit.size };
     r.pickIdMax = (() => { const pk = v._pickGPU(rect.left + rect.width / 2, rect.top + rect.height / 2, 400); return pk ? pk.index : null; })();
     // 5) блокировки правки/выделения: не падают, возвращают нейтральное, шлют сообщение
+    // Ревизия 17: с копиями сегментов в памяти (cpu=true) операции работают (см. big-lab.js); аварийный путь r16 — когда копии не поместились (cpu=false)
+    v.base[0]._stream.cpu = false;
     window.__stl = 0; v._streamBlockAt = 0;
     const blk = {};
     blk.selectBox = v.selectBox([-1, 0, -1], [1, 1, 1]); blk.deleteSelection = v.deleteSelection(); blk.cropToSelection = v.cropToSelection();

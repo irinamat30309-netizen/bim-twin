@@ -719,6 +719,15 @@ function registerIpc() {
   const MAX_EXPORT_STREAMS_PER_SENDER = 1;
   const MAX_EXPORT_STREAM_BYTES = 16 * 1024 * 1024 * 1024;
   const MAX_EXPORT_CHUNK_CHARS = 4 * 1024 * 1024;
+  // Ревизия 17: облака больше 48 млн точек сохраняются/экспортируются потоком бинарных кусков (PLY/LAS/XYZ/PTS/CSV/PCD).
+  const MAX_EXPORT_CHUNK_BYTES = 32 * 1024 * 1024;
+  const BIG_EXPORT_EXT = { ply: 'PLY', las: 'LAS', xyz: 'XYZ', pts: 'PTS', csv: 'CSV', pcd: 'PCD', obj: 'OBJ' };
+  function exportChunkBuffer(v) {
+    if (Buffer.isBuffer(v)) return v;
+    if (v instanceof Uint8Array) return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
+    if (v instanceof ArrayBuffer) return Buffer.from(v);
+    return null;
+  }
   function ipcSender(event) {
     const sender = event && event.sender;
     if (!sender || sender.id == null || (sender.isDestroyed && sender.isDestroyed()) || !isTrustedIpcEvent(event)) return null;
@@ -799,35 +808,51 @@ function registerIpc() {
     })();
     return session.cleanupPromise;
   }
-  // Streamed PTX is the first bounded-memory export path. It is intentionally
-  // restricted to PTX; renderer never supplies a destination path, and every
-  // token is tied to the WebContents that opened the native save dialog.
+  // Streamed export is a bounded-memory path: PTX (text, validated) and, since revision 17, binary/text chunks of
+  // PLY/LAS/XYZ/PTS/CSV/PCD for clouds that are read in parts. The renderer never supplies a destination path,
+  // and every token is tied to the WebContents that opened the native save dialog.
   ipcMain.handle('bim:beginExportStream', async (event, payload) => {
     let session = null;
     try {
       const sender = event && event.sender;
       if (!sender || (sender.isDestroyed && sender.isDestroyed())) return { ok: false, error: 'invalid_sender' };
       const ext = String(payload && payload.ext || '').replace(/^\./, '').toLowerCase();
-      if (ext !== 'ptx') return { ok: false, error: 'stream_format_not_supported' };
-      const expectedPoints = Number(payload && payload.expectedPoints);
-      if (!Number.isSafeInteger(expectedPoints) || expectedPoints < 1 || expectedPoints > 2147483647) return { ok: false, error: 'invalid_point_count' };
+      if (ext !== 'ptx' && !Object.prototype.hasOwnProperty.call(BIG_EXPORT_EXT, ext)) return { ok: false, error: 'stream_format_not_supported' };
+      const isPtx = ext === 'ptx';
+      let expectedPoints = Number(payload && payload.expectedPoints);
+      if (isPtx) {
+        if (!Number.isSafeInteger(expectedPoints) || expectedPoints < 1 || expectedPoints > 2147483647) return { ok: false, error: 'invalid_point_count' };
+      } else if (!Number.isSafeInteger(expectedPoints) || expectedPoints < 1 || expectedPoints > 4294967295 * 4) expectedPoints = null;
+      let expectedBytes = null;
+      if (!isPtx && payload && payload.expectedBytes != null) {
+        expectedBytes = Number(payload.expectedBytes);
+        if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1 || expectedBytes > MAX_EXPORT_STREAM_BYTES) return { ok: false, error: 'invalid_expected_bytes' };
+      }
       const activeForSender = Array.from(activeExportStreams.values()).filter(item => item.sender === sender && !item.cleaned).length;
       if (activeForSender >= MAX_EXPORT_STREAMS_PER_SENDER) return { ok: false, error: 'export_busy' };
 
-      const requestedName = safeFilePart(payload && payload.name || 'pointcloud.ptx');
-      const defaultPath = path.extname(requestedName).toLowerCase() === '.ptx' ? requestedName : requestedName + '.ptx';
+      const requestedName = safeFilePart(payload && payload.name || ('pointcloud.' + ext));
+      const defaultPath = path.extname(requestedName).toLowerCase() === '.' + ext ? requestedName : requestedName + '.' + ext;
       const options = {
-        title: String(payload && payload.title || 'Экспорт · PTX').slice(0, 120),
+        title: String(payload && payload.title || ('Экспорт · ' + ext.toUpperCase())).slice(0, 120),
         defaultPath,
-        filters: [{ name: 'PTX', extensions: ['ptx'] }]
+        filters: [{ name: isPtx ? 'PTX' : BIG_EXPORT_EXT[ext], extensions: [ext] }]
       };
-      let owner = null;
-      try { owner = BrowserWindow.fromWebContents(sender); } catch (_) {}
-      const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
-      if (!result || result.canceled || !result.filePath) return { ok: false, canceled: true };
-
-      let target = path.resolve(String(result.filePath));
-      if (path.extname(target).toLowerCase() !== '.ptx') target += '.ptx';
+      let target = null;
+      if (!isPtx && payload && payload.targetPath) {
+        // тихое сохранение в уже выбранный пользователем файл (рабочая копия): путь должен быть ранее выдан этому окну
+        target = resolveAuthorizedOutput(event, String(payload.targetPath));
+        if (!target) return { ok: false, error: 'path_not_authorized' };
+        if (path.extname(target).toLowerCase() !== '.' + ext) return { ok: false, error: 'invalid_output_extension' };
+        target = path.resolve(target);
+      } else {
+        let owner = null;
+        try { owner = BrowserWindow.fromWebContents(sender); } catch (_) {}
+        const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+        if (!result || result.canceled || !result.filePath) return { ok: false, canceled: true };
+        target = path.resolve(String(result.filePath));
+        if (path.extname(target).toLowerCase() !== '.' + ext) target += '.' + ext;
+      }
       const directory = path.dirname(target);
       const dirStat = fs.statSync(directory);
       if (!dirStat.isDirectory()) return { ok: false, error: 'output_directory_not_found' };
@@ -837,8 +862,8 @@ function registerIpc() {
       const tempName = '.' + path.basename(target).slice(0, 72) + '.bimtwin-' + id + '.tmp';
       const tempPath = path.join(directory, tempName);
       session = {
-        id, sender, target, tempPath, expectedPoints,
-        validator: new PTXStreamValidator(expectedPoints),
+        id, sender, target, tempPath, expectedPoints, expectedBytes, ext,
+        validator: isPtx ? new PTXStreamValidator(expectedPoints) : null,
         writer: null, state: 'opening', bytes: 0,
         writeChain: Promise.resolve(), error: null, cleaned: false
       };
@@ -885,22 +910,28 @@ function registerIpc() {
   ipcMain.handle('bim:writeExportStreamChunk', async (event, payload) => {
     const session = exportStreamFor(event, payload);
     if (!session) return { ok: false, error: 'invalid_or_expired_stream' };
-    const text = payload && payload.text;
-    if (session.state !== 'writing' || typeof text !== 'string' || !text.length || text.length > MAX_EXPORT_CHUNK_CHARS) {
+    const isTextStream = !!session.validator;
+    const text = isTextStream ? (payload && payload.text) : null;
+    const binary = isTextStream ? null : exportChunkBuffer(payload && payload.bytes);
+    const chunkOk = isTextStream
+      ? (typeof text === 'string' && text.length > 0 && text.length <= MAX_EXPORT_CHUNK_CHARS)
+      : (!!binary && binary.length > 0 && binary.length <= MAX_EXPORT_CHUNK_BYTES);
+    if (session.state !== 'writing' || !chunkOk) {
       await removeExportStream(session, false);
       return { ok: false, error: 'invalid_stream_chunk' };
     }
     const operation = session.writeChain.then(async () => {
       if (session.cleaned || session.error || !['writing', 'finishing'].includes(session.state)) throw session.error || new Error('export stream was cancelled');
-      const validated = session.validator.push(text);
-      const bytes = Buffer.from(text, 'ascii');
-      if (session.bytes + bytes.length > MAX_EXPORT_STREAM_BYTES) throw new Error('PTX export exceeds 16 GiB safety limit');
+      const validated = isTextStream ? session.validator.push(text) : null;
+      const bytes = isTextStream ? Buffer.from(text, 'ascii') : binary;
+      if (session.bytes + bytes.length > MAX_EXPORT_STREAM_BYTES) throw new Error(session.ext.toUpperCase() + ' export exceeds 16 GiB safety limit');
+      if (session.expectedBytes != null && session.bytes + bytes.length > session.expectedBytes) throw new Error('export stream is larger than announced');
       await new Promise((resolve, reject) => {
         try { session.writer.write(bytes, error => error ? reject(error) : resolve()); }
         catch (error) { reject(error); }
       });
       session.bytes += bytes.length;
-      return { ok: true, bytes: session.bytes, points: validated.points, expectedPoints: session.expectedPoints };
+      return { ok: true, bytes: session.bytes, points: validated ? validated.points : null, expectedPoints: session.expectedPoints };
     });
     session.writeChain = operation.catch(error => { session.error = error; });
     try { return await operation; }
@@ -918,8 +949,12 @@ function registerIpc() {
     try {
       await session.writeChain;
       if (session.cleaned || session.error) throw session.error || new Error('export stream was cancelled');
-      const validated = session.validator.finish();
-      if (validated.bytes !== session.bytes || validated.points !== session.expectedPoints) throw new Error('PTX stream integrity check failed');
+      if (session.validator) {
+        const validated = session.validator.finish();
+        if (validated.bytes !== session.bytes || validated.points !== session.expectedPoints) throw new Error('PTX stream integrity check failed');
+      } else if (session.bytes < 1 || (session.expectedBytes != null && session.bytes !== session.expectedBytes)) {
+        throw new Error('export stream integrity check failed');
+      }
       await new Promise((resolve, reject) => {
         session.writer.once('error', reject);
         session.writer.once('finish', resolve);
@@ -931,7 +966,7 @@ function registerIpc() {
       session.state = 'committing';
       const saved = await saveCloudOutputFromTemp(session.target, session.tempPath, {
         operation: 'pointcloud.export.stream',
-        format: 'ptx'
+        format: session.ext
       });
       grantExistingOutput(event, saved.path);
       session.state = 'committed';
