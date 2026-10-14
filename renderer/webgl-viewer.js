@@ -307,7 +307,7 @@
       this._lodThreshold = Number.POSITIVE_INFINITY; // порог «до бесконечности»: обычная загрузка всегда рисует ВСЕ точки одним буфером
       // v1059: предел одного VBO поднят до 96 млн — облака до ~90 млн (вкл. текущие 78 млн) рисуются ЦЕЛИКОМ,
       // как в CloudCompare (на RTX 5070 / 32 ГБ памяти). Более крупные проекты аккуратно прорежаются до этого уровня (выглядит сплошным).
-      this._bigColorPoints = 12000000; this._segPoints = 48000000; this._maxSingleBuffer = Number.POSITIVE_INFINITY; // ревизия 15: облако крупнее _segPoints (48 млн) кладётся в НЕСКОЛЬКО буферов видеопамяти (по 576 МБ) и рисуется целиком — предела в 170 млн больше нет, прореживания нет
+      this._chunkPoints = 1000000; this._cullOn = true; this._moveSmart = true; this._smartK = 6; this._bigColorPoints = 12000000; this._segPoints = 48000000; this._maxSingleBuffer = Number.POSITIVE_INFINITY; // ревизия 15: облако крупнее _segPoints (48 млн) кладётся в НЕСКОЛЬКО буферов видеопамяти (по 576 МБ) и рисуется целиком — предела в 170 млн больше нет, прореживания нет
       this._initGL(); this._bind(); this._resize();
       // throttle resize по кадрам — иначе сильные зависания при тяге окна
       this._roRAF = 0;
@@ -373,6 +373,7 @@
     // в 2 ГБ на один буфер WebGL больше не мешает). Если видеопамяти не хватило — рисуются сегменты, которые поместились; об этом сообщается.
     _makeSegObj(o) {
       const gl = this.gl, T = gl.ARRAY_BUFFER, S = Math.max(1000000, this._segPoints | 0), n = Math.floor(o.pos.length / 3), segs = [];
+      const CH = Math.max(1000, this._chunkPoints | 0);
       let drawn = 0;
       if (gl.getError) gl.getError();
       for (let st = 0; st < n; st += S) {
@@ -386,14 +387,25 @@
           try { gl.deleteVertexArray(vao); gl.deleteBuffer(pb); if (cb) gl.deleteBuffer(cb); } catch (_) {}
           break;
         }
-        segs.push({ vao, pb, cb, ib: null, kb: null, start: st, n: m }); drawn += m;
+        segs.push({ vao, pb, cb, ib: null, kb: null, start: st, n: m, boxes: null, chunk: CH }); drawn += m;
       }
       if (!segs.length) throw new Error('Не хватило видеопамяти для облака (' + n.toLocaleString('ru-RU') + ' точек)');
-      o._segs = segs; o._gpuCount = drawn; o._vao = segs[0].vao; o._pb = segs[0].pb; o._cb = segs[0].cb; o.count = n;
+      o._segs = segs; o._gpuCount = drawn; o._vao = segs[0].vao; o._pb = segs[0].pb; o._cb = segs[0].cb; o.count = n; o._chunked = true;
       if (drawn < n) { this._gpuShort = { drawn, total: n }; try { if (typeof window !== 'undefined' && window.dispatchEvent && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('bim-gpu-short', { detail: { drawn, total: n } })); } catch (_) {} }
       else this._gpuShort = null;
+      // рамки кирпичей (по CH подряд идущих точек): по ним не рисуются точки вне экрана; общая рамка облака — из них же
       let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity]; const P = o.pos;
-      for (let i = 0; i < P.length; i += 3) for (let k = 0; k < 3; k++) { const v = P[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; }
+      for (const sg of segs) {
+        const nc = Math.ceil(sg.n / CH), B = new Float32Array(nc * 6);
+        for (let c = 0; c < nc; c++) {
+          const i0 = (sg.start + c * CH) * 3, i1 = (sg.start + Math.min(sg.n, (c + 1) * CH)) * 3;
+          let a0 = Infinity, a1 = Infinity, a2 = Infinity, b0 = -Infinity, b1 = -Infinity, b2 = -Infinity;
+          for (let i = i0; i < i1; i += 3) { const x = P[i], y = P[i + 1], z = P[i + 2]; if (x < a0) a0 = x; if (x > b0) b0 = x; if (y < a1) a1 = y; if (y > b1) b1 = y; if (z < a2) a2 = z; if (z > b2) b2 = z; }
+          B[c * 6] = a0; B[c * 6 + 1] = a1; B[c * 6 + 2] = a2; B[c * 6 + 3] = b0; B[c * 6 + 4] = b1; B[c * 6 + 5] = b2;
+          if (a0 < mn[0]) mn[0] = a0; if (a1 < mn[1]) mn[1] = a1; if (a2 < mn[2]) mn[2] = a2; if (b0 > mx[0]) mx[0] = b0; if (b1 > mx[1]) mx[1] = b1; if (b2 > mx[2]) mx[2] = b2;
+        }
+        sg.boxes = B;
+      }
       o.aabb = { mn, mx };
       return o;
     }
@@ -402,12 +414,17 @@
       const gl = this.gl, T = gl.ARRAY_BUFFER, isI = kind === 'intensity';
       const data = isI ? (o.intensity || this._intensityValues) : (this._classificationLabels || o.classification);
       const loc = isI ? this.aIntensity : this.aClassification, key = isI ? 'ib' : 'kb';
-      if (!data || loc < 0) return;
+      if (loc < 0) return;
       for (const sg of o._segs) {
         if (sg[key] || sg.start >= (o._gpuCount || 0)) continue;
+        // облако, прочитанное частями: у каждого сегмента свои массивы (интенсивность uint16 → в шейдер 0…1, класс uint8)
+        const own = o._stream ? (isI ? sg.intensity : sg.classification) : null;
+        const src = own || (o._stream ? null : (data && data.subarray ? data.subarray(sg.start, sg.start + sg.n) : null));
+        if (!src) continue;
         const b = gl.createBuffer(); gl.bindVertexArray(sg.vao); gl.bindBuffer(T, b);
-        gl.bufferData(T, data.subarray(sg.start, sg.start + sg.n), gl.STATIC_DRAW);
-        gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 1, isI ? gl.FLOAT : gl.UNSIGNED_BYTE, false, 0, 0);
+        gl.bufferData(T, src, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(loc);
+        if (isI) gl.vertexAttribPointer(loc, 1, own ? gl.UNSIGNED_SHORT : gl.FLOAT, !!own, 0, 0); else gl.vertexAttribPointer(loc, 1, gl.UNSIGNED_BYTE, false, 0, 0);
         gl.bindVertexArray(null); sg[key] = b;
       }
     }
@@ -415,24 +432,105 @@
       const gl = this.gl, key = kind === 'intensity' ? 'ib' : 'kb';
       if (o._segs) for (const sg of o._segs) if (sg[key]) { try { gl.deleteBuffer(sg[key]); } catch (_) {} sg[key] = null; }
     }
-    _drawPointSegs(o, dc, attrMode) {
+    // Экранная площадь рамки кирпича в пикселях: -1 — рамка целиком вне экрана (кирпич не рисуем); Infinity — рамка пересекает плоскость камеры.
+    // B — массив рамок (min x,y,z, max x,y,z), o — смещение рамки в нём. Запас по краю экрана ≈ 3 %, чтобы спрайты точек не обрезались у границы.
+    _boxScreenArea(M, B, o, W, H) {
+      const G = 1.03; let l = 0, r = 0, b = 0, t = 0, nn = 0, ff = 0, behind = 0, x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
+      for (let i = 0; i < 8; i++) {
+        const x = (i & 1) ? B[o + 3] : B[o], y = (i & 2) ? B[o + 4] : B[o + 1], z = (i & 4) ? B[o + 5] : B[o + 2];
+        const cx = M[0] * x + M[4] * y + M[8] * z + M[12], cy = M[1] * x + M[5] * y + M[9] * z + M[13];
+        const cz = M[2] * x + M[6] * y + M[10] * z + M[14], cw = (M[3] * x + M[7] * y + M[11] * z + M[15]) * G;
+        if (cx < -cw) l++; if (cx > cw) r++; if (cy < -cw) b++; if (cy > cw) t++; if (cz < -cw) nn++; if (cz > cw) ff++;
+        if (cw <= 1e-9) behind++; else { const nx = cx / cw, ny = cy / cw; if (nx < x0) x0 = nx; if (nx > x1) x1 = nx; if (ny < y0) y0 = ny; if (ny > y1) y1 = ny; }
+      }
+      if (l === 8 || r === 8 || b === 8 || t === 8 || nn === 8 || ff === 8) return -1;
+      if (behind) return Infinity;
+      if (x0 < -1) x0 = -1; if (x1 > 1) x1 = 1; if (y0 < -1) y0 = -1; if (y1 > 1) y1 = 1;
+      return Math.max(0, x1 - x0) * 0.5 * W * Math.max(0, y1 - y0) * 0.5 * H;
+    }
+    // План кадра для облака из кирпичей: сколько точек каждого кирпича рисовать. 0 — кирпич вне экрана (не рисуется вовсе).
+    // budget — «не больше стольких точек» (при движении; из «Авто»/процента), он делится только между ВИДИМЫМИ кирпичами;
+    // при движении дополнительно (если включено) отбрасываются точки, которые не добавляют ничего видимого: их больше K на пиксель рамки.
+    _planChunks(o, budget) {
+      const gl = this.gl, M = this._lastVP || this._vp(), cv = gl.canvas, W = cv.width || 800, H = cv.height || 600;
+      let nChunks = 0; for (const sg of o._segs) nChunks += sg.boxes ? sg.boxes.length / 6 : 1;
+      let takes = o._planTakes; if (!takes || takes.length !== nChunks) { takes = o._planTakes = new Uint32Array(nChunks); o._planAreas = new Float64Array(nChunks); }
+      const areas = o._planAreas;
+      let V = 0, culled = 0, ci = 0;
+      for (const sg of o._segs) {
+        if (!sg.boxes) { takes[ci] = sg.n; areas[ci] = Infinity; V += sg.n; ci++; continue; }
+        const nc = sg.boxes.length / 6, CH = sg.chunk;
+        for (let c = 0; c < nc; c++, ci++) {
+          const cn = Math.min(CH, sg.n - c * CH), area = this._boxScreenArea(M, sg.boxes, c * 6, W, H);
+          areas[ci] = area;
+          if (area < 0) { takes[ci] = 0; culled += cn; } else { takes[ci] = cn; V += cn; }
+        }
+      }
+      const reduce = !!o._shuffled;
+      const share = (reduce && budget < V) ? Math.max(0, budget) / V : 1;
+      const smart = reduce && !!this._interacting && this._moveSmart !== false, K = this._smartK || 6;
+      let drawn = 0; ci = 0;
+      for (const sg of o._segs) {
+        const nc = sg.boxes ? sg.boxes.length / 6 : 1, CH = sg.boxes ? sg.chunk : sg.n;
+        for (let c = 0; c < nc; c++, ci++) {
+          let t = takes[ci];
+          if (t > 0) {
+            if (share < 1) t = Math.max(1, Math.ceil(t * share));
+            if (smart && areas[ci] !== Infinity) { const cap = Math.max(64, Math.ceil(K * areas[ci])); if (cap < t) t = cap; }
+            takes[ci] = t; drawn += t;
+          }
+        }
+      }
+      return { takes, visible: V, drawn, culled, total: o._gpuCount || o.count, chunks: nChunks };
+    }
+    _drawPointSegs(o, dc, attrMode, plan) {
       const gl = this.gl;
       if (attrMode === 2) this._segEnsureAttr(o, 'intensity'); else if (attrMode === 3) this._segEnsureAttr(o, 'classification');
-      const lim = Math.min(dc, o._gpuCount || dc);
-      for (const sg of o._segs) { if (sg.start >= lim) break; gl.bindVertexArray(sg.vao); gl.drawArrays(gl.POINTS, 0, Math.min(sg.n, lim - sg.start)); }
-      return lim;
+      if (!plan) {
+        const lim = Math.min(dc, o._gpuCount || dc);
+        for (const sg of o._segs) { if (sg.start >= lim) break; gl.bindVertexArray(sg.vao); gl.drawArrays(gl.POINTS, 0, Math.min(sg.n, lim - sg.start)); }
+        this._cullStats = null;
+        return lim;
+      }
+      // рисуем по кирпичам: подряд идущие целиком видимые кирпичи сливаются в один вызов
+      const takes = plan.takes; let ci = 0, calls = 0;
+      for (const sg of o._segs) {
+        gl.bindVertexArray(sg.vao);
+        const nc = sg.boxes ? sg.boxes.length / 6 : 1, CH = sg.boxes ? sg.chunk : sg.n;
+        let runS = -1, runN = 0;
+        for (let c = 0; c < nc; c++, ci++) {
+          const cs = c * CH, cn = Math.min(CH, sg.n - cs), t = takes[ci];
+          if (t === cn) { if (runS >= 0 && runS + runN === cs) runN += cn; else { if (runN) { gl.drawArrays(gl.POINTS, runS, runN); calls++; } runS = cs; runN = cn; } continue; }
+          if (runN) { gl.drawArrays(gl.POINTS, runS, runN); calls++; runS = -1; runN = 0; }
+          if (t > 0) { gl.drawArrays(gl.POINTS, cs, t); calls++; }
+        }
+        if (runN) { gl.drawArrays(gl.POINTS, runS, runN); calls++; }
+      }
+      this._cullStats = { drawn: plan.drawn, visible: plan.visible, culled: plan.culled, total: plan.total, calls: calls, chunks: plan.chunks };
+      return plan.drawn;
     }
     _drawPickPoints(bo) {
       const gl = this.gl, segs = bo._segs || [{ pb: bo._pb, start: 0, n: bo.count }];
+      // ревизия 16: кирпичи вне экрана в проходе выбора тоже не рисуются (для облака в сотни млн точек это разница между мгновенным и тяжёлым выбором)
+      const cull = !!(bo._segs && bo._chunked && this._cullOn !== false), M = cull ? (this._lastVP || this._vp()) : null, W = gl.canvas.width || 800, H = gl.canvas.height || 600;
       for (const sg of segs) {
         if (bo._gpuCount && sg.start >= bo._gpuCount) break;
         gl.bindBuffer(gl.ARRAY_BUFFER, sg.pb); gl.enableVertexAttribArray(this._pickAPos); gl.vertexAttribPointer(this._pickAPos, 3, gl.FLOAT, false, 0, 0);
         if (this._pickU.uIdBase) gl.uniform1ui(this._pickU.uIdBase, sg.start);
-        gl.drawArrays(gl.POINTS, 0, sg.n);
+        if (cull && sg.boxes) {
+          const nc = sg.boxes.length / 6, CH = sg.chunk; let runS = -1, runN = 0;
+          for (let c = 0; c < nc; c++) {
+            const cs = c * CH, cn = Math.min(CH, sg.n - cs);
+            if (this._boxScreenArea(M, sg.boxes, c * 6, W, H) < 0) { if (runN) { gl.drawArrays(gl.POINTS, runS, runN); runN = 0; runS = -1; } continue; }
+            if (runN) runN += cn; else { runS = cs; runN = cn; }
+          }
+          if (runN) gl.drawArrays(gl.POINTS, runS, runN);
+        } else gl.drawArrays(gl.POINTS, 0, sg.n);
       }
       if (bo._segs && this._pickU.uIdBase) gl.uniform1ui(this._pickU.uIdBase, 0);
     }
     _makeObj(o) {
+      if (o._stream) return o;   // ревизия 16: облако, читаемое частями, — буферы видеопамяти добавляются по мере чтения (addCloudStreamSegment)
       if (o._lodBuild) return this._makeLodObj(o);
       if (o.points && !o.line && o.pos && o.pos.length / 3 > Math.max(1000000, this._segPoints | 0) && o.pos.subarray) return this._makeSegObj(o);
       const gl = this.gl; const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
@@ -543,7 +641,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
 
     _recomputeBBox() {
       let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
-      for (const o of this.base) { if (o.line) continue; for (let i = 0; i < o.pos.length; i += 3) for (let k = 0; k < 3; k++) { const v = o.pos[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; } }
+      for (const o of this.base) { if (o.line) continue; if (o._stream && o.aabb) { for (let k = 0; k < 3; k++) { if (o.aabb.mn[k] < mn[k]) mn[k] = o.aabb.mn[k]; if (o.aabb.mx[k] > mx[k]) mx[k] = o.aabb.mx[k]; } continue; } for (let i = 0; i < o.pos.length; i += 3) for (let k = 0; k < 3; k++) { const v = o.pos[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; } }
       if (mn[0] === Infinity) { mn = [-1, 0, -1]; mx = [1, 3, 1]; }
       this.bbox = { mn, mx };
     }
@@ -600,6 +698,22 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         if (cs) for (let k = 0; k < cs; k++) { const a = col[i * cs + k]; col[i * cs + k] = col[j * cs + k]; col[j * cs + k] = a; }
         if (intensity && intensity.length === n) { const a = intensity[i]; intensity[i] = intensity[j]; intensity[j] = a; }
         if (classification && classification.length === n) { const a = classification[i]; classification[i] = classification[j]; classification[j] = a; }
+      }
+    }
+
+    _shuffleChunks(pos, col, intensity, classification) {
+      const n = pos.length / 3; if (n < 2) return;
+      const CH = Math.max(1000, this._chunkPoints | 0), cs = col ? (col.length / n) | 0 : 0;
+      for (let a = 0; a < n; a += CH) {
+        const m = Math.min(CH, n - a);
+        for (let i = m - 1; i > 0; i--) {
+          const j = (Math.random() * (i + 1)) | 0; if (j === i) continue;
+          const p = (a + i) * 3, q = (a + j) * 3;
+          for (let k = 0; k < 3; k++) { const t = pos[p + k]; pos[p + k] = pos[q + k]; pos[q + k] = t; }
+          if (cs) { const pc = (a + i) * cs, qc = (a + j) * cs; for (let k = 0; k < cs; k++) { const t = col[pc + k]; col[pc + k] = col[qc + k]; col[qc + k] = t; } }
+          if (intensity && intensity.length === n) { const t = intensity[a + i]; intensity[a + i] = intensity[a + j]; intensity[a + j] = t; }
+          if (classification && classification.length === n) { const t = classification[a + i]; classification[a + i] = classification[a + j]; classification[a + j] = t; }
+        }
       }
     }
 
@@ -807,7 +921,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       // export. Keep the acquisition order whenever that metadata is present.
       const hasScanOrderMetadata = Array.isArray(this._srcMeta && this._srcMeta.scans) && this._srcMeta.scans.length > 0;
       const canShuffle = !lodBuild && n > 2000000 && !hasScanOrderMetadata;
-      if (canShuffle) { try { this._shuffleCloud(cloud.pos, cloud.col || null, intensity, classification); } catch (e) { console.warn('shuffle skip', e); } }
+      // ревизия 16: крупное облако (несколько сегментов) перемешивается ВНУТРИ кирпичей — их рамки остаются верными, а первая доля точек кирпича — равномерная выборка
+      if (canShuffle) { try { if ((this._segPoints | 0) > 0 && n > Math.max(1000000, this._segPoints | 0)) this._shuffleChunks(cloud.pos, cloud.col || null, intensity, classification); else this._shuffleCloud(cloud.pos, cloud.col || null, intensity, classification); } catch (e) { console.warn('shuffle skip', e); } }
       this._intensityValues = intensity ? new intensity.constructor(intensity) : null;
       this._classificationLabels = classification ? new Uint8Array(classification) : null;
       const baseObj = { id: null, points: true, pos: cloud.pos, col: cloud.col || null, intensity:this._intensityValues, classification:this._classificationLabels, pointSize: cloud.pointSize || ps, color: hex2rgb('#cfd6e2'), status: 'none' };
@@ -889,6 +1004,161 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this.render();
       return true;
     }
+    // ===== Ревизия 16: облако, читаемое ЧАСТЯМИ (сотни млн точек) =====
+    // Файл читается сегментами по ~16 млн точек: каждый сегмент сразу уходит в видеопамять и нигде больше не хранится — ни один массив не больше
+    // сегмента (поэтому нет ни «Array buffer allocation failed», ни диалога про память). На процессоре остаётся только выборка (каждая N-я точка,
+    // ~4 млн): для инструментов, которым нужны координаты в памяти (подсказка при наведении, габариты, плоскости). Остальное — в видеопамяти.
+    isStreamedCloud() { const b = this.base && this.base[0]; return !!(b && b._stream); }
+    // Операции, которым нужны ВСЕ точки в оперативной памяти (правка, выделение, чистка, сохранение, экспорт), для такого облака недоступны:
+    // вместо падения — нейтральный результат и сообщение (событие bim-stream-limit, не чаще раза в 3 с).
+    _streamBlock(what, soft) {
+      // soft — вызов «фоновый» (автосохранение, сводки): сообщение только если пользователь только что сам что-то нажал
+      try { if (soft && typeof navigator !== 'undefined' && navigator.userActivation && !navigator.userActivation.isActive) return true; } catch (_) {}
+      const t = Date.now();
+      if (!this._streamBlockAt || t - this._streamBlockAt > 3000) {
+        this._streamBlockAt = t;
+        try { if (typeof window !== 'undefined' && window.dispatchEvent && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('bim-stream-limit', { detail: { what: what || '' } })); } catch (_) {}
+      }
+      return true;
+    }
+    // Координаты точки с номером idx — прямо из буфера видеопамяти (по GPU-выбору под курсором: измерения и привязка работают).
+    _segPointAt(bo, idx) {
+      if (!bo || !bo._segs || !(idx >= 0)) return null;
+      let sg = null; for (const s of bo._segs) { if (idx >= s.start && idx < s.start + s.n) { sg = s; break; } }
+      if (!sg) return null;
+      const gl = this.gl, out = new Float32Array(3);
+      try { gl.bindBuffer(gl.ARRAY_BUFFER, sg.pb); gl.getBufferSubData(gl.ARRAY_BUFFER, (idx - sg.start) * 12, out); } catch (_) { return null; }
+      return [out[0], out[1], out[2]];
+    }
+    // Начало чтения облака по частям: пустой объект облака; части добавляются addCloudStreamSegment, заканчивается endCloudStream.
+    beginCloudStream(info, opts) {
+      info = info || {}; opts = opts || {};
+      const total = Math.max(0, Math.floor(Number(info.total) || 0)), meta = Object.assign({}, info.meta || {});
+      try { this.clearSelection(); } catch (_) {}
+      try { this.clearOctreeStream(); } catch (_) {}
+      this.room = null; this.selectedId = null; this.isolate = false; this._clearMeasure();
+      this._modelFull = null; this.lod = false; this._undo = [];
+      this._classificationLabels = null; this._intensityValues = null;
+      this._srcXform = meta.srcXform || null; this._srcCrs = meta.crsWkt || null; this._srcUnits = meta.units || null;
+      this._srcMeta = Object.assign({}, meta); this._srcMeta.srcXform = this._srcXform;
+      if (this._srcCrs) this._srcMeta.crsWkt = this._srcCrs;
+      if (this._srcUnits) this._srcMeta.units = this._srcUnits;
+      this._attributeWarnings = []; (meta.attributeWarnings || []).forEach(w => { if (w && !this._attributeWarnings.includes(w)) this._attributeWarnings.push(String(w)); });
+      this._cloudDisplay = { pointSize: null, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };
+      this.cloudVisible = true; this._ptElev = false; this._cloudColorMode = 'rgb'; this._ptSizeMul = 1.45;
+      this._denseFill = false; this._attenuate = true; this._roundPoints = false;
+      this._decimatedFrom = 0; this._decimatedTo = 0; this._gpuShort = null;
+      const target = Math.max(100000, Math.floor(Number(opts.sampleTarget || info.sampleTarget) || 4000000));
+      const every = Math.max(1, Math.ceil(total / target)), cap = Math.max(1, Math.ceil(total / every));
+      const st = { total, every, cap, filled: 0, pos: new Float32Array(cap * 3), col: new Float32Array(cap * 3),
+        int: info.hasIntensity ? new Float32Array(cap) : null, cls: info.hasClassification ? new Uint8Array(cap) : null };
+      const q = cloudQuality(Math.min(total || 1, 2000000000));
+      const bb = info.bbox && info.bbox.mn && info.bbox.mx ? { mn: info.bbox.mn.slice(0, 3), mx: info.bbox.mx.slice(0, 3) } : { mn: [-1, 0, -1], mx: [1, 3, 1] };
+      const bo = { id: null, points: true, pos: st.pos.subarray(0, 0), col: st.col.subarray(0, 0), intensity: null, classification: null,
+        pointSize: q.pointSize, color: hex2rgb('#cfd6e2'), status: 'none', _stream: st, _segs: [], _gpuCount: 0, count: 0, _chunked: true, _shuffled: true,
+        aabb: bb, _ptMax: q.ptMax };
+      this._setBase([bo]);
+      const w = bb.mx[0] - bb.mn[0], h = bb.mx[1] - bb.mn[1], d = bb.mx[2] - bb.mn[2];
+      const area = 2 * (w * d + w * h + d * h) || 1, diag = Math.sqrt(w * w + h * h + d * d) || 8;
+      bo._spacing = Math.min(Math.sqrt(area / Math.max(1, total)), diag * 0.02);
+      this._cloudDisplay.min = this.bbox.mn[1]; this._cloudDisplay.max = this.bbox.mx[1];
+      if (!this._edlAutoTried) { this._edlAutoTried = true; this._edl = false; if (typeof this.onQualityChange === 'function') { try { this.onQualityChange(); } catch (e) {} } }
+      this._cloudRecord = { sourceName: opts.sourceName || info.name || meta.name || 'Облако без имени', sourceCount: Number.isSafeInteger(total) ? total : null, loadedCount: 0,
+        format: meta.format || '', hasRGB: meta.colored !== false, hasIntensity: !!info.hasIntensity, hasClassification: !!info.hasClassification, revision: 1 };
+      this.modelDims = this._computeCloudDims(meta, total);
+      this._notifyCloudChanged();
+      this._frame(); this.render();
+      if (typeof this.onModelDims === 'function' && this.modelDims) this.onModelDims(this.modelDims);
+      return true;
+    }
+    // Добавляет прочитанную часть облака в видеопамять. Возвращает { ok, added, loaded } или { ok:false, short:true } — видеопамять кончилась
+    // (уже добавленные части остаются на экране). Массивы части после вызова можно выбросить: на процессоре остаётся только выборка.
+    addCloudStreamSegment(seg) {
+      const bo = this.base && this.base[0], gl = this.gl;
+      if (!bo || !bo._stream || !seg || !seg.pos) return { ok: false, error: 'no_stream' };
+      const st = bo._stream, T = gl.ARRAY_BUFFER, n = Math.floor(seg.count || seg.pos.length / 3);
+      if (!(n > 0)) return { ok: true, added: 0, loaded: bo._gpuCount };
+      const start = bo._gpuCount;
+      if (gl.getError) gl.getError();
+      const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+      const pb = gl.createBuffer(); gl.bindBuffer(T, pb); this._bigBufferData(seg.pos.subarray(0, n * 3));
+      gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
+      let cb = null;
+      if (seg.col && this.aColor >= 0) {
+        cb = gl.createBuffer(); gl.bindBuffer(T, cb);
+        let u8 = true; if (seg.col instanceof Uint8Array || seg.col instanceof Uint8ClampedArray) gl.bufferData(T, seg.col.subarray(0, n * 3), gl.STATIC_DRAW); else u8 = this._bigColorBuffer(seg.col.subarray(0, n * 3));
+        gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, u8 ? gl.UNSIGNED_BYTE : gl.FLOAT, !!u8, 0, 0);
+      }
+      gl.bindVertexArray(null);
+      if (gl.getError && gl.getError() === gl.OUT_OF_MEMORY) {
+        try { gl.deleteVertexArray(vao); gl.deleteBuffer(pb); if (cb) gl.deleteBuffer(cb); } catch (_) {}
+        this._gpuShort = { drawn: bo._gpuCount, total: st.total };
+        try { if (typeof window !== 'undefined' && window.dispatchEvent && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('bim-gpu-short', { detail: { drawn: bo._gpuCount, total: st.total, streamed: true } })); } catch (_) {}
+        return { ok: false, short: true, loaded: bo._gpuCount };
+      }
+      const CH = Math.max(1000, Math.floor(seg.chunkPoints) || this._chunkPoints | 0), nc = Math.ceil(n / CH);
+      let boxes = seg.chunkBoxes && seg.chunkBoxes.length >= nc * 6 ? seg.chunkBoxes : null;
+      if (!boxes) { boxes = new Float32Array(nc * 6); const P = seg.pos; for (let c = 0; c < nc; c++) { const i0 = c * CH * 3, i1 = Math.min(n, (c + 1) * CH) * 3; let a0 = Infinity, a1 = Infinity, a2 = Infinity, b0 = -Infinity, b1 = -Infinity, b2 = -Infinity; for (let i = i0; i < i1; i += 3) { const x = P[i], y = P[i + 1], z = P[i + 2]; if (x < a0) a0 = x; if (x > b0) b0 = x; if (y < a1) a1 = y; if (y > b1) b1 = y; if (z < a2) a2 = z; if (z > b2) b2 = z; } boxes.set([a0, a1, a2, b0, b1, b2], c * 6); } }
+      const sg = { vao, pb, cb, ib: null, kb: null, start, n, boxes, chunk: CH, intensity: (seg.intensity && st.int) ? seg.intensity.subarray(0, n) : null, classification: (seg.classification && st.cls) ? seg.classification.subarray(0, n) : null };
+      bo._segs.push(sg); bo._gpuCount = start + n; bo.count = bo._gpuCount;
+      if (bo._segs.length === 1) { bo._vao = vao; bo._pb = pb; bo._cb = cb; }
+      // выборка для процессора: каждая every-я точка облака
+      const every = st.every, hasC = !!seg.col, I = seg.intensity, K = seg.classification;
+      for (let j = (every - (start % every)) % every; j < n; j += every) {
+        const s = Math.floor((start + j) / every); if (s >= st.cap) break;
+        st.pos[s * 3] = seg.pos[j * 3]; st.pos[s * 3 + 1] = seg.pos[j * 3 + 1]; st.pos[s * 3 + 2] = seg.pos[j * 3 + 2];
+        if (hasC) { st.col[s * 3] = seg.col[j * 3] / 255; st.col[s * 3 + 1] = seg.col[j * 3 + 1] / 255; st.col[s * 3 + 2] = seg.col[j * 3 + 2] / 255; }
+        if (st.int && I) st.int[s] = I[j] / 65535;
+        if (st.cls && K) st.cls[s] = K[j];
+        if (s + 1 > st.filled) st.filled = s + 1;
+      }
+      bo.pos = st.pos.subarray(0, st.filled * 3); bo.col = st.col.subarray(0, st.filled * 3);
+      this._intensityValues = st.int ? st.int.subarray(0, st.filled) : null; bo.intensity = this._intensityValues;
+      this._classificationLabels = st.cls ? st.cls.subarray(0, st.filled) : null; bo.classification = this._classificationLabels;
+      // габариты: объединение рамок кирпичей уже прочитанных частей (общая рамка из заголовка — только для первой установки кадра)
+      const a = bo.aabb, ub = st.ub || (st.ub = { mn: [Infinity, Infinity, Infinity], mx: [-Infinity, -Infinity, -Infinity] });
+      for (let c = 0; c < nc; c++) for (let k = 0; k < 3; k++) { const lo = boxes[c * 6 + k], hi = boxes[c * 6 + 3 + k]; if (lo < ub.mn[k]) ub.mn[k] = lo; if (hi > ub.mx[k]) ub.mx[k] = hi; if (lo < a.mn[k]) a.mn[k] = lo; if (hi > a.mx[k]) a.mx[k] = hi; }
+      this._psCache = null; this._psJob = null; this._yqCache = null; this._spTok = (this._spTok || 0) + 1;
+      this._recomputeBBox();
+      if (this._cloudRecord) this._cloudRecord.loadedCount = bo._gpuCount;
+      this._notifyCloudChanged();
+      this.render();
+      return { ok: true, added: n, loaded: bo._gpuCount };
+    }
+    // Конец чтения по частям: окончательные габариты, событие «облако загружено» (проект, метаданные).
+    endCloudStream(opts) {
+      const bo = this.base && this.base[0];
+      if (!bo || !bo._stream) return false;
+      opts = opts || {};
+      const loaded = bo._gpuCount | 0, total = bo._stream.total;
+      if (loaded > 0) {
+        if (bo._stream.ub) bo.aabb = { mn: bo._stream.ub.mn.slice(), mx: bo._stream.ub.mx.slice() };   // окончательная рамка — по прочитанным точкам
+        this._recomputeBBox();
+        const d0 = this._cloudDisplay; if (d0 && !d0.hideOutside) { d0.min = this.bbox.mn[1]; d0.max = this.bbox.mx[1]; }
+        const bw = this.bbox.mx[0] - this.bbox.mn[0], bh = this.bbox.mx[1] - this.bbox.mn[1], bd = this.bbox.mx[2] - this.bbox.mn[2];
+        const area = 2 * (bw * bd + bw * bh + bd * bh) || 1, diag = Math.sqrt(bw * bw + bh * bh + bd * bd) || 8;
+        bo._spacing = Math.min(Math.sqrt(area / Math.max(1, loaded)), diag * 0.02);
+      }
+      if (this._cloudRecord) { this._cloudRecord.loadedCount = loaded; this._cloudRecord.sourceCount = total; }
+      this.modelDims = this._computeCloudDims(this._srcMeta || {}, loaded);
+      this._notifyCloudChanged();
+      this.render();
+      if (typeof this.onModelDims === 'function' && this.modelDims) this.onModelDims(this.modelDims);
+      try {
+        if (typeof window !== 'undefined' && typeof window.CustomEvent === 'function') {
+          const rec = this._cloudRecord || {}, sourcePath = opts.path || rec.sourceName || '';
+          const displayName = opts.name || (sourcePath ? String(sourcePath).split(/[\\\\/]/).pop() : '') || 'Облако';
+          window.dispatchEvent(new CustomEvent('lx-cloud-loaded', { detail: {
+            name: displayName, path: opts.path || '', count: loaded,
+            sourceTransform: this._srcXform || null, crsWkt: this._srcCrs || null, units: this._srcUnits || null,
+            attributeWarnings: this._attributeWarnings.slice()
+          } }));
+        }
+      } catch (error) { try { console.warn('[cloud] project sync event failed', error); } catch (_) {} }
+      return true;
+    }
+    setMoveSmart(on) { this._moveSmart = !!on; this.render(); return this._moveSmart; }
+    getCullStats() { return this._cullStats ? Object.assign({}, this._cullStats) : null; }
     applyClassificationLabels(labels, selectClass) {
       const bo = this.base && this.base[0];
       if (!bo || !bo.pos || !labels || labels.length !== Math.floor(bo.pos.length / 3)) return false;
@@ -2547,7 +2817,10 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         // ревизия 8: при движении рисуем только часть точек (адаптивно по времени кадра); размер точек растёт на корень из доли пропущенного, чтобы поверхность не рассыпалась
         let dcI = o.count;
         if (isCloud && this._interacting && o._shuffled && !o._lod && !(this._octMovePct >= 100)) { const b = this._interBudget || 4000000; if (dcI > b) dcI = b; dcI = Math.min(dcI, this._octMovePct > 0 ? Math.max(100000, Math.round(o.count * this._octMovePct / 100)) : this.interactivePointBudget(o.count)); }   // ревизия 14: «Все точки» (100) — при движении тоже рисуется всё облако
-        const compI = dcI < o.count ? Math.min(3, Math.sqrt(o.count / dcI)) : 1;
+        // ревизия 16: облако из кирпичей — кирпичи вне экрана не рисуются; бюджет точек при движении делится между видимыми кирпичами
+        let plan = null, visN = o.count;
+        if (isCloud && o._segs && o._chunked && this._cullOn !== false && !o._lod) { plan = this._planChunks(o, dcI); visN = plan.visible; dcI = plan.drawn; }
+        const compI = (dcI < visN && dcI > 0) ? Math.min(3, Math.sqrt(visN / dcI)) : 1;
         const scale = (o._spacing || 0) * (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm * compI;
         // По умолчанию — адаптивный размер: вдали точки чёткие постоянного размера,
         // вблизи растут и закрывают зазоры (плотно и чётко на любом приближении).
@@ -2575,8 +2848,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         if (o._lod) { this._drawLod(o); }
         else {
           let dc = dcI;
-          if (o._segs) dc = this._drawPointSegs(o, dc, attrMode); else gl.drawArrays(gl.POINTS, 0, dc);
-          if (isCloud && (this._interacting || this._probeIdle)) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + o.count; }
+          if (o._segs) dc = this._drawPointSegs(o, dc, attrMode, plan); else gl.drawArrays(gl.POINTS, 0, dc);
+          if (isCloud && (this._interacting || this._probeIdle)) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + (plan ? Math.max(dc, plan.visible) : o.count); }
         }
         gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); gl.bindVertexArray(null); return;
       }
@@ -2960,13 +3233,14 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       }
       if (!bestId) return null;
       const idx = bestId - 1; const P = bo.pos;
+      if (bo._stream) { const pt = this._segPointAt(bo, idx); return pt ? { id: null, el: null, point: pt, index: idx } : null; }   // ревизия 16: точка читается из буфера видеопамяти
       if (idx < 0 || idx * 3 + 2 >= P.length) return null;
       return { id: null, el: null, point: [P[idx * 3], P[idx * 3 + 1], P[idx * 3 + 2]], index: idx };
     }
     // Рендерит ID видимых точек в области и возвращает Set индексов (ближайших к камере в каждом пикселе).
     _gpuVisibleSet(bbox, poly) {
       const gl = this.gl; const bo = this.base && this.base[0];
-      if (!gl || !bo || !bo.points || !bo._pb || bo._lod) return null;
+      if (!gl || !bo || !bo.points || !bo._pb || bo._lod || bo._stream) return null;   // облако по частям: выделение рамкой недоступно (все точки только в видеопамяти)
       if (!this._pickReady) { this._pickInit(); if (!this._pickReady) return null; }
       if (this._pickW !== this.canvas.width || this._pickH !== this.canvas.height) this._pickResize();
       const cw = this.canvas.width, ch = this.canvas.height;
@@ -3421,6 +3695,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     canUndo() { return !!(this._undo && this._undo.length); }
     getEditedCloud() {
       const bo = this.base && this.base[0]; if (!bo) return null;
+      if (bo._stream) { this._streamBlock('сохранение и экспорт облака', true); return null; }   // ревизия 16: все точки лежат только в видеопамяти
       return { pos: bo.pos, col: bo.col || null, intensity:this._intensityValues||null, classification:this._classificationLabels||null };
     }
     getSourceCloud() {
@@ -4237,6 +4512,29 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     var ptMax = n > 6000000 ? 2.5 : (n > 1500000 ? 3 : 3.5);
     return { pointSize: pointSize, ptMax: ptMax };
   }
+  // Ревизия 16: облако, прочитанное частями (сотни млн точек), лежит только в видеопамяти, а на процессоре — лишь выборка. Операции, которым
+  // нужны ВСЕ точки в оперативной памяти (выделение, правка, чистка, классы, сохранение), вместо падения возвращают нейтральный результат
+  // и показывают сообщение (событие bim-stream-limit). Для облаков до 48 млн точек всё работает как раньше.
+  (function guardStreamedCloud() {
+    const P = Viewer3DGL.prototype;
+    const guard = (names, neutral, what) => names.forEach(name => {
+      const orig = P[name]; if (typeof orig !== 'function') return;
+      P[name] = function () {
+        const b = this.base && this.base[0];
+        if (b && b._stream) { this._streamBlock(what); return typeof neutral === 'function' ? neutral.apply(this, arguments) : neutral; }
+        return orig.apply(this, arguments);
+      };
+    });
+    guard(['selectBox', 'selectSphere', 'selectSphereAt', 'selectColorAt', 'magicWandAt', 'selectInSlice', 'smartObjectAt', 'selectRegion'], 0, 'выделение точек');
+    guard(['deleteSelection', 'cropToSelection', 'deleteSelectionForce', '_applyEdit'], 0, 'правка облака');
+    guard(['_applyEditOp'], null, 'правка облака');
+    guard(['cleanInApp', 'cleanClustersInApp', 'cleanIslandsInApp', 'cleanAutoInApp', 'cleanSORInApp', 'cleanRadiusInApp', 'noiseFilterInApp', 'voxelDownsampleInApp', 'sliceKeepInApp'], 0, 'чистка облака');
+    guard(['classifyInApp', 'extractSelectionAsObject', 'extractRegionAsObject'], null, 'классификация и выделение объектов');
+    guard(['detectFloorWalls'], function () { return []; }, 'поиск пола и стен');
+    guard(['undoEdit', 'applyClassificationLabels'], false, 'правка облака');
+    guard(['assignClassificationInApp'], function () { return { ok: false, error: 'cloud_streamed' }; }, 'классификация');
+    guard(['invertSelection', '_finishMarquee'], undefined, 'выделение точек');
+  })();
   if (typeof window !== 'undefined') window.Viewer3DGL = Viewer3DGL;
   if (typeof module !== 'undefined' && module.exports) module.exports = { Viewer3DGL: Viewer3DGL, cloudQuality: cloudQuality };
 })();

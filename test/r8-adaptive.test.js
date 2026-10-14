@@ -42,7 +42,7 @@ test('адаптивные точки: до первого замера рису
 test('адаптивные точки: замер встроен в рендер, размер точки компенсируется, полное облако после остановки', () => {
   assert.match(src, /_renderNowInner\(\) \{/);
   assert.match(src, /gl\.finish\(\)/);
-  assert.match(src, /compI = dcI < o\.count \? Math\.min\(3, Math\.sqrt\(o\.count \/ dcI\)\)/);
+  assert.match(src, /compI = \(dcI < visN && dcI > 0\) \? Math\.min\(3, Math\.sqrt\(visN \/ dcI\)\) : 1/);   // ревизия 16: от числа ВИДИМЫХ точек (кирпичи вне экрана не считаются)
   assert.match(src, /this\.interactivePointBudget\(o\.count\)/);
   assert.match(src, /this\._interBudget = 128000000/);
 });

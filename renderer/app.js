@@ -162,7 +162,59 @@
   // Ревизия 15: потокового режима больше нет. Файл читается и рисуется ЦЕЛИКОМ (все точки, сколько бы их ни было в файле).
   // Только если памяти реально не хватило, окно предлагает открыть максимум возможного (равномерная выборка) — и только с согласия.
   const fmtMln = (n) => (n / 1e6).toFixed(1).replace('.', ',');
-  async function parseCloudWithProgress(filePath, label) {
+  // Ревизия 16: большие LAS/PLY (больше 48 млн точек) читаются ЧАСТЯМИ: ни один массив не больше части (~16 млн точек), каждая часть сразу уходит
+  // в видеопамять, пока читается следующая. Поэтому нет ни «Array buffer allocation failed», ни диалога про память: на экране ВСЕ точки файла.
+  // Возвращает null, если облако небольшое или формат читается целиком — тогда работает прежний путь (parseCloudWithProgressOnce).
+  async function tryPartsLoad(filePath, label, extra) {
+    extra = extra || {};
+    if (!API || typeof API.cloudPartsOpen !== 'function' || typeof API.cloudPartsRead !== 'function' || !viewer || typeof viewer.beginCloudStream !== 'function' || !window.CloudChunks) return null;
+    let opened = null;
+    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId()); } catch (e) { return null; }
+    if (!opened || !opened.ok || !opened.token) return null;
+    const token = opened.token, nParts = Math.max(1, opened.segments | 0), total = Number(opened.total) || 0;
+    const closeSession = () => { try { return Promise.resolve(API.cloudPartsClose({ token })).catch(() => {}); } catch (_) { return Promise.resolve(); } };
+    if (typeof extra.confirmReplace === 'function') {
+      let go = true; try { go = await extra.confirmReplace(opened); } catch (_) { go = true; }
+      if (!go) { await closeSession(); return { ok: false, cancelled: true, message: 'Импорт отменён' }; }
+    }
+    let cancelled = false, loaded = 0, failure = '', short = false, began = false;
+    const panel = createCloudParseProgress(label || filePath, () => { cancelled = true; closeSession(); });
+    const readPart = async (k) => {
+      const light = await API.cloudPartsRead({ token, part: k });
+      if (!light || light.ok === false) return light || { ok: false, message: 'часть облака не прочитана' };
+      return await window.CloudChunks.resolve(_rawAPI, light);
+    };
+    try {
+      panel.update({ phase: 'header', fraction: 0 });
+      let next = readPart(0);
+      for (let k = 0; k < nParts; k++) {
+        const res = await next;
+        if (cancelled) break;
+        if (k + 1 < nParts) next = readPart(k + 1);   // пока эта часть уходит в видеопамять, следующая уже читается
+        if (!res || res.ok === false || !res.pos) { failure = (res && res.message) || 'часть облака не прочитана'; break; }
+        // открытое до этого облако заменяется только когда первая часть новой уже прочитана (отмена раньше ничего не трогает)
+        if (!began) { viewer.beginCloudStream({ total, bbox: opened.bbox, meta: opened.meta, hasColor: opened.hasColor, hasIntensity: opened.hasIntensity, hasClassification: opened.hasClassification, name: label }, { sourceName: filePath }); began = true; }
+        const r = viewer.addCloudStreamSegment(res);
+        if (!r || r.ok === false) { short = !!(r && r.short); if (!short) failure = (r && r.error) || 'часть облака не добавлена'; break; }
+        loaded = r.loaded;
+        panel.update({ phase: 'read', fraction: Math.min(0.99, (k + 1) / nParts), message: 'Читаю точки: часть ' + (k + 1) + ' из ' + nParts, pointsLoaded: loaded });
+        await new Promise(resolve => setTimeout(resolve, 0));   // окну — отрисовать кадр: облако появляется по мере чтения
+      }
+      try { if (typeof next === 'object' && next && next.catch) next.catch(() => {}); } catch (_) {}
+      if (cancelled) { if (began) { try { viewer.clearCloud(); } catch (_) {} } panel.update({ phase: 'cancelled', fraction: 0 }); return { ok: false, cancelled: true, message: 'Импорт отменён' }; }
+      if (!loaded) { if (began) { try { viewer.clearCloud(); } catch (_) {} } try { console.warn('[cloud] чтение по частям не удалось, читаю целиком:', failure); } catch (_) {} return null; }
+      viewer.endCloudStream({ path: filePath, name: label });
+      panel.update({ phase: 'done', fraction: 1, pointsLoaded: loaded });
+      if (failure) toast('Облако прочитано не полностью: ' + fmtMln(loaded) + ' из ' + fmtMln(total) + ' млн точек (' + failure + ')');
+      await new Promise(resolve => setTimeout(resolve, 260));
+      return { ok: true, kind: 'points', viewerLoaded: true, streamed: true, short: short, count: loaded, total: total, meta: opened.meta };
+    } finally {
+      await closeSession();
+      panel.close();
+    }
+  }
+  async function parseCloudWithProgress(filePath, label, extra) {
+    if (!(extra && extra.noParts)) { const parts = await tryPartsLoad(filePath, label, extra); if (parts) return parts; }
     const first = await parseCloudWithProgressOnce(filePath, label, { allowReduced: false });
     if (!(first && first.tooBig)) return first;
     const k = window.__lxKit; let yes = false;
@@ -398,7 +450,7 @@
         else {
           const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop());
           if (pr && pr.ok) {
-            if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else { viewer.loadCloud(pr, {sourceName:p}); cacheCloud(p, pr); }
+            if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, {sourceName:p}); cacheCloud(p, pr); }
             lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0;
           } else if (pr && pr.fallback) {
             const b64 = await API.readFile(p); if (!b64) { toast('Файл PLY не найден'); return; }
@@ -771,7 +823,7 @@
       const pr = await parseCloudWithProgress(lastCloudPath, progressLabel);
       if (pr && pr.ok) {
         if (pr.kind === 'mesh') viewer.loadColoredMesh(pr);
-        else { viewer.loadCloud(pr, { sourceName: lastCloudPath, preserveView: true }); cacheCloud(lastCloudPath, pr); lastCloudOffset = (pr.meta && pr.meta.offset) || null; lastCloudCount = (pr.meta && pr.meta.points) || pr.count || 0; }
+        else { if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: lastCloudPath, preserveView: true }); cacheCloud(lastCloudPath, pr); } lastCloudOffset = (pr.meta && pr.meta.offset) || null; lastCloudCount = (pr.meta && pr.meta.points) || pr.count || 0; }
         const got = Number(pr.count) || (pr.pos && pr.pos.length / 3) || 0;
         toast('Готово: ' + (got / 1e6).toFixed(got >= 1e7 ? 1 : 2) + ' млн точек');
         return true;
@@ -1453,7 +1505,7 @@
     try {
       var active = window.MultiCloud && window.MultiCloud.getActive && window.MultiCloud.getActive();
       var v = viewer;
-      if (active && active.path && window.PCEdit && v && v.base && v.base[0]) {
+      if (active && active.path && window.PCEdit && v && v.base && v.base[0] && !(v.isStreamedCloud && v.isStreamedCloud())) {
         cacheCloud(active.path, {
           pos: v.base[0].pos, col: v.base[0].col || null,
           intensity: v._intensityValues || null, classification: v._classificationLabels || null,
@@ -1569,17 +1621,24 @@
     // Большие облака точек .las парсим в главном процессе прямо с диска — без лимитов памяти рендерера.
     if (localPath && API && API.parseCloud && /\.(las|laz|ply|e57|ptx|pcd|xyz|pts|txt|csv|xyzrgb)$/i.test(file.name)) {
       let pr = null;
-      try { pr = await parseCloudWithProgress(localPath, file.name); } catch (e) { console.warn('parseCloud', e); }
+      try {
+        pr = await parseCloudWithProgress(localPath, file.name, { confirmReplace: async (info) => {
+          // облако открывается по частям (прямо в видеопамять) и заменяет текущее: «добавить к проекту» для него недоступно
+          const TX = window.__lxToolsExt, have = (TX && TX.addableCount && viewer._cloudRecord) ? TX.addableCount() : 0;
+          if (have > 0 && window.__lxKit && window.__lxKit.ask) return !!(await window.__lxKit.ask({ title: 'Заменить текущее облако?', message: 'Облако «' + file.name + '» (' + fmtMln(info && info.total || 0) + ' млн точек) очень большое и открывается по частям прямо в видеопамять, поэтому оно заменит открытое сейчас облако (' + have.toLocaleString('ru') + ' точек). Добавить его к проекту нельзя.', okLabel: 'Заменить', cancelLabel: 'Отмена' }));
+          return true;
+        } });
+      } catch (e) { console.warn('parseCloud', e); }
       if (pr && pr.ok) {
         // В проекте уже есть облако: новое можно добавить к нему (все облака на экране), а не заменять
-        if (pr.kind !== 'mesh') {
+        if (pr.kind !== 'mesh' && !pr.viewerLoaded) {
           const TX = window.__lxToolsExt, have = (TX && TX.addableCount && viewer._cloudRecord) ? TX.addableCount() : 0;
           if (have > 0 && window.__lxKit && window.__lxKit.ask) {
             const add = await window.__lxKit.ask({ title: 'Открыть ещё одно облако', message: 'В проекте уже открыто облако (' + have.toLocaleString('ru') + ' точек). Добавить «' + file.name + '» к нему, чтобы видеть все облака вместе, или заменить текущее?', hint: 'Новое облако совмещается по координатам файла. Чтобы все облака остались в проекте, сохраните его (Ctrl+S).', okLabel: 'Добавить к проекту', cancelLabel: 'Заменить текущее' });
             if (add) { await TX.addParsedCloud(pr, localPath || file.name); return; }
           }
         }
-        try { if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else { viewer.loadCloud(pr, {sourceName:localPath || file.name}); cacheCloud(localPath, pr); } r = { ok: true, kind: pr.kind, meta: pr.meta }; lastCloudOffset = (pr.meta && pr.meta.offset) || null; lastCloudPath = localPath; lastCloudCount = (pr.meta && pr.meta.points) || 0; }
+        try { if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, {sourceName:localPath || file.name}); cacheCloud(localPath, pr); } r = { ok: true, kind: pr.kind, meta: pr.meta }; lastCloudOffset = (pr.meta && pr.meta.offset) || null; lastCloudPath = localPath; lastCloudCount = (pr.meta && pr.meta.points) || 0; }
         catch (e) { console.warn('render-cloud', e); toast('Ошибка 3D: ' + (e && e.message ? e.message : 'не удалось показать')); return; }
       } else if (pr && pr.fallback) { /* PLY mesh: use the full renderer parser below. */ }
       else if (pr && pr.message) { toast(pr.message); return; }
@@ -1834,7 +1893,9 @@
       apply();
       window.addEventListener('lx-cloud-loaded', apply);
       // ревизия 15: облако рисуется несколькими буферами видеопамяти; если видеопамяти не хватило на все — честно говорим, сколько на экране
-      window.addEventListener('bim-gpu-short', (e) => { const d = (e && e.detail) || {}; toast('Видеопамяти хватило на ' + fmtMln(d.drawn || 0) + ' из ' + fmtMln(d.total || 0) + ' млн точек: остальные загружены в память, но на экране не показаны. Закройте другие программы, использующие видеокарту, и откройте файл снова.'); });
+      window.addEventListener('bim-gpu-short', (e) => { const d = (e && e.detail) || {}; toast('Видеопамяти хватило на ' + fmtMln(d.drawn || 0) + ' из ' + fmtMln(d.total || 0) + ' млн точек: ' + (d.streamed ? 'остальные не прочитаны' : 'остальные загружены в память, но на экране не показаны') + '. Закройте другие программы, использующие видеокарту, и откройте файл снова.'); });
+      // ревизия 16: облако открыто по частям — все точки на экране, но операциям, которым нужны все точки в памяти, они недоступны
+      window.addEventListener('bim-stream-limit', (e) => { const d = (e && e.detail) || {}; const rec = viewer && viewer._cloudRecord; toast('Облако' + (rec && rec.sourceCount ? ' из ' + fmtMln(rec.sourceCount) + ' млн точек' : '') + ' открыто по частям: все точки на экране, но ' + (d.what || 'эта операция') + ' для него недоступны — правка, выделение, чистка, сохранение и экспорт работают для облаков до 48 млн точек. Измерения по точкам работают.'); });
       window.addEventListener('bim-octree-state', apply);
       let lastVram = 0;
       window.addEventListener('bim-octree-vram-limit', (e) => {

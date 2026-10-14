@@ -91,6 +91,6 @@ test('ревизия 15: облако крупнее сегмента кладё
   assert.match(w, /uniform uint uIdBase/);
   assert.match(w, /vId = uint\(gl_VertexID\) \+ uIdBase \+ 1u/, 'выбор точки учитывает смещение сегмента');
   assert.match(w, /this\._drawPickPoints\(bo\)/);
-  assert.match(w, /_drawPointSegs\(o, dc, attrMode\)/);
+  assert.match(w, /_drawPointSegs\(o, dc, attrMode, plan\)/);   // ревизия 16: и план кадра по кирпичам
   assert.match(read('renderer/app.js'), /addEventListener\('bim-gpu-short'/);
 });
