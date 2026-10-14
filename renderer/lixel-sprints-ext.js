@@ -28,6 +28,12 @@
       toast('Операция требует полный массив точек и недоступна в «Поток LOD». Выключите «Поток LOD» и повторите.');
       return null;
     }
+    var bv = window.__viewer;
+    if (bv && typeof bv.isBigCloud === 'function' && bv.isBigCloud()) {
+      // Ревизия 17: облако больше 48 млн точек — у него нет плоского массива; эта операция пока работает только с массивом целиком
+      toast('Эта операция работает с массивом точек целиком и недоступна для облака больше 48 млн точек. Для такого облака доступны выделение, правка, чистка, классификация, сохранение и экспорт.');
+      return null;
+    }
     var c = getCloud(); if (!c) { toast('Сначала откройте облако точек'); return null; } return c;
   }
   // Robust coordinate bounds and clipping are local to this module (the volume

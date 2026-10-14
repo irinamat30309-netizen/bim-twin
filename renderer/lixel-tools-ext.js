@@ -27,6 +27,12 @@
       toast('Операция требует полный массив точек и недоступна в «Поток LOD». Выключите «Поток LOD» и повторите.');
       return null;
     }
+    var bv = window.__viewer;
+    if (bv && typeof bv.isBigCloud === 'function' && bv.isBigCloud()) {
+      // Ревизия 17: облако больше 48 млн точек — у него нет плоского массива; эта операция пока работает только с массивом целиком
+      toast('Эта операция работает с массивом точек целиком и недоступна для облака больше 48 млн точек. Для такого облака доступны выделение, правка, чистка, классификация, сохранение и экспорт.');
+      return null;
+    }
     var c = getCloud(); if (!c) { toast('Сначала откройте облако точек'); return null; } return c;
   }
 
@@ -349,6 +355,8 @@
    * на ровные плоскости, «волосы» около них убираются. Перед применением — предпросмотр удаляемого красным; Ctrl+Z возвращает облако.
    */
   function opAutoClean() {
+    var bigV = window.__viewer;
+    if (bigV && typeof bigV.isBigCloud === 'function' && bigV.isBigCloud()) { var cb = document.getElementById('vtClean'); if (cb) { cb.click(); return; } }
     var LV = { soft: 'мягко', medium: 'средне', strong: 'сильно' }, PL = { strict: 'строго', normal: 'обычно', loose: 'мягко' };
     return processOp({
       op: 'autoclean', label: 'Автоматическая чистка…', title: 'Автоматическая чистка',

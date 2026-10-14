@@ -97,7 +97,10 @@
     if (s2) {
       var vwr = window.__viewer || window.__lxViewer;
       var cc  = vwr && vwr.getEditedCloud && vwr.getEditedCloud();
-      if (cc && cc.pos && cc.pos.length) {
+      var bigI = (vwr && vwr.isBigCloud && vwr.isBigCloud() && vwr.bigInfo) ? vwr.bigInfo() : null;
+      if (bigI) {
+        setStatus(s2, 'ok', 'Облако загружено по частям: ' + ((bigI.count || 0) / 1e6).toFixed(2) + ' млн точек (3DGS строится по выборке)');
+      } else if (cc && cc.pos && cc.pos.length) {
         var mln = (cc.pos.length / 3e6).toFixed(2);
         setStatus(s2, 'ok', 'Облако загружено: ' + mln + ' млн точек');
       } else {
@@ -182,11 +185,16 @@
     szRow.append(szTop, szSlider);
     c.appendChild(szRow);
 
-    var goBtn = btn('primary', 'Конвертировать и открыть', function () {
+    var goBtn = btn('primary', 'Конвертировать и открыть', async function () {
       if (!window.CloudConvert)  { toast('Модуль CloudConvert не загружен'); return; }
       if (!window.SplatViewer)   { toast('Модуль SplatViewer не загружен'); return; }
       var vwr = window.__viewer || window.__lxViewer;
       var cc  = vwr && vwr.getEditedCloud && vwr.getEditedCloud();
+      if (vwr && vwr.isBigCloud && vwr.isBigCloud() && vwr.getBigSample) {
+        // облако больше 48 млн точек: 3DGS строится по равномерной выборке из всех точек (сплэтов всё равно не больше 6 млн)
+        cc = await vwr.getBigSample(12000000);
+        if (cc && cc.total > cc.count) toast('Облако больше 48 млн точек: 3DGS строится по выборке (' + (cc.count / 1e6).toFixed(1) + ' из ' + (cc.total / 1e6).toFixed(1) + ' млн точек)');
+      }
       if (!cc || !cc.pos || !cc.pos.length) {
         toast('Сначала откройте облако точек в главном вьюере'); return;
       }

@@ -461,6 +461,28 @@
     if (v && v.getEditedCloud) { try { var c2 = v.getEditedCloud(); if (c2 && c2.pos && c2.pos.length) return c2; } catch (e) {} }
     return null;
   }
+  // Ревизия 17: облако больше 48 млн точек (читается частями) не имеет плоских массивов — сохраняется и экспортируется ПОТОКОМ из сегментов viewer.
+  var BIG_FMT = ['ply', 'las', 'xyz', 'pts', 'pcd', 'csv', 'obj'];
+  function bigViewer() { var v = viewer(); return (v && typeof v.isBigCloud === 'function' && v.isBigCloud() && typeof v.saveBigStream === 'function') ? v : null; }
+  async function saveBig(bv, opts) {
+    var saveGeneration = window.__pcAutosave && Number.isSafeInteger(window.__pcAutosave.editGeneration) ? window.__pcAutosave.editGeneration : undefined;
+    var fmt = 'ply', wp = (st.workingPath && !opts.askPath) ? st.workingPath : null;
+    if (wp) { var mm = /\.([a-z0-9]+)$/i.exec(wp), ee = mm ? mm[1].toLowerCase() : ''; if (BIG_FMT.indexOf(ee) >= 0) fmt = ee; else wp = null; }
+    st.saving = true; renderChip();
+    try {
+      var r = await bv.saveBigStream(fmt, { name: nowName(fmt), title: '\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u043e\u0431\u043b\u0430\u043a\u043e \u0442\u043e\u0447\u0435\u043a', targetPath: wp || undefined });
+      if (r && r.ok) {
+        st.workingPath = r.path; st.workingFmt = fmt;
+        await markSaved('file', saveGeneration);
+        if (!opts.silent) toast('\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043e: ' + r.path + ' \u00b7 \u0442\u043e\u0447\u0435\u043a: ' + Number(r.count || 0).toLocaleString('ru-RU'));
+        return { ok: true, path: r.path };
+      }
+      if (r && r.canceled) return { ok: false, canceled: true };
+      toast('\u041e\u0448\u0438\u0431\u043a\u0430 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u044f: ' + ((r && (r.message || r.error)) || ''), true);
+      return { ok: false };
+    } catch (e) { toast('\u041e\u0448\u0438\u0431\u043a\u0430 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u044f', true); return { ok: false }; }
+    finally { st.saving = false; renderChip(); }
+  }
   function bimModel() { try { return (window.__lxScan2BIM && window.__lxScan2BIM.state && window.__lxScan2BIM.state.model) || null; } catch (e) { return null; } }
   function hhmm(ts) { try { var d = new Date(ts); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); } catch (e) { return ''; } }
   function nowName(ext) { return 'pointcloud-edited.' + ext; }
@@ -526,6 +548,7 @@
     opts = opts || {};
     if (st.saving) return { ok: false, busy: true };
     var A = api(); if (!A) { toast('Сохранение доступно в десктоп-версии', true); return { ok: false }; }
+    var bigV = bigViewer(); if (bigV) return saveBig(bigV, opts);
     var cloud = getCloud(); if (!cloud) { if (!opts.silent) toast('Нет облака для сохранения', true); return { ok: false }; }
     var cnt = cloud.pos.length / 3;
     if (cnt > ((window.APP_CONFIG && window.APP_CONFIG.PLY_EXPORT_MAX_POINTS) || 200000000)) { toast('Слишком большое облако (~' + Math.round(cnt / 1e6) + ' млн) — сначала обрежьте', true); return { ok: false }; }
@@ -588,6 +611,13 @@
     var streamId = null, cancelRequested = false, cancelListener = null;
     try {
       var payload = { name: 'export.' + f.ext, ext: f.ext, filterName: f.filterName, title: '\u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u00b7 ' + f.label };
+      if (f.kind === 'cloud' && bigViewer()) {
+        if (BIG_FMT.indexOf(f.id) < 0) { toast('\u0424\u043e\u0440\u043c\u0430\u0442 ' + f.label + ' \u0434\u043b\u044f \u043e\u0431\u043b\u0430\u043a\u0430 \u0431\u043e\u043b\u044c\u0448\u0435 48 \u043c\u043b\u043d \u0442\u043e\u0447\u0435\u043a \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d. \u041f\u043e\u0442\u043e\u043a\u043e\u043c (\u0432\u0441\u0435 \u0442\u043e\u0447\u043a\u0438, \u0431\u0435\u0437 \u043f\u0440\u043e\u0440\u0435\u0436\u0438\u0432\u0430\u043d\u0438\u044f) \u044d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u0443\u044e\u0442\u0441\u044f PLY, LAS, XYZ, PTS, PCD, CSV \u0438 OBJ.', true); return; }
+        var bigR = await bigViewer().saveBigStream(f.id, { name: payload.name, title: payload.title });
+        if (bigR && bigR.ok) toast('\u042d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u043e: ' + bigR.path + ' \u00b7 \u0442\u043e\u0447\u0435\u043a: ' + Number(bigR.count || 0).toLocaleString('ru-RU'));
+        else if (bigR && !bigR.canceled) toast('\u041e\u0448\u0438\u0431\u043a\u0430 \u044d\u043a\u0441\u043f\u043e\u0440\u0442\u0430: ' + ((bigR.message || bigR.error) || ''), true);
+        return;
+      }
       if (f.kind === 'cloud') {
         var cloud = getCloud(); if (!cloud) { toast('\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u043e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u043e\u0431\u043b\u0430\u043a\u043e \u0442\u043e\u0447\u0435\u043a', true); return; }
         if (!window.PCEdit) { toast('\u041c\u043e\u0434\u0443\u043b\u044c \u0440\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f \u043d\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043d', true); return; }

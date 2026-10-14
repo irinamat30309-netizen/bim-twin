@@ -595,11 +595,11 @@
       var dist = Math.hypot(_x1 - _x0, _y1 - _y0);
       var name = 'Инспекция ' + (state.n + 1);
       var _t = (window.__pcTools && window.__pcTools.beginProgress) ? window.__pcTools.beginProgress('Захват области…') : null;
-      setTimeout(function () {
+      setTimeout(async function () {
         var r = null;
         try {
-          if (dist >= 8 && v.extractRegionAsObject) { r = v.extractRegionAsObject(_x0, _y0, _x1, _y1, name); }
-          else if (v.smartObjectAt) { var nn = v.smartObjectAt(_x1, _y1, { maxPts: 500000 }); if (nn) r = v.extractSelectionAsObject(name); }
+          if (dist >= 8 && v.extractRegionAsObject) { r = await v.extractRegionAsObject(_x0, _y0, _x1, _y1, name); }
+          else if (v.smartObjectAt) { var nn = await v.smartObjectAt(_x1, _y1, { maxPts: 500000 }); if (nn) r = await v.extractSelectionAsObject(name); }
         } catch (err) {}
         var cloud = (r && v.getExtractedObjectCloud) ? v.getExtractedObjectCloud(r.id) : null;
         try { if (v.clearSelection) v.clearSelection(); } catch (e2) {}

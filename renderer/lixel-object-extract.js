@@ -179,7 +179,7 @@
       var vv = V(); if (!vv || !vv.smartObjectAt) return;
       var _cx = e.clientX, _cy = e.clientY;
       var _t = (window.__pcTools && window.__pcTools.beginProgress) ? window.__pcTools.beginProgress('Захват объекта…') : null;
-      setTimeout(function () { var n = 0; try { n = vv.smartObjectAt(_cx, _cy, { maxPts: 500000 }); } catch (err) {} try { if (_t) _t(); } catch (e2) {} if (n) toast('Захвачено точек объекта: ' + nfmt(n) + ' — нажмите «Извлечь объект»', 'ok'); else toast('Объект не найден — кликните по нему в срезе', 'warn'); }, 30);
+      setTimeout(async function () { var n = 0; try { n = await vv.smartObjectAt(_cx, _cy, { maxPts: 500000 }); } catch (err) {} try { if (_t) _t(); } catch (e2) {} if (n) toast('Захвачено точек объекта: ' + nfmt(n) + ' — нажмите «Извлечь объект»', 'ok'); else toast('Объект не найден — кликните по нему в срезе', 'warn'); }, 30);
     });
   }
 
