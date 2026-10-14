@@ -207,11 +207,7 @@
       const note = $('cpShareNote');
       if (note) {
         note.hidden = !part;
-        const pv = window.__lxPreview;
-        note.textContent = !part ? '' : (pv && pv.state === 'building'
-          ? 'Это быстрый предпросмотр: ' + pv.shown.toLocaleString('ru-RU') + ' из ' + pv.total.toLocaleString('ru-RU') + ' точек. Индекс всех точек строится в фоне — ' + Math.round((pv.fraction || 0) * 100) + ' %. Когда он будет готов, вид переключится сам, и на экране будут ВСЕ точки файла.'
-          : pv && pv.state === 'failed' ? 'Показан только быстрый предпросмотр. Индекс всех точек построить не удалось: ' + (pv.message || 'ошибка') + '. Кнопка «Потоковый LOD» попробует ещё раз.'
-          : 'Показана часть точек файла. Все точки: кнопка «Потоковый LOD» (индекс на диске по всем точкам).');
+        note.textContent = !part ? '' : 'Показана часть точек файла (' + info.loadedCount.toLocaleString('ru-RU') + ' из ' + info.sourceCount.toLocaleString('ru-RU') + '): всем точкам не хватило памяти, они выбраны равномерно по всему облаку. Закройте другие программы и откройте файл снова — тогда загрузятся все.';
       }
     }
     $('cpDimensions').textContent = info.bounds.mx.map((x, i) => 'XYZ'[i] + ': ' + (x - info.bounds.mn[i]).toFixed(3)).join('  ·  ');
@@ -237,6 +233,6 @@
     if (info && info.streaming && el) el.textContent = streamLoadedText(info, lastStats);
   });
   window.__lxCloudUI = { sync, closeMenu, select, streamLoadedText };
-  ['bim-cloud-change', 'bim-app-ready', 'lx-scene-built', 'bim-preview-state'].forEach(e => window.addEventListener(e, sync));
+  ['bim-cloud-change', 'bim-app-ready', 'lx-scene-built'].forEach(e => window.addEventListener(e, sync));
   if (document.readyState !== 'loading') sync(); else window.addEventListener('DOMContentLoaded', () => setTimeout(sync, 200));
 })();

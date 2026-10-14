@@ -55,7 +55,6 @@
     { id: 'import', label: 'Импорт', groups: [
       G('clouds', 'Облака точек', [
         I('btnOpenCloud', 'folder-open', 'Открыть облако', { sel: '#btnOpenCloud', primary: 1, tip: 'Облако помещения или файл LAS / LAZ / E57 / PLY' }),
-        I('vtStream', 'hard-drive-download', 'Потоковый LOD', { sel: '#vtStream', tip: 'Большие облака: дисковый octree и уровни детализации (LAS 0–10, PLY, PCD). Индекс до 40 млн точек' }),
         I('opPotree', 'cloud-download', 'Potree 2.0', { call: OPS_S + 'opPotree', tip: 'Открыть набор Potree 2.0 (metadata.json + octree)' })
       ]),
       G('models', 'Модели и документы', [

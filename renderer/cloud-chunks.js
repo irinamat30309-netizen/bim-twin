@@ -74,7 +74,7 @@
     } catch (e) {
       await release();
       if (isMemoryError(e)) {
-        return { ok: false, message: 'Окну не хватило памяти для ' + (n / 1e6).toFixed(1) + ' млн точек. Закройте другие программы и откройте файл снова: большие LAS/PLY/PCD открываются потоком (индекс на диске по всем точкам), а остальные форматы лучше сконвертировать в LAS или PLY.', outOfMemory: true };
+        return { ok: false, tooBig: true, total: n, canLoad: 0, message: 'Окну не хватило памяти для ' + (n / 1e6).toFixed(1) + ' млн точек.', outOfMemory: true };
       }
       return { ok: false, message: 'Не удалось передать облако в окно: ' + String((e && e.message) || e) };
     }
