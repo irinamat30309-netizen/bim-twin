@@ -1041,31 +1041,13 @@ function registerIpc() {
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       if (jobId != null && (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId))) return { ok: false, message: 'invalid_job_id' };
       const s = readSettings();
-      // Ревизия 13: облако открывается ЦЕЛИКОМ в обычном режиме — без бюджета точек, без доли файла и БЕЗ автоматического
-      // переключения в «Потоковый LOD». Потоковый режим включается только по явному согласию пользователя (payload.preview === true):
-      // тогда окно получает быстрый предпросмотр (PREVIEW_POINTS), а индекс всех точек строится в фоне.
-      // Если файл не помещается в свободную память, он НЕ режется молча: возвращаем { tooBig } и окно спрашивает пользователя.
-      let maxPoints = APP_CFG.resolvePointBudget(s);
+      // Ревизия 15: потокового режима и предпросмотра нет. Облако читается ЦЕЛИКОМ (без бюджета точек, без доли файла, без оглядки
+      // на «свободную память»). Только если выделение памяти реально упало, возвращаем { tooBig } — окно предложит открыть максимум
+      // возможного (allowReduced), и только с согласия пользователя.
+      const maxPoints = APP_CFG.resolvePointBudget(s);
       const pointShare = 1;
-      let previewOnly = false;
       const allowReduced = !!(payload && typeof payload === 'object' && payload.allowReduced === true);
-      const wantStream = !!(payload && typeof payload === 'object' && payload.preview === true);
       const peek = peekSourcePointCount(abs);
-      const streamable = peek > 0;
-      if (streamable && wantStream) {
-        maxPoints = Math.min(maxPoints, APP_CFG.PREVIEW_POINTS || 6000000); previewOnly = true;
-      } else if (streamable && !allowReduced) {
-        // Ревизия 14: файл читается ЦЕЛИКОМ всегда, когда это возможно. «Свободная память» больше не повод отказать (система сама
-        // освободит кэш/подкачку): отказ — только если файл не поместится в ОПЕРАТИВНУЮ память компьютера целиком или превышает
-        // один буфер видеокарты обычного режима (тогда все точки покажет только потоковый режим).
-        let canLoad = peek;
-        try { canLoad = cloud.effectivePointBudget(peek, { availableMemoryBytes: require('os').totalmem() }); } catch (_) { canLoad = peek; }
-        const singleCap = Number(APP_CFG.MAX_SINGLE_BUFFER_POINTS) || 170000000;
-        if (peek > singleCap) canLoad = Math.min(canLoad, singleCap);
-        if (canLoad < peek) {
-          return { ok: false, tooBig: true, streamable: true, total: peek, canLoad, message: 'Файл (' + (peek / 1e6).toFixed(1) + ' млн точек) слишком велик, чтобы показать все точки одним куском в обычном режиме: целиком помещается около ' + (canLoad / 1e6).toFixed(1) + ' млн.' };
-        }
-      }
       const controller = new AbortController();
       const key = jobId ? cloudJobKey(event && event.sender, jobId) : null;
       if (key && activeCloudParseJobs.has(key)) return { ok: false, message: 'duplicate_job_id' };
@@ -1083,20 +1065,15 @@ function registerIpc() {
         } catch (_) {}
       };
       try {
-        const result = await cloud.parseCloudFileAsync(abs, { maxPoints, pointShare, signal: controller.signal, onProgress, memoryGuard: (previewOnly || allowReduced) ? undefined : false });
-        if (result && result.ok === false && !result.cancelled && !previewOnly && !allowReduced && /out of memory|allocation failed|Array buffer allocation|Invalid typed array length|Invalid array length|Cannot create a (Buffer|string)|ERR_MEMORY|не хватает памяти|недостаточно.*памят/i.test(String(result.message || ''))) {
-          // реальный сбой выделения памяти: ничего не режем молча — окно предложит потоковый режим (все точки с диска)
-          return { ok: false, tooBig: true, streamable, total: peek || 0, canLoad: 0, message: 'Не хватило памяти, чтобы прочитать все точки сразу' + (peek ? ' (' + (peek / 1e6).toFixed(1) + ' млн)' : '') + '.' };
-        }
-        if (result && result.ok && !previewOnly && !allowReduced && result.pointBudget && result.pointBudget.memoryLimited) {
-          // не помещается в память целиком, а у формата нет потокового чтения: молча урезать нельзя — сообщаем и предлагаем выбор
-          const pb = result.pointBudget;
-          return { ok: false, tooBig: true, streamable: false, total: pb.total, canLoad: pb.applied, message: 'Файл (' + (pb.total / 1e6).toFixed(1) + ' млн точек) не помещается в память целиком, а этот формат не читается потоком. Сконвертируйте его в LAS или PLY (тогда откроются все точки) либо освободите память.' };
+        const result = await cloud.parseCloudFileAsync(abs, { maxPoints, pointShare, signal: controller.signal, onProgress, memoryGuard: allowReduced ? undefined : false });
+        if (result && result.ok === false && !result.cancelled && !allowReduced && /out of memory|allocation failed|Array buffer allocation|Invalid typed array length|Invalid array length|Cannot create a (Buffer|string)|ERR_MEMORY|не хватает памяти|недостаточно.*памят/i.test(String(result.message || ''))) {
+          // реальный сбой выделения памяти: ничего не режем молча — окно спросит, открыть ли максимум возможного
+          let canLoad = 0; try { if (peek) canLoad = cloud.effectivePointBudget(peek, {}); } catch (_) { canLoad = 0; }
+          return { ok: false, tooBig: true, total: peek || 0, canLoad, message: 'Не хватило памяти, чтобы прочитать все точки сразу' + (peek ? ' (' + (peek / 1e6).toFixed(1) + ' млн)' : '') + '.' };
         }
         if (result && result.ok) {
           const loaded = result.count || (result.pos && result.pos.length / 3) || 0;
           if (pointShare < 1) result.pointShare = pointShare;
-          if (previewOnly) result.previewOnly = true;
           // Крупное облако — в окно кусками (одно сообщение на 1–1,5 ГБ роняло процесс окна)
           if (result.kind !== 'mesh' && ArrayBuffer.isView(result.pos) && result.pos.length / 3 > (APP_CFG.IPC_INLINE_POINTS || 6000000) && sender && sender.id != null) {
             onProgress({ phase: 'transfer', fraction: 0, pointsLoaded: loaded });
