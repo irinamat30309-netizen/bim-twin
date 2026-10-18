@@ -128,6 +128,7 @@ d2378c116d064093d4d609344f801cf854f3c630309f3f166e04bdee22cefc41  POINTCLOUD-PAT
 d5b28eb8a8752334e1e81f1ec1c67b259451da2a178ce5505cf15431be4257d4  pointcloud-ply-io.js
 ed70cf6085d6aae9c8e679c81a25801a461e196901a3746be3e186a8f79aa688  PRECISION-SNAP.md
 72e757db6d8640c6111b024e93b834a91b89bce8dc5a6902a305180be2a5ff37  preload.js
+e645ffd1aa3c73dc08103bdd50d77a2c6e7cccba1661f1ea9eb90ab6143eda84  preview_c.png
 1ea9b57324715a20850855166e21eb46a07a9d8b96ac0fcf2c5e91081c77ce04  QA-RETEST-stage0-7-current.md
 e5bc86062825252fd3af098d03a9bdf7e5591bda18c18cee68cfba9ae3459025  QA-RETEST-stage2.md
 a7cbb33150835d7e128a13e9df10f1d4a6f0f9a2eba21d9023564c32890cdd42  QA-RETEST-stage3.md
@@ -290,7 +291,7 @@ b6c4e6c763d0d1e1583448d0cfe9c1c2ff5600e4535799beed9af80b48179f9e  scan2bim-ai-se
 9f1b59021cfea5cdbcf9d772ccc44eaf025474c0ac3c900f367498a8a606adc0  scan2bim-ai-server/Dockerfile
 3e67c3be4dc7a4db91225b6a360213bff347e6ff911d3408fd8079d32cb97d5e  scan2bim-ai-server/download_models.py
 7aaa67ef921a6d50ec30a3c0e9cc35279ee8e694bbd278d718f5cdbf86c12578  scan2bim-ai-server/install_gpu_windows.bat
-d071e0f3b1d09ea10357c558ff2c7e1a5f7de4f9cde028a3b1def7857e3db721  scan2bim-ai-server/models/#U2568#U00dc#U2568#U00fa#U2568#U00f6#U2568#U00c9_#U2568#U00dc#U2568#U00a2#U2568#U00c9#U2568#U00ed#U2568#U00f3#U2568#U00bc_#U2568#U00c6#U2568#U00f2#U2568#U00ed#U2568#U00c9.txt
+d071e0f3b1d09ea10357c558ff2c7e1a5f7de4f9cde028a3b1def7857e3db721  scan2bim-ai-server/models/╨Ü╨ú╨ö╨É_╨Ü╨¢╨É╨í╨ó╨¼_╨Æ╨ò╨í╨É.txt
 4e58857e7697aed9e083063983fab30373cc1b3d5b9c2784852a54c4d050712e  scan2bim-ai-server/README.md
 c572d57b30c7416cec11c41df5aa6265a183ede18513f697860cfe471c61d40e  scan2bim-ai-server/requirements-cpu.txt
 7c679ab673bc3ab49a1d53c6436ca5c7f84881b30f3f4cce0739e9cd66a0ba9e  scan2bim-ai-server/requirements-gpu.txt
