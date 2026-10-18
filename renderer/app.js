@@ -489,6 +489,18 @@
     } catch (e) { console.warn('open cloud', e); toast('Ошибка открытия облака'); }
     finally { if (btn) btn.classList.remove('on'); }
   }
+  // Открыть облако по пути, уже выданному окну главным процессом (например, результат чистовой обработки)
+  window.__bimOpenCloudPath = async function (p) {
+    if (!p || !API || typeof API.parseCloud !== 'function') return false;
+    try {
+      const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop());
+      if (!pr || !pr.ok) { if (!(pr && pr.cancelled)) toast((pr && pr.message) || 'Не удалось открыть облако'); return false; }
+      if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: p }); cacheCloud(p, pr); }
+      lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0;
+      toast('Облако открыто' + (lastCloudCount ? ': ' + Number(lastCloudCount).toLocaleString('ru-RU') + ' точек' : ''));
+      return true;
+    } catch (e) { console.warn('open cloud', e); toast('Ошибка открытия облака'); return false; }
+  };
   // Синхронизирует свойства помещения (площадь/высота/габариты/объём) с реальной 3D-моделью
   async function applyModelDims(room, mode) {
     const dm = viewer && viewer.modelDims; if (!room || !dm) return;

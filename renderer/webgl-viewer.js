@@ -561,7 +561,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       }
       return o;
     }
-    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._segs) { for (const sg of o._segs) { try { gl.deleteVertexArray(sg.vao); gl.deleteBuffer(sg.pb); if (sg.cb) gl.deleteBuffer(sg.cb); if (sg.ib) gl.deleteBuffer(sg.ib); if (sg.kb) gl.deleteBuffer(sg.kb); } catch (_) {} } o._segs = null; o._vao = null; o._pb = null; o._cb = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._kb) gl.deleteBuffer(o._kb); if (o._radVbo) { gl.deleteBuffer(o._radVbo); o._radVbo = null; o._rad = null; } } }
+    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._segs) { for (const sg of o._segs) { try { gl.deleteVertexArray(sg.vao); gl.deleteBuffer(sg.pb); if (sg.cb) gl.deleteBuffer(sg.cb); if (sg.ib) gl.deleteBuffer(sg.ib); if (sg.kb) gl.deleteBuffer(sg.kb); if (sg.rb) gl.deleteBuffer(sg.rb); } catch (_) {} } o._segs = null; o._radModel = null; o._radSegReady = false; o._vao = null; o._pb = null; o._cb = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._kb) gl.deleteBuffer(o._kb); if (o._radVbo) { gl.deleteBuffer(o._radVbo); o._radVbo = null; o._rad = null; } } }
     _makeLodObj(o) {
       const gl = this.gl; const lb = o._lodBuild;
       const mkBuf = (pos, col) => {
@@ -610,7 +610,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     _setBase(objs) { if (this._prevObj) this.clearPreview(true); this._delObjs(this.base); this._psCache = null; this._psJob = null; this._yqCache = null; this._spTok = (this._spTok || 0) + 1; this.base = objs.map(o => this._makeObj(o)); this._recomputeBBox(); if (!this.base.some(o => o.points)) this._cloudRecord = null; this._notifyCloudChanged(); const _m = this.base[0]; if (_m && _m.points && !_m._lod && !_m._isSel && !_m._isStation && _m.count >= 20000) this._startSpacingField(_m); }
     // ревизия 7: локальный шаг точек (1 байт на точку) считается кусочками в простое — интерфейс не замирает, пока облако «дорисовывается»
     _startSpacingField(o) {
-      if (o._segs) return;   // ревизия 15: облако в нескольких буферах видеопамяти — локальный шаг точек не считаем (экономим память и время)
+      if (o._segs) { this._startSegSpacing(o); return; }   // облако в нескольких буферах видеопамяти: поле по выборке, коды — посегментно
       const CC = (typeof window !== 'undefined' && window.CloudClean) || (typeof globalThis !== 'undefined' && globalThis.CloudClean);
       if (!CC || typeof CC.spacingGen !== 'function' || typeof setTimeout !== 'function') return;
       const tok = this._spTok, self = this; let gen = null;
@@ -636,7 +636,76 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       try { console.info('[cloud] локальный шаг точек: ' + (f.sMin * 1000).toFixed(1) + '…' + (f.sMax * 1000).toFixed(1) + ' мм (по ячейкам ' + f.cells.toLocaleString('ru-RU') + ')'); } catch (_) {}
       this.render(); return true;
     }
-    getSpacingField() { const o = this.base && this.base[0]; return o && o._rad ? { sMin: o._rad.sMin, sMax: o._rad.sMax, s0: o._rad.s0 } : null; }
+    // Локальный шаг для облака из сегментов (любое число точек): модель поля считается по выборке, затем коды (1 байт на точку)
+    // пишутся в буфер каждого сегмента кусочками в простое. Пока не готовы все сегменты — размер по среднему шагу (как раньше).
+    _segPtsOf(o, sg) {
+      if (sg.P && sg.P.length >= sg.n * 3) return { P: sg.P, off: 0 };
+      if (!o._stream && o.pos && o.pos.length >= (sg.start + sg.n) * 3) return { P: o.pos, off: sg.start };
+      return null;
+    }
+    _startSegSpacing(o) {
+      const CC = (typeof window !== 'undefined' && window.CloudClean) || (typeof globalThis !== 'undefined' && globalThis.CloudClean);
+      if (!CC || typeof CC.spacingModelGen !== 'function' || typeof setTimeout !== 'function' || this.aRad < 0 || !o || !o._segs || !o._segs.length) return false;
+      for (const sg of o._segs) if (!this._segPtsOf(o, sg)) return false;   // копий точек в памяти нет — поле не из чего считать
+      const tok = this._segRadTok = (this._segRadTok || 0) + 1, self = this;
+      o._radSegReady = false; o._radModel = null;
+      const sample = o._stream ? o.pos : o.pos, ns = Math.floor(sample.length / 3), weight = o._stream ? Math.max(1, o._stream.every || 1) : 1;
+      if (ns < 20000) return false;
+      let gen = null, si = 0, at = 0, buf = null;
+      const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      const tick = () => {
+        if (tok !== self._segRadTok || self.base[0] !== o || !o._segs) return;
+        try {
+          const t0 = now();
+          if (!o._radModel) {
+            if (!gen) gen = CC.spacingModelGen(sample, ns, { weight });
+            let r; do { r = gen.next(); } while (!r.done && now() - t0 < 14);
+            if (!r.done) { setTimeout(tick, 6); return; }
+            if (!r.value) return;
+            o._radModel = r.value; si = 0; at = 0;
+          }
+          const M = o._radModel, gl = self.gl, T = gl.ARRAY_BUFFER, STEP = 1 << 20;
+          while (si < o._segs.length && now() - t0 < 14) {
+            const sg = o._segs[si], src = self._segPtsOf(o, sg);
+            if (!src || !sg.vao) { si++; at = 0; continue; }
+            if (at === 0) {
+              if (sg.rb) { try { gl.deleteBuffer(sg.rb); } catch (_) {} }
+              sg.rb = gl.createBuffer(); gl.bindBuffer(T, sg.rb); gl.bufferData(T, sg.n, gl.DYNAMIC_DRAW); sg.rbN = sg.n;
+            }
+            const e = Math.min(sg.n, at + STEP);
+            if (!buf || buf.length < STEP) buf = new Uint8Array(STEP);
+            const out = buf.subarray(0, e - at);
+            CC.spacingCodes(M, src.P, src.off + at, src.off + e, out);
+            gl.bindBuffer(T, sg.rb); gl.bufferSubData(T, at, out);
+            at = e;
+            if (at >= sg.n) { self._segRadAttach(sg); si++; at = 0; }
+          }
+          gl.bindBuffer(T, null);
+          if (si < o._segs.length) { setTimeout(tick, 6); return; }
+          o._radSegReady = true;
+          try { console.info('[cloud] локальный шаг точек (сегменты: ' + o._segs.length + '): ' + (M.sMin * 1000).toFixed(1) + '…' + (M.sMax * 1000).toFixed(1) + ' мм'); } catch (_) {}
+          self.render();
+        } catch (e) { try { console.warn('[cloud] локальный шаг точек для сегментов недоступен:', e && e.message); } catch (_) {} }
+      };
+      setTimeout(tick, 30);
+      return true;
+    }
+    _segRadAttach(sg) {
+      const gl = this.gl; if (!sg.vao || !sg.rb) return;
+      gl.bindVertexArray(sg.vao); gl.bindBuffer(gl.ARRAY_BUFFER, sg.rb);
+      gl.enableVertexAttribArray(this.aRad); gl.vertexAttribPointer(this.aRad, 1, gl.UNSIGNED_BYTE, true, 0, 0); gl.bindVertexArray(null);
+    }
+    // после правки сегмента (хвост с точки from переписан, или буферы созданы заново) — коды шага пересчитываются по готовой модели
+    _segRadRefresh(o, sg, from) {
+      const M = o && o._radModel, gl = this.gl; if (!M || !gl || !sg || !sg.vao) return false;
+      const CC = (typeof window !== 'undefined' && window.CloudClean) || (typeof globalThis !== 'undefined' && globalThis.CloudClean);
+      const src = this._segPtsOf(o, sg); if (!CC || !src) { o._radSegReady = false; return false; }
+      const T = gl.ARRAY_BUFFER;
+      if (!sg.rb || !(sg.rbN >= sg.n)) { if (sg.rb) { try { gl.deleteBuffer(sg.rb); } catch (_) {} } sg.rb = gl.createBuffer(); gl.bindBuffer(T, sg.rb); gl.bufferData(T, Math.max(1, sg.n), gl.DYNAMIC_DRAW); sg.rbN = sg.n; from = 0; }
+      from = Math.max(0, from | 0); if (from < sg.n) { const out = new Uint8Array(sg.n - from); CC.spacingCodes(M, src.P, src.off + from, src.off + sg.n, out); gl.bindBuffer(T, sg.rb); gl.bufferSubData(T, from, out); }
+      gl.bindBuffer(T, null); this._segRadAttach(sg); return true;
+    }
+    getSpacingField() { const o = this.base && this.base[0]; const f = o && (o._rad || (o._radSegReady ? o._radModel : null)); return f ? { sMin: f.sMin, sMax: f.sMax, s0: f.s0, segments: !o._rad } : null; }
     _setOverlay(objs) { this._delObjs(this.overlay); this.overlay = objs.map(o => this._makeObj(o)); }
 
     _recomputeBBox() {
@@ -1160,6 +1229,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         bo._spacing = Math.min(Math.sqrt(area / Math.max(1, loaded)), diag * 0.02);
       }
       if (this._cloudRecord) { this._cloudRecord.loadedCount = loaded; this._cloudRecord.sourceCount = total; }
+      if (loaded >= 20000) { try { this._startSegSpacing(bo); } catch (_) {} }
       this.modelDims = this._computeCloudDims(this._srcMeta || {}, loaded);
       this._notifyCloudChanged();
       this.render();
@@ -2459,6 +2529,38 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     }
 
     // ---------- camera + render ----------
+    // Зум колесом (r18): к точке под курсором и без «стены». Пока камера далеко, сцена масштабируется вокруг точки под курсором
+    // (она остаётся на месте экрана). Когда расстояние до точки вращения доходит до нескольких шагов облака, камера дальше
+    // не «подползает», а летит вперёд вместе с точкой вращения — приближаться можно бесконечно, сквозь облако.
+    _zoomMinDist() {
+      const b0 = this.base && this.base[0]; const sp = (b0 && b0._spacing > 0) ? b0._spacing : 0;
+      const c = this.bbox; const dg = c ? Math.sqrt(Math.pow(c.mx[0] - c.mn[0], 2) + Math.pow(c.mx[1] - c.mn[1], 2) + Math.pow(c.mx[2] - c.mn[2], 2)) || 8 : 8;
+      return Math.max(1e-3, Math.min(sp > 0 ? sp * 25 : dg * 2e-4, 0.25));
+    }
+    _wheelZoom(e) {
+      const dy = e.deltaMode === 1 ? e.deltaY * 33 : (e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY);
+      const k = Math.pow(1.1, Math.max(-6, Math.min(6, dy / 100)));   // одно деление колеса = ±10 %, тачпад — плавно
+      if (!isFinite(k) || k === 1) return;
+      const c = this.bbox; const dg = c ? Math.sqrt(Math.pow(c.mx[0] - c.mn[0], 2) + Math.pow(c.mx[1] - c.mn[1], 2) + Math.pow(c.mx[2] - c.mn[2], 2)) || 8 : 8;
+      const maxD = Math.max(6000, dg * 6), minD = this._zoomMinDist();
+      let ray = null; try { if (e.clientX != null && this._zoomToCursor !== false) ray = this._ray(e.clientX, e.clientY); } catch (_) { ray = null; }
+      const eye = this._eye(), t = this.target;
+      const fwd = norm(sub(t, eye));
+      const dir = (ray && ray.d && isFinite(ray.d[0])) ? ray.d : fwd;
+      const cosA = Math.max(0.2, dot(dir, fwd));
+      if (k < 1 && this.dist * k < minD) {
+        // пролёт вперёд: шаг постоянный относительно minD, точка вращения едет вместе с камерой
+        const step = Math.max(this.dist, minD) * (1 - k);
+        t[0] += dir[0] * step; t[1] += dir[1] * step; t[2] += dir[2] * step;
+        this.dist = Math.max(this.dist, minD);
+        return;
+      }
+      const nd = Math.max(minD, Math.min(maxD, this.dist * k)); const kk = nd / this.dist;
+      // точка под курсором на глубине точки вращения: масштабирование вокруг неё оставляет её под курсором
+      const depth = this.dist / cosA; const P = [eye[0] + dir[0] * depth, eye[1] + dir[1] * depth, eye[2] + dir[2] * depth];
+      t[0] = P[0] + (t[0] - P[0]) * kk; t[1] = P[1] + (t[1] - P[1]) * kk; t[2] = P[2] + (t[2] - P[2]) * kk;
+      this.dist = nd;
+    }
     _eye() { const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch), cy = Math.cos(this.yaw), sy = Math.sin(this.yaw); return [this.target[0] + this.dist * cp * sy, this.target[1] + this.dist * sp, this.target[2] + this.dist * cp * cy]; }
     _vp() {
       const asp = this.canvas.width / Math.max(1, this.canvas.height);
@@ -2853,10 +2955,11 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         let radOn = 0;
         if (isCloud && atten && !fixedPx && !this._frameBox) {
           const closeCap = Math.max(24, Math.round(vh * 0.05));
-          if (o._rad && o._rad.codes && o._radVbo && o._rad.codes.length === o.count) {
+          const rf = (o._rad && o._rad.codes && o._radVbo && o._rad.codes.length === o.count) ? o._rad : (o._segs && o._radSegReady && o._radModel && this._radSegsOn !== false ? o._radModel : null);
+          if (rf) {
             radOn = 1;
             gl.uniform1f(this.u.uPtScale, (vh * 0.5 / Math.tan(this._fov / 2)) * (this._densityBoost || 1.8) * psm * compI);
-            gl.uniform1f(this.u.uRadMin, o._rad.sMin); gl.uniform1f(this.u.uRadLog, Math.log2(o._rad.sMax / o._rad.sMin));
+            gl.uniform1f(this.u.uRadMin, rf.sMin); gl.uniform1f(this.u.uRadLog, Math.log2(rf.sMax / rf.sMin));
           }
           gl.uniform1f(this.u.uPtMin, Math.max(1.0, baseSize * 0.8 * Math.min(compI, 1.6)));
           gl.uniform1f(this.u.uPtMax, Math.max((o._ptMax || 8.0) * psm * (this._denseFill ? 9.0 : 1.0), closeCap));
@@ -2971,7 +3074,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         this._beginInteract();
         this.render();
       });
-      el.addEventListener('wheel', e => { e.preventDefault(); this._stopTween(); this._beginInteract(); this._endInteractSoon(this._octActive ? 380 : 220); if (this.editSelect && this.editMode === 'brush' && (e.ctrlKey || e.metaKey)) { this._brushRadius = Math.max(4, Math.min(160, (this._brushRadius || 16) * (e.deltaY > 0 ? 0.85 : 1.18))); if (typeof this.onBrushRadius === 'function') this.onBrushRadius(Math.round(this._brushRadius)); return; } if (this.walk) { const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw); const s = (e.deltaY > 0 ? -1 : 1) * 0.6; this.target[0] += -sy * s; this.target[2] += -cy * s; this.render(); return; } this.dist *= (e.deltaY > 0 ? 1.1 : 0.9); this.dist = Math.max(1e-4, Math.min(6000, this.dist)); this.render(); }, { passive: false });
+      el.addEventListener('wheel', e => { e.preventDefault(); this._stopTween(); this._beginInteract(); this._endInteractSoon(this._octActive ? 380 : 220); if (this.editSelect && this.editMode === 'brush' && (e.ctrlKey || e.metaKey)) { this._brushRadius = Math.max(4, Math.min(160, (this._brushRadius || 16) * (e.deltaY > 0 ? 0.85 : 1.18))); if (typeof this.onBrushRadius === 'function') this.onBrushRadius(Math.round(this._brushRadius)); return; } if (this.walk) { const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw); const s = (e.deltaY > 0 ? -1 : 1) * 0.6; this.target[0] += -sy * s; this.target[2] += -cy * s; this.render(); return; } this._wheelZoom(e); this.render(); }, { passive: false });
       try { if (typeof window !== 'undefined') window.__lxViewer = this; } catch (e) {}
     }
     _click(cx, cy) {
