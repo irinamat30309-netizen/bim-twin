@@ -350,6 +350,150 @@
     });
   }
 
+  // ---------- Движущиеся объекты по траектории сканера (как удаление динамики в Lixel Studio) ----------
+  // Облако LAS с временем точек + poses.csv проекта: если в другое время сканер «видел сквозь» место, где были точки, там стоял
+  // движущийся объект (прохожий, машина, их «след»). Расчёт — в фоне по файлу на диске; на экране — предпросмотр красным.
+  var lastCloudFile = null;
+  try { window.addEventListener('lx-cloud-loaded', function (e) { var d = e && e.detail; lastCloudFile = d && d.path ? String(d.path) : null; }); } catch (e) {}
+  function cloudFilePath() {
+    var V = window.__viewer, rec = V && V._cloudRecord, cand = [lastCloudFile, rec && rec.sourceName];
+    for (var i = 0; i < cand.length; i++) if (cand[i] && /\.las$/i.test(cand[i])) return cand[i];
+    return null;
+  }
+  var DYN_LEVELS = { strict: { ratio: 1.0, fMin: 4, maxSeen: 35 }, normal: { ratio: 0.6, fMin: 3, maxSeen: 50 }, loose: { ratio: 0.4, fMin: 2, maxSeen: 80 } };
+  async function opDynClean() {
+    var t = T(), api = t && t.api ? t.api() : null, V = window.__viewer, DV = window.DynVoxels;
+    if (!api || !api.dynamicClean) { toast('Удаление движущихся объектов доступно в десктоп-версии'); return; }
+    if (!DV) { toast('Модуль разметки вокселей не загружен'); return; }
+    if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
+    var big = !!(V && typeof V.isBigCloud === 'function' && V.isBigCloud());
+    if (!big && !getCloud()) { toast('Сначала откройте облако точек'); return; }
+    var file = cloudFilePath();
+    if (!file) { toast('Нужен исходный файл LAS с временем точек (GPS time): откройте облако из LAS, экспортированного Lixel Studio'); return; }
+    var found = null; try { var fr = await api.findTrajectory({ path: file }); found = fr && fr.ok ? fr.path : null; } catch (e) {}
+    var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
+      title: 'Движущиеся объекты', okLabel: 'Найти',
+      message: 'Находит прохожих, машины и их «следы» по траектории сканера: точки, сквозь которые сканер в другое время видел дальше. Стены, колонны, деревья и стоящие машины остаются. Перед удалением найденное показывается красным.',
+      fields: [
+        { key: 'traj', label: 'Траектория сканера', type: 'select', value: found ? 'auto' : 'pick', options: (found ? [{ value: 'auto', label: 'Найдена рядом: ' + String(found).split(/[\\/]/).slice(-2).join('/') }] : []).concat([{ value: 'pick', label: 'Выбрать файл poses.csv…' }]),
+          hint: 'Файл poses.csv лежит в папке проекта Lixel: <проект>/project_data/poses.csv. Время точек в LAS и в траектории должно совпадать.' },
+        { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }] }
+      ] }) : Promise.resolve(null));
+    if (!values) return;
+    var posesPath = values.traj === 'auto' ? found : null;
+    if (!posesPath) { var pk = await api.pickTrajectory(); if (!pk || !pk.ok || !pk.path) { toast('Траектория не выбрана'); return; } posesPath = pk.path; }
+    var jobId = 'dyn' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), res = null, stopSub = null, M = null;
+    var idx = null, sel = null, nFound = 0;
+    await run('Движущиеся объекты…', async function (setPct) {
+      if (api.onDynamicCleanProgress) stopSub = api.onDynamicCleanProgress(jobId, function (f, lab) { setPct(0.02 + 0.78 * f, lab || 'Анализ…'); });
+      try { res = await api.dynamicClean({ path: file, posesPath: posesPath, jobId: jobId, opts: DYN_LEVELS[values.level] || DYN_LEVELS.normal }); }
+      finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
+      if (!res || !res.ok) {
+        if (res && res.cancelled) { toast('Операция отменена, облако не изменено'); res = null; return; }
+        throw new Error((res && (res.message || res.error)) || 'расчёт не выполнен');
+      }
+      setPct(0.82, 'Разметка точек…'); await yieldFrame();
+      M = DV.build(res.keys instanceof Float64Array ? res.keys : Float64Array.from(res.keys || []), res.grid);
+      var xf = DV.xfOf(V && V._srcXform), STEP = 2000000;
+      if (big) {
+        var BC = window.BigCloud, segs = V.base[0]._segs, tot = 0, done = 0; sel = new BC.BigSel(segs);
+        for (var s0 = 0; s0 < segs.length; s0++) tot += segs[s0].n;
+        for (var s = 0; s < segs.length; s++) {
+          var sg = segs[s], m = null;
+          for (var i0 = 0; i0 < sg.n; i0 += STEP) {
+            var i1 = Math.min(sg.n, i0 + STEP);
+            DV.classify(M, sg.P, i0, i1, xf, function (i) { if (!m) m = new Uint8Array(sg.n); m[i] = 1; });
+            done += i1 - i0; setPct(0.82 + 0.16 * done / Math.max(1, tot), 'Разметка точек…'); await yieldFrame();
+          }
+          sel.m[s] = m;
+        }
+        sel.recount(); nFound = sel.size;
+      } else {
+        var c = getCloud(), list = [], n = c.count;
+        for (var j0 = 0; j0 < n; j0 += STEP) { DV.classify(M, c.pos, j0, Math.min(n, j0 + STEP), xf, function (i) { list.push(i); }); setPct(0.82 + 0.16 * Math.min(n, j0 + STEP) / n, 'Разметка точек…'); await yieldFrame(); }
+        idx = Uint32Array.from(list); nFound = idx.length;
+      }
+    }, { onCancel: function () { try { api.cancelDynamicClean(jobId); } catch (e) {} } });
+    if (!res) return;
+    var st = res.stats || {}, secs = st.ms ? Math.round((st.ms.occupancy + st.ms.rays + (st.ms.decide || 0)) / 1000) : 0;
+    if (!nFound) { toast('Движущихся объектов не найдено (проверено лучей: ' + nfmt(st.rays || 0) + '). Если они есть, попробуйте «Мягко».'); return; }
+    if (big) {
+      var total = 0; for (var q = 0; q < V.base[0]._segs.length; q++) total += V.base[0]._segs[q].n;
+      V._bigSetSel(sel);
+      var pct = nFound / Math.max(1, total) * 100, ok = false;
+      try {
+        ok = await reviewBar({ title: 'Удалить ' + nfmt(nFound) + ' точек движущихся объектов (' + num(pct, pct < 1 ? 3 : 1) + ' % облака)?',
+          text: 'Красным выделено найденное по траектории ' + (res.trajectory || '') + ' за ' + secs + ' с. Крутите и приближайте сцену, чтобы проверить. Ctrl+Z вернёт точки.',
+          okLabel: 'Удалить', cancelLabel: 'Отмена', tone: pct > 5 ? 'warn' : '' });
+      } catch (e) { ok = false; }
+      if (!ok) { try { V.clearSelection(); } catch (e) {} toast('Отменено, облако не изменено'); return; }
+      var removed = await (V.deleteSelectionForce ? V.deleteSelectionForce() : V._bigApplyEdit(false, true));
+      toast('Движущиеся объекты: удалено ' + nfmt(removed || nFound) + ' точек · Ctrl+Z — отмена');
+      return;
+    }
+    var c2 = getCloud();
+    var okGo = await previewRemoval(c2, idx, { noun: 'точек', color: '#ff3b4a', okLabel: 'Удалить' });
+    if (!okGo) { toast('Отменено, облако не изменено'); return; }
+    var cur = getCloud(); if (!cur || cur.pos !== c2.pos) { toast('Облако изменилось — запустите операцию заново'); return; }
+    await run('Движущиеся объекты…', async function (setPct) {
+      setPct(0.6, 'Применение…'); await yieldFrame();
+      var keep = keptIndices(idx, cur.count);
+      if (!keep.length) { toast('Удалились бы все точки — операция отменена'); return; }
+      T().loadCloud(subsetCloud(cur, keep), 'remove-dynamic', { operation: 'cloud.removeDynamic', parameters: { algorithm: 'trajectory-ray-free-space', level: values.level, trajectory: res.trajectory || '', voxel: res.grid && res.grid.v, voxels: M ? M.count : 0, removed: idx.length, kept: keep.length } });
+      toast('Движущиеся объекты: удалено ' + nfmt(idx.length) + ' точек · Ctrl+Z — отмена');
+    });
+  }
+
+  /**
+   * Чистовая обработка скана в новый файл LAS (как экспорт после обработки в Lixel Studio): движущиеся объекты по траектории,
+   * одиночный шум, тонкие стены и пол (проекция на локальную плоскость), пёстрые точки. Исходный файл не меняется; работает
+   * с файлом любого размера по плиткам в фоновом потоке, окно не замирает. Результат можно сразу открыть.
+   */
+  async function opRefineScan() {
+    var t = T(), api = t && t.api ? t.api() : null;
+    if (!api || !api.refineScan) { toast('Чистовая обработка доступна в десктоп-версии'); return; }
+    if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
+    var file = cloudFilePath();
+    if (!file || !/\.las$/i.test(file)) { toast('Нужен исходный файл LAS: откройте облако из LAS'); return; }
+    var found = null; try { var fr = await api.findTrajectory({ path: file }); found = fr && fr.ok ? fr.path : null; } catch (e) {}
+    var trajOpts = (found ? [{ value: 'auto', label: 'Да, траектория рядом: ' + String(found).split(/[\\/]/).slice(-2).join('/') }] : []).concat([{ value: 'pick', label: 'Да, выбрать файл poses.csv…' }, { value: 'off', label: 'Нет' }]);
+    var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
+      title: 'Чистовая обработка', okLabel: 'Выбрать файл и начать',
+      message: 'Создаёт новый файл LAS: без прохожих и машин, без одиночного шума, с тонкими чёткими стенами и полом и без пёстрых точек. Исходный файл не меняется. Файл любого размера обрабатывается по частям в фоне; нужно свободное место примерно в два размера исходного файла.',
+      fields: [
+        { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'off', options: trajOpts,
+          hint: 'Нужны время точек в LAS и траектория сканера: <проект Lixel>/project_data/poses.csv.' },
+        { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }], showIf: function (v) { return v.traj !== 'off'; } },
+        { key: 'noise', label: 'Убрать одиночный шум', type: 'checkbox', value: true },
+        { key: 'thin', label: 'Тонкие чёткие поверхности (стены, пол, потолок)', type: 'checkbox', value: true, hint: 'Точки плоских участков ложатся на локальную плоскость: слой 5–10 мм становится тоньше миллиметра. Углы, трубы и мелкие детали не трогаются.' },
+        { key: 'color', label: 'Исправить пёстрые точки', type: 'checkbox', value: true }
+      ] }) : Promise.resolve(null));
+    if (!values) return;
+    var posesPath = null, dyn = values.traj !== 'off';
+    if (dyn) {
+      posesPath = values.traj === 'auto' ? found : null;
+      if (!posesPath) { var pk = await api.pickTrajectory(); if (!pk || !pk.ok || !pk.path) { toast('Траектория не выбрана'); return; } posesPath = pk.path; }
+    }
+    var jobId = 'ref' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), res = null, stopSub = null;
+    await run('Чистовая обработка…', async function (setPct) {
+      if (api.onRefineScanProgress) stopSub = api.onRefineScanProgress(jobId, function (f, lab) { setPct(0.02 + 0.97 * f, lab || 'Обработка…'); });
+      try { res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, thin: !!values.thin, color: !!values.color, jobId: jobId }); }
+      finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
+    }, { onCancel: function () { try { api.cancelRefineScan(jobId); } catch (e) {} } });
+    if (!res) return;
+    if (!res.ok) { toast(res.cancelled ? 'Обработка отменена' : ('Не удалось: ' + (res.message || res.error || 'ошибка'))); return; }
+    var st = res.stats || {}, parts = [];
+    if (dyn) parts.push(res.dynWarning ? 'движущиеся объекты не найдены (' + res.dynWarning + ')' : 'движущиеся объекты: ' + nfmt(st.dynamic || 0));
+    if (values.noise) parts.push('шум: ' + nfmt(st.noise || 0));
+    if (values.thin) parts.push('выровнено: ' + nfmt(st.moved || 0));
+    if (values.color) parts.push('цвет: ' + nfmt(st.recolored || 0));
+    var msg = 'Сохранено ' + nfmt(st.written || 0) + ' из ' + nfmt(st.points || 0) + ' точек за ' + Math.max(1, Math.round((st.ms || 0) / 1000)) + ' с. ' + parts.join(' · ') + '.\n\n' + (res.name || '');
+    var k = window.__lxKit, open = false;
+    if (k && k.ask) { try { open = await k.ask({ title: 'Чистовая обработка готова', message: msg + '\n\nОткрыть обработанное облако?', okLabel: 'Открыть', cancelLabel: 'Позже' }); } catch (e) { open = false; } }
+    else toast(msg);
+    if (open && typeof window.__bimOpenCloudPath === 'function') await window.__bimOpenCloudPath(res.path);
+  }
+
   /**
    * Автоматическая чистка одним действием (как «авто-очистка» в Lixel): шум и «облачка» в пустоте → люди → стены, пол и потолок ложатся
    * на ровные плоскости, «волосы» около них убираются. Перед применением — предпросмотр удаляемого красным; Ctrl+Z возвращает облако.
@@ -611,7 +755,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDynClean: opDynClean, opRefineScan: opRefineScan, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });

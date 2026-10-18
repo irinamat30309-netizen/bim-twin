@@ -104,7 +104,8 @@
     P._bigGpuDispose = function (sg) {
       const gl = this.gl; if (!gl || !sg) return;
       try { if (sg.vao) gl.deleteVertexArray(sg.vao); if (sg.pb) gl.deleteBuffer(sg.pb); if (sg.cb) gl.deleteBuffer(sg.cb); if (sg.ib) gl.deleteBuffer(sg.ib); if (sg.kb) gl.deleteBuffer(sg.kb); } catch (_) {}
-      sg.vao = null; sg.pb = null; sg.cb = null; sg.ib = null; sg.kb = null;
+      try { if (sg.rb) gl.deleteBuffer(sg.rb); } catch (_) {}
+      sg.vao = null; sg.pb = null; sg.cb = null; sg.ib = null; sg.kb = null; sg.rb = null; sg.rbN = 0;
     };
     // дозаливка изменившегося хвоста сегмента (с точки from) в буферы видеопамяти
     P._bigUpload = function (sg, from) {
@@ -121,13 +122,16 @@
       const st = bo._stream, segs = bo._segs, gl = this.gl;
       BC.renumber(segs);
       for (const sg of segs) {
-        if (!sg.vao) { if (!this._bigGpuCreate(sg)) this._bigNote('Видеопамяти не хватило для части точек — на экране они появятся после перезапуска (в памяти и в файле они есть).', 'warn'); sg._dirtyFrom = null; continue; }
+        if (!sg.vao) { if (!this._bigGpuCreate(sg)) this._bigNote('Видеопамяти не хватило для части точек — на экране они появятся после перезапуска (в памяти и в файле они есть).', 'warn'); else if (bo._radModel && this._segRadRefresh) this._segRadRefresh(bo, sg, 0); sg._dirtyFrom = null; continue; }
         if (sg._dirtyFrom != null) {
-          this._bigUpload(sg, sg._dirtyFrom); sg._dirtyFrom = null;
+          this._bigUpload(sg, sg._dirtyFrom);
+          if (bo._radModel && this._segRadRefresh) this._segRadRefresh(bo, sg, sg._dirtyFrom);
+          sg._dirtyFrom = null;
           if (sg.ib) { try { gl.deleteBuffer(sg.ib); } catch (_) {} sg.ib = null; }
           if (sg.kb) { try { gl.deleteBuffer(sg.kb); } catch (_) {} sg.kb = null; }
         }
       }
+      if (bo._radModel && !bo._radSegReady && this._startSegSpacing) { try { this._startSegSpacing(bo); } catch (_) {} }   // поле шага ещё считалось — заново по новым точкам
       if (o.dropClass || o.dropAll) this._segDropAttr(bo, 'classification');
       if (o.dropIntensity || o.dropAll) this._segDropAttr(bo, 'intensity');
       const N = BC.total(segs);

@@ -100,6 +100,9 @@
   function* fieldGen(pos, n, opt, ctl) {
     opt = opt || {}; n = n | 0;
     var est = CP.estimate(pos, n), s0 = est.spacing > 0 ? est.spacing : 0.02;
+    // opt.weight: pos — равномерная выборка (каждая weight-я точка) большого облака; счётчики приводятся к полному облаку,
+    // ячейки остаются по шагу выборки (3·s0 выборки), шаг полного облака ≈ s0/√weight
+    var wMul = opt.weight > 1 ? +opt.weight : 1, sFull = s0 / Math.sqrt(wMul);
     var rb = robustBox(pos, n);
     if (!rb) return null;
     var diag = Math.hypot(rb.mx[0] - rb.mn[0], rb.mx[1] - rb.mn[1], rb.mx[2] - rb.mn[2]);
@@ -111,7 +114,7 @@
     var i, j;
     // счёт ячеек — по равномерной подвыборке (не более SUB точек): крупные облака считаются в разы быстрее, а число точек в плотных
     // ячейках всё равно измеряется с запасом; вес точки wgt = n/m приводит счётчики к полному облаку
-    var SUB = opt.sub > 0 ? +opt.sub : 6000000, m = Math.min(n, SUB), wgt = n / m, step = n / m;
+    var SUB = opt.sub > 0 ? +opt.sub : 6000000, m = Math.min(n, SUB), wgt = n / m * wMul, step = n / m;
     var cid = opt.keepCid && m === n ? new Int32Array(n).fill(-1) : null;
     for (var u = 0; u < m; u++) {
       i = u < m - 1 ? Math.floor(u * step) : n - 1; j = i * 3;
@@ -133,10 +136,10 @@
       levels.push(P); cur = P; yield 0.46;
     }
     var cells = L0.n, sClimb = new Float32Array(cells), isoFlag = new Uint8Array(cells), jStar = new Uint8Array(cells), LEN = levels.length;
-    var sFloor = s0 / 64, sCeil = 16 * s0;
+    var sFloor = sFull / 64, sCeil = 16 * sFull, cMin = CMIN * wMul;
     for (var id = 0; id < cells; id++) {
       var ax = L0.cx[id], ay = L0.cy[id], az = L0.cz[id], cc = L0.cnt[id], hh = h0, l2 = 0, c0 = cc, c1 = cc;
-      while (cc < CMIN && l2 + 1 < LEN) {
+      while (cc < cMin && l2 + 1 < LEN) {
         l2++; hh *= 2;
         var pid = levels[l2].find(ax >> l2, ay >> l2, az >> l2);
         cc = pid >= 0 ? levels[l2].cnt[pid] : 1;
@@ -155,18 +158,16 @@
       }
       if ((id & 262143) === 262143) yield 0.46 + 0.04 * id / cells;
     }
-    return { s0: s0, h0: h0, inv: inv, mn: [mn0, mn1, mn2], mx: [mx0, mx1, mx2], L0: L0, levels: levels, LEN: LEN, wgt: wgt, m: m, cid: cid, cells: cells,
+    return { s0: sFull, h0: h0, inv: inv, mn: [mn0, mn1, mn2], mx: [mx0, mx1, mx2], L0: L0, levels: levels, LEN: LEN, wgt: wgt, m: m, cid: cid, cells: cells,
       sClimb: sClimb, isoFlag: isoFlag, jStar: jStar, rb: rb };
   }
 
-  /**
-   * Код шага для каждой точки (лог-шкала 0..255 в диапазоне [sMin, sMax]): { codes, sMin, sMax, s0, h0, cells }.
-   * Шаг одиночных выбросов ограничен 4·s0 — шум не раздувается в огромные квадраты.
-   */
-  function* spacingGen(pos, n, opt, ctl) {
+  // Модель поля шага: ячейки нулевого уровня → код 0..255 (лог-шкала [sMin, sMax]); по ней код любой точки считается отдельно
+  // (spacingCodes) — так поле, посчитанное по выборке, раскладывается на все сегменты большого облака
+  function* spacingModelGen(pos, n, opt, ctl) {
     opt = opt || {}; n = n | 0;
     var F = yield* fieldGen(pos, n, opt, ctl);
-    if (!F) { var s0 = (CP.estimate(pos, n).spacing) || 0.02; return { codes: new Uint8Array(n), sMin: s0, sMax: s0 * 1.0001, s0: s0, h0: s0 * 3, cells: 0 }; }
+    if (!F) return null;
     var L0 = F.L0, cells = F.cells, s0b = F.s0, sCell = new Float32Array(cells), lo = Infinity, hi = 0, id;
     for (id = 0; id < cells; id++) {
       var sv = F.isoFlag[id] ? Math.min(F.sClimb[id], 4 * s0b) : F.sClimb[id];
@@ -177,21 +178,38 @@
     var codeOfCell = new Uint8Array(cells);
     for (var q = 0; q < cells; q++) codeOfCell[q] = Math.round((Math.log(sCell[q]) - lnMin) / span * 255);
     F.levels.length = 1;
-    // запись кода каждой точки
-    var codes = new Uint8Array(n), inv = F.inv, mn0 = F.mn[0], mn1 = F.mn[1], mn2 = F.mn[2], mx0 = F.mx[0], mx1 = F.mx[1], mx2 = F.mx[2], i, j;
-    for (i = 0, j = 0; i < n; i++, j += 3) {
+    return { L0: L0, codeOfCell: codeOfCell, inv: F.inv, mn: F.mn, mx: F.mx, sMin: sMin, sMax: sMax, s0: s0b, h0: F.h0, cells: cells };
+  }
+  /** Коды шага точек pos[from..to) по модели M в out[0..to-from); точки вне ячеек модели получают код ближайшей ячейки по краю или 128. */
+  function spacingCodes(M, pos, from, to, out) {
+    var L0 = M.L0, cc = M.codeOfCell, inv = M.inv, mn0 = M.mn[0], mn1 = M.mn[1], mn2 = M.mn[2], mx0 = M.mx[0], mx1 = M.mx[1], mx2 = M.mx[2];
+    for (var i = from, k = 0, j = from * 3; i < to; i++, k++, j += 3) {
       var x2 = pos[j] - mn0, y2 = pos[j + 1] - mn1, z2 = pos[j + 2] - mn2;
-      if ((x2 - x2) + (y2 - y2) + (z2 - z2) !== 0) { codes[i] = 255; continue; }
+      if ((x2 - x2) + (y2 - y2) + (z2 - z2) !== 0) { out[k] = 255; continue; }
       var jx = (x2 * inv) | 0, jy = (y2 * inv) | 0, jz = (z2 * inv) | 0;
       if (x2 < 0) jx = 0; else if (jx > mx0) jx = mx0;
       if (y2 < 0) jy = 0; else if (jy > mx1) jy = mx1;
       if (z2 < 0) jz = 0; else if (jz > mx2) jz = mx2;
       var cid = L0.find(jx, jy, jz);
-      codes[i] = cid >= 0 ? codeOfCell[cid] : 128;
-      if ((i & (CHUNK - 1)) === CHUNK - 1) { prog(ctl, 0.5 + 0.5 * i / n, 'Запись шага точек…'); yield 0.5 + 0.5 * i / n; }
+      out[k] = cid >= 0 ? cc[cid] : 128;
+    }
+    return out;
+  }
+  /**
+   * Код шага для каждой точки (лог-шкала 0..255 в диапазоне [sMin, sMax]): { codes, sMin, sMax, s0, h0, cells }.
+   * Шаг одиночных выбросов ограничен 4·s0 — шум не раздувается в огромные квадраты.
+   */
+  function* spacingGen(pos, n, opt, ctl) {
+    opt = opt || {}; n = n | 0;
+    var M = yield* spacingModelGen(pos, n, opt, ctl);
+    if (!M) { var s0 = (CP.estimate(pos, n).spacing) || 0.02; return { codes: new Uint8Array(n), sMin: s0, sMax: s0 * 1.0001, s0: s0, h0: s0 * 3, cells: 0 }; }
+    var codes = new Uint8Array(n);
+    for (var i = 0; i < n; i += CHUNK) {
+      var e = Math.min(n, i + CHUNK); spacingCodes(M, pos, i, e, codes.subarray(i, e));
+      prog(ctl, 0.5 + 0.5 * e / n, 'Запись шага точек…'); yield 0.5 + 0.5 * e / n;
     }
     prog(ctl, 1, 'Готово');
-    return { codes: codes, sMin: sMin, sMax: sMax, s0: s0b, h0: F.h0, cells: cells };
+    return { codes: codes, sMin: M.sMin, sMax: M.sMax, s0: M.s0, h0: M.h0, cells: M.cells };
   }
   function spacingField(pos, n, opt, ctl) { return run(spacingGen(pos, n, opt, ctl)); }
 
@@ -940,6 +958,6 @@
   /** Декодирует код 0..255 в шаг, м. */
   function decodeSpacing(code, sMin, sMax) { return sMin * Math.pow(sMax / sMin, code / 255); }
 
-  return { spacingGen: spacingGen, spacingField: spacingField, decodeSpacing: decodeSpacing, denoiseGen: denoiseGen, denoise: denoise, DENOISE_PRESETS: DENOISE_PRESETS, peopleGen: peopleGen, people: people, peopleV2Gen: peopleV2Gen, autoCleanGen: autoCleanGen, autoClean: autoClean, PEOPLE_LEVELS: PEOPLE_LEVELS, run: run,
+  return { spacingGen: spacingGen, spacingModelGen: spacingModelGen, spacingCodes: spacingCodes, spacingField: spacingField, decodeSpacing: decodeSpacing, denoiseGen: denoiseGen, denoise: denoise, DENOISE_PRESETS: DENOISE_PRESETS, peopleGen: peopleGen, people: people, peopleV2Gen: peopleV2Gen, autoCleanGen: autoCleanGen, autoClean: autoClean, PEOPLE_LEVELS: PEOPLE_LEVELS, run: run,
     _internal: { CellMap: CellMap, hash3: hash3, robustBox: robustBox } };
 });

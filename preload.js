@@ -183,6 +183,29 @@ contextBridge.exposeInMainWorld('bimAPI', {
   importStations: () => inv('bim:importStations'),
   saveStations: (payload) => inv('bim:saveStations', payload),
 
+  // Удаление движущихся объектов по траектории сканера (LAS с временем точек + poses.csv)
+  findTrajectory: (payload) => inv('bim:findTrajectory', payload),
+  pickTrajectory: () => inv('bim:pickTrajectory'),
+  dynamicClean: (payload) => inv('bim:dynamicClean', payload),
+  onDynamicCleanProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:dynamicCleanProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:dynamicCleanProgress', listener); } catch (_) {} };
+  },
+  cancelDynamicClean: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelDynamicClean', { jobId }); },
+  // Чистовая обработка скана в новый LAS (выбор файла результата — в диалоге главного процесса)
+  refineScan: (payload) => inv('bim:refineScan', payload),
+  onRefineScanProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:refineScanProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:refineScanProgress', listener); } catch (_) {} };
+  },
+  cancelRefineScan: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelRefineScan', { jobId }); },
+
   // Пункт 4 (patch 28): дисковый octree — сборка на диск и потоковая подгрузка узлов
   buildOctree: (payload) => inv('bim:buildOctree', payload),
   readOctreeNode: (payload) => inv('bim:readOctreeNode', payload),
