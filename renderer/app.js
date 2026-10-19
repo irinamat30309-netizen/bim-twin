@@ -490,8 +490,13 @@
     finally { if (btn) btn.classList.remove('on'); }
   }
   // Открыть облако по пути, уже выданному окну главным процессом (например, результат чистовой обработки)
-  window.__bimOpenCloudPath = async function (p) {
+  // Ревизия 19: сброс RAM-кеша облака по пути (файл на диске заменён чистовой обработкой)
+  window.__bimDropCloudCache = function (p) {
+    try { const e = p && cloudCacheMap.get(p); if (e) { cloudCacheBytes -= e.bytes || 0; cloudCacheMap.delete(p); if (cloudCacheBytes < 0) cloudCacheBytes = 0; } } catch (_) {}
+  };
+  window.__bimOpenCloudPath = async function (p, opts) {
     if (!p || !API || typeof API.parseCloud !== 'function') return false;
+    if (opts && opts.fresh) window.__bimDropCloudCache(p);
     try {
       const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop());
       if (!pr || !pr.ok) { if (!(pr && pr.cancelled)) toast((pr && pr.message) || 'Не удалось открыть облако'); return false; }
@@ -500,6 +505,30 @@
       toast('Облако открыто' + (lastCloudCount ? ': ' + Number(lastCloudCount).toLocaleString('ru-RU') + ' точек' : ''));
       return true;
     } catch (e) { console.warn('open cloud', e); toast('Ошибка открытия облака'); return false; }
+  };
+  // Ревизия 19: «Папка сканера» — облако и траектория находятся в папке проекта сами
+  window.__bimOpenScanFolder = async function () {
+    if (!API || typeof API.pickScanFolder !== 'function') { toast('Открытие папки сканера доступно в десктоп-версии'); return false; }
+    let r = null; try { r = await API.pickScanFolder(); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
+    if (!r || !r.ok) { if (!(r && r.cancelled)) toast((r && r.message) || 'Не удалось открыть папку'); return false; }
+    toast('Найдено облако ' + r.name + (r.trajectoryName ? ' и траектория ' + r.trajectoryName : ' (траектория не найдена — движущиеся объекты ищутся по времени точек)'));
+    return window.__bimOpenCloudPath(r.path, { fresh: true });
+  };
+  // Ревизия 19: скан проекта при открытии проекта — тем же путём, что и «Открыть облако» (крупные LAS/PLY читаются по частям).
+  // Возвращает { ok, count, meta } без лишних сообщений; ошибку показывает вызывающий (multicloud.js).
+  window.__bimLoadCloudForProject = async function (p, label) {
+    if (!p || !API || typeof API.parseCloud !== 'function' || !viewer) return { ok: false, message: 'Импорт облака недоступен' };
+    try {
+      if (typeof showCloudFromCache === 'function' && showCloudFromCache(p)) {
+        const cc = cloudCacheMap.get(p); lastCloudPath = p; lastCloudCount = (cc && cc.count) || 0;
+        return { ok: true, count: lastCloudCount, meta: (cc && cc.meta) || {} };
+      }
+      const pr = await parseCloudWithProgress(p, label || String(p).split(/[\\/]/).pop());
+      if (!pr || !pr.ok) return pr || { ok: false };
+      if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: p }); cacheCloud(p, pr); }
+      lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || pr.count || (pr.pos ? pr.pos.length / 3 : 0);
+      return { ok: true, count: lastCloudCount, meta: pr.meta || {} };
+    } catch (e) { console.warn('project cloud', e); return { ok: false, message: String((e && e.message) || e) }; }
   };
   // Синхронизирует свойства помещения (площадь/высота/габариты/объём) с реальной 3D-моделью
   async function applyModelDims(room, mode) {
@@ -1906,14 +1935,15 @@
       const lsGet = (k, d) => { try { const v = window.localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
       const lsSet = (k, v) => { try { window.localStorage.setItem(k, String(v)); } catch (_) {} };
       [['100', 'Все точки (без срезания)'], ['0', 'Авто (срезать, если лагает)'], ['75', '75 % точек'], ['50', '50 % точек'], ['25', '25 % точек'], ['10', '10 % точек'], ['5', '5 % точек'], ['2', '2 % точек']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; qMove.appendChild(o); });
-      // ревизия 14: по умолчанию «Все точки» — ничего не срезается и при движении; прежнее сохранённое «Авто/%» (ключ bim.stream.move) не переносим
-      qMove.value = lsGet('bim.stream.move2', '100'); if (qMove.value !== lsGet('bim.stream.move2', '100')) qMove.value = '100';
+      // ревизия 19: по умолчанию «Авто» — пока камера крутится, двигается или приближается колесом, рисуется столько точек, сколько видеокарта
+      // успевает за кадр (не меньше 2 % облака); как только камера остановилась — снова ВСЕ точки файла. Прежний выбор (ключ move2) не переносим.
+      qMove.value = lsGet('bim.stream.move3', '0'); if (qMove.value !== lsGet('bim.stream.move3', '0')) qMove.value = '0';
       const rows = Array.from(document.querySelectorAll('.q-stream'));
       const apply = () => {
         if (!viewer) return;
         try { if (viewer.setOctreeMovePercent) viewer.setOctreeMovePercent(Number(qMove.value) || 0); } catch (_) {}
       };
-      qMove.addEventListener('change', () => { lsSet('bim.stream.move2', qMove.value); apply(); toast(Number(qMove.value) >= 100 ? 'Всегда рисуются все точки, в том числе при движении (на очень больших облаках возможны подтормаживания)' : Number(qMove.value) ? 'При движении рисуется ' + qMove.value + ' % точек файла; когда камера остановилась, на экране все точки' : 'При движении число точек подбирается под видеокарту; когда камера остановилась, на экране все точки'); });
+      qMove.addEventListener('change', () => { lsSet('bim.stream.move3', qMove.value); apply(); toast(Number(qMove.value) >= 100 ? 'Всегда рисуются все точки, в том числе при движении (на очень больших облаках возможны подтормаживания)' : Number(qMove.value) ? 'При движении рисуется ' + qMove.value + ' % точек файла; когда камера остановилась, на экране все точки' : 'При движении число точек подбирается под видеокарту; когда камера остановилась, на экране все точки'); });
       // Ревизия 13: «При движении» работает в обычном режиме (облако целиком) и в потоковом
       rows.forEach((r) => { r.hidden = false; });
       apply();

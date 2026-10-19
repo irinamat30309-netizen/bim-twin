@@ -935,9 +935,10 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this._attributeWarnings = preserve ? priorWarnings.slice() : [];
       (meta.attributeWarnings || []).forEach(w => { if (w && !this._attributeWarnings.includes(w)) this._attributeWarnings.push(String(w)); });
       if (!preserve) {
-        this._cloudDisplay = { pointSize:null, opacity:1, min:0, max:1, palette:0, hideOutside:false };
-        this.cloudVisible = true; this._ptElev = false; this._cloudColorMode = 'rgb'; this._ptSizeMul = 1.45;
-        this._denseFill = false; this._attenuate = true; this._roundPoints = false;
+        // ревизия 19: по умолчанию — самый маленький размер точки (1 px, как в CloudCompare); крупнее — ползунком «Размер точки»
+        this._cloudDisplay = { pointSize:1, opacity:1, min:0, max:1, palette:0, hideOutside:false };
+        this.cloudVisible = true; this._ptElev = false; this._cloudColorMode = 'rgb'; this._ptSizeMul = 1;
+        this._denseFill = false; this._attenuate = false; this._roundPoints = false;
       }
       let n = Math.min(Math.floor(cloud.count || cloud.pos.length / 3), Math.floor(cloud.pos.length / 3));
       let intensity = cloud.intensity && cloud.intensity.length >= n ? cloud.intensity.subarray ? cloud.intensity.subarray(0, n) : new Float32Array(cloud.intensity.slice(0, n)) : null;
@@ -1113,9 +1114,9 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       if (this._srcCrs) this._srcMeta.crsWkt = this._srcCrs;
       if (this._srcUnits) this._srcMeta.units = this._srcUnits;
       this._attributeWarnings = []; (meta.attributeWarnings || []).forEach(w => { if (w && !this._attributeWarnings.includes(w)) this._attributeWarnings.push(String(w)); });
-      this._cloudDisplay = { pointSize: null, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };
-      this.cloudVisible = true; this._ptElev = false; this._cloudColorMode = 'rgb'; this._ptSizeMul = 1.45;
-      this._denseFill = false; this._attenuate = true; this._roundPoints = false;
+      this._cloudDisplay = { pointSize: 1, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };   // ревизия 19: 1 px по умолчанию
+      this.cloudVisible = true; this._ptElev = false; this._cloudColorMode = 'rgb'; this._ptSizeMul = 1;
+      this._denseFill = false; this._attenuate = false; this._roundPoints = false;
       this._decimatedFrom = 0; this._decimatedTo = 0; this._gpuShort = null;
       const target = Math.max(100000, Math.floor(Number(opts.sampleTarget || info.sampleTarget) || 4000000));
       const every = Math.max(1, Math.ceil(total / target)), cap = Math.max(1, Math.ceil(total / every));
@@ -2881,7 +2882,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this._interPts = Math.max(Math.min(total, 1500000), Math.min(total, Math.max(want, total * 0.02)));
       this._interMs = ms;
     }
-    interactivePointBudget(total) { return this._interPts ? Math.min(total, Math.round(this._interPts)) : total; }
+    // ревизия 19: до первого замера кадра при движении рисуется не больше 12 млн точек (а не всё облако): первый же поворот огромного облака не «залипает»
+    interactivePointBudget(total) { return this._interPts ? Math.min(total, Math.round(this._interPts)) : Math.min(total, 12000000); }
     _renderNow() {
       const gl = this.gl; if (!gl) return;
       // ревизия 13: скорость видеокарты замеряется и на первом полном кадре в покое — первое же движение мыши по огромному облаку не «подвисает»
