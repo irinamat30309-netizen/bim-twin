@@ -1168,7 +1168,8 @@ function registerIpc() {
       const key = cloudJobKey(sender, 'refine:' + jobId);
       if (activeRefineJobs.has(key)) return { ok: false, error: 'duplicate_job_id' };
       let posesText = null, posesName = null;
-      if (a.dynamic && a.posesPath !== 'none') {   // траектория необязательна (ревизия 19)
+      // траектория необязательна (ревизия 19); ревизия 21 — нужна и для сведения проходов, не только для движущихся
+      if ((a.dynamic || a.align !== false) && a.posesPath !== 'none') {
         let posesAbs = null;
         if (a.posesPath) { posesAbs = resolveAuthorizedFile(event, String(a.posesPath), new Set(['.csv', '.txt'])); if (!posesAbs) return { ok: false, error: 'trajectory_not_authorized' }; }
         else posesAbs = findTrajectoryNear(abs);
@@ -1202,7 +1203,8 @@ function registerIpc() {
       tmpOut = path.join(workDir, 'out.las');
       const NOISE_LEVELS = ['soft', 'normal', 'strong', 'max'];
       const opt = { noise: a.noise !== false, thin: a.thin !== false, color: a.color !== false, dynamic: !!a.dynamic,
-        noiseLevel: NOISE_LEVELS.includes(a.noiseLevel) ? a.noiseLevel : 'strong' };
+        noiseLevel: NOISE_LEVELS.includes(a.noiseLevel) ? a.noiseLevel : 'strong',
+        align: a.align !== false, colorBalance: a.colorBalance !== false };   // ревизия 21: сведение проходов и ровный цвет
       const worker = new Worker(unpackedWorker('scan-refine-worker.js'), { workerData: { src: abs, out: tmpOut, tmpDir: workDir, posesText, dynOpt: dynOptsFrom(a.dynOpts), opt } });
       const r = await new Promise(resolve => {
         const job = { worker, cancelled: false, finished: false };

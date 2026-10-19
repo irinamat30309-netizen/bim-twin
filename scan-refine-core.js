@@ -8,7 +8,11 @@
  *   • чёткость поверхностей: на плоских участках точки проецируются на локальную плоскость (MLS по ячейкам 4 см) — стена
  *     толщиной 5–10 мм (realtime-карта сканера) становится тонкой, как в Lixel, края, трубы и углы не трогаются;
  *   • цвет: «пёстрые» точки (белые блики на кирпиче, пиксель неба) получают цвет похожих соседей; швы плитки и кладки
- *     не усредняются.
+ *     не усредняются; ревизия 21 — «соль с перцем» ограничивается ±T от медианы поверхности (швы и провода сохраняются);
+ *   • ревизия 21, сведение проходов (pass-align-core.js): дрейф realtime-траектории между проходами (2–4 см: двойные рамы,
+ *     «ореолы» у окон и арматуры) исправляется плавной поправкой по времени точек — как пересчёт в Lixel Studio;
+ *   • ревизия 21, ровный цвет (color-balance-core.js): экспозиция проходов выравнивается, баланс белого нейтральный,
+ *     тёмное облако мягко осветляется.
  * Файл обрабатывается по плиткам (столбцы в плане с перекрытием 20 см): память ограничена размером плитки, а не облака.
  * Проходы: 1) счёт точек по столбцам 1 м → плитки; 2) раскладка во временные файлы; 3) обработка плиток и запись LAS.
  */
@@ -16,6 +20,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const RGB_OFF = { 2: 20, 3: 28, 5: 28, 7: 30, 8: 30, 10: 30 };
+const PA = require('./pass-align-core');
+const CB = require('./color-balance-core');
 
 function readHeader(fd) {
   const h = Buffer.alloc(375); fs.readSync(fd, h, 0, 375, 0);
@@ -23,7 +29,7 @@ function readHeader(fd) {
   const minor = h[25], hsize = h.readUInt16LE(94), off = h.readUInt32LE(96), fmt = h[104] & 0x3f, rl = h.readUInt16LE(105);
   if (h[104] & 0x80) throw new Error('сжатый LAS (LAZ) не поддерживается — нужен обычный LAS');
   let n = h.readUInt32LE(107); if (minor >= 4) { const n2 = Number(h.readBigUInt64LE(247)); if (n2 > 0) n = n2; }
-  return { minor, hsize, off, fmt, rl, n, rgb: RGB_OFF[fmt], sx: h.readDoubleLE(131), sy: h.readDoubleLE(139), sz: h.readDoubleLE(147), ox: h.readDoubleLE(155), oy: h.readDoubleLE(163), oz: h.readDoubleLE(171),
+  return { minor, hsize, off, fmt, rl, n, rgb: RGB_OFF[fmt], tOff: PA.TOFF[fmt], sx: h.readDoubleLE(131), sy: h.readDoubleLE(139), sz: h.readDoubleLE(147), ox: h.readDoubleLE(155), oy: h.readDoubleLE(163), oz: h.readDoubleLE(171),
     maxX: h.readDoubleLE(179), minX: h.readDoubleLE(187), maxY: h.readDoubleLE(195), minY: h.readDoubleLE(203) };
 }
 
@@ -211,10 +217,10 @@ function isolated(X, n, alive, o) {
 // и самые редкие дальние участки). globalFrac — порог относительно типичной плотности участка, off — «пыль» у поверхностей,
 // speck — доля похожих по цвету соседей, ниже которой точка считается «пёстрой».
 const NOISE_LEVELS = {
-  soft:   { maxNb: 2, frac: 0.02, minMean: 30, cluster: 8,  globalFrac: 0,    off: null, speck: { shareMin: 0.04 } },
-  normal: { maxNb: 3, frac: 0.04, minMean: 20, cluster: 20, globalFrac: 0.05, off: { k: 3, ratio: 0.3, passes: 1 }, speck: { shareMin: 0.05 } },
-  strong: { maxNb: 3, frac: 0.06, minMean: 20, cluster: 40, globalFrac: 0.1,  off: { k: 2.5, ratio: 0.3, passes: 2 }, speck: { shareMin: 0.06 } },
-  max:    { maxNb: 4, frac: 0.08, minMean: 20, cluster: 60, globalFrac: 0.15, off: { k: 2, ratio: 0.4, minTol: 0.01, passes: 2 }, speck: { shareMin: 0.08 } }
+  soft:   { maxNb: 2, frac: 0.02, minMean: 30, cluster: 8,  globalFrac: 0,    off: null, speck: { shareMin: 0.04 }, clampT: 24 },
+  normal: { maxNb: 3, frac: 0.04, minMean: 20, cluster: 20, globalFrac: 0.05, off: { k: 3, ratio: 0.3, passes: 1 }, speck: { shareMin: 0.05 }, clampT: 16 },
+  strong: { maxNb: 3, frac: 0.06, minMean: 20, cluster: 40, globalFrac: 0.1,  off: { k: 2.5, ratio: 0.3, passes: 2 }, speck: { shareMin: 0.06 }, clampT: 12 },
+  max:    { maxNb: 4, frac: 0.08, minMean: 20, cluster: 60, globalFrac: 0.15, off: { k: 2, ratio: 0.4, minTol: 0.01, passes: 2 }, speck: { shareMin: 0.08 }, clampT: 8 }
 };
 /** «Туман» у поверхностей: точек в кубе 15 см вокруг точки меньше frac от средней по окрестности 75 см → удалить. */
 function lowDensity(X, n, alive, o) {
@@ -355,14 +361,71 @@ function denoise(X, n, alive, level) {
   if (L.off) for (let p = 0; p < (L.off.passes || 1); p++) st.surface += offSurface(X, n, alive, L.off);
   return st;
 }
-/** Цвет (ревизия 20): только «пёстрые» точки; швы плитки и кладки не усредняются (прежний fixColors их стирал). */
-function cleanColors(X, RGB, n, alive, level) {
+/**
+ * Ревизия 21: «соль с перцем» — соседние точки одной поверхности отличаются по цвету на десятки единиц (кадры разных
+ * проходов, шум камеры). Опора — медиана цвета в ячейках 1 см, сглаженная гауссом (σ 8 мм) по 27 соседним ячейкам;
+ * отклонение точки от опоры ограничивается ±T (по каналам). Текстура (кладка, швы, надписи) в пределах ±T остаётся,
+ * выбросы приводятся к цвету поверхности. Медианы считаются по исходным цветам, порядок обхода не влияет на результат.
+ */
+function clampColors(X, RGB, n, alive, o) {
+  const cell = o.cell || 0.01, sig2 = Math.pow(o.sigma || 0.8 * cell, 2), T = o.T || 12, csig = o.colorSigma != null ? o.colorSigma : 30, csig2 = csig > 0 ? 3 * csig * csig : 0, s0 = o.support0 != null ? o.support0 : 0.03, s1 = o.support1 != null ? o.support1 : 0.12, minNb = o.minNb != null ? o.minNb : 24;
+  const G = cellsOf(X, n, cell, alive), m = G.m, nx = G.nx, ny = G.ny;
+  const start = new Int32Array(m + 1), ord = new Int32Array(n);
+  for (let i = 0; i < n; i++) if (G.cid[i] >= 0) start[G.cid[i] + 1]++;
+  let mxc = 0; for (let j = 0; j < m; j++) { if (start[j + 1] > mxc) mxc = start[j + 1]; start[j + 1] += start[j]; }
+  { const pos = start.slice(0, m); for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0) ord[pos[j]++] = i; } }
+  const med = new Float32Array(m * 3), cen = new Float64Array(m * 3), cw = new Float32Array(m), v = new Float32Array(mxc + 1);
+  for (let j = 0; j < m; j++) {
+    const a0 = start[j], c = start[j + 1] - a0; cw[j] = Math.min(c, 4);
+    let sx = 0, sy = 0, sz = 0; for (let t = a0; t < a0 + c; t++) { const i = ord[t]; sx += X[i * 3]; sy += X[i * 3 + 1]; sz += X[i * 3 + 2]; }
+    cen[j * 3] = sx / c; cen[j * 3 + 1] = sy / c; cen[j * 3 + 2] = sz / c;
+    for (let a = 0; a < 3; a++) {
+      if (c > 48) { for (let t = 0; t < c; t++) v[t] = RGB[ord[a0 + t] * 3 + a]; v.subarray(0, c).sort(); }
+      else for (let t = 0; t < c; t++) { const x = RGB[ord[a0 + t] * 3 + a]; let k = t - 1; while (k >= 0 && v[k] > x) { v[k + 1] = v[k]; k--; } v[k + 1] = x; }
+      med[j * 3 + a] = 0.5 * (v[(c - 1) >> 1] + v[c >> 1]);
+    }
+  }
+  const nb = new Int32Array(27), ref = [0, 0, 0]; let changed = 0;
+  for (let j = 0; j < m; j++) {
+    const x = G.cx[j], y = G.cy[j], z = G.cz[j]; let k = 0;
+    let tot27 = 0;
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const q = (dx | dy | dz) === 0 ? j : G.C.get((x + dx) + nx * ((y + dy) + ny * (z + dz)), false); if (q >= 0) { nb[k++] = q; tot27 += start[q + 1] - start[q]; } }
+    if (tot27 < minNb) continue;   // редкие места: шум и деталь не различить — цвет не трогается
+    for (let t = start[j]; t < start[j + 1]; t++) {
+      const i = ord[t], px = X[i * 3], py = X[i * 3 + 1], pz = X[i * 3 + 2], c0 = RGB[i * 3], c1 = RGB[i * 3 + 1], c2 = RGB[i * 3 + 2];
+      let ws = 0, r = 0, g = 0, b = 0, ws2 = 0, r2 = 0, g2 = 0, b2 = 0, sup = 0, tot = 0;
+      for (let u = 0; u < k; u++) {
+        const q = nb[u], ex = px - cen[q * 3], ey = py - cen[q * 3 + 1], ez = pz - cen[q * 3 + 2], w = Math.exp(-(ex * ex + ey * ey + ez * ez) / sig2) * cw[q];
+        const m0 = med[q * 3], m1 = med[q * 3 + 1], m2 = med[q * 3 + 2];
+        ws += w; r += w * m0; g += w * m1; b += w * m2;
+        if (csig2 > 0) { const d0 = m0 - c0, d1 = m1 - c1, d2 = m2 - c2, w2 = w * Math.exp(-(d0 * d0 + d1 * d1 + d2 * d2) / csig2); ws2 += w2; r2 += w2 * m0; g2 += w2 * m1; b2 += w2 * m2; if (q !== j) { sup += w2; tot += w; } }
+      }
+      if (!(ws > 0)) continue;
+      ref[0] = r / ws; ref[1] = g / ws; ref[2] = b / ws;
+      // шов, провод, кромка: такой же цвет есть и в соседних ячейках — опора сдвигается к похожим (линия не размывается);
+      // у одиночной «соли» похожих соседей нет — опора по всем
+      if (csig2 > 0 && tot > 0 && ws2 > 1e-12) {
+        const al = Math.max(0, Math.min(1, (sup / tot - s0) / (s1 - s0)));
+        if (al > 0) { ref[0] += al * (r2 / ws2 - ref[0]); ref[1] += al * (g2 / ws2 - ref[1]); ref[2] += al * (b2 / ws2 - ref[2]); }
+      }
+      let ch = false;
+      for (let a = 0; a < 3; a++) { const d = RGB[i * 3 + a] - ref[a]; if (d > T) { RGB[i * 3 + a] = ref[a] + T; ch = true; } else if (d < -T) { RGB[i * 3 + a] = ref[a] - T; ch = true; } }
+      if (ch) changed++;
+    }
+  }
+  return changed;
+}
+/** Цвет: «пёстрые» точки (ревизия 20; швы плитки и кладки не усредняются), затем ограничение «соли с перцем» (ревизия 21). */
+function cleanColors(X, RGB, n, alive, level, o) {
   const L = NOISE_LEVELS[level] || NOISE_LEVELS.normal;
-  return fixSpeckles(X, RGB, n, alive, Object.assign({ cell: 0.02, minNb: 6, iters: 2 }, L.speck));
+  let k = fixSpeckles(X, RGB, n, alive, Object.assign({ cell: 0.02, minNb: 6, iters: 2 }, L.speck));
+  if (!(o && o.clamp === false) && L.clampT) k += clampColors(X, RGB, n, alive, { T: (o && o.clampT) || L.clampT });
+  return k;
 }
 
 /**
- * refine(src, dst, opt, onProgress) → stats. opt: { dynamic: { sets } | null, noise, noiseLevel ('soft'|'normal'|'strong'|'max', по умолчанию strong), thin, color, tileMax, tmpDir }
+ * refine(src, dst, opt, onProgress) → stats. opt: { dynamic: { sets } | null, noise, noiseLevel ('soft'|'normal'|'strong'|'max', по умолчанию strong), thin, color, tileMax, tmpDir,
+ *   align (true), posesText | poses, alignOpt, colorBalance (true), colorBalanceOpt, colorClamp (true) }; stats.align, stats.colorBalance — итоги ревизии 21
  */
 function refine(src, dst, opt, onProgress) {
   opt = Object.assign({ noise: true, thin: true, color: true, tileMax: 4000000, halo: 0.2, thinCell: 0.04, planar: 0.06 }, opt || {});
@@ -376,16 +439,49 @@ function refine(src, dst, opt, onProgress) {
     if (!(ncx > 0 && ncy > 0) || ncx * ncy > 64e6) throw new Error('габариты облака в заголовке LAS некорректны');
     const cnt = new Float64Array(ncx * ncy);
     let colorMax = 0;
+    // ревизия 21: выборка для «сведения проходов» (нужно время точки; траектория — по возможности)
+    const alignOn = opt.align !== false && H.tOff !== undefined && N >= 20000;
+    // ревизия 21: выравнивание цвета проходов (экспозиция, баланс белого, яркость) — по той же выборке, с цветом
+    const balOn = opt.color !== false && opt.colorBalance !== false && H.rgb !== undefined && N >= 20000;
+    const smp = alignOn || balOn ? new PA.Sampler(N, opt.alignSample || 3000000, balOn) : null;
     scan(fd, H, (b, first, c) => {
       for (let j = 0, o = 0; j < c; j++, o += rl) {
         const x = b.readInt32LE(o) * H.sx + H.ox, y = b.readInt32LE(o + 4) * H.sy + H.oy;
+        if (smp && smp.want(first + j)) smp.add(x, y, b.readInt32LE(o + 8) * H.sz + H.oz, H.tOff !== undefined ? b.readDoubleLE(o + H.tOff) : 0,
+          balOn ? b.readUInt16LE(o + H.rgb) : 0, balOn ? b.readUInt16LE(o + H.rgb + 2) : 0, balOn ? b.readUInt16LE(o + H.rgb + 4) : 0);
         let cx = Math.floor((x - x0) / CS), cy = Math.floor((y - y0) / CS); if (cx < 0) cx = 0; else if (cx >= ncx) cx = ncx - 1; if (cy < 0) cy = 0; else if (cy >= ncy) cy = ncy - 1;
         cnt[cy * ncx + cx]++;
         if (H.rgb !== undefined && (j & 255) === 0) { const r = b.readUInt16LE(o + H.rgb); if (r > colorMax) colorMax = r; }
       }
-      prog(0.15 * (first + c) / N, 'Разметка плиток…');
+      prog(0.12 * (first + c) / N, 'Разметка плиток…');
     });
     const c16 = colorMax > 255;
+    let corr = null, align = alignOn ? null : { skipped: H.tOff === undefined ? 'в файле нет времени точек' : 'выключено' };
+    if (alignOn) {
+      prog(0.12, 'Сведение проходов…');
+      try {
+        let poseAt = null;
+        const Pz = opt.poses || (opt.posesText ? require('./dynamic-clean-core').parsePoses(opt.posesText) : null);
+        if (Pz && Pz.n >= 2) {
+          // траектория годится, если покрывает время точек (а не, например, другой съёмки)
+          let inR = 0; const m = Math.min(smp.n, 2000), st = Math.max(1, Math.floor(smp.n / m));
+          for (let i = 0; i < smp.n; i += st) { const t = smp.T[i]; if (t >= Pz.t[0] - 1 && t <= Pz.t[Pz.n - 1] + 1) inR++; }
+          if (inR >= 0.9 * Math.ceil(smp.n / st)) { const f = require('./dynamic-clean-core').makePoseAt(Pz); poseAt = (t, out) => { f(t, out); return out; }; }
+        }
+        const sol = PA.solve(smp, poseAt, Object.assign({ onIter: (it) => prog(0.12 + 0.03 * Math.min(1, (it + 1) / 6), 'Сведение проходов…') }, opt.alignOpt || {}));
+        if (sol.ok) { corr = PA.makeCorrector(sol, poseAt); align = { segments: sol.stats.segments, trajectory: !!poseAt, maxShift: sol.stats.maxShift, before: sol.stats.before.medRes, after: sol.stats.after.medRes, links: sol.stats.after.links }; }
+        else align = { skipped: sol.reason };
+      } catch (e) { align = { skipped: String((e && e.message) || e) }; }
+    }
+    let cfix = null, colorBalance = balOn ? null : { skipped: H.rgb === undefined ? 'в файле нет цвета' : 'выключено' };
+    if (balOn) {
+      prog(0.15, 'Выравнивание цвета проходов…');
+      try {
+        const cs = CB.solve(smp, Object.assign({ scale: c16 ? 1 / 256 : 1, exposure: H.tOff !== undefined }, opt.colorBalanceOpt || {}));
+        if (cs.ok) { cfix = CB.makeColorFix(cs); colorBalance = cs.stats; } else colorBalance = Object.assign({ skipped: cs.reason }, cs.stats);
+      } catch (e) { colorBalance = { skipped: String((e && e.message) || e) }; }
+    }
+    smp && (smp.X = smp.T = smp.C = null);
     // ---- плитки: прямоугольники столбцов, делятся пополам, пока точек больше tileMax
     const tiles = [], tileOf = new Int32Array(ncx * ncy).fill(-1);
     const sumRect = (a, b2, c2, d) => { let s = 0; for (let y = b2; y < d; y++) for (let x = a; x < c2; x++) s += cnt[y * ncx + x]; return s; };
@@ -432,17 +528,19 @@ function refine(src, dst, opt, onProgress) {
       const n = Math.floor(B.length / RS), X = new Float64Array(n * 3), alive = new Uint8Array(n).fill(1), own = new Uint8Array(n);
       const RGB = H.rgb !== undefined ? new Float32Array(n * 3) : null;
       const T = tiles[t], cxm = x0 + (T.a + T.c) / 2 * CS, cym = y0 + (T.b + T.d) / 2 * CS;
-      let zs = 0;
+      let zs = 0; const cv = [0, 0, 0], tOk = H.tOff !== undefined;
       for (let i = 0, o = 0; i < n; i++, o += RS) {
-        const x = B.readInt32LE(o) * H.sx + H.ox, y = B.readInt32LE(o + 4) * H.sy + H.oy, z = B.readInt32LE(o + 8) * H.sz + H.oz;
+        let x = B.readInt32LE(o) * H.sx + H.ox, y = B.readInt32LE(o + 4) * H.sy + H.oy, z = B.readInt32LE(o + 8) * H.sz + H.oz;
+        if (DV && DV.has(x, y, z)) { alive[i] = 0; if (B[o + rl] === 0) nDyn++; }   // движущиеся — по исходным координатам (так их искали)
+        const tt = tOk ? B.readDoubleLE(o + H.tOff) : 0;
+        if (corr) { corr(x, y, z, tt, cv); x = cv[0]; y = cv[1]; z = cv[2]; }
         X[i * 3] = x - cxm; X[i * 3 + 1] = y - cym; X[i * 3 + 2] = z; zs += z; own[i] = B[o + rl] === 0 ? 1 : 0;
-        if (RGB) { const s = c16 ? 1 / 256 : 1; RGB[i * 3] = B.readUInt16LE(o + H.rgb) * s; RGB[i * 3 + 1] = B.readUInt16LE(o + H.rgb + 2) * s; RGB[i * 3 + 2] = B.readUInt16LE(o + H.rgb + 4) * s; }
-        if (DV && DV.has(x, y, z)) { alive[i] = 0; if (own[i]) nDyn++; }
+        if (RGB) { const s = c16 ? 1 / 256 : 1; RGB[i * 3] = B.readUInt16LE(o + H.rgb) * s; RGB[i * 3 + 1] = B.readUInt16LE(o + H.rgb + 2) * s; RGB[i * 3 + 2] = B.readUInt16LE(o + H.rgb + 4) * s; if (cfix) cfix(tt, RGB, i * 3); }
       }
       const zm = n ? zs / n : 0; for (let i = 0; i < n; i++) X[i * 3 + 2] -= zm;
       if (opt.noise) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); denoise(X, n, alive, opt.noiseLevel || 'strong'); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
       if (opt.thin) { for (let it = 0; it < (opt.thinIters || 1); it++) nMoved += thinSurfaces(X, n, alive, { cell: opt.thinCell, planar: opt.planar }); }
-      if (opt.color && RGB) nColor += cleanColors(X, RGB, n, alive, opt.noiseLevel || 'strong');
+      if (opt.color && RGB) nColor += cleanColors(X, RGB, n, alive, opt.noiseLevel || 'strong', { clamp: opt.colorClamp !== false });
       // запись своих живых точек: исходная запись с новыми координатами и цветом
       let k = 0; for (let i = 0; i < n; i++) if (alive[i] && own[i]) k++;
       const O = Buffer.allocUnsafe(k * rl); let w = 0;
@@ -466,7 +564,7 @@ function refine(src, dst, opt, onProgress) {
     if (H.minor >= 3 && h.length >= 235) h.writeBigUInt64LE(0n, 227);
     if (H.minor >= 4 && h.length >= 375) { h.writeBigUInt64LE(0n, 235); h.writeUInt32LE(0, 243); h.writeBigUInt64LE(BigInt(out), 247); h.writeBigUInt64LE(BigInt(out), 255); for (let r = 1; r < 15; r++) h.writeBigUInt64LE(0n, 255 + r * 8); }
     fs.writeSync(ofd, h, 0, h.length, 0); fs.ftruncateSync(ofd, wpos); fs.closeSync(ofd); ofd = null;
-    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: c16 };
+    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: c16, align, colorBalance };
   } finally {
     if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} }
     if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
@@ -474,4 +572,4 @@ function refine(src, dst, opt, onProgress) {
   }
 }
 
-module.exports = { refine, cleanColors, offSurface, fixSpeckles, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3 };
+module.exports = { refine, cleanColors, clampColors, offSurface, fixSpeckles, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3 };

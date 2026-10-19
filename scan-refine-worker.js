@@ -10,6 +10,7 @@ try {
   const o = Object.assign({}, opt || {}, { tmpDir });
   let dynWarning = null, dynStats = null, base = 0;
   o.dynamic = null;
+  o.posesText = posesText || null;   // ревизия 21: траектория и для сведения проходов (поворот вокруг положения сканера)
   // ревизия 19: движущиеся объекты и без траектории — по «следам» во времени точек LAS
   if (opt && opt.dynamic) {
     try {
