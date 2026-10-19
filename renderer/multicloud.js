@@ -64,20 +64,44 @@
       if (attempt < 40) setTimeout(function () { openActiveProjectCloud(cloud, token, serial, attempt + 1); }, 100);
       return;
     }
-    Promise.resolve(window.CloudChunks && window.CloudChunks.parse ? window.CloudChunks.parse(api, cloud.path) : api.parseCloud(cloud.path)).then(function (parsed) {
+    // Ревизия 19: скан проекта открывается тем же путём, что и кнопка «Открыть» (крупные LAS/PLY — по частям, с прогрессом).
+    // Раньше здесь читался весь файл одним запросом: на облаке в сотни миллионов точек это падало по памяти и показывало
+    // «Скан проекта не загружен», хотя то же облако затем нормально открывалось по частям.
+    var stillCurrent = function () {
       var ps = window.BimProjectState;
-      if (serial !== _projectRestoreSerial || !ps || token !== String(ps.projectId || '') + ':' + String(ps.revision || 0)) return;
-      if (!parsed || !parsed.ok || !parsed.pos || !parsed.pos.length) {
+      return serial === _projectRestoreSerial && ps && token === String(ps.projectId || '') + ':' + String(ps.revision || 0);
+    };
+    var shownPath = function () { var r = v && v._cloudRecord; return r && r.sourceName ? String(r.sourceName) : ''; };
+    var loader = typeof window.__bimLoadCloudForProject === 'function' ? window.__bimLoadCloudForProject : null;
+    var job;
+    if (shownPath() === String(cloud.path)) {
+      job = Promise.resolve({ ok: true, alreadyShown: true, count: Number(v.pointCount) || Number(cloud.count) || 0, meta: (v._srcMeta || {}) });
+    } else if (loader) {
+      _suppressLoadedCloudSync = true;
+      job = Promise.resolve(loader(cloud.path, cloud.name)).finally(function () { _suppressLoadedCloudSync = false; });
+    } else {
+      job = Promise.resolve(window.CloudChunks && window.CloudChunks.parse ? window.CloudChunks.parse(api, cloud.path) : api.parseCloud(cloud.path)).then(function (parsed) {
+        if (!stillCurrent()) return { ok: false, stale: true };
+        if (!parsed || !parsed.ok || !parsed.pos || !parsed.pos.length) return parsed || { ok: false };
+        _suppressLoadedCloudSync = true;
+        try { v.loadCloud(parsed, { sourceName: cloud.path }); }
+        finally { _suppressLoadedCloudSync = false; }
+        return { ok: true, count: parsed.pos.length / 3, meta: parsed.meta || {} };
+      });
+    }
+    job.then(function (res) {
+      var ps = window.BimProjectState;
+      if (!stillCurrent() || (res && res.stale)) return;
+      if (!res || !res.ok) {
+        if (res && res.cancelled) return;
+        if (shownPath() === String(cloud.path)) return;   // облако всё же на экране (открыто другим путём) — ошибки нет
         toast('Скан проекта не загружен: исходный файл недоступен или повреждён');
         return;
       }
-      _suppressLoadedCloudSync = true;
-      try { v.loadCloud(parsed, { sourceName: cloud.path }); }
-      finally { _suppressLoadedCloudSync = false; }
       try { if (window.MultiCloud && window.MultiCloud.syncFromViewer) window.MultiCloud.syncFromViewer(cloud.name, cloud.path, { persist: false }); } catch (_) {}
       try {
         window.dispatchEvent(new CustomEvent('bim-project-cloud-restored', {
-          detail: { projectId: ps.projectId, cloudId: cloud.id, path: cloud.path, count: parsed.pos.length / 3, meta: parsed.meta || {} }
+          detail: { projectId: ps.projectId, cloudId: cloud.id, path: cloud.path, count: Number(res.count) || 0, meta: res.meta || {} }
         }));
       } catch (_) {}
       if (ps.loadClassification) {
@@ -100,6 +124,7 @@
     }).catch(function (error) {
       if (serial === _projectRestoreSerial) {
         try { console.warn('[multicloud] project cloud restore failed', error); } catch (_) {}
+        if (shownPath() === String(cloud.path)) return;
         toast('Не удалось открыть исходное облако проекта');
       }
     });

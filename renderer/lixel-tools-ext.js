@@ -360,7 +360,11 @@
     for (var i = 0; i < cand.length; i++) if (cand[i] && /\.las$/i.test(cand[i])) return cand[i];
     return null;
   }
-  var DYN_LEVELS = { strict: { ratio: 1.0, fMin: 4, maxSeen: 35 }, normal: { ratio: 0.6, fMin: 3, maxSeen: 50 }, loose: { ratio: 0.4, fMin: 2, maxSeen: 80 } };
+  // ревизия 19: trail — поиск «следов» по времени точек (работает и без траектории сканера)
+  // ревизия 20: snapSpan — сколько секунд мог простоять «снимок» человека (копия в ключевом кадре) без траектории
+  var DYN_LEVELS = { strict: { ratio: 1.0, fMin: 4, maxSeen: 35, trail: { spanMax: 1.0, minTravel: 1.5, snapSpan: 1 } }, normal: { ratio: 0.6, fMin: 3, maxSeen: 50, trail: { snapSpan: 2 } },
+    loose: { ratio: 0.4, fMin: 2, maxSeen: 80, trail: { spanMax: 2.5, minHits: 1, snapSpan: 4 } } };
+  function trajLabel(p) { return String(p).split(/[\\/]/).slice(-2).join('/'); }
   async function opDynClean() {
     var t = T(), api = t && t.api ? t.api() : null, V = window.__viewer, DV = window.DynVoxels;
     if (!api || !api.dynamicClean) { toast('Удаление движущихся объектов доступно в десктоп-версии'); return; }
@@ -373,14 +377,15 @@
     var found = null; try { var fr = await api.findTrajectory({ path: file }); found = fr && fr.ok ? fr.path : null; } catch (e) {}
     var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
       title: 'Движущиеся объекты', okLabel: 'Найти',
-      message: 'Находит прохожих, машины и их «следы» по траектории сканера: точки, сквозь которые сканер в другое время видел дальше. Стены, колонны, деревья и стоящие машины остаются. Перед удалением найденное показывается красным.',
+      message: 'Находит прохожих, машины и их «следы» и «копии» (цепочки силуэтов идущего человека): по времени точек — объект был в этом месте недолго, а место вокруг сканер видел дольше, — и, если есть траектория сканера, по лучам (сквозь эти точки сканер в другое время видел дальше). Стены, колонны, деревья и стоящие машины остаются. Люди, простоявшие на месте дольше нескольких секунд, находятся только с траекторией. Перед удалением найденное показывается красным.',
       fields: [
-        { key: 'traj', label: 'Траектория сканера', type: 'select', value: found ? 'auto' : 'pick', options: (found ? [{ value: 'auto', label: 'Найдена рядом: ' + String(found).split(/[\\/]/).slice(-2).join('/') }] : []).concat([{ value: 'pick', label: 'Выбрать файл poses.csv…' }]),
-          hint: 'Файл poses.csv лежит в папке проекта Lixel: <проект>/project_data/poses.csv. Время точек в LAS и в траектории должно совпадать.' },
+        { key: 'traj', label: 'Траектория сканера', type: 'select', value: found ? 'auto' : 'none',
+          options: (found ? [{ value: 'auto', label: 'Найдена рядом: ' + trajLabel(found) }] : []).concat([{ value: 'none', label: 'Без траектории — по времени точек' }, { value: 'pick', label: 'Выбрать файл poses.csv…' }]),
+          hint: 'Траектория не обязательна: идущие люди и машины находятся и без неё. С ней (<проект Lixel>/project_data/poses.csv) находятся ещё и стоявшие на месте. Нужно время точек (GPS time) в LAS.' },
         { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }] }
       ] }) : Promise.resolve(null));
     if (!values) return;
-    var posesPath = values.traj === 'auto' ? found : null;
+    var posesPath = values.traj === 'auto' ? found : (values.traj === 'none' ? 'none' : null);
     if (!posesPath) { var pk = await api.pickTrajectory(); if (!pk || !pk.ok || !pk.path) { toast('Траектория не выбрана'); return; } posesPath = pk.path; }
     var jobId = 'dyn' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), res = null, stopSub = null, M = null;
     var idx = null, sel = null, nFound = 0;
@@ -393,7 +398,8 @@
         throw new Error((res && (res.message || res.error)) || 'расчёт не выполнен');
       }
       setPct(0.82, 'Разметка точек…'); await yieldFrame();
-      M = DV.build(res.keys instanceof Float64Array ? res.keys : Float64Array.from(res.keys || []), res.grid);
+      var sets = (res.sets && res.sets.length ? res.sets : [{ keys: res.keys, grid: res.grid }]).map(function (q) { return { keys: q.keys instanceof Float64Array ? q.keys : Float64Array.from(q.keys || []), grid: q.grid, kind: q.kind }; });
+      M = DV.buildMany ? DV.buildMany(sets) : DV.build(sets[0].keys, sets[0].grid);
       var xf = DV.xfOf(V && V._srcXform), STEP = 2000000;
       if (big) {
         var BC = window.BigCloud, segs = V.base[0]._segs, tot = 0, done = 0; sel = new BC.BigSel(segs);
@@ -416,14 +422,15 @@
     }, { onCancel: function () { try { api.cancelDynamicClean(jobId); } catch (e) {} } });
     if (!res) return;
     var st = res.stats || {}, secs = st.ms ? Math.round((st.ms.occupancy + st.ms.rays + (st.ms.decide || 0)) / 1000) : 0;
-    if (!nFound) { toast('Движущихся объектов не найдено (проверено лучей: ' + nfmt(st.rays || 0) + '). Если они есть, попробуйте «Мягко».'); return; }
+    var how = res.trajectory ? 'по траектории ' + res.trajectory + ' и по времени точек' : 'по времени точек';
+    if (!nFound) { toast('Движущихся объектов не найдено (' + how + '). Если они есть, попробуйте «Мягко»' + (res.trajectory ? '' : ' или укажите траекторию poses.csv') + '.'); return; }
     if (big) {
       var total = 0; for (var q = 0; q < V.base[0]._segs.length; q++) total += V.base[0]._segs[q].n;
       V._bigSetSel(sel);
       var pct = nFound / Math.max(1, total) * 100, ok = false;
       try {
         ok = await reviewBar({ title: 'Удалить ' + nfmt(nFound) + ' точек движущихся объектов (' + num(pct, pct < 1 ? 3 : 1) + ' % облака)?',
-          text: 'Красным выделено найденное по траектории ' + (res.trajectory || '') + ' за ' + secs + ' с. Крутите и приближайте сцену, чтобы проверить. Ctrl+Z вернёт точки.',
+          text: 'Красным выделено найденное ' + how + ' за ' + secs + ' с. Крутите и приближайте сцену, чтобы проверить. Ctrl+Z вернёт точки.',
           okLabel: 'Удалить', cancelLabel: 'Отмена', tone: pct > 5 ? 'warn' : '' });
       } catch (e) { ok = false; }
       if (!ok) { try { V.clearSelection(); } catch (e) {} toast('Отменено, облако не изменено'); return; }
@@ -439,68 +446,113 @@
       setPct(0.6, 'Применение…'); await yieldFrame();
       var keep = keptIndices(idx, cur.count);
       if (!keep.length) { toast('Удалились бы все точки — операция отменена'); return; }
-      T().loadCloud(subsetCloud(cur, keep), 'remove-dynamic', { operation: 'cloud.removeDynamic', parameters: { algorithm: 'trajectory-ray-free-space', level: values.level, trajectory: res.trajectory || '', voxel: res.grid && res.grid.v, voxels: M ? M.count : 0, removed: idx.length, kept: keep.length } });
+      T().loadCloud(subsetCloud(cur, keep), 'remove-dynamic', { operation: 'cloud.removeDynamic', parameters: { algorithm: res.trajectory ? 'trajectory-ray-free-space+time-trail' : 'time-trail', level: values.level, trajectory: res.trajectory || '', voxel: res.grid && res.grid.v, voxels: M ? M.count : 0, removed: idx.length, kept: keep.length } });
       toast('Движущиеся объекты: удалено ' + nfmt(idx.length) + ' точек · Ctrl+Z — отмена');
     });
   }
 
+  // Ревизия 19: «Папка сканера» — облако и траектория из папки проекта (реализация — window.__bimOpenScanFolder в app.js)
+  function opScanFolder() {
+    if (typeof window.__bimOpenScanFolder !== 'function') { toast('Открытие папки сканера недоступно'); return; }
+    return window.__bimOpenScanFolder();
+  }
+
   /**
-   * Чистовая обработка скана в новый файл LAS (как экспорт после обработки в Lixel Studio): движущиеся объекты по траектории,
-   * одиночный шум, тонкие стены и пол (проекция на локальную плоскость), пёстрые точки. Исходный файл не меняется; работает
-   * с файлом любого размера по плиткам в фоновом потоке, окно не замирает. Результат можно сразу открыть.
+   * Чистовая обработка скана (как экспорт после обработки в Lixel Studio): движущиеся объекты (по времени точек и по траектории),
+   * шум (уровни мягко/обычно/сильно), тонкие стены и пол (проекция на локальную плоскость), пёстрые точки. Ревизия 19: по умолчанию
+   * результат заменяет открытый файл (исходник остаётся рядом как «<имя>-original.las»), облако на экране перезагружается.
+   * Работает с файлом любого размера по плиткам в фоновом потоке, окно не замирает.
    */
-  async function opRefineScan() {
-    var t = T(), api = t && t.api ? t.api() : null;
+  async function opRefineScan(o) {
+    o = o || {};
+    var t = T(), api = t && t.api ? t.api() : null, V = window.__viewer;
     if (!api || !api.refineScan) { toast('Чистовая обработка доступна в десктоп-версии'); return; }
     if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
     var file = cloudFilePath();
     if (!file || !/\.las$/i.test(file)) { toast('Нужен исходный файл LAS: откройте облако из LAS'); return; }
     var found = null; try { var fr = await api.findTrajectory({ path: file }); found = fr && fr.ok ? fr.path : null; } catch (e) {}
-    var trajOpts = (found ? [{ value: 'auto', label: 'Да, траектория рядом: ' + String(found).split(/[\\/]/).slice(-2).join('/') }] : []).concat([{ value: 'pick', label: 'Да, выбрать файл poses.csv…' }, { value: 'off', label: 'Нет' }]);
+    var trajOpts = (found ? [{ value: 'auto', label: 'Да, по времени точек и траектории ' + trajLabel(found) }] : [])
+      .concat([{ value: 'none', label: 'Да, по времени точек (без траектории)' }, { value: 'pick', label: 'Да, выбрать файл poses.csv…' }, { value: 'off', label: 'Нет' }]);
+    var edited = !!(V && typeof V.canUndo === 'function' && V.canUndo());
+    var fname = String(file).split(/[\\/]/).pop();
     var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
-      title: 'Чистовая обработка', okLabel: 'Выбрать файл и начать',
-      message: 'Создаёт новый файл LAS: без прохожих и машин, без одиночного шума, с тонкими чёткими стенами и полом и без пёстрых точек. Исходный файл не меняется. Файл любого размера обрабатывается по частям в фоне; нужно свободное место примерно в два размера исходного файла.',
+      title: o.title || 'Чистовая обработка', okLabel: 'Начать',
+      message: 'Убирает прохожих и машины, шум и «туман» вокруг поверхностей, делает стены и пол тонкими и чёткими, исправляет пёстрые точки. Файл любого размера обрабатывается по частям в фоне; нужно свободное место примерно в два размера файла.',
+      hint: edited ? 'Внимание: обрабатывается файл на диске (' + fname + '). Правки, сделанные в окне и не сохранённые в файл, в результат не попадут.' : '',
       fields: [
-        { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'off', options: trajOpts,
-          hint: 'Нужны время точек в LAS и траектория сканера: <проект Lixel>/project_data/poses.csv.' },
+        { key: 'target', label: 'Результат', type: 'select', value: 'replace', options: [{ value: 'replace', label: 'Заменить открытый файл ' + fname }, { value: 'new', label: 'Сохранить в новый файл…' }] },
+        { key: 'backup', label: 'Оставить копию исходного файла (<имя>-original.las)', type: 'checkbox', value: true, showIf: function (v) { return v.target === 'replace'; },
+          hint: 'Без копии исходный скан будет удалён без возможности вернуть.' },
+        { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'none', options: trajOpts,
+          hint: 'Нужно время точек (GPS time) в LAS. Траектория сканера (<проект Lixel>/project_data/poses.csv) не обязательна, с ней находится больше.' },
         { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }], showIf: function (v) { return v.traj !== 'off'; } },
-        { key: 'noise', label: 'Убрать одиночный шум', type: 'checkbox', value: true },
+        { key: 'noise', label: 'Убрать шум', type: 'checkbox', value: true },
+        { key: 'noiseLevel', label: 'Сила очистки шума', type: 'select', value: 'strong', options: [{ value: 'soft', label: 'Мягко — только заведомый мусор' }, { value: 'normal', label: 'Обычно' }, { value: 'strong', label: 'Сильно (рекомендуется) — чёткая картинка' }, { value: 'max', label: 'Максимум — самая чистая картинка' }],
+          showIf: function (v) { return !!v.noise; }, hint: 'Удаляются одиночные точки, «туман» и «лучи» за кромками и стеклом, мелкие облачка и «пыль» в 1–8 см перед стенами и полом; арматура, рамы и кабели защищены. «Максимум» может задеть провода тоньше 5 мм и самые редкие дальние участки.' },
         { key: 'thin', label: 'Тонкие чёткие поверхности (стены, пол, потолок)', type: 'checkbox', value: true, hint: 'Точки плоских участков ложатся на локальную плоскость: слой 5–10 мм становится тоньше миллиметра. Углы, трубы и мелкие детали не трогаются.' },
-        { key: 'color', label: 'Исправить пёстрые точки', type: 'checkbox', value: true }
+        { key: 'color', label: 'Исправить пёстрые точки', type: 'checkbox', value: true, hint: 'Белые и цветные одиночные точки (блики, пиксели неба) получают цвет соседей. Швы плитки и кладки не размываются.' }
       ] }) : Promise.resolve(null));
     if (!values) return;
+    var inPlace = values.target !== 'new', keepBackup = !inPlace || values.backup !== false;
+    if (inPlace && !keepBackup && window.__lxKit && window.__lxKit.ask) {
+      var sure = false; try { sure = await window.__lxKit.ask({ title: 'Заменить файл без копии?', message: 'Исходный файл ' + fname + ' будет заменён обработанным, копия не сохранится. Продолжить?', okLabel: 'Заменить', cancelLabel: 'Отмена' }); } catch (e) { sure = false; }
+      if (!sure) return;
+    }
     var posesPath = null, dyn = values.traj !== 'off';
     if (dyn) {
-      posesPath = values.traj === 'auto' ? found : null;
+      posesPath = values.traj === 'auto' ? found : (values.traj === 'none' ? 'none' : null);
       if (!posesPath) { var pk = await api.pickTrajectory(); if (!pk || !pk.ok || !pk.path) { toast('Траектория не выбрана'); return; } posesPath = pk.path; }
     }
     var jobId = 'ref' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), res = null, stopSub = null;
     await run('Чистовая обработка…', async function (setPct) {
       if (api.onRefineScanProgress) stopSub = api.onRefineScanProgress(jobId, function (f, lab) { setPct(0.02 + 0.97 * f, lab || 'Обработка…'); });
-      try { res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, thin: !!values.thin, color: !!values.color, jobId: jobId }); }
-      finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
+      try {
+        res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, noiseLevel: values.noiseLevel || 'strong',
+          thin: !!values.thin, color: !!values.color, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId });
+      } finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
     }, { onCancel: function () { try { api.cancelRefineScan(jobId); } catch (e) {} } });
     if (!res) return;
-    if (!res.ok) { toast(res.cancelled ? 'Обработка отменена' : ('Не удалось: ' + (res.message || res.error || 'ошибка'))); return; }
+    if (!res.ok) { toast(res.cancelled ? 'Обработка отменена, файл не изменён' : ('Не удалось: ' + (res.message || res.error || 'ошибка'))); return; }
     var st = res.stats || {}, parts = [];
     if (dyn) parts.push(res.dynWarning ? 'движущиеся объекты не найдены (' + res.dynWarning + ')' : 'движущиеся объекты: ' + nfmt(st.dynamic || 0));
     if (values.noise) parts.push('шум: ' + nfmt(st.noise || 0));
     if (values.thin) parts.push('выровнено: ' + nfmt(st.moved || 0));
     if (values.color) parts.push('цвет: ' + nfmt(st.recolored || 0));
-    var msg = 'Сохранено ' + nfmt(st.written || 0) + ' из ' + nfmt(st.points || 0) + ' точек за ' + Math.max(1, Math.round((st.ms || 0) / 1000)) + ' с. ' + parts.join(' · ') + '.\n\n' + (res.name || '');
-    var k = window.__lxKit, open = false;
+    var msg = 'Сохранено ' + nfmt(st.written || 0) + ' из ' + nfmt(st.points || 0) + ' точек за ' + Math.max(1, Math.round((st.ms || 0) / 1000)) + ' с. ' + parts.join(' · ') + '.';
+    var k = window.__lxKit;
+    if (inPlace && res.inPlace) {
+      // файл заменён — сразу показываем обработанное облако (кеш старого облака сбрасывается)
+      if (typeof window.__bimOpenCloudPath === 'function') await window.__bimOpenCloudPath(res.path, { fresh: true });
+      toast('Чистовая обработка: файл ' + (res.name || fname) + ' обновлён. ' + msg + (res.backupName ? ' Исходник: ' + res.backupName + '.' : ''));
+      return;
+    }
+    if (inPlace && !res.inPlace) msg = 'Открытый файл заменить не удалось (' + (res.replaceError || 'файл занят') + '), результат сохранён рядом: ' + (res.name || '') + '.\n\n' + msg;
+    else msg += '\n\n' + (res.name || '');
+    var open = false;
     if (k && k.ask) { try { open = await k.ask({ title: 'Чистовая обработка готова', message: msg + '\n\nОткрыть обработанное облако?', okLabel: 'Открыть', cancelLabel: 'Позже' }); } catch (e) { open = false; } }
     else toast(msg);
-    if (open && typeof window.__bimOpenCloudPath === 'function') await window.__bimOpenCloudPath(res.path);
+    if (open && typeof window.__bimOpenCloudPath === 'function') await window.__bimOpenCloudPath(res.path, { fresh: true });
   }
 
   /**
    * Автоматическая чистка одним действием (как «авто-очистка» в Lixel): шум и «облачка» в пустоте → люди → стены, пол и потолок ложатся
    * на ровные плоскости, «волосы» около них убираются. Перед применением — предпросмотр удаляемого красным; Ctrl+Z возвращает облако.
    */
-  function opAutoClean() {
+  async function opAutoClean() {
     var bigV = window.__viewer;
-    if (bigV && typeof bigV.isBigCloud === 'function' && bigV.isBigCloud()) { var cb = document.getElementById('vtClean'); if (cb) { cb.click(); return; } }
+    if (bigV && typeof bigV.isBigCloud === 'function' && bigV.isBigCloud()) {
+      // ревизия 20: большой скан из LAS — полная автоочистка по файлу (люди и их «копии», шум, «пыль», тонкие стены, цвет),
+      // в окне — только быстрая чистка загруженной части
+      var t = T(), api = t && t.api ? t.api() : null, file = cloudFilePath();
+      if (api && api.refineScan && file && /\.las$/i.test(file) && window.__lxKit && window.__lxKit.form) {
+        var how = await window.__lxKit.form({ title: 'Автоочистка', okLabel: 'Далее',
+          message: 'Большой скан очищается по файлу целиком: прохожие и их «копии», шум и «туман», «пыль» у стен, тонкие чёткие стены и пол, пёстрые точки. Результат записывается в LAS (по умолчанию — вместо открытого, с копией исходника).',
+          fields: [{ key: 'mode', label: 'Способ', type: 'select', value: 'full', options: [{ value: 'full', label: 'Полная по файлу (рекомендуется)' }, { value: 'quick', label: 'Быстрая в окне — только шум и мусор' }] }] });
+        if (!how) return;
+        if (how.mode !== 'quick') return opRefineScan({ title: 'Автоочистка' });
+      }
+      var cb = document.getElementById('vtClean'); if (cb) { cb.click(); return; }
+    }
     var LV = { soft: 'мягко', medium: 'средне', strong: 'сильно' }, PL = { strict: 'строго', normal: 'обычно', loose: 'мягко' };
     return processOp({
       op: 'autoclean', label: 'Автоматическая чистка…', title: 'Автоматическая чистка',
@@ -755,7 +807,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDynClean: opDynClean, opRefineScan: opRefineScan, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDynClean: opDynClean, opRefineScan: opRefineScan, opScanFolder: opScanFolder, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });

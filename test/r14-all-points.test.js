@@ -31,11 +31,11 @@ test('вьюер: по умолчанию при движении рисуютс
   assert.equal(v.setOctreeMovePercent('abc'), 0);
 });
 
-test('окно: «При движении» — «Все точки» по умолчанию, старое сохранённое «Авто» не переносится', () => {
+test('окно: «При движении» — «Авто» по умолчанию (ревизия 19), прежний выбор не переносится', () => {
   const a = read('renderer/app.js');
   assert.match(a, /\['100', 'Все точки \(без срезания\)'\]/);
-  assert.match(a, /lsGet\('bim\.stream\.move2', '100'\)/);
-  assert.match(a, /lsSet\('bim\.stream\.move2', qMove\.value\)/);
+  assert.match(a, /lsGet\('bim\.stream\.move3', '0'\)/);   // ревизия 19: по умолчанию «Авто» (в покое — все точки)
+  assert.match(a, /lsSet\('bim\.stream\.move3', qMove\.value\)/);
   assert.ok(!/lsGet\('bim\.stream\.move',/.test(a));
 });
 

@@ -1003,7 +1003,9 @@ function registerIpc() {
   // Удаление движущихся объектов (люди, машины, следы) по траектории сканера: LAS с GPS-временем + poses.csv (Lixel).
   // Расчёт — в фоновом потоке (dynamic-clean-worker.js); в окно возвращается только список «движущихся» вокселей.
   const activeDynCleanJobs = new Map();
+  const scanFolderPoses = new Map();   // облако → траектория, найденные при открытии папки сканера (ревизия 19)
   function findTrajectoryNear(lasAbs) {
+    try { const k = path.resolve(lasAbs), f = scanFolderPoses.get(process.platform === 'win32' ? k.toLowerCase() : k); if (f && fs.statSync(f).isFile()) return f; } catch (_) {}
     const names = ['poses.csv', 'trajectory.csv', 'traj.csv', 'poses.txt', 'trajectory.txt'];
     const dirs = [];
     let d = path.dirname(lasAbs);
@@ -1028,6 +1030,15 @@ function registerIpc() {
     src = src || {}; const opt = {};
     const num = (k, lo, hi) => { const v = Number(src[k]); if (Number.isFinite(v) && v >= lo && v <= hi) opt[k] = v; };
     num('voxel', 0.03, 0.5); num('radius', 5, 200); num('ratio', 0.1, 5); num('fMin', 1, 50); num('minCluster', 1, 1000); num('maxRay', 5, 300); num('rayStep', 1, 64); num('maxSeen', 0, 3600);
+    // ревизия 19: «следы» по времени точек (работают и без траектории)
+    if (src.trail === false) opt.trail = false;
+    else if (src.trail && typeof src.trail === 'object') {
+      const t = {}, tn = (k, lo, hi) => { const v = Number(src.trail[k]); if (Number.isFinite(v) && v >= lo && v <= hi) t[k] = v; };
+      tn('spanMax', 0.2, 10); tn('minTravel', 0.2, 20); tn('minHits', 1, 20); tn('voxel', 0.05, 0.5);
+      // ревизия 20: «снимки» (копии идущего человека в ключевых кадрах) и «ушёл/пришёл» — без траектории
+      tn('snapSpan', 0.3, 30); tn('supMin', 2, 60); tn('supRatio', 1, 50); tn('snapCluster', 1, 1000); tn('touchMax', 0, 1); tn('occlMargin', 0, 60);
+      opt.trail = t;
+    }
     return opt;
   }
   ipcMain.handle('bim:findTrajectory', (event, a) => {
@@ -1049,6 +1060,48 @@ function registerIpc() {
     try { fileGrants.grantExistingFile(sender.id, f, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
     return { ok: true, path: f };
   });
+  // Ревизия 19: «Открыть папку сканера» — в папке проекта (Lixel и др.) находится облако (самый большой LAS, иначе LAZ/E57/PLY/PCD)
+  // и траектория poses.csv; оба файла выдаются окну на чтение, траектория запоминается для движущихся объектов.
+  function scanProjectFolder(root) {
+    const CL = { '.las': 0, '.laz': 1, '.e57': 2, '.ply': 3, '.pcd': 4 }, POSES = /^(poses|trajectory|traj)\.(csv|txt)$/i;
+    const clouds = [], poses = []; let seen = 0;
+    const walk = (dir, depth) => {
+      if (depth > 4 || seen > 20000) return;
+      let ents = []; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+      for (const e of ents) {
+        if (++seen > 20000) return;
+        const f = path.join(dir, e.name);
+        if (e.isDirectory()) { if (!/^(\.|node_modules$|\$recycle)/i.test(e.name)) walk(f, depth + 1); continue; }
+        if (!e.isFile()) continue;
+        const ext = path.extname(e.name).toLowerCase();
+        if (ext in CL) { if (/^\.bimtwin-refine-/.test(path.basename(dir))) continue; let size = 0; try { size = fs.statSync(f).size; } catch (_) { continue; } clouds.push({ path: f, ext, rank: CL[ext], size, backup: /-original(-\d+)?\.las$/i.test(e.name), depth }); }
+        else if (POSES.test(e.name)) poses.push({ path: f, depth, lixel: /project_data$/i.test(dir) });
+      }
+    };
+    walk(root, 0);
+    clouds.sort((x, y) => (x.backup - y.backup) || (x.rank - y.rank) || (y.size - x.size));
+    poses.sort((x, y) => (y.lixel - x.lixel) || (x.depth - y.depth) || (/^poses/i.test(path.basename(y.path)) - /^poses/i.test(path.basename(x.path))));
+    return { clouds, poses };
+  }
+  ipcMain.handle('bim:pickScanFolder', async (event) => {
+    const sender = ipcSender(event); if (!sender) return { ok: false, error: 'invalid_sender' };
+    const owner = BrowserWindow.fromWebContents(sender);
+    const options = { title: 'Папка проекта сканера (облако LAS и траектория poses.csv)', properties: ['openDirectory'] };
+    const res = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, cancelled: true };
+    const root = res.filePaths[0];
+    const { clouds, poses } = scanProjectFolder(root);
+    if (!clouds.length) return { ok: false, error: 'no_cloud', message: 'В папке не найдено облако точек (LAS, LAZ, E57, PLY, PCD). Экспортируйте облако из программы сканера.' };
+    const cloud = clouds[0].path;
+    let traj = findTrajectoryNear(cloud) || (poses[0] && poses[0].path) || null;
+    try { fileGrants.grantExistingFile(sender.id, cloud, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
+    if (traj) {
+      try { fileGrants.grantExistingFile(sender.id, traj, { read: true }); const k = path.resolve(cloud); scanFolderPoses.set(process.platform === 'win32' ? k.toLowerCase() : k, traj); }
+      catch (_) { traj = null; }
+    }
+    return { ok: true, path: cloud, name: path.basename(cloud), size: clouds[0].size, trajectory: traj, trajectoryName: traj ? path.basename(traj) : null,
+      others: clouds.slice(1, 6).map(c => ({ name: path.basename(c.path), size: c.size })) };
+  });
   ipcMain.handle('bim:dynamicClean', async (event, a) => {
     try {
       a = a || {};
@@ -1059,11 +1112,18 @@ function registerIpc() {
       const jobId = typeof a.jobId === 'string' && /^[a-zA-Z0-9:_-]{1,128}$/.test(a.jobId) ? a.jobId : crypto.randomBytes(12).toString('hex');
       const key = cloudJobKey(sender, 'dyn:' + jobId);
       if (activeDynCleanJobs.has(key)) return { ok: false, error: 'duplicate_job_id' };
-      let posesAbs = a.posesPath ? resolveAuthorizedFile(event, String(a.posesPath), new Set(['.csv', '.txt'])) : findTrajectoryNear(abs);
-      if (!posesAbs) return { ok: false, error: 'no_trajectory', message: 'Не найдена траектория сканера (poses.csv) рядом с облаком.' };
-      const st = fs.statSync(posesAbs); if (st.size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
-      const posesText = fs.readFileSync(posesAbs, 'utf8');
+      // ревизия 19: траектория необязательна — без неё движущиеся объекты ищутся по «следам» во времени точек
+      let posesAbs = null;
+      if (a.posesPath === 'none') posesAbs = null;
+      else if (a.posesPath) { posesAbs = resolveAuthorizedFile(event, String(a.posesPath), new Set(['.csv', '.txt'])); if (!posesAbs) return { ok: false, error: 'trajectory_not_authorized' }; }
+      else posesAbs = findTrajectoryNear(abs);
+      let posesText = null;
+      if (posesAbs) {
+        const st = fs.statSync(posesAbs); if (st.size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
+        posesText = fs.readFileSync(posesAbs, 'utf8');
+      }
       const opt = dynOptsFrom(a.opts);
+      if (!posesText && opt.trail === false) return { ok: false, error: 'no_method', message: 'Без траектории сканера нужен поиск по следам во времени точек.' };
       const worker = new Worker(unpackedWorker('dynamic-clean-worker.js'), { workerData: { lasPath: abs, posesText, opt } });
       return await new Promise(resolve => {
         const job = { worker, cancelled: false, finished: false };
@@ -1074,7 +1134,7 @@ function registerIpc() {
         worker.on('message', m => {
           if (!m || job.finished) return;
           if (m.type === 'progress') { try { if (!(sender.isDestroyed && sender.isDestroyed())) sender.send('bim:dynamicCleanProgress', { jobId, progress: m.progress, label: m.label }); } catch (_) {} }
-          else if (m.type === 'result') finish(Object.assign({ trajectory: path.basename(posesAbs) }, m.result || { ok: false }));
+          else if (m.type === 'result') finish(Object.assign({ trajectory: posesAbs ? path.basename(posesAbs) : null }, m.result || { ok: false }));
         });
         worker.on('error', e => finish({ ok: false, error: String((e && e.message) || e) }));
         worker.on('exit', code => { if (job.cancelled) finish({ ok: false, cancelled: true, error: 'cancelled' }); else finish({ ok: false, error: 'dynamic_worker_exit_' + code }); });
@@ -1108,20 +1168,31 @@ function registerIpc() {
       const key = cloudJobKey(sender, 'refine:' + jobId);
       if (activeRefineJobs.has(key)) return { ok: false, error: 'duplicate_job_id' };
       let posesText = null, posesName = null;
-      if (a.dynamic) {
-        const posesAbs = a.posesPath ? resolveAuthorizedFile(event, String(a.posesPath), new Set(['.csv', '.txt'])) : findTrajectoryNear(abs);
-        if (!posesAbs) return { ok: false, error: 'no_trajectory', message: 'Не найдена траектория сканера (poses.csv) рядом с облаком.' };
-        if (fs.statSync(posesAbs).size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
-        posesText = fs.readFileSync(posesAbs, 'utf8'); posesName = path.basename(posesAbs);
+      if (a.dynamic && a.posesPath !== 'none') {   // траектория необязательна (ревизия 19)
+        let posesAbs = null;
+        if (a.posesPath) { posesAbs = resolveAuthorizedFile(event, String(a.posesPath), new Set(['.csv', '.txt'])); if (!posesAbs) return { ok: false, error: 'trajectory_not_authorized' }; }
+        else posesAbs = findTrajectoryNear(abs);
+        if (posesAbs) {
+          if (fs.statSync(posesAbs).size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
+          posesText = fs.readFileSync(posesAbs, 'utf8'); posesName = path.basename(posesAbs);
+        }
       }
       const owner = BrowserWindow.fromWebContents(sender);
       const base = path.basename(abs).replace(/\.las$/i, '');
-      const options = { title: 'Сохранить обработанное облако', defaultPath: path.join(path.dirname(abs), base + '-clean.las'), filters: [{ name: 'LAS', extensions: ['las'] }] };
-      const res = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
-      if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
-      let target = path.resolve(String(res.filePath)); if (path.extname(target).toLowerCase() !== '.las') target += '.las';
-      const same = (x, y) => process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
-      if (same(target, path.resolve(abs))) return { ok: false, error: 'same_file', message: 'Выберите другое имя: исходный файл не перезаписывается.' };
+      // Ревизия 19: inPlace — результат заменяет ОТКРЫТЫЙ файл (без диалога); исходник переименовывается в «<имя>-original.las»
+      // (переименование — без лишнего места на диске) или удаляется, если копия не нужна.
+      const inPlace = !!a.inPlace, keepBackup = a.keepBackup !== false;
+      const uniqueName = (dir0, stem) => { for (let i = 0; i < 1000; i++) { const f = path.join(dir0, stem + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f)) return f; } return path.join(dir0, stem + '-' + Date.now() + '.las'); };
+      let target;
+      if (inPlace) target = path.resolve(abs);
+      else {
+        const options = { title: 'Сохранить обработанное облако', defaultPath: path.join(path.dirname(abs), base + '-clean.las'), filters: [{ name: 'LAS', extensions: ['las'] }] };
+        const res = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+        if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
+        target = path.resolve(String(res.filePath)); if (path.extname(target).toLowerCase() !== '.las') target += '.las';
+        const same = (x, y) => process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+        if (same(target, path.resolve(abs))) return { ok: false, error: 'same_file', message: 'Выберите другое имя: исходный файл не перезаписывается.' };
+      }
       const dir = path.dirname(target);
       if (!fs.statSync(dir).isDirectory()) return { ok: false, error: 'output_directory_not_found' };
       // место: временные плитки (≈ размер исходника) + результат (≈ размер исходника)
@@ -1129,7 +1200,9 @@ function registerIpc() {
       try { const sf = fs.statfsSync(dir); const free = Number(sf.bavail) * Number(sf.bsize); if (Number.isFinite(free) && free < need) return { ok: false, error: 'no_space', message: 'Недостаточно места на диске: нужно около ' + (need / 1073741824).toFixed(1) + ' ГБ, свободно ' + (free / 1073741824).toFixed(1) + ' ГБ.' }; } catch (_) {}
       workDir = fs.mkdtempSync(path.join(dir, '.bimtwin-refine-'));
       tmpOut = path.join(workDir, 'out.las');
-      const opt = { noise: a.noise !== false, thin: a.thin !== false, color: a.color !== false };
+      const NOISE_LEVELS = ['soft', 'normal', 'strong', 'max'];
+      const opt = { noise: a.noise !== false, thin: a.thin !== false, color: a.color !== false, dynamic: !!a.dynamic,
+        noiseLevel: NOISE_LEVELS.includes(a.noiseLevel) ? a.noiseLevel : 'strong' };
       const worker = new Worker(unpackedWorker('scan-refine-worker.js'), { workerData: { src: abs, out: tmpOut, tmpDir: workDir, posesText, dynOpt: dynOptsFrom(a.dynOpts), opt } });
       const r = await new Promise(resolve => {
         const job = { worker, cancelled: false, finished: false };
@@ -1146,10 +1219,29 @@ function registerIpc() {
         worker.on('exit', code => { if (job.cancelled) finish({ ok: false, cancelled: true, error: 'cancelled' }); else finish({ ok: false, error: 'refine_worker_exit_' + code }); });
       });
       if (!r.ok) { cleanup(); return r; }
-      try { fs.rmSync(target, { force: true }); } catch (_) {}
-      fs.renameSync(tmpOut, target); tmpOut = null; cleanup();
+      let backup = null, replaced = false, replaceError = null;
+      if (inPlace) {
+        // исходник → «-original» (или во временное имя, если копия не нужна), результат → имя исходника; при любой ошибке исходник возвращается на место
+        const bak = keepBackup ? uniqueName(dir, base + '-original') : path.join(workDir, 'source-old.las');
+        try {
+          fs.renameSync(target, bak);
+          try { fs.renameSync(tmpOut, target); tmpOut = null; replaced = true; }
+          catch (e2) { try { fs.renameSync(bak, target); } catch (_) {} throw e2; }
+          if (keepBackup) backup = bak; else { try { fs.rmSync(bak, { force: true }); } catch (_) {} }
+        } catch (e) { replaceError = String((e && e.code) || (e && e.message) || e); }
+        if (!replaced) {   // файл занят другой программой — сохраняем рядом новым файлом, исходник не тронут
+          target = uniqueName(dir, base + '-clean');
+          fs.renameSync(tmpOut, target); tmpOut = null;
+        }
+      } else {
+        try { fs.rmSync(target, { force: true }); } catch (_) {}
+        fs.renameSync(tmpOut, target); tmpOut = null;
+      }
+      cleanup();
       try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) {}
-      return { ok: true, path: target, name: path.basename(target), stats: r.stats, dynStats: r.dynStats, dynWarning: r.dynWarning, trajectory: posesName };
+      if (backup) { try { fileGrants.grantExistingFile(sender.id, backup, { read: true }); } catch (_) {} }
+      return { ok: true, path: target, name: path.basename(target), inPlace: inPlace && replaced, replaceError, backup, backupName: backup ? path.basename(backup) : null,
+        stats: r.stats, dynStats: r.dynStats, dynWarning: r.dynWarning, trajectory: posesName };
     } catch (e) { cleanup(); return { ok: false, error: String((e && e.message) || e) }; }
   });
   ipcMain.on('bim:cancelRefineScan', (event, payload) => {

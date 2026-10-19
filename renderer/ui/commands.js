@@ -55,6 +55,7 @@
     { id: 'import', label: 'Импорт', groups: [
       G('clouds', 'Облака точек', [
         I('btnOpenCloud', 'folder-open', 'Открыть облако', { sel: '#btnOpenCloud', primary: 1, tip: 'Облако помещения или файл LAS / LAZ / E57 / PLY' }),
+        I('opScanFolder', 'folder', 'Папка сканера', { call: OPS_T + 'opScanFolder', tip: 'Папка проекта сканера (Lixel и др.): облако и траектория poses.csv находятся сами' }),
         I('opPotree', 'cloud-download', 'Potree 2.0', { call: OPS_S + 'opPotree', tip: 'Открыть набор Potree 2.0 (metadata.json + octree)' })
       ]),
       G('models', 'Модели и документы', [
@@ -70,8 +71,8 @@
       ]),
       G('clean', 'Очистка', [
         I('opAutoClean', 'sparkles', 'Автоочистка', { call: OPS_T + 'opAutoClean', needs: 'cloud', tip: 'Шум, «облачка» в пустоте, прохожие и «волоски» у стен убираются, стены, пол и потолок становятся ровными. Перед применением — предпросмотр красным' }),
-        I('opDynClean', 'route', 'Движущиеся объекты', { call: OPS_T + 'opDynClean', needs: 'cloud', tip: 'Прохожие, машины и их «следы» по траектории сканера (LAS с временем + poses.csv Lixel). Перед удалением — предпросмотр красным' }),
-        I('opRefineScan', 'file-output', 'Чистовая обработка', { call: OPS_T + 'opRefineScan', needs: 'cloud', tip: 'Новый файл LAS без прохожих и шума, с тонкими чёткими стенами и полом — для файла любого размера. Исходный файл не меняется' }),
+        I('opDynClean', 'route', 'Движущиеся объекты', { call: OPS_T + 'opDynClean', needs: 'cloud', tip: 'Прохожие, машины и их «следы» по времени точек LAS, точнее — с траекторией poses.csv. Перед удалением — предпросмотр красным' }),
+        I('opRefineScan', 'file-output', 'Чистовая обработка', { call: OPS_T + 'opRefineScan', needs: 'cloud', tip: 'Без прохожих и шума, с тонкими чёткими стенами и полом — для файла любого размера. Обновляет открытый файл (копия исходника остаётся) или сохраняет новый' }),
         I('vtTools', 'brush-cleaning', 'Чистка', { sel: '#vtTools', menu: 1, needs: 'cloud', tip: 'Убрать шум, выбросы и «лучи», выделить мусор' }),
         I('vtEdit', 'lasso-select', 'Правка облака', { sel: '#vtEdit', needs: 'cloud', tip: 'Выделение лассо или рамкой и удаление точек' }),
       ]),

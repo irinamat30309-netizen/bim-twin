@@ -42,5 +42,13 @@
     }
     return c;
   }
-  return { build: build, classify: classify, xfOf: xfOf };
+  // ревизия 19: несколько наборов вокселей (лучи по траектории + «следы» по времени точек) — точка движущаяся, если попала в любой
+  function buildMany(sets) {
+    const list = (sets || []).filter(function (s) { return s && s.grid && s.keys && s.keys.length; }).map(function (s) { return build(s.keys instanceof Float64Array ? s.keys : Float64Array.from(s.keys), s.grid); });
+    if (list.length === 1) return list[0];
+    let count = 0; for (let i = 0; i < list.length; i++) count += list[i].count;
+    return { parts: list, count: count, grid: list.length ? list[0].grid : null,
+      has(x, y, z) { for (let i = 0; i < list.length; i++) if (list[i].has(x, y, z)) return true; return false; } };
+  }
+  return { build: build, buildMany: buildMany, classify: classify, xfOf: xfOf };
 });

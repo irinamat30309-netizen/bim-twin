@@ -2,10 +2,13 @@
 /*
  * scan-refine-core.js — «чистовая» обработка скана в новый файл LAS (как экспорт после обработки в Lixel Studio), любого размера.
  *   • движущиеся объекты: точки в «движущихся» вокселях (результат dynamic-clean-core.js, voxelsOnly) удаляются;
- *   • одиночный шум: точка без соседей в кубе 30 см удаляется;
+ *   • шум (уровни мягко/обычно/сильно/максимум, ревизии 19–20): одиночные точки, «туман» и «лучи» (низкая плотность
+ *     относительно окрестности и типичной плотности участка), мелкие оторванные облачка, «пыль» в 1–8 см перед поверхностями
+ *     (робастная локальная плоскость; арматура, кабели и кромки защищены плотностью);
  *   • чёткость поверхностей: на плоских участках точки проецируются на локальную плоскость (MLS по ячейкам 4 см) — стена
  *     толщиной 5–10 мм (realtime-карта сканера) становится тонкой, как в Lixel, края, трубы и углы не трогаются;
- *   • цвет: одиночные «пёстрые» точки (блик, пиксель соседнего предмета) получают цвет окрестности.
+ *   • цвет: «пёстрые» точки (белые блики на кирпиче, пиксель неба) получают цвет похожих соседей; швы плитки и кладки
+ *     не усредняются.
  * Файл обрабатывается по плиткам (столбцы в плане с перекрытием 20 см): память ограничена размером плитки, а не облака.
  * Проходы: 1) счёт точек по столбцам 1 м → плитки; 2) раскладка во временные файлы; 3) обработка плиток и запись LAS.
  */
@@ -137,6 +140,63 @@ function fixColors(X, RGB, n, alive, o) {
   for (let i = 0; i < n; i++) { if (!out[i]) continue; const j = G.cid[i], c = S2[j * 4]; if (!(c > 0)) continue; RGB[i * 3] = S2[j * 4 + 1] / c; RGB[i * 3 + 1] = S2[j * 4 + 2] / c; RGB[i * 3 + 2] = S2[j * 4 + 3] / c; }
   return nOut;
 }
+/**
+ * Ревизия 20: «пёстрые» точки (белая пыль на кирпиче, синие блики на бетоне) — по доле похожих цветов рядом, а не по среднему:
+ * цвет точки квантуется (яркость 8 ступеней × преобладающий канал 4 класса); если среди соседей в кубе 9 см таких же цветов
+ * (± одна ступень яркости) меньше shareMin, точка получает средний цвет «согласных» соседей. Швы кирпича и плитки — это линии,
+ * а не одиночные точки: у их точек похожих соседей много, они остаются.
+ */
+function colorClass(r, g, b) {
+  const L = 0.299 * r + 0.587 * g + 0.114 * b, mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  let h = 0; if (mx - mn > 24) h = mx === r ? 1 : (mx === g ? 2 : 3);
+  return (Math.min(7, Math.floor(L / 32)) << 2) | h;
+}
+// доля «похожих по цвету» соседей каждой точки в кубе 3×3×3 ячеек размера cell (без самой точки); -1 — соседей меньше minNb
+function colorShare(X, RGB, n, alive, cell, minNb, out) {
+  const G = cellsOf(X, n, cell, alive), m = G.m;
+  const start = new Int32Array(m + 1), ord = new Int32Array(n), cls = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (G.cid[i] >= 0) start[G.cid[i] + 1]++;
+  for (let j = 0; j < m; j++) start[j + 1] += start[j];
+  { const pos = start.slice(0, m); for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0) ord[pos[j]++] = i; } }
+  const A = new Uint16Array(m * 32), Sl = new Float64Array(32);
+  for (let t = 0; t < start[m]; t++) { const i = ord[t], c = colorClass(RGB[i * 3], RGB[i * 3 + 1], RGB[i * 3 + 2]); cls[i] = c; const q = G.cid[i] * 32 + c; if (A[q] < 65535) A[q]++; }
+  for (let j = 0; j < m; j++) {
+    Sl.fill(0); const x = G.cx[j], y = G.cy[j], z = G.cz[j];
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const q = (dx | dy | dz) === 0 ? j : G.C.get((x + dx) + G.nx * ((y + dy) + G.ny * (z + dz)), false); if (q < 0) continue;
+      const b = q * 32; for (let a = 0; a < 32; a++) Sl[a] += A[b + a];
+    }
+    let tot0 = 0; for (let a = 0; a < 32; a++) tot0 += Sl[a];
+    for (let t = start[j]; t < start[j + 1]; t++) {
+      const i = ord[t], c = cls[i], L = c >> 2, h = c & 3;
+      let same = 0; for (let l = Math.max(0, L - 1); l <= Math.min(7, L + 1); l++) { same += Sl[(l << 2) + h]; if (h) same += 0.5 * Sl[l << 2]; else for (let hh = 1; hh < 4; hh++) same += 0.5 * Sl[(l << 2) + hh]; }
+      const tot = tot0 - 1; out[i] = tot >= minNb ? (same - 1) / tot : -1;
+    }
+  }
+  return G;
+}
+/**
+ * Точка «пёстрая», если похожих по цвету соседей мало и в кубе 3·cell, и в кубе 1,5·cell: шов шириной 1 см в мелком кубе
+ * занимает треть, а одиночный блик — ничего. Цвет — средний по непёстрым соседям.
+ */
+function fixSpeckles(X, RGB, n, alive, o) {
+  const cell = o.cell || 0.03, shareMin = o.shareMin || 0.15, minNb = o.minNb || 10, iters = o.iters || 2, fineMin = o.fineMin != null ? o.fineMin : 2 * shareMin;
+  const sh = new Float32Array(n), shf = new Float32Array(n), bad = new Uint8Array(n); let total = 0;
+  for (let it = 0; it < iters; it++) {
+    const G = colorShare(X, RGB, n, alive, cell, minNb, sh); if (fineMin > 0) colorShare(X, RGB, n, alive, cell / 2, Math.max(3, minNb >> 1), shf);
+    const m = G.m, B = new Float64Array(m * 4); let nb = 0; bad.fill(0);
+    for (let i = 0; i < n; i++) {
+      const j = G.cid[i]; if (j < 0) continue;
+      if (sh[i] >= 0 && sh[i] < shareMin && (!(fineMin > 0) || shf[i] < fineMin)) { bad[i] = 1; nb++; continue; }
+      B[j * 4] += 1; B[j * 4 + 1] += RGB[i * 3]; B[j * 4 + 2] += RGB[i * 3 + 1]; B[j * 4 + 3] += RGB[i * 3 + 2];
+    }
+    if (!nb) break;
+    const S2 = nbSum(G, B, 4);
+    for (let i = 0; i < n; i++) { if (!bad[i]) continue; const j = G.cid[i], c = S2[j * 4]; if (!(c > 0)) continue; RGB[i * 3] = S2[j * 4 + 1] / c; RGB[i * 3 + 1] = S2[j * 4 + 2] / c; RGB[i * 3 + 2] = S2[j * 4 + 3] / c; }
+    total += nb;
+  }
+  return total;
+}
 /** Одиночный шум: в кубе 3×3×3 ячеек (по 10 см) не больше maxNb точек, включая саму → удалить. */
 function isolated(X, n, alive, o) {
   const cell = o.cell || 0.1, maxNb = o.maxNb || 2, G = cellsOf(X, n, cell, alive), A = new Float64Array(G.m);
@@ -146,8 +206,163 @@ function isolated(X, n, alive, o) {
   return r;
 }
 
+// Уровни очистки шума (ревизия 19, усилены в ревизии 20): soft — бережно, normal — по умолчанию прежних версий,
+// strong — по умолчанию с ревизии 20 (картинка как после Lixel Studio), max — максимум чёткости (может съесть провода тоньше 5 мм
+// и самые редкие дальние участки). globalFrac — порог относительно типичной плотности участка, off — «пыль» у поверхностей,
+// speck — доля похожих по цвету соседей, ниже которой точка считается «пёстрой».
+const NOISE_LEVELS = {
+  soft:   { maxNb: 2, frac: 0.02, minMean: 30, cluster: 8,  globalFrac: 0,    off: null, speck: { shareMin: 0.04 } },
+  normal: { maxNb: 3, frac: 0.04, minMean: 20, cluster: 20, globalFrac: 0.05, off: { k: 3, ratio: 0.3, passes: 1 }, speck: { shareMin: 0.05 } },
+  strong: { maxNb: 3, frac: 0.06, minMean: 20, cluster: 40, globalFrac: 0.1,  off: { k: 2.5, ratio: 0.3, passes: 2 }, speck: { shareMin: 0.06 } },
+  max:    { maxNb: 4, frac: 0.08, minMean: 20, cluster: 60, globalFrac: 0.15, off: { k: 2, ratio: 0.4, minTol: 0.01, passes: 2 }, speck: { shareMin: 0.08 } }
+};
+/** «Туман» у поверхностей: точек в кубе 15 см вокруг точки меньше frac от средней по окрестности 75 см → удалить. */
+function lowDensity(X, n, alive, o) {
+  const frac = o.frac || 0.04, minMean = o.minMean || 20;
+  const G = cellsOf(X, n, 0.05, alive), A = new Float64Array(G.m);
+  for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0) A[j]++; }
+  const S1 = nbSum(G, A, 1);
+  const Gc = cellsOf(X, n, 0.25, alive), B = new Float64Array(Gc.m * 2);
+  for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j < 0) continue; const q = Gc.cid[i] * 2; B[q] += 1; B[q + 1] += S1[j]; }
+  const Sc = nbSum(Gc, B, 2); let r = 0;
+  // ревизия 20: ещё и относительно типичной плотности поверхностей участка (медиана) — «лучи» за кромками и отражения в стекле
+  // образуют редкие «листы» в пустоте, где средняя по окрестности тоже мала
+  let gref = 0;
+  if (o.globalFrac > 0) {
+    const smp = []; for (let i = 0; i < n; i += 7) { const j = G.cid[i]; if (j >= 0) smp.push(S1[j]); }
+    smp.sort((a, b) => a - b); gref = smp.length ? o.globalFrac * smp[smp.length >> 1] : 0;
+  }
+  for (let i = 0; i < n; i++) {
+    const j = G.cid[i]; if (j < 0) continue; const q = Gc.cid[i] * 2, mean = Sc[q + 1] / Sc[q];
+    if ((mean >= minMean && S1[j] < frac * mean) || S1[j] < gref) { alive[i] = 0; r++; }
+  }
+  return r;
+}
+/** Мелкие «облачка» вдали от всего (пыль, блики, отражения): связные группы ячеек 10 см, в которых меньше minPts точек. */
+function smallClusters(X, n, alive, o) {
+  const minPts = o.minPts || 20, G = cellsOf(X, n, 0.1, alive), m = G.m, A = new Int32Array(m), P = new Int32Array(m);
+  for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0) A[j]++; }
+  for (let j = 0; j < m; j++) P[j] = j;
+  const find = j => { while (P[j] !== j) { P[j] = P[P[j]]; j = P[j]; } return j; };
+  for (let j = 0; j < m; j++) {
+    const x = G.cx[j], y = G.cy[j], z = G.cz[j];
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if ((dx | dy | dz) === 0) continue;
+      const q = G.C.get((x + dx) + G.nx * ((y + dy) + G.ny * (z + dz)), false); if (q < 0) continue;
+      const a = find(j), b = find(q); if (a !== b) P[a < b ? b : a] = a < b ? a : b;
+    }
+  }
+  const T = new Int32Array(m); for (let j = 0; j < m; j++) T[find(j)] += A[j];
+  let r = 0;
+  for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0 && T[find(j)] < minPts) { alive[i] = 0; r++; } }
+  return r;
+}
+/** Выбросы у плоскостей (ревизия 19; с ревизии 20 в уровнях заменено на offSurface — оставлено для совместимости). */
+function planeOutliers(X, n, alive, o) {
+  const cell = o.cell || 0.05, planar = o.planar || 0.04, G = cellsOf(X, n, cell, alive), m = G.m, A = new Float64Array(m * 10);
+  for (let i = 0; i < n; i++) {
+    const j = G.cid[i]; if (j < 0) continue; const b = j * 10, x = X[i * 3], y = X[i * 3 + 1], z = X[i * 3 + 2];
+    A[b] += 1; A[b + 1] += x; A[b + 2] += y; A[b + 3] += z; A[b + 4] += x * x; A[b + 5] += x * y; A[b + 6] += x * z; A[b + 7] += y * y; A[b + 8] += y * z; A[b + 9] += z * z;
+  }
+  const S = nbSum(G, A, 10), ev = new Float64Array(3), mu = new Float64Array(m * 3), nr = new Float32Array(m * 3), tol = new Float32Array(m);
+  for (let j = 0; j < m; j++) {
+    const b = j * 10, c = S[b]; if (c < 30) continue;
+    const mx = S[b + 1] / c, my = S[b + 2] / c, mz = S[b + 3] / c;
+    const cxx = S[b + 4] / c - mx * mx, cyy = S[b + 7] / c - my * my, czz = S[b + 9] / c - mz * mz;
+    const curv = eig3(cxx, S[b + 5] / c - mx * my, S[b + 6] / c - mx * mz, cyy, S[b + 8] / c - my * mz, czz, ev);
+    if (!(curv < planar)) continue;
+    const sig = Math.sqrt(Math.max(0, curv * (cxx + cyy + czz)));
+    mu[j * 3] = mx; mu[j * 3 + 1] = my; mu[j * 3 + 2] = mz; nr[j * 3] = ev[0]; nr[j * 3 + 1] = ev[1]; nr[j * 3 + 2] = ev[2]; tol[j] = Math.max(0.03, 3 * sig);
+  }
+  let r = 0;
+  for (let i = 0; i < n; i++) {
+    const j = G.cid[i]; if (j < 0 || !(tol[j] > 0)) continue;
+    const d = (X[i * 3] - mu[j * 3]) * nr[j * 3] + (X[i * 3 + 1] - mu[j * 3 + 1]) * nr[j * 3 + 1] + (X[i * 3 + 2] - mu[j * 3 + 2]) * nr[j * 3 + 2];
+    if (Math.abs(d) > tol[j]) { alive[i] = 0; r++; }
+  }
+  return r;
+}
 /**
- * refine(src, dst, opt, onProgress) → stats. opt: { dynamic: { keys, grid } | null, noise, thin, color, tileMax, tmpDir }
+ * Ревизия 20: «пыль» у поверхностей (белые/серые точки в 1–8 см перед кирпичом, плиткой, бетоном). Для каждой ячейки 5 см —
+ * робастная локальная плоскость по окрестности 15 см (2 уточнения только по точкам у плоскости, пыль не тянет её на себя),
+ * разброс σ. Точка дальше max(minTol, k·σ) — кандидат. Кандидат удаляется, только если вокруг (куб 6 см) мало таких же
+ * внеплоскостных точек относительно плотности самой поверхности (ratio): арматура, кабели, кромки рам, уголки — это плотные
+ * линии вне плоскости, их точки остаются; пыль — редкая взвесь.
+ */
+function offSurface(X, n, alive, o) {
+  const cell = o.cell || 0.05, planar = o.planar || 0.12, minTol = o.minTol || 0.012, k = o.k || 3, ratio = o.ratio || 0.3, iters = o.iters || 2;
+  const G = cellsOf(X, n, cell, alive), m = G.m, ev = new Float64Array(3);
+  const mu = new Float64Array(m * 3), nr = new Float32Array(m * 3), band = new Float32Array(m), ok = new Uint8Array(m), inl = new Float64Array(m);
+  const mom = (sel) => {
+    const A = new Float64Array(m * 10);
+    for (let i = 0; i < n; i++) {
+      const j = G.cid[i]; if (j < 0) continue;
+      const x = X[i * 3], y = X[i * 3 + 1], z = X[i * 3 + 2];
+      if (sel && !(ok[j] && Math.abs((x - mu[j * 3]) * nr[j * 3] + (y - mu[j * 3 + 1]) * nr[j * 3 + 1] + (z - mu[j * 3 + 2]) * nr[j * 3 + 2]) < band[j])) continue;
+      const b = j * 10; A[b] += 1; A[b + 1] += x; A[b + 2] += y; A[b + 3] += z; A[b + 4] += x * x; A[b + 5] += x * y; A[b + 6] += x * z; A[b + 7] += y * y; A[b + 8] += y * z; A[b + 9] += z * z;
+    }
+    return nbSum(G, A, 10);
+  };
+  const fit = (S, final) => {
+    for (let j = 0; j < m; j++) {
+      const b = j * 10, c = S[b]; if (c < 15) { ok[j] = 0; continue; }
+      const mx = S[b + 1] / c, my = S[b + 2] / c, mz = S[b + 3] / c;
+      const cxx = S[b + 4] / c - mx * mx, cyy = S[b + 7] / c - my * my, czz = S[b + 9] / c - mz * mz;
+      const curv = eig3(cxx, S[b + 5] / c - mx * my, S[b + 6] / c - mx * mz, cyy, S[b + 8] / c - my * mz, czz, ev);
+      if (!(curv < planar)) { ok[j] = 0; continue; }
+      const sig = Math.sqrt(Math.max(0, curv * (cxx + cyy + czz)));
+      ok[j] = 1; mu[j * 3] = mx; mu[j * 3 + 1] = my; mu[j * 3 + 2] = mz; nr[j * 3] = ev[0]; nr[j * 3 + 1] = ev[1]; nr[j * 3 + 2] = ev[2];
+      band[j] = final ? Math.max(minTol, k * sig) : Math.max(minTol * 0.8, 2 * sig); inl[j] = c;
+    }
+  };
+  fit(mom(false), false);
+  for (let it = 0; it < iters; it++) fit(mom(true), it === iters - 1);
+  // точка проверяется по плоскости той из 27 соседних ячеек, у которой больше всего опорных точек: сама поверхность, а не
+  // «слой пыли» в 5–8 см от неё (он тоже бывает плоским)
+  const ref = new Int32Array(m).fill(-1);
+  for (let j = 0; j < m; j++) {
+    let best = ok[j] ? j : -1, bc = ok[j] ? inl[j] : 0; const x = G.cx[j], y = G.cy[j], z = G.cz[j];
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if ((dx | dy | dz) === 0) continue; const q = G.C.get((x + dx) + G.nx * ((y + dy) + G.ny * (z + dz)), false);
+      if (q >= 0 && ok[q] && inl[q] > bc) { bc = inl[q]; best = q; }
+    }
+    ref[j] = best;
+  }
+  // кандидаты и их плотность в кубе 6 см (ячейки 2 см)
+  const cand = new Uint8Array(n); let nc = 0;
+  for (let i = 0; i < n; i++) {
+    const j0 = G.cid[i]; if (j0 < 0) continue; const j = ref[j0]; if (j < 0) continue;
+    const d = (X[i * 3] - mu[j * 3]) * nr[j * 3] + (X[i * 3 + 1] - mu[j * 3 + 1]) * nr[j * 3 + 1] + (X[i * 3 + 2] - mu[j * 3 + 2]) * nr[j * 3 + 2];
+    if (Math.abs(d) > band[j]) { cand[i] = 1; nc++; }
+  }
+  if (!nc) return 0;
+  const F = cellsOf(X, n, 0.02, cand), Cn = new Float64Array(F.m);
+  for (let i = 0; i < n; i++) { const q = F.cid[i]; if (q >= 0) Cn[q]++; }
+  const Sn = nbSum(F, Cn, 1), area = (0.06 * 0.06) / ((3 * cell) * (3 * cell)); let r = 0;
+  for (let i = 0; i < n; i++) {
+    if (!cand[i]) continue; const q = F.cid[i], j = ref[G.cid[i]];
+    if (Sn[q] < ratio * area * inl[j]) { alive[i] = 0; r++; }
+  }
+  if (o.debug) o.debug({ ref, cand, ok, G, band, mu, nr, inl, Sn, F, area });
+  return r;
+}
+/** Весь шумоподавитель одного участка: одиночные точки → «туман» и «лучи» → мелкие облачка → «пыль» у поверхностей. */
+function denoise(X, n, alive, level) {
+  const L = NOISE_LEVELS[level] || NOISE_LEVELS.normal, st = { isolated: 0, density: 0, clusters: 0, surface: 0 };
+  st.isolated = isolated(X, n, alive, { cell: 0.1, maxNb: L.maxNb });
+  st.density = lowDensity(X, n, alive, L);
+  st.clusters = smallClusters(X, n, alive, { minPts: L.cluster });
+  if (L.off) for (let p = 0; p < (L.off.passes || 1); p++) st.surface += offSurface(X, n, alive, L.off);
+  return st;
+}
+/** Цвет (ревизия 20): только «пёстрые» точки; швы плитки и кладки не усредняются (прежний fixColors их стирал). */
+function cleanColors(X, RGB, n, alive, level) {
+  const L = NOISE_LEVELS[level] || NOISE_LEVELS.normal;
+  return fixSpeckles(X, RGB, n, alive, Object.assign({ cell: 0.02, minNb: 6, iters: 2 }, L.speck));
+}
+
+/**
+ * refine(src, dst, opt, onProgress) → stats. opt: { dynamic: { sets } | null, noise, noiseLevel ('soft'|'normal'|'strong'|'max', по умолчанию strong), thin, color, tileMax, tmpDir }
  */
 function refine(src, dst, opt, onProgress) {
   opt = Object.assign({ noise: true, thin: true, color: true, tileMax: 4000000, halo: 0.2, thinCell: 0.04, planar: 0.06 }, opt || {});
@@ -209,7 +424,8 @@ function refine(src, dst, opt, onProgress) {
     ofd = fs.openSync(dst, 'w+'); fs.writeSync(ofd, hdr, 0, H.off, 0);
     let wpos = H.off, out = 0, nDyn = 0, nNoise = 0, nMoved = 0, nColor = 0, done = 0;
     let bx0 = Infinity, by0 = Infinity, bz0 = Infinity, bx1 = -Infinity, by1 = -Infinity, bz1 = -Infinity;
-    const DV = opt.dynamic && opt.dynamic.keys && opt.dynamic.keys.length ? require('./renderer/dynamic-voxels').build(opt.dynamic.keys, opt.dynamic.grid) : null;
+    const dynSets = opt.dynamic ? (opt.dynamic.sets || (opt.dynamic.keys ? [{ keys: opt.dynamic.keys, grid: opt.dynamic.grid }] : [])).filter(q => q && q.keys && q.keys.length) : [];
+    const DV = dynSets.length ? require('./renderer/dynamic-voxels').buildMany(dynSets) : null;
     for (let t = 0; t < tiles.length; t++) {
       const f = path.join(tmp, t + '.bin'); if (!fs.existsSync(f)) continue;
       const B = fs.readFileSync(f); fs.unlinkSync(f);
@@ -224,9 +440,9 @@ function refine(src, dst, opt, onProgress) {
         if (DV && DV.has(x, y, z)) { alive[i] = 0; if (own[i]) nDyn++; }
       }
       const zm = n ? zs / n : 0; for (let i = 0; i < n; i++) X[i * 3 + 2] -= zm;
-      if (opt.noise) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); isolated(X, n, alive, { cell: 0.1, maxNb: opt.noiseMax || 2 }); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
+      if (opt.noise) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); denoise(X, n, alive, opt.noiseLevel || 'strong'); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
       if (opt.thin) { for (let it = 0; it < (opt.thinIters || 1); it++) nMoved += thinSurfaces(X, n, alive, { cell: opt.thinCell, planar: opt.planar }); }
-      if (opt.color && RGB) nColor += fixColors(X, RGB, n, alive, { cell: 0.05 });
+      if (opt.color && RGB) nColor += cleanColors(X, RGB, n, alive, opt.noiseLevel || 'strong');
       // запись своих живых точек: исходная запись с новыми координатами и цветом
       let k = 0; for (let i = 0; i < n; i++) if (alive[i] && own[i]) k++;
       const O = Buffer.allocUnsafe(k * rl); let w = 0;
@@ -258,4 +474,4 @@ function refine(src, dst, opt, onProgress) {
   }
 }
 
-module.exports = { refine, readHeader, thinSurfaces, fixColors, isolated, cellsOf, eig3 };
+module.exports = { refine, cleanColors, offSurface, fixSpeckles, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3 };

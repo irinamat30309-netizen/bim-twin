@@ -47,7 +47,8 @@ function readLasHeader(fd) {
   let n = h.readUInt32LE(107); if (minor >= 4) { const n2 = Number(h.readBigUInt64LE(247)); if (n2 > 0) n = n2; }
   const TOFF = { 1: 20, 3: 20, 4: 20, 5: 20, 6: 22, 7: 22, 8: 22, 9: 22, 10: 22 };
   if (TOFF[fmt] === undefined) throw new Error('в LAS нет времени точек (формат ' + fmt + ')');
-  return { off, fmt, rl, n, tOff: TOFF[fmt], sx: h.readDoubleLE(131), sy: h.readDoubleLE(139), sz: h.readDoubleLE(147), ox: h.readDoubleLE(155), oy: h.readDoubleLE(163), oz: h.readDoubleLE(171) };
+  return { off, fmt, rl, n, tOff: TOFF[fmt], sx: h.readDoubleLE(131), sy: h.readDoubleLE(139), sz: h.readDoubleLE(147), ox: h.readDoubleLE(155), oy: h.readDoubleLE(163), oz: h.readDoubleLE(171),
+    maxX: h.readDoubleLE(179), minX: h.readDoubleLE(187), maxY: h.readDoubleLE(195), minY: h.readDoubleLE(203), maxZ: h.readDoubleLE(211), minZ: h.readDoubleLE(219) };
 }
 
 // Чтение LAS кусками: cb(buf, firstIndex, count)
@@ -305,4 +306,227 @@ function run(lasPath, poses, opt, onProgress) {
   } finally { fs.closeSync(fd); }
 }
 
-module.exports = { run, smallestEig, parsePoses, makePoseAt, readLasHeader, scanLas };
+/*
+ * runTrail — движущиеся объекты БЕЗ траектории сканера (ревизия 19): нужен только LAS с временем точек.
+ * Неподвижную поверхность сканер видит, пока она в поле зрения, — обычно много секунд, и в разные моменты обхода.
+ * Прохожий или машина занимают каждый воксель лишь на доли секунды, а соседние воксели «следа» заняты одна за другой:
+ * время плавно меняется вдоль следа, и след смещается в плане. Поэтому:
+ *   1) воксель-кандидат: попаданий ≥ minHits, все попадания в пределах spanMax секунд;
+ *   2) кандидаты связываются в кластеры (26-связность);
+ *   3) кластер — движущийся объект, если время соседних вокселей согласовано (доля пар с |Δt| ≤ dtAdj ≥ smooth),
+ *      кластер существовал ≥ minDur секунд, за это время сместился в плане ≥ minTravel м со скоростью speedMin…speedMax м/с,
+ *      и его высота не больше maxHeight (люди, машины, тележки).
+ * Короткий взгляд на неподвижное (через проём, издалека) даёт кластер, который весь занят в одно и то же время, — он остаётся.
+ * Результат — как у run(..., { voxelsOnly: true }): { keys, grid, stats }.
+ */
+function runTrail(lasPath, opt, onProgress) {
+  opt = Object.assign({ voxel: 0.15, spanMax: 1.5, minHits: 2, minCluster: 8, dtAdj: 0.6, smooth: 0.7, minDur: 1.0, minTravel: 1.0,
+    speedMin: 0.15, speedMax: 25, maxHeight: 4.5, grow: 2, maxBlocks: 48e6,
+    snapSpan: 2.0, supMin: 8, supRatio: 5, snapCluster: 6, footVox: 3, occlMargin: 3, occlHeight: 2.6, occlSpanMax: 600, occlExtent: 8, touchMax: 0.15 }, opt || {});
+  const prog = typeof onProgress === 'function' ? onProgress : () => {};
+  const fd = fs.openSync(lasPath, 'r');
+  try {
+    const H = readLasHeader(fd), N = H.n, rl = H.rl, tO = H.tOff;
+    if (!(N > 0)) throw new Error('в LAS нет точек');
+    if (![H.minX, H.minY, H.minZ, H.maxX, H.maxY, H.maxZ].every(Number.isFinite) || !(H.maxX >= H.minX && H.maxY >= H.minY && H.maxZ >= H.minZ)) throw new Error('габариты облака в заголовке LAS некорректны');
+    let v = opt.voxel;
+    const ext = [H.maxX - H.minX + 2 * v, H.maxY - H.minY + 2 * v, H.maxZ - H.minZ + 2 * v];
+    while (Math.ceil(ext[0] / v / 4) * Math.ceil(ext[1] / v / 4) * Math.ceil(ext[2] / v / 4) > opt.maxBlocks) v *= 1.25;   // огромная площадка — крупнее воксель
+    const iv = 1 / v, gx = H.minX - v, gy = H.minY - v, gz = H.minZ - v;
+    const nx = Math.ceil((H.maxX - gx) * iv) + 2, ny = Math.ceil((H.maxY - gy) * iv) + 2, nz = Math.ceil((H.maxZ - gz) * iv) + 2;
+    const bx = (nx + 3) >> 2, by = (ny + 3) >> 2, bz = (nz + 3) >> 2;
+    const blk = new Int32Array(bx * by * bz).fill(-1);
+    let cap = 1 << 15, nb = 0, Hc = new Uint16Array(cap * 64), tA = new Float32Array(cap * 64), tB = new Float32Array(cap * 64);
+    const grow = () => { const nc = cap * 2; let a = new Uint16Array(nc * 64); a.set(Hc); Hc = a; let b = new Float32Array(nc * 64); b.set(tA); tA = b; b = new Float32Array(nc * 64); b.set(tB); tB = b; cap = nc; };
+    const vox = (ix, iy, iz, alloc) => {
+      const b = ((iz >> 2) * by + (iy >> 2)) * bx + (ix >> 2); let id = blk[b];
+      if (id < 0) { if (!alloc) return -1; if (nb >= cap) grow(); id = blk[b] = nb++; }
+      return id * 64 + (((iz & 3) << 4) | ((iy & 3) << 2) | (ix & 3));
+    };
+    const t0s = Date.now();
+    let T0 = NaN;
+    { const b = Buffer.alloc(rl); fs.readSync(fd, b, 0, rl, H.off); T0 = b.readDoubleLE(tO); if (!Number.isFinite(T0)) T0 = 0; }
+    let tMinAll = Infinity, tMaxAll = -Infinity;
+    scanLas(fd, H, (buf, first, c) => {
+      for (let j = 0, o = 0; j < c; j++, o += rl) {
+        const x = buf.readInt32LE(o) * H.sx + H.ox, y = buf.readInt32LE(o + 4) * H.sy + H.oy, z = buf.readInt32LE(o + 8) * H.sz + H.oz;
+        const ix = Math.floor((x - gx) * iv), iy = Math.floor((y - gy) * iv), iz = Math.floor((z - gz) * iv);
+        if (ix < 0 || iy < 0 || iz < 0 || ix >= nx || iy >= ny || iz >= nz) continue;
+        const tt = buf.readDoubleLE(o + tO) - T0; if (!Number.isFinite(tt)) continue;
+        if (tt < tMinAll) tMinAll = tt; if (tt > tMaxAll) tMaxAll = tt;
+        const k = vox(ix, iy, iz, true);
+        if (Hc[k] === 0) { tA[k] = tt; tB[k] = tt; } else { if (tt < tA[k]) tA[k] = tt; if (tt > tB[k]) tB[k] = tt; }
+        if (Hc[k] < 65535) Hc[k]++;
+      }
+      prog(0.8 * (first + c) / N, 'занятость');
+    });
+    if (!(tMaxAll - tMinAll > 0)) throw new Error('у точек LAS одинаковое время — без траектории движущиеся объекты не найти');
+    const t1s = Date.now();
+    const blkPos = new Int32Array(nb * 3);
+    for (let b = 0; b < blk.length; b++) { const id = blk[b]; if (id < 0) continue; const X = b % bx, Y = ((b / bx) | 0) % by, Z = (b / (bx * by)) | 0; blkPos[id * 3] = X << 2; blkPos[id * 3 + 1] = Y << 2; blkPos[id * 3 + 2] = Z << 2; }
+    const kxyz = (k, out) => { const b = (k >> 6), l = k & 63; out[0] = blkPos[b * 3] + (l & 3); out[1] = blkPos[b * 3 + 1] + ((l >> 2) & 3); out[2] = blkPos[b * 3 + 2] + (l >> 4); };
+    const NV = nb * 64, cand = new Uint8Array(NV); let nCand = 0, occVox = 0;
+    for (let k = 0; k < NV; k++) { const h = Hc[k]; if (!h) continue; occVox++; if (h >= opt.minHits && tB[k] - tA[k] <= opt.spanMax) { cand[k] = 1; nCand++; } }
+    const c3 = new Int32Array(3), seen = new Uint8Array(NV), stack = [], comp = [];
+    const dyn = new Uint8Array(NV); let dynVox = 0, clusters = 0, checked = 0;
+    const tm = (k) => 0.5 * (tA[k] + tB[k]);
+    for (let k0 = 0; k0 < NV; k0++) {
+      if (!cand[k0] || seen[k0]) continue;
+      stack.length = 0; comp.length = 0; stack.push(k0); seen[k0] = 1;
+      let pairs = 0, good = 0;
+      while (stack.length) {
+        const a = stack.pop(); comp.push(a); kxyz(a, c3); const ax = c3[0], ay = c3[1], az = c3[2], ta = tm(a);
+        for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy && !dz) continue; const X = ax + dx, Y = ay + dy, Z = az + dz;
+          if (X < 0 || Y < 0 || Z < 0 || X >= nx || Y >= ny || Z >= nz) continue;
+          const q = vox(X, Y, Z, false); if (q < 0 || !cand[q]) continue;
+          if (q > a) { pairs++; if (Math.abs(tm(q) - ta) <= opt.dtAdj) good++; }
+          if (!seen[q]) { seen[q] = 1; stack.push(q); }
+        }
+      }
+      if (comp.length < opt.minCluster) continue;
+      checked++;
+      if (pairs > 0 && good / pairs < opt.smooth) continue;
+      let tLo = Infinity, tHi = -Infinity, zLo = Infinity, zHi = -Infinity;
+      for (const a of comp) { const t = tm(a); if (t < tLo) tLo = t; if (t > tHi) tHi = t; kxyz(a, c3); if (c3[2] < zLo) zLo = c3[2]; if (c3[2] > zHi) zHi = c3[2]; }
+      const dur = tHi - tLo; if (dur < opt.minDur) continue;
+      if ((zHi - zLo + 1) * v > opt.maxHeight) continue;
+      // смещение в плане: центр самых ранних 20 % времени кластера → центр самых поздних 20 %
+      const qa = tLo + 0.2 * dur, qb = tHi - 0.2 * dur; let ex = 0, ey = 0, en = 0, lx = 0, ly = 0, ln = 0;
+      for (const a of comp) { const t = tm(a); if (t > qa && t < qb) continue; kxyz(a, c3); if (t <= qa) { ex += c3[0]; ey += c3[1]; en++; } else { lx += c3[0]; ly += c3[1]; ln++; } }
+      if (!en || !ln) continue;
+      const travel = Math.hypot(lx / ln - ex / en, ly / ln - ey / en) * v, speed = travel / Math.max(1e-3, 0.6 * dur);
+      if (travel < opt.minTravel || speed < opt.speedMin || speed > opt.speedMax) continue;
+      for (const a of comp) { dyn[a] = 1; dynVox++; }
+      clusters++;
+    }
+    // ---- ревизия 20: «мгновенные снимки» и «ушедшие/пришедшие» объекты (realtime-карта пишет точки ключевыми кадрами,
+    // поэтому идущий человек — это цепочка отдельных копий по 0,1 с, а не сплошной след)
+    let snapVox = 0, occlVox = 0;
+    const NC = nx * ny;
+    if ((opt.snap !== false || opt.occl !== false) && NC <= 80e6) {
+      // столбцы: нижний занятый воксель (≈ земля) и самая долгая занятость в столбце
+      const cLowZ = new Int16Array(NC).fill(32767), cLowK = new Int32Array(NC).fill(-1), cSup = new Float32Array(NC);
+      for (let k = 0; k < NV; k++) {
+        if (!Hc[k]) continue; kxyz(k, c3); const c = c3[0] + nx * c3[1], sp = tB[k] - tA[k];
+        if (c3[2] < cLowZ[c]) { cLowZ[c] = c3[2]; cLowK[c] = k; }
+        if (sp > cSup[c]) cSup[c] = sp;
+      }
+      const R = Math.max(1, Math.round(0.3 / v)), nbMax = (cx, cy) => { let m = 0; for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) { const X = cx + dx, Y = cy + dy; if (X < 0 || Y < 0 || X >= nx || Y >= ny) continue; const q = cSup[X + nx * Y]; if (q > m) m = q; } return m; };
+      const lowNear = (cx, cy, z) => { for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const X = cx + dx, Y = cy + dy; if (X < 0 || Y < 0 || X >= nx || Y >= ny) continue; const lz = cLowZ[X + nx * Y]; if (lz !== 32767 && z - lz <= opt.footVox) return true; } return false; };
+      const mark = new Uint8Array(NV);   // 1 — снимок, 2 — ушедший/пришедший
+      if (opt.snap !== false) {
+        for (let k = 0; k < NV; k++) {
+          if (!Hc[k] || dyn[k]) continue; const sp = tB[k] - tA[k]; if (sp > opt.snapSpan) continue;
+          kxyz(k, c3); const c = c3[0] + nx * c3[1]; if (c3[2] <= cLowZ[c]) continue;
+          const sup = nbMax(c3[0], c3[1]); if (sup >= opt.supMin && sup >= opt.supRatio * Math.max(sp, 0.05)) mark[k] = 1;
+        }
+      }
+      if (opt.occl !== false) {
+        // земля под объектом увидена только ПОСЛЕ его ухода (или только ДО прихода), а земля рядом в это время была видна
+        const r1 = Math.max(2, Math.round(0.3 / v)), r2 = Math.max(r1 + 1, Math.round(0.75 / v)), M = opt.occlMargin;
+        for (let k = 0; k < NV; k++) {
+          if (!Hc[k] || dyn[k] || mark[k]) continue; kxyz(k, c3); const c = c3[0] + nx * c3[1], g = cLowK[c];
+          if (g < 0 || g === k || c3[2] - cLowZ[c] < 1 || (c3[2] - cLowZ[c]) * v > opt.occlHeight) continue;
+          const after = tA[g] >= tB[k] - 0.5, before = tB[g] <= tA[k] + 0.5; if (!after && !before) continue;
+          if (tB[k] - tA[k] > opt.occlSpanMax) continue;
+          let ok = 0, all = 0;
+          for (let dy = -r2; dy <= r2; dy++) for (let dx = -r2; dx <= r2; dx++) {
+            const dd = Math.max(Math.abs(dx), Math.abs(dy)); if (dd < r1) continue; const X = c3[0] + dx, Y = c3[1] + dy; if (X < 0 || Y < 0 || X >= nx || Y >= ny) continue;
+            const q = cLowK[X + nx * Y]; if (q < 0 || Math.abs(cLowZ[X + nx * Y] - cLowZ[c]) > 2) continue; all++;
+            if (after ? tA[q] <= tB[k] - M : tB[q] >= tA[k] + M) ok++;
+          }
+          if (all >= 6 && ok >= 0.5 * all) mark[k] = 2;
+        }
+      }
+      // кластеры отметок: размер, высота, опора на землю
+      const seen2 = new Uint8Array(NV);
+      for (let k0 = 0; k0 < NV; k0++) {
+        if (!mark[k0] || seen2[k0]) continue;
+        stack.length = 0; comp.length = 0; stack.push(k0); seen2[k0] = 1;
+        while (stack.length) {
+          const a = stack.pop(); comp.push(a); kxyz(a, c3); const ax = c3[0], ay = c3[1], az = c3[2];
+          for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy && !dz) continue; const X = ax + dx, Y = ay + dy, Z = az + dz;
+            if (X < 0 || Y < 0 || Z < 0 || X >= nx || Y >= ny || Z >= nz) continue;
+            const q = vox(X, Y, Z, false); if (q < 0 || !mark[q] || seen2[q]) continue; seen2[q] = 1; stack.push(q);
+          }
+        }
+        if (comp.length < opt.snapCluster) continue;
+        let zLo = Infinity, zHi = -Infinity, foot = false, nOcc = 0, xLo = Infinity, xHi = -Infinity, yLo = Infinity, yHi = -Infinity;
+        for (const a of comp) { kxyz(a, c3); if (c3[2] < zLo) zLo = c3[2]; if (c3[2] > zHi) zHi = c3[2]; if (!foot && lowNear(c3[0], c3[1], c3[2])) foot = true; if (mark[a] === 2) nOcc++;
+          if (c3[0] < xLo) xLo = c3[0]; if (c3[0] > xHi) xHi = c3[0]; if (c3[1] < yLo) yLo = c3[1]; if (c3[1] > yHi) yHi = c3[1]; }
+        if ((zHi - zLo + 1) * v > opt.maxHeight || !foot) continue;
+        // объект стоит на земле, но сбоку ни к чему долгому не прилегает (обратная сторона стены, увиденная мельком, — прилегает)
+        let touch = 0;
+        for (const a of comp) {
+          kxyz(a, c3); if (c3[2] <= zLo + 1) continue; const ax = c3[0], ay = c3[1], az = c3[2]; let hit = false;
+          for (let dz = -1; dz <= 1 && !hit; dz++) for (let dy = -1; dy <= 1 && !hit; dy++) for (let dx = -1; dx <= 1 && !hit; dx++) {
+            const X = ax + dx, Y = ay + dy, Z = az + dz; if (X < 0 || Y < 0 || Z < 0 || X >= nx || Y >= ny || Z >= nz) continue;
+            const q = vox(X, Y, Z, false); if (q < 0 || !Hc[q] || mark[q] || dyn[q]) continue;
+            if (tB[q] - tA[q] >= opt.supMin) hit = true;
+          }
+          if (hit) touch++;
+        }
+        if (touch > opt.touchMax * comp.length) continue;
+        if (nOcc > comp.length / 2 && Math.max(xHi - xLo + 1, yHi - yLo + 1) * v > opt.occlExtent) continue;
+        for (const a of comp) { dyn[a] = 1; dynVox++; if (mark[a] === 2) occlVox++; else snapVox++; }
+        clusters++;
+      }
+    }
+    // дорастить следы: соседние воксели с короткой занятостью (в том числе с одной точкой — далёкий прохожий редок) в то же время
+    let grown = 0;
+    for (let it = 0; it < (opt.grow | 0); it++) {
+      const add = [];
+      for (let a = 0; a < NV; a++) {
+        if (dyn[a] !== 1) continue; kxyz(a, c3); const ax = c3[0], ay = c3[1], az = c3[2], ta = tm(a);
+        for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const X = ax + dx, Y = ay + dy, Z = az + dz;
+          if (X < 0 || Y < 0 || Z < 0 || X >= nx || Y >= ny || Z >= nz) continue;
+          const q = vox(X, Y, Z, false); if (q < 0 || !Hc[q] || dyn[q]) continue;
+          if (tB[q] - tA[q] <= opt.spanMax && Math.abs(tm(q) - ta) <= opt.dtAdj) { dyn[q] = 3; add.push(q); }
+        }
+      }
+      for (const q2 of add) dyn[q2] = 1;
+      grown += add.length; dynVox += add.length;
+      if (!add.length) break;
+    }
+    const keys = new Float64Array(dynVox); let q = 0;
+    for (let k = 0; k < NV && q < dynVox; k++) { if (!dyn[k]) continue; kxyz(k, c3); keys[q++] = c3[0] + nx * (c3[1] + ny * c3[2]); }
+    keys.sort();
+    prog(1, 'решение');
+    return { keys, grid: { gx, gy, gz, v, nx, ny, nz }, stats: { mode: 'trail', points: N, occVox, candVox: nCand, dynVox: q, grown, clusters, snapVox, occlVox, checked, blocks: nb, voxel: +v.toFixed(3),
+      duration: +(tMaxAll - tMinAll).toFixed(1), ms: { occupancy: t1s - t0s, decide: Date.now() - t1s } } };
+  } finally { fs.closeSync(fd); }
+}
+
+// Общая точка входа для окна и чистовой обработки: { sets: [{ keys, grid }], keys, grid, stats, mode }.
+// С траекторией — объединение лучей и «следов» (у каждого способа свои пропуски); без неё — только «следы».
+// opt: настройки run (voxel, ratio, fMin, maxSeen, …) и следов: trail = false | { spanMax, minTravel, minHits }.
+function detect(lasPath, posesText, opt, onProgress) {
+  opt = opt || {};
+  const prog = typeof onProgress === 'function' ? onProgress : () => {};
+  let last = -1; const send = (f, l) => { const p = Math.floor(f * 200); if (p === last) return; last = p; prog(f, l); };
+  const sets = [], stats = {}; let mode = 'trail';
+  const tOpt = opt.trail === false ? null : Object.assign({}, opt.trail || {});
+  if (posesText) {
+    mode = tOpt ? 'rays+trail' : 'rays';
+    const k = tOpt ? 0.75 : 1;
+    const ro = Object.assign({}, opt, { voxelsOnly: true }); delete ro.trail;
+    const r = run(lasPath, posesText, ro, (f, l) => send(k * f, l));
+    sets.push({ keys: r.keys, grid: r.grid, kind: 'rays' }); stats.rays = r.stats;
+    if (tOpt) { const t = runTrail(lasPath, tOpt, (f, l) => send(0.75 + 0.25 * f, l === 'занятость' ? 'следы' : l)); sets.push({ keys: t.keys, grid: t.grid, kind: 'trail' }); stats.trail = t.stats; }
+  } else {
+    const t = runTrail(lasPath, tOpt || {}, (f, l) => send(f, l === 'занятость' ? 'следы' : l)); sets.push({ keys: t.keys, grid: t.grid, kind: 'trail' }); stats.trail = t.stats;
+  }
+  const s0 = stats.rays || stats.trail || {};
+  const merged = Object.assign({}, s0, { mode, rays: stats.rays ? stats.rays.rays : 0, dynVox: sets.reduce((a, s) => a + s.keys.length, 0),
+    ms: { occupancy: ((stats.rays && stats.rays.ms.occupancy) || 0) + ((stats.trail && stats.trail.ms.occupancy) || 0), rays: (stats.rays && stats.rays.ms.rays) || 0,
+      decide: ((stats.rays && stats.rays.ms.decide) || 0) + ((stats.trail && stats.trail.ms.decide) || 0) }, parts: stats });
+  return { sets, keys: sets[0].keys, grid: sets[0].grid, stats: merged, mode };
+}
+function stageLabel(l) {
+  return l === 'занятость' ? 'Чтение облака…' : l === 'лучи' ? 'Проверка лучей сканера…' : l === 'следы' ? 'Поиск следов по времени точек…' : 'Анализ…';
+}
+
+module.exports = { run, runTrail, detect, stageLabel, smallestEig, parsePoses, makePoseAt, readLasHeader, scanLas };
