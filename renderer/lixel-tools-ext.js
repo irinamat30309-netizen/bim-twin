@@ -477,12 +477,15 @@
     var fname = String(file).split(/[\\/]/).pop();
     var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
       title: o.title || 'Чистовая обработка', okLabel: 'Начать',
-      message: 'Убирает прохожих и машины, шум и «туман» вокруг поверхностей, делает стены и пол тонкими и чёткими, исправляет пёстрые точки. Файл любого размера обрабатывается по частям в фоне; нужно свободное место примерно в два размера файла.',
-      hint: edited ? 'Внимание: обрабатывается файл на диске (' + fname + '). Правки, сделанные в окне и не сохранённые в файл, в результат не попадут.' : '',
+      message: 'Сводит проходы (убирает двойные рамы и «ореолы» от дрейфа), убирает прохожих и машины, шум и «туман» вокруг поверхностей, делает стены и пол тонкими и чёткими, выравнивает цвет. Файл любого размера обрабатывается по частям в фоне; нужно свободное место примерно в два размера файла.',
+      hint: [edited ? 'Внимание: обрабатывается файл на диске (' + fname + '). Правки, сделанные в окне и не сохранённые в файл, в результат не попадут.' : '',
+        found ? '' : 'Траектория сканера рядом с файлом не найдена. Без неё не находятся люди, которые стояли на месте, а проходы сводятся грубее. Если есть проект Lixel, выберите <проект>/project_data/poses.csv в пункте «Убрать движущиеся объекты».'].filter(Boolean).join(' '),
       fields: [
         { key: 'target', label: 'Результат', type: 'select', value: 'replace', options: [{ value: 'replace', label: 'Заменить открытый файл ' + fname }, { value: 'new', label: 'Сохранить в новый файл…' }] },
         { key: 'backup', label: 'Оставить копию исходного файла (<имя>-original.las)', type: 'checkbox', value: true, showIf: function (v) { return v.target === 'replace'; },
           hint: 'Без копии исходный скан будет удалён без возможности вернуть.' },
+        { key: 'align', label: 'Свести проходы (исправить дрейф)', type: 'checkbox', value: true,
+          hint: 'Повторные проходы realtime-карты сдвинуты на 2–4 см: рамы двоятся, у окон и арматуры «ореол». Поправка ищется по времени точек (как при пересчёте в Lixel Studio); с траекторией точнее.' },
         { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'none', options: trajOpts,
           hint: 'Нужно время точек (GPS time) в LAS. Траектория сканера (<проект Lixel>/project_data/poses.csv) не обязательна, с ней находится больше.' },
         { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }], showIf: function (v) { return v.traj !== 'off'; } },
@@ -490,7 +493,9 @@
         { key: 'noiseLevel', label: 'Сила очистки шума', type: 'select', value: 'strong', options: [{ value: 'soft', label: 'Мягко — только заведомый мусор' }, { value: 'normal', label: 'Обычно' }, { value: 'strong', label: 'Сильно (рекомендуется) — чёткая картинка' }, { value: 'max', label: 'Максимум — самая чистая картинка' }],
           showIf: function (v) { return !!v.noise; }, hint: 'Удаляются одиночные точки, «туман» и «лучи» за кромками и стеклом, мелкие облачка и «пыль» в 1–8 см перед стенами и полом; арматура, рамы и кабели защищены. «Максимум» может задеть провода тоньше 5 мм и самые редкие дальние участки.' },
         { key: 'thin', label: 'Тонкие чёткие поверхности (стены, пол, потолок)', type: 'checkbox', value: true, hint: 'Точки плоских участков ложатся на локальную плоскость: слой 5–10 мм становится тоньше миллиметра. Углы, трубы и мелкие детали не трогаются.' },
-        { key: 'color', label: 'Исправить пёстрые точки', type: 'checkbox', value: true, hint: 'Белые и цветные одиночные точки (блики, пиксели неба) получают цвет соседей. Швы плитки и кладки не размываются.' }
+        { key: 'color', label: 'Исправить пёстрые точки', type: 'checkbox', value: true, hint: 'Белые и цветные одиночные точки (блики, пиксели неба) и «соль с перцем» приводятся к цвету поверхности. Швы плитки и кладки не размываются.' },
+        { key: 'colorBalance', label: 'Ровный цвет: яркость проходов и баланс белого', type: 'checkbox', value: true, showIf: function (v) { return !!v.color; },
+          hint: 'Камера сканера меняет экспозицию: поздние проходы темнее, стена становится «рябой». Яркость проходов выравнивается, серые поверхности становятся серыми, тёмное облако мягко осветляется (как цвет Lixel Studio).' }
       ] }) : Promise.resolve(null));
     if (!values) return;
     var inPlace = values.target !== 'new', keepBackup = !inPlace || values.backup !== false;
@@ -508,16 +513,18 @@
       if (api.onRefineScanProgress) stopSub = api.onRefineScanProgress(jobId, function (f, lab) { setPct(0.02 + 0.97 * f, lab || 'Обработка…'); });
       try {
         res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, noiseLevel: values.noiseLevel || 'strong',
-          thin: !!values.thin, color: !!values.color, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId });
+          thin: !!values.thin, color: !!values.color, align: values.align !== false, colorBalance: !!values.color && values.colorBalance !== false, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId });
       } finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
     }, { onCancel: function () { try { api.cancelRefineScan(jobId); } catch (e) {} } });
     if (!res) return;
     if (!res.ok) { toast(res.cancelled ? 'Обработка отменена, файл не изменён' : ('Не удалось: ' + (res.message || res.error || 'ошибка'))); return; }
-    var st = res.stats || {}, parts = [];
-    if (dyn) parts.push(res.dynWarning ? 'движущиеся объекты не найдены (' + res.dynWarning + ')' : 'движущиеся объекты: ' + nfmt(st.dynamic || 0));
+    var st = res.stats || {}, parts = [], al = st.align || null, cb = st.colorBalance || null;
+    if (values.align !== false && al) parts.push(al.skipped ? 'проходы не сведены (' + al.skipped + ')' : 'проходы сведены: сдвиг до ' + (al.maxShift * 100).toFixed(1) + ' см, расхождение ' + (al.before * 1000).toFixed(1) + ' → ' + (al.after * 1000).toFixed(1) + ' мм' + (al.trajectory ? '' : ' (без траектории)'));
+    if (dyn) parts.push(res.dynWarning ? 'движущиеся объекты не найдены (' + res.dynWarning + ')' : 'движущиеся объекты: ' + nfmt(st.dynamic || 0) + (res.trajectory ? '' : ' (без траектории — стоявшие на месте люди могли остаться; укажите poses.csv)'));
     if (values.noise) parts.push('шум: ' + nfmt(st.noise || 0));
     if (values.thin) parts.push('выровнено: ' + nfmt(st.moved || 0));
     if (values.color) parts.push('цвет: ' + nfmt(st.recolored || 0));
+    if (values.color && values.colorBalance !== false && cb && !cb.skipped) parts.push('яркость проходов' + (cb.segments ? ' выровнена (×' + cb.gainMin.toFixed(2) + '…×' + cb.gainMax.toFixed(2) + ')' : ' ровная') + (cb.gamma < 0.999 ? ', осветлено' : ''));
     var msg = 'Сохранено ' + nfmt(st.written || 0) + ' из ' + nfmt(st.points || 0) + ' точек за ' + Math.max(1, Math.round((st.ms || 0) / 1000)) + ' с. ' + parts.join(' · ') + '.';
     var k = window.__lxKit;
     if (inPlace && res.inPlace) {
