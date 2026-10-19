@@ -186,6 +186,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   // Удаление движущихся объектов по траектории сканера (LAS с временем точек + poses.csv)
   findTrajectory: (payload) => inv('bim:findTrajectory', payload),
   pickTrajectory: () => inv('bim:pickTrajectory'),
+  findXbin: (payload) => inv('bim:findXbin', payload),   // ревизия 22: файл сканера .xbin рядом с облаком (цвет по фото)
+  pickXbin: () => inv('bim:pickXbin'),
   pickScanFolder: () => inv('bim:pickScanFolder'),   // ревизия 19: папка проекта сканера → облако + траектория
   dynamicClean: (payload) => inv('bim:dynamicClean', payload),
   onDynamicCleanProgress: (jobId, callback) => {

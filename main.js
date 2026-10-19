@@ -1060,6 +1060,66 @@ function registerIpc() {
     try { fileGrants.grantExistingFile(sender.id, f, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
     return { ok: true, path: f };
   });
+  // Ревизия 22: сырой файл сканера (.xbin) рядом с облаком — кадры камер для цвета по фото (как Lixel Studio)
+  function findXbinNear(lasAbs) {
+    try { const f = require('./xbin-core').findNear(lasAbs); if (f) return f; } catch (_) {}
+    try {   // облако отдельно, а траектория — из проекта: <проект>/project_data/poses.csv → <проект>/*.xbin
+      const tr = findTrajectoryNear(lasAbs);
+      if (tr) { const proj = path.dirname(path.dirname(tr)); for (const e of fs.readdirSync(proj, { withFileTypes: true })) if (e.isFile() && /\.xbin$/i.test(e.name)) return path.join(proj, e.name); }
+    } catch (_) {}
+    return null;
+  }
+  ipcMain.handle('bim:findXbin', (event, a) => {
+    const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), CLOUD_EXT_ALLOW);
+    if (!abs) return { ok: false, error: 'path_not_authorized' };
+    const f = findXbinNear(abs);
+    if (!f) return { ok: true, path: null };
+    const sender = ipcSender(event); let g = null;
+    try { g = sender ? fileGrants.grantExistingFile(sender.id, f, { read: true }) : null; } catch (_) { g = null; }
+    let size = 0; try { size = fs.statSync(f).size; } catch (_) {}
+    return { ok: true, path: g ? f : null, size };
+  });
+  ipcMain.handle('bim:pickXbin', async (event) => {
+    const sender = ipcSender(event); if (!sender) return { ok: false, error: 'invalid_sender' };
+    const owner = BrowserWindow.fromWebContents(sender);
+    const options = { title: 'Сырой файл сканера (*.xbin из проекта Lixel)', properties: ['openFile'], filters: [{ name: 'Файл сканера XGRIDS (XBIN)', extensions: ['xbin'] }] };
+    const res = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, cancelled: true };
+    const f = res.filePaths[0];
+    try { fileGrants.grantExistingFile(sender.id, f, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
+    return { ok: true, path: f };
+  });
+  // Цвет по фото: скрытое окно с пустой страницей без скриптов (CSP default-src 'none'), contextIsolation включена,
+  // nodeIntegration выключена; кадры H.264 декодирует WebCodecs в preload (recolor-host-preload.js), расчёт — recolor-core.js.
+  // Переходы и новые окна запрещены; окно закрывается по окончании задачи, при отмене — сразу.
+  function runPhotoRecolor(cfg, onProgress, job) {
+    return new Promise((resolve) => {
+      let win = null, done = false;
+      const finish = (r) => {
+        if (done) return; done = true;
+        ipcMain.removeListener('recolor:progress', onProg); ipcMain.removeListener('recolor:done', onDone); ipcMain.removeListener('recolor:ready', onReady);
+        job.recolorStop = null;
+        const w = win; win = null; if (w && !w.isDestroyed()) { try { w.destroy(); } catch (_) {} }
+        resolve(r);
+      };
+      const mine = (e) => !!(win && !win.isDestroyed() && e && e.sender === win.webContents);
+      const onProg = (e, m) => { if (mine(e) && m) { try { onProgress(Math.max(0, Math.min(1, Number(m.f) || 0)), String(m.label || '')); } catch (_) {} } };
+      const onDone = (e, m) => { if (mine(e)) finish(m && typeof m === 'object' ? m : { ok: false, error: 'no_result' }); };
+      const onReady = (e) => { if (mine(e)) { try { win.webContents.send('recolor:start', Object.assign({ appDir: __dirname }, cfg)); } catch (err) { finish({ ok: false, error: String((err && err.message) || err) }); } } };
+      ipcMain.on('recolor:progress', onProg); ipcMain.on('recolor:done', onDone); ipcMain.on('recolor:ready', onReady);
+      job.recolorStop = () => finish({ ok: false, cancelled: true, error: 'cancelled' });
+      try {
+        win = new BrowserWindow({ show: false, width: 320, height: 240, skipTaskbar: true, title: 'BIM Twin: цвет по фото',
+          webPreferences: { preload: path.join(__dirname, 'recolor-host-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false,
+            backgroundThrottling: false, spellcheck: false, webgl: false, devTools: false } });
+        win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+        win.webContents.on('will-navigate', (ev) => { try { ev.preventDefault(); } catch (_) {} });
+        win.webContents.on('render-process-gone', (_e, d) => finish({ ok: false, error: 'окно декодера закрылось (' + ((d && d.reason) || 'сбой') + ')' }));
+        win.on('closed', () => finish({ ok: false, error: 'recolor_window_closed' }));
+        win.loadFile(path.join(__dirname, 'recolor-host.html')).catch((e) => finish({ ok: false, error: String((e && e.message) || e) }));
+      } catch (e) { finish({ ok: false, error: String((e && e.message) || e) }); }
+    });
+  }
   // Ревизия 19: «Открыть папку сканера» — в папке проекта (Lixel и др.) находится облако (самый большой LAS, иначе LAZ/E57/PLY/PCD)
   // и траектория poses.csv; оба файла выдаются окну на чтение, траектория запоминается для движущихся объектов.
   function scanProjectFolder(root) {
@@ -1169,7 +1229,8 @@ function registerIpc() {
       if (activeRefineJobs.has(key)) return { ok: false, error: 'duplicate_job_id' };
       let posesText = null, posesName = null;
       // траектория необязательна (ревизия 19); ревизия 21 — нужна и для сведения проходов, не только для движущихся
-      if ((a.dynamic || a.align !== false) && a.posesPath !== 'none') {
+      const photo = a.photo === true || (a.photo !== false && typeof a.xbinPath === 'string' && !!a.xbinPath);
+      if ((a.dynamic || a.align !== false || photo) && a.posesPath !== 'none') {
         let posesAbs = null;
         if (a.posesPath) { posesAbs = resolveAuthorizedFile(event, String(a.posesPath), new Set(['.csv', '.txt'])); if (!posesAbs) return { ok: false, error: 'trajectory_not_authorized' }; }
         else posesAbs = findTrajectoryNear(abs);
@@ -1177,6 +1238,12 @@ function registerIpc() {
           if (fs.statSync(posesAbs).size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
           posesText = fs.readFileSync(posesAbs, 'utf8'); posesName = path.basename(posesAbs);
         }
+      }
+      // ревизия 22: цвет по фото сканера — нужен .xbin (кадры камер) и траектория с ориентацией
+      let xbinAbs = null;
+      if (photo) {
+        if (a.xbinPath) { xbinAbs = resolveAuthorizedFile(event, String(a.xbinPath), new Set(['.xbin'])); if (!xbinAbs) return { ok: false, error: 'xbin_not_authorized' }; }
+        else xbinAbs = findXbinNear(abs);
       }
       const owner = BrowserWindow.fromWebContents(sender);
       const base = path.basename(abs).replace(/\.las$/i, '');
@@ -1197,7 +1264,7 @@ function registerIpc() {
       const dir = path.dirname(target);
       if (!fs.statSync(dir).isDirectory()) return { ok: false, error: 'output_directory_not_found' };
       // место: временные плитки (≈ размер исходника) + результат (≈ размер исходника)
-      const need = fs.statSync(abs).size * 2.05;
+      const need = fs.statSync(abs).size * (xbinAbs ? 3.7 : 2.05);   // цвет по фото: копия облака с новым цветом + корзины времени
       try { const sf = fs.statfsSync(dir); const free = Number(sf.bavail) * Number(sf.bsize); if (Number.isFinite(free) && free < need) return { ok: false, error: 'no_space', message: 'Недостаточно места на диске: нужно около ' + (need / 1073741824).toFixed(1) + ' ГБ, свободно ' + (free / 1073741824).toFixed(1) + ' ГБ.' }; } catch (_) {}
       workDir = fs.mkdtempSync(path.join(dir, '.bimtwin-refine-'));
       tmpOut = path.join(workDir, 'out.las');
@@ -1205,16 +1272,38 @@ function registerIpc() {
       const opt = { noise: a.noise !== false, thin: a.thin !== false, color: a.color !== false, dynamic: !!a.dynamic,
         noiseLevel: NOISE_LEVELS.includes(a.noiseLevel) ? a.noiseLevel : 'strong',
         align: a.align !== false, colorBalance: a.colorBalance !== false };   // ревизия 21: сведение проходов и ровный цвет
-      const worker = new Worker(unpackedWorker('scan-refine-worker.js'), { workerData: { src: abs, out: tmpOut, tmpDir: workDir, posesText, dynOpt: dynOptsFrom(a.dynOpts), opt } });
+      const job = { worker: null, cancelled: false, finished: false, recolorStop: null };
+      const sendProg = (f, label) => { try { if (!(sender.isDestroyed && sender.isDestroyed())) sender.send('bim:refineScanProgress', { jobId, progress: f, label }); } catch (_) {} };
+      let photoStats = null, photoWarning = null, srcForRefine = abs;
+      if (photo) {
+        if (!xbinAbs) photoWarning = 'рядом с облаком нет файла сканера .xbin';
+        else if (!posesText) photoWarning = 'нет траектории сканера (poses.csv)';
+        else {
+          activeRefineJobs.set(key, job);
+          const onGone0 = () => { job.cancelled = true; try { if (job.recolorStop) job.recolorStop(); } catch (_) {} };
+          try { sender.once('destroyed', onGone0); } catch (_) {}
+          const photoOut = path.join(workDir, 'photo.las');
+          const pr = await runPhotoRecolor({ src: abs, dst: photoOut, xbin: xbinAbs, posesText, tmpDir: workDir, opt: a.photoOpt && typeof a.photoOpt === 'object' ? a.photoOpt : {} },
+            (f, label) => sendProg(0.45 * f, label), job);
+          try { sender.removeListener('destroyed', onGone0); } catch (_) {}
+          activeRefineJobs.delete(key);
+          if (job.cancelled || (pr && pr.cancelled)) { cleanup(); return { ok: false, cancelled: true, error: 'cancelled' }; }
+          if (pr && pr.ok) { photoStats = pr.stats || {}; photoStats.xbin = path.basename(xbinAbs); srcForRefine = photoOut; }
+          else { photoWarning = String((pr && (pr.message || pr.error)) || 'ошибка'); try { fs.rmSync(photoOut, { force: true }); } catch (_) {} }
+        }
+      }
+      const pBase = srcForRefine !== abs ? 0.45 : 0;
+      const worker = new Worker(unpackedWorker('scan-refine-worker.js'), { workerData: { src: srcForRefine, out: tmpOut, tmpDir: workDir, posesText, dynOpt: dynOptsFrom(a.dynOpts), opt: Object.assign({}, opt, { photoColor: srcForRefine !== abs }) } });
+      job.worker = worker;
       const r = await new Promise(resolve => {
-        const job = { worker, cancelled: false, finished: false };
         const finish = x => { if (job.finished) return; job.finished = true; activeRefineJobs.delete(key); try { sender.removeListener('destroyed', onGone); } catch (_) {} resolve(x); };
+
         const onGone = () => { job.cancelled = true; try { worker.terminate().catch(() => {}); } catch (_) {} };
         activeRefineJobs.set(key, job);
         try { sender.once('destroyed', onGone); } catch (_) {}
         worker.on('message', m => {
           if (!m || job.finished) return;
-          if (m.type === 'progress') { try { if (!(sender.isDestroyed && sender.isDestroyed())) sender.send('bim:refineScanProgress', { jobId, progress: m.progress, label: m.label }); } catch (_) {} }
+          if (m.type === 'progress') sendProg(pBase + (1 - pBase) * (Number(m.progress) || 0), m.label);
           else if (m.type === 'result') finish(m.result || { ok: false });
         });
         worker.on('error', e => finish({ ok: false, error: String((e && e.message) || e) }));
@@ -1243,7 +1332,7 @@ function registerIpc() {
       try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) {}
       if (backup) { try { fileGrants.grantExistingFile(sender.id, backup, { read: true }); } catch (_) {} }
       return { ok: true, path: target, name: path.basename(target), inPlace: inPlace && replaced, replaceError, backup, backupName: backup ? path.basename(backup) : null,
-        stats: r.stats, dynStats: r.dynStats, dynWarning: r.dynWarning, trajectory: posesName };
+        stats: r.stats, dynStats: r.dynStats, dynWarning: r.dynWarning, trajectory: posesName, photo: photoStats, photoWarning };
     } catch (e) { cleanup(); return { ok: false, error: String((e && e.message) || e) }; }
   });
   ipcMain.on('bim:cancelRefineScan', (event, payload) => {
@@ -1252,7 +1341,8 @@ function registerIpc() {
     const job = activeRefineJobs.get(cloudJobKey(event && event.sender, 'refine:' + jobId));
     if (!job || job.finished || job.cancelled) return;
     job.cancelled = true;
-    try { job.worker.terminate().catch(() => {}); } catch (_) {}
+    try { if (job.recolorStop) job.recolorStop(); } catch (_) {}
+    try { if (job.worker) job.worker.terminate().catch(() => {}); } catch (_) {}
   });
   ipcMain.on('bim:cancelOctreeBuild', (event, payload) => {
     const jobId = typeof payload === 'string' ? payload : payload && payload.jobId;
