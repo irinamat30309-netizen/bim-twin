@@ -475,6 +475,11 @@
       .concat([{ value: 'none', label: 'Да, по времени точек (без траектории)' }, { value: 'pick', label: 'Да, выбрать файл poses.csv…' }, { value: 'off', label: 'Нет' }]);
     var edited = !!(V && typeof V.canUndo === 'function' && V.canUndo());
     var fname = String(file).split(/[\\/]/).pop();
+    // ревизия 22: файл сканера .xbin (кадры камер) — цвет по фото, как в Lixel Studio
+    var xb = null; if (api.findXbin) { try { var xr = await api.findXbin({ path: file }); xb = xr && xr.ok && xr.path ? xr : null; } catch (e) { xb = null; } }
+    var xbName = xb ? String(xb.path).split(/[\\/]/).pop() : '';
+    var photoOpts = (xb ? [{ value: 'auto', label: 'Да, по кадрам камер ' + xbName + (xb.size ? ' (' + (xb.size / 1073741824).toFixed(1) + ' ГБ)' : '') }] : [])
+      .concat(api.pickXbin ? [{ value: 'pick', label: 'Да, выбрать файл сканера .xbin…' }] : []).concat([{ value: 'off', label: 'Нет — оставить цвет облака' }]);
     var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
       title: o.title || 'Чистовая обработка', okLabel: 'Начать',
       message: 'Сводит проходы (убирает двойные рамы и «ореолы» от дрейфа), убирает прохожих и машины, шум и «туман» вокруг поверхностей, делает стены и пол тонкими и чёткими, выравнивает цвет. Файл любого размера обрабатывается по частям в фоне; нужно свободное место примерно в два размера файла.',
@@ -484,6 +489,8 @@
         { key: 'target', label: 'Результат', type: 'select', value: 'replace', options: [{ value: 'replace', label: 'Заменить открытый файл ' + fname }, { value: 'new', label: 'Сохранить в новый файл…' }] },
         { key: 'backup', label: 'Оставить копию исходного файла (<имя>-original.las)', type: 'checkbox', value: true, showIf: function (v) { return v.target === 'replace'; },
           hint: 'Без копии исходный скан будет удалён без возможности вернуть.' },
+        { key: 'photo', label: 'Цвет по фото сканера (чёткий, как в Lixel Studio)', type: 'select', value: xb ? 'auto' : 'off', options: photoOpts,
+          hint: 'Каждая точка заново получает цвет из 12-Мп кадров двух камер сканера (файл .xbin в папке проекта Lixel): по ближайшим и самым резким кадрам, с учётом заслонений; оператор и прохожие в кадре отбрасываются. Нужны время точек и траектория poses.csv, на диске — ещё около 1,7 размера файла. Занимает примерно минуту на минуту съёмки.' },
         { key: 'align', label: 'Свести проходы (исправить дрейф)', type: 'checkbox', value: true,
           hint: 'Повторные проходы realtime-карты сдвинуты на 2–4 см: рамы двоятся, у окон и арматуры «ореол». Поправка ищется по времени точек (как при пересчёте в Lixel Studio); с траекторией точнее.' },
         { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'none', options: trajOpts,
@@ -508,17 +515,26 @@
       posesPath = values.traj === 'auto' ? found : (values.traj === 'none' ? 'none' : null);
       if (!posesPath) { var pk = await api.pickTrajectory(); if (!pk || !pk.ok || !pk.path) { toast('Траектория не выбрана'); return; } posesPath = pk.path; }
     }
+    var photo = values.photo === 'auto' || values.photo === 'pick', xbinPath = null;
+    if (photo) {
+      if (values.photo === 'auto') xbinPath = xb.path;
+      else { var px = await api.pickXbin(); if (!px || !px.ok || !px.path) { toast('Файл сканера не выбран'); return; } xbinPath = px.path; }
+      // для цвета по фото нужна траектория с ориентацией: найденная рядом или выбранная
+      if (!posesPath || posesPath === 'none') posesPath = found || null;
+      if (!posesPath) { var pk2 = await api.pickTrajectory(); if (!pk2 || !pk2.ok || !pk2.path) { toast('Для цвета по фото нужна траектория poses.csv'); return; } posesPath = pk2.path; }
+    }
     var jobId = 'ref' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), res = null, stopSub = null;
     await run('Чистовая обработка…', async function (setPct) {
       if (api.onRefineScanProgress) stopSub = api.onRefineScanProgress(jobId, function (f, lab) { setPct(0.02 + 0.97 * f, lab || 'Обработка…'); });
       try {
         res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, noiseLevel: values.noiseLevel || 'strong',
-          thin: !!values.thin, color: !!values.color, align: values.align !== false, colorBalance: !!values.color && values.colorBalance !== false, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId });
+          thin: !!values.thin, color: !!values.color, align: values.align !== false, colorBalance: !!values.color && values.colorBalance !== false, photo: photo, xbinPath: xbinPath, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId });
       } finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
     }, { onCancel: function () { try { api.cancelRefineScan(jobId); } catch (e) {} } });
     if (!res) return;
     if (!res.ok) { toast(res.cancelled ? 'Обработка отменена, файл не изменён' : ('Не удалось: ' + (res.message || res.error || 'ошибка'))); return; }
     var st = res.stats || {}, parts = [], al = st.align || null, cb = st.colorBalance || null;
+    if (photo) parts.push(res.photo ? 'цвет по фото: ' + nfmt(res.photo.colored || 0) + ' точек по ' + nfmt(res.photo.frames || 0) + ' кадрам' : 'цвет по фото не применён (' + (res.photoWarning || 'ошибка') + '), цвет облака сохранён');
     if (values.align !== false && al) parts.push(al.skipped ? 'проходы не сведены (' + al.skipped + ')' : 'проходы сведены: сдвиг до ' + (al.maxShift * 100).toFixed(1) + ' см, расхождение ' + (al.before * 1000).toFixed(1) + ' → ' + (al.after * 1000).toFixed(1) + ' мм' + (al.trajectory ? '' : ' (без траектории)'));
     if (dyn) parts.push(res.dynWarning ? 'движущиеся объекты не найдены (' + res.dynWarning + ')' : 'движущиеся объекты: ' + nfmt(st.dynamic || 0) + (res.trajectory ? '' : ' (без траектории — стоявшие на месте люди могли остаться; укажите poses.csv)'));
     if (values.noise) parts.push('шум: ' + nfmt(st.noise || 0));
