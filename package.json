@@ -105,6 +105,7 @@
       "pass-align-core.js",
       "color-balance-core.js",
       "xbin-core.js",
+      "xbin-project.js",
       "recolor-core.js",
       "recolor-host.html",
       "recolor-host-preload.js",

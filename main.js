@@ -96,7 +96,7 @@ const PICKED_EXT_ALLOW = new Set(['.glb', '.gltf', '.obj', '.stl', '.ply', '.las
 
 // Разрешённые расширения облаков точек для bim:parseCloud (чтение с диска).
 const CLOUD_EXT_ALLOW = new Set(['.las', '.laz', '.ply', '.e57', '.ptx', '.pcd', '.xyz', '.pts', '.txt', '.csv', '.xyzrgb']);
-const USER_PICK_EXT_ALLOW = new Set([...PICKED_EXT_ALLOW, ...CLOUD_EXT_ALLOW, '.json']);
+const USER_PICK_EXT_ALLOW = new Set([...PICKED_EXT_ALLOW, ...CLOUD_EXT_ALLOW, '.json', '.xbin']);   // .xbin — проект сканера Lixel (ревизия 23)
 const MAX_IN_MEMORY_PICKED_BYTES = 512 * 1024 * 1024;
 const MAX_DOCUMENT_WRITE_BYTES = 256 * 1024 * 1024;
 
@@ -1089,6 +1089,24 @@ function registerIpc() {
     try { fileGrants.grantExistingFile(sender.id, f, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
     return { ok: true, path: f };
   });
+  // Ревизия 23: «Открыть» → файл .xbin (сырые данные сканера Lixel). Читаются только начало .xbin и заголовки облаков в папке проекта;
+  // окну выдаётся чтение выбранного облака и траектории, траектория запоминается для облака (движущиеся объекты, цвет по фото).
+  ipcMain.handle('bim:openXbin', (event, a) => {
+    const sender = ipcSender(event); if (!sender) return { ok: false, error: 'invalid_sender' };
+    const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), new Set(['.xbin']));
+    if (!abs) return { ok: false, error: 'path_not_authorized', message: 'Нет доступа к файлу .xbin — выберите его через «Открыть».' };
+    let info = null;
+    try { info = require('./xbin-project').inspect(abs); }
+    catch (e) { return { ok: false, error: 'xbin_invalid', message: String((e && e.message) || e) }; }
+    if (info.cloud) {
+      try { fileGrants.grantExistingFile(sender.id, info.cloud.path, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
+      if (info.poses) {
+        try { fileGrants.grantExistingFile(sender.id, info.poses.path, { read: true }); const k = path.resolve(info.cloud.path); scanFolderPoses.set(process.platform === 'win32' ? k.toLowerCase() : k, info.poses.path); }
+        catch (_) { info.poses = null; }
+      }
+    }
+    return Object.assign({ ok: true }, info);
+  });
   // Цвет по фото: скрытое окно с пустой страницей без скриптов (CSP default-src 'none'), contextIsolation включена,
   // nodeIntegration выключена; кадры H.264 декодирует WebCodecs в preload (recolor-host-preload.js), расчёт — recolor-core.js.
   // Переходы и новые окна запрещены; окно закрывается по окончании задачи, при отмене — сразу.
@@ -1151,7 +1169,12 @@ function registerIpc() {
     if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, cancelled: true };
     const root = res.filePaths[0];
     const { clouds, poses } = scanProjectFolder(root);
-    if (!clouds.length) return { ok: false, error: 'no_cloud', message: 'В папке не найдено облако точек (LAS, LAZ, E57, PLY, PCD). Экспортируйте облако из программы сканера.' };
+    if (!clouds.length) {
+      let hasXbin = false; try { hasXbin = fs.readdirSync(root).some(n => /\.xbin$/i.test(n)); } catch (_) {}
+      return { ok: false, error: 'no_cloud', message: hasXbin
+        ? 'В папке есть только сырые данные сканера (.xbin), облака точек нет. Положите рядом map.las со сканера или экспорт из Lixel Studio.'
+        : 'В папке не найдено облако точек (LAS, LAZ, E57, PLY, PCD). Экспортируйте облако из программы сканера.' };
+    }
     const cloud = clouds[0].path;
     let traj = findTrajectoryNear(cloud) || (poses[0] && poses[0].path) || null;
     try { fileGrants.grantExistingFile(sender.id, cloud, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
