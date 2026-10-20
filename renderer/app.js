@@ -179,11 +179,17 @@
   // Ревизия 16: большие LAS/PLY (больше 48 млн точек) читаются ЧАСТЯМИ: ни один массив не больше части (~16 млн точек), каждая часть сразу уходит
   // в видеопамять, пока читается следующая. Поэтому нет ни «Array buffer allocation failed», ни диалога про память: на экране ВСЕ точки файла.
   // Возвращает null, если облако небольшое или формат читается целиком — тогда работает прежний путь (parseCloudWithProgressOnce).
+  // Ревизия 26: сколько точек видеокарта показывает надёжно. Облако крупнее (например, 670 млн точек «Все точки» из .xbin) читается
+  // равномерной выборкой по всему облаку: 670 млн точек — это ~10 ГБ видеопамяти и ~12 ГБ памяти, видеокарта сбрасывает изображение
+  // и окно просмотра становится белым. После такого сброса предел уменьшается вдвое (bim.gpuPointBudget).
+  const GPU_POINT_BUDGET = 300000000;
+  function gpuPointBudget() { let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {} return v >= 10000000 ? Math.floor(v) : GPU_POINT_BUDGET; }
+  window.__bimGpuPointBudget = gpuPointBudget;
   async function tryPartsLoad(filePath, label, extra) {
     extra = extra || {};
     if (!API || typeof API.cloudPartsOpen !== 'function' || typeof API.cloudPartsRead !== 'function' || !viewer || typeof viewer.beginCloudStream !== 'function' || !window.CloudChunks) return null;
     let opened = null;
-    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId()); } catch (e) { return null; }
+    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), { maxPoints: gpuPointBudget() }); } catch (e) { return null; }
     if (!opened || !opened.ok || !opened.token) return null;
     const token = opened.token, nParts = Math.max(1, opened.segments | 0), total = Number(opened.total) || 0;
     const closeSession = () => { try { return Promise.resolve(API.cloudPartsClose({ token })).catch(() => {}); } catch (_) { return Promise.resolve(); } };
@@ -207,7 +213,7 @@
         if (k + 1 < nParts) next = readPart(k + 1);   // пока эта часть уходит в видеопамять, следующая уже читается
         if (!res || res.ok === false || !res.pos) { failure = (res && res.message) || 'часть облака не прочитана'; break; }
         // открытое до этого облако заменяется только когда первая часть новой уже прочитана (отмена раньше ничего не трогает)
-        if (!began) { viewer.beginCloudStream({ total, bbox: opened.bbox, meta: opened.meta, hasColor: opened.hasColor, hasIntensity: opened.hasIntensity, hasClassification: opened.hasClassification, name: label }, { sourceName: filePath }); began = true; }
+        if (!began) { viewer.beginCloudStream({ total, sourceTotal: opened.sourceTotal || total, bbox: opened.bbox, meta: opened.meta, hasColor: opened.hasColor, hasIntensity: opened.hasIntensity, hasClassification: opened.hasClassification, name: label }, { sourceName: filePath }); began = true; }
         const r = viewer.addCloudStreamSegment(res);
         if (!r || r.ok === false) { short = !!(r && r.short); if (!short) failure = (r && r.error) || 'часть облака не добавлена'; break; }
         loaded = r.loaded;
@@ -220,8 +226,9 @@
       viewer.endCloudStream({ path: filePath, name: label });
       panel.update({ phase: 'done', fraction: 1, pointsLoaded: loaded });
       if (failure) toast('Облако прочитано не полностью: ' + fmtMln(loaded) + ' из ' + fmtMln(total) + ' млн точек (' + failure + ')');
+      else if (opened.thinned && opened.sourceTotal > loaded) toast('Облако ' + fmtMln(opened.sourceTotal) + ' млн точек: на экране ' + fmtMln(loaded) + ' млн, выбранных равномерно по всему облаку, — все точки видеокарта не покажет. Файл не меняется: все точки остаются в нём (Автоочистка, CloudCompare).');
       await new Promise(resolve => setTimeout(resolve, 260));
-      return { ok: true, kind: 'points', viewerLoaded: true, streamed: true, short: short, count: loaded, total: total, meta: opened.meta };
+      return { ok: true, kind: 'points', viewerLoaded: true, streamed: true, short: short, count: loaded, total: opened.sourceTotal || total, thinned: !!opened.thinned, meta: opened.meta };
     } finally {
       await closeSession();
       panel.close();
@@ -571,7 +578,7 @@
         fields: [{ key: 'density', label: 'Плотность', type: 'select', value: 'normal', options: [
           { value: 'normal', label: 'Обычная — до 40 млн точек (до 1,4 ГБ)' },
           { value: 'high', label: 'Высокая — до 120 млн точек (до 4 ГБ)' },
-          { value: 'all', label: 'Все точки — около ' + allMln + ' млн (' + (allMln * 34 / 1024).toFixed(1).replace('.', ',') + ' ГБ)' }] },
+          { value: 'all', label: 'Все точки — около ' + allMln + ' млн (' + (allMln * 34 / 1024).toFixed(1).replace('.', ',') + ' ГБ)' + (allMln * 1e6 > gpuPointBudget() ? ', на экране — до ' + fmtMln(gpuPointBudget()) + ' млн' : '') }] },
           { key: 'refine', label: 'Уточнить траекторию по облаку (точнее, дольше)', type: 'checkbox', value: true }] });
       if (!v) return false; density = v.density || 'normal'; refine = v.refine !== false;
     }
@@ -2004,6 +2011,28 @@
     const qFrame = $('qFrame');
     if (qFrame) qFrame.addEventListener('click', () => { if (!viewer || !viewer.setFrame) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setFrame(!qFrame.classList.contains('on')); qFrame.classList.toggle('on', on); toast(on ? 'Чёрные рамки точек включены' : 'Чёрные рамки точек выключены'); });
     // Ревизия 12–13: доля точек только ПОКА камера движется (обычный и потоковый режим); в покое всегда рисуются ВСЕ точки файла (предела в покое больше нет)
+    // ревизия 26: видеокарта сбросила изображение (белый экран) — предел точек на экране уменьшается вдвое, окно перезагружается, облако открывается снова
+    window.addEventListener('bim-gl-lost', async (e) => {
+      const d = (e && e.detail) || {}, shown = Number(d.loaded) || 0, cur = gpuPointBudget();
+      const next = Math.max(20000000, Math.floor(Math.min(cur, shown > 0 ? shown : cur) / 2 / 10000000) * 10000000);
+      try { localStorage.setItem('bim.gpuPointBudget', String(next)); } catch (_) {}
+      const p = d.path || lastCloudPath || '', kit = window.__lxKit;
+      const msg = 'Видеокарта не справилась с облаком' + (shown ? ' (' + fmtMln(shown) + ' млн точек на экране)' : '') + ' и сбросила изображение, поэтому окно просмотра стало пустым. Окно будет перезагружено' + (p ? ', и облако откроется снова' : '') + ': на экране будет до ' + fmtMln(next) + ' млн точек, выбранных равномерно по всему облаку. Файл не меняется — все точки остаются в нём.';
+      let go = true;
+      if (kit && kit.ask) { try { go = await kit.ask({ title: 'Видеокарта сбросила изображение', message: msg, okLabel: 'Перезагрузить окно', cancelLabel: 'Позже', wide: true }); } catch (_) { go = true; } }
+      else toast(msg);
+      if (!go) { toast('Окно просмотра не заработает до перезагрузки: перезапустите приложение и откройте облако снова.'); return; }
+      try { if (p) sessionStorage.setItem('bim.reopenCloud', p); } catch (_) {}
+      try { location.reload(); } catch (_) {}
+    });
+    try {
+      const rp = sessionStorage.getItem('bim.reopenCloud');
+      if (rp) {
+        sessionStorage.removeItem('bim.reopenCloud');
+        // облако проекта может открыться само (multicloud) — тогда второй раз не открываем
+        setTimeout(() => { try { const rec = viewer && viewer._cloudRecord; if (!(rec && rec.sourceName) && typeof window.__bimOpenCloudPath === 'function') window.__bimOpenCloudPath(rp, { fresh: true }); } catch (_) {} }, 2500);
+      }
+    } catch (_) {}
     (function setupStreamPrefs() {
       const qMove = $('qMove'); if (!qMove) return;
       const lsGet = (k, d) => { try { const v = window.localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
