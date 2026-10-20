@@ -21,7 +21,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   readPicked: (p) => inv('bim:readPicked', p),
   parseCloud: (p, jobId, opts) => inv('bim:parseCloud', jobId ? { path: p, jobId, preview: !!(opts && opts.preview), allowReduced: !!(opts && opts.allowReduced) } : p),
   readCloudChunk: (a) => inv('bim:readCloudChunk', a),
-  cloudPartsOpen: (p, jobId) => inv('bim:cloudPartsOpen', { path: p, jobId }),
+  cloudPartsOpen: (p, jobId, opts) => inv('bim:cloudPartsOpen', { path: p, jobId, maxPoints: opts && opts.maxPoints > 0 ? Number(opts.maxPoints) : 0 }),
   cloudPartsRead: (a) => inv('bim:cloudPartsRead', a),
   cloudPartsClose: (a) => inv('bim:cloudPartsClose', a),
   releaseCloud: (a) => inv('bim:releaseCloud', a),

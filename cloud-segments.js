@@ -16,6 +16,7 @@
  *       desc — простой JSON-объект (его можно отдать в поток чтения): формат, число точек, преобразование координат, meta.
  *   readSegment(desc, from, count, { onProgress }) → { ok, pos, col, intensity, classification, count, chunkPoints, chunkBoxes, bbox }
  *   readSegmentAsync(desc, from, count, { signal }) → то же, но в отдельном потоке (главный процесс не блокируется)
+ *   { keepPer } (ревизия 26) — из каждого кирпича берутся первые keepPer точек (равномерная выборка для экрана), см. thinSegment
  *
  * Поддержано: LAS без сжатия (все форматы точек), бинарный PLY с вершинами (little/big endian). Остальные форматы возвращают
  * { unsupported:true } — их читает прежний путь (целиком).
@@ -287,6 +288,41 @@ function openSegmentSource(absPath, opts) {
   } finally { if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} } }
 }
 
+// Ревизия 26: равномерная выборка части для экрана. Точки внутри кирпича уже перемешаны, поэтому первые keepPer точек кирпича —
+// равномерная выборка всего кирпича; рамки кирпичей остаются верными (выборка лежит внутри рамки). Нужна для облаков, которые
+// целиком не помещаются в видеокарту (например, 670 млн точек «Все точки» из .xbin): иначе видеокарта сбрасывает изображение.
+function keepOfChunk(cn, CH, keepPer) { return cn >= CH ? keepPer : Math.max(1, Math.ceil(cn * keepPer / CH)); }
+function thinnedCount(count, CH, keepPer) {
+  count = Math.floor(count); CH = Math.floor(CH); keepPer = Math.floor(keepPer);
+  if (!(count > 0) || !(keepPer > 0) || keepPer >= CH) return Math.max(0, count);
+  const full = Math.floor(count / CH), rem = count - full * CH;
+  return full * keepPer + (rem > 0 ? keepOfChunk(rem, CH, keepPer) : 0);
+}
+// keepPer для бюджета точек: не меньше 1000 (столько окно считает наименьшим кирпичом)
+function keepPerForBudget(count, CH, budget) {
+  count = Math.floor(count); CH = Math.floor(CH); budget = Math.floor(budget);
+  if (!(budget > 0) || !(count > budget) || !(CH > 0)) return CH;
+  return Math.min(CH, Math.max(1000, Math.floor(CH * budget / count)));
+}
+function thinSegment(res, keepPer) {
+  if (!res || res.ok === false) return res;
+  const CH = Math.floor(res.chunkPoints), n = Math.floor(res.count); keepPer = Math.floor(keepPer);
+  if (!(keepPer > 0) || keepPer >= CH || !(n > 0)) return res;
+  const nc = Math.ceil(n / CH), m = thinnedCount(n, CH, keepPer);
+  const pos = new Float32Array(m * 3), col = res.col ? new Uint8Array(m * 3) : null;
+  const intensity = res.intensity ? new Uint16Array(m) : null, classification = res.classification ? new Uint8Array(m) : null;
+  let o = 0;
+  for (let c = 0; c < nc; c++) {
+    const a = c * CH, cn = Math.min(CH, n - a), k = keepOfChunk(cn, CH, keepPer);
+    pos.set(res.pos.subarray(a * 3, (a + k) * 3), o * 3);
+    if (col) col.set(res.col.subarray(a * 3, (a + k) * 3), o * 3);
+    if (intensity) intensity.set(res.intensity.subarray(a, a + k), o);
+    if (classification) classification.set(res.classification.subarray(a, a + k), o);
+    o += k;
+  }
+  return Object.assign({}, res, { pos, col, intensity, classification, count: m, chunkPoints: keepPer, sourceCount: n });
+}
+
 function readSegment(desc, from, count, opts) {
   opts = opts || {};
   from = Math.floor(from); count = Math.floor(count);
@@ -309,7 +345,8 @@ function readSegment(desc, from, count, opts) {
     if (opts.shuffle !== false) shuffleChunks(out, count, CH, from / CH);
     const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
     for (let c = 0; c < nChunks; c++) for (let k = 0; k < 3; k++) { if (boxes[c * 6 + k] < mn[k]) mn[k] = boxes[c * 6 + k]; if (boxes[c * 6 + 3 + k] > mx[k]) mx[k] = boxes[c * 6 + 3 + k]; }
-    return { ok: true, pos: out.pos, col: out.col, intensity: out.intensity, classification: out.classification, count, chunkPoints: CH, chunkBoxes: boxes, bbox: { mn, mx }, from };
+    const res = { ok: true, pos: out.pos, col: out.col, intensity: out.intensity, classification: out.classification, count, chunkPoints: CH, chunkBoxes: boxes, bbox: { mn, mx }, from };
+    return opts.keepPer > 0 && opts.keepPer < CH ? thinSegment(res, opts.keepPer) : res;
   } catch (e) {
     return { ok: false, message: 'Ошибка чтения облака: ' + String((e && e.message) || e) };
   } finally { if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} } }
@@ -335,7 +372,7 @@ function readSegmentAsync(desc, from, count, opts) {
       resolve(r);
     };
     const onAbort = () => { aborted = true; done({ ok: false, cancelled: true, message: 'Импорт отменён' }); };
-    try { worker = new Worker(workerPath, { workerData: { desc, from, count, shuffle: opts.shuffle !== false } }); }
+    try { worker = new Worker(workerPath, { workerData: { desc, from, count, shuffle: opts.shuffle !== false, keepPer: Math.floor(Number(opts.keepPer) || 0) } }); }
     catch (e) { done({ ok: false, message: 'Не удалось запустить поток чтения: ' + String((e && e.message) || e) }); return; }
     if (signal) { signal.addEventListener('abort', onAbort, { once: true }); if (signal.aborted) onAbort(); }
     worker.on('message', (m) => { if (m && m.type === 'result') done(m.result || { ok: false, message: 'пустой ответ потока чтения' }); });
@@ -344,4 +381,4 @@ function readSegmentAsync(desc, from, count, opts) {
   });
 }
 
-module.exports = { openSegmentSource, readSegment, readSegmentAsync, shuffleChunks, SEG_POINTS, CHUNK_POINTS };
+module.exports = { openSegmentSource, readSegment, readSegmentAsync, shuffleChunks, thinSegment, thinnedCount, keepPerForBudget, SEG_POINTS, CHUNK_POINTS };

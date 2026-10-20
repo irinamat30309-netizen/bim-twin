@@ -15,7 +15,7 @@ function transferables(result) {
 
 try {
   const d = workerData || {};
-  const result = Seg.readSegment(d.desc, d.from, d.count, { shuffle: d.shuffle !== false });
+  const result = Seg.readSegment(d.desc, d.from, d.count, { shuffle: d.shuffle !== false, keepPer: d.keepPer });
   parentPort.postMessage({ type: 'result', result }, transferables(result));
 } catch (e) {
   parentPort.postMessage({ type: 'result', result: { ok: false, message: 'Ошибка чтения облака: ' + String((e && e.message) || e) } });

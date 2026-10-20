@@ -245,7 +245,7 @@ test('main/preload: чтение по частям — IPC с проверкой
   assert.match(h, /resolveAuthorizedFile\(event, requested, CLOUD_EXT_ALLOW\)/, 'путь проходит ту же проверку доступа, что и обычное открытие');
   assert.match(h, /openSegmentSource\(abs\)/); assert.match(h, /CLOUD_PARTS_MIN_POINTS/); assert.match(h, /unsupported: true/);
   assert.match(h, /activeCloudParseJobs\.set\(key/, 'сессия видна общей отмене импорта');
-  assert.match(h, /readSegmentAsync\(d, from, count, \{ signal: ss\.controller\.signal \}\)/);
+  assert.match(h, /readSegmentAsync\(d, from, count, \{ signal: ss\.controller\.signal(, keepPer: ss\.keepPer)? \}\)/);
   assert.match(h, /ss\.senderId !== sender\.id/, 'чужое окно сессию не читает');
   assert.match(h, /pendingClouds\.stash\(sender\.id, res/);
   assert.match(h, /bim:cloudPartsClose/); assert.match(h, /controller\.abort\(\)/);

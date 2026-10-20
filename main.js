@@ -1587,9 +1587,15 @@ function registerIpc() {
         if (activeCloudParseJobs.has(key)) return { ok: false, message: 'duplicate_job_id' };
         activeCloudParseJobs.set(key, { controller, senderId: sender.id });
       }
-      cloudPartSessions.set(token, { senderId: sender.id, desc: d, controller, key });
+      // ревизия 26: окно передаёт, сколько точек видеокарта показывает надёжно (maxPoints); облако крупнее читается равномерной выборкой
+      // (первые keepPer точек каждого перемешанного кирпича). Файл не меняется; sourceTotal — сколько точек в нём.
+      const gpuBudget = Math.floor(Number(payload && typeof payload === 'object' ? payload.maxPoints : 0) || 0);
+      const keepPer = cloudSegments.keepPerForBudget(d.count, d.chunkPoints, gpuBudget);
+      const shown = cloudSegments.thinnedCount(d.count, d.chunkPoints, keepPer);
+      cloudPartSessions.set(token, { senderId: sender.id, desc: d, controller, key, keepPer });
       try { sender.once('destroyed', () => { const ss = cloudPartSessions.get(token); if (ss) { try { ss.controller.abort(); } catch (_) {} cloudPartSessions.delete(token); if (ss.key) activeCloudParseJobs.delete(ss.key); } }); } catch (_) {}
-      return { ok: true, token, total: d.count, segPoints: d.segPoints, chunkPoints: d.chunkPoints, segments: Math.ceil(d.count / d.segPoints), bbox: d.bbox, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity, hasClassification: d.hasClassification };
+      return { ok: true, token, total: shown, sourceTotal: d.count, thinned: keepPer < d.chunkPoints ? { keepPer, chunkPoints: d.chunkPoints, budget: gpuBudget } : null,
+        segPoints: d.segPoints, chunkPoints: keepPer, segments: Math.ceil(d.count / d.segPoints), bbox: d.bbox, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity, hasClassification: d.hasClassification };
     } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
   });
   ipcMain.handle('bim:cloudPartsRead', async (event, req) => {
@@ -1601,7 +1607,7 @@ function registerIpc() {
       const d = ss.desc;
       if (!Number.isInteger(k) || k < 0 || k * d.segPoints >= d.count) return { ok: false, message: 'неверный номер части' };
       const from = k * d.segPoints, count = Math.min(d.segPoints, d.count - from);
-      const res = await cloudSegments.readSegmentAsync(d, from, count, { signal: ss.controller.signal });
+      const res = await cloudSegments.readSegmentAsync(d, from, count, { signal: ss.controller.signal, keepPer: ss.keepPer });
       if (!res || res.ok === false) return res || { ok: false, message: 'часть облака не прочитана' };
       if (ss.controller.signal.aborted) return { ok: false, cancelled: true, message: 'Импорт отменён' };
       const light = pendingClouds.stash(sender.id, res, APP_CFG.IPC_CHUNK_POINTS || 4000000);
