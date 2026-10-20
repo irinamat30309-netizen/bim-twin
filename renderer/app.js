@@ -524,9 +524,12 @@
     const gb = (n) => n >= 1073741824 ? (n / 1073741824).toFixed(1).replace('.', ',') + ' ГБ' : fmtSize(n);
     parts.push('Сканер: ' + (x.model || 'XGRIDS Lixel') + (x.lidar ? ', лидар ' + x.lidar : '') + (x.cams ? ', камер: ' + x.cams + (x.camRes ? ' (' + x.camRes + ')' : '') : '') + ', файл ' + gb(x.size || 0) + '.');
     if (r.poses && r.poses.n) parts.push('Съёмка: ' + Math.max(1, Math.round((r.poses.duration || 0) / 60)) + ' мин, путь ' + Math.round(r.poses.length || 0) + ' м (траектория ' + r.poses.name + ').');
+    if (!r.cloud && x.lidarReady && r.poses && r.poses.n && typeof API.xbinBuildCloud === 'function') {   // ревизия 24: облако из сырого лидара
+      return window.__bimXbinCloud(p, r, parts.join(' ') + ' В папке проекта нет облака точек — его можно собрать из сырых данных лидара в .xbin.');
+    }
     if (!r.cloud) {
-      const msg = parts.join(' ') + ' В папке проекта нет облака точек. В .xbin записаны сырые данные (пакеты лидара, IMU, кадры камер) — облако из них собирает SLAM-пересчёт в Lixel Studio.';
-      if (kit && kit.ask) await kit.ask({ title: 'Проект сканера без облака', message: msg, hint: 'Положите в папку с .xbin файл map.las со сканера или экспорт из Lixel Studio (LAS) и откройте .xbin ещё раз.', okLabel: 'Понятно', cancelLabel: 'Закрыть' });
+      const msg = parts.join(' ') + ' В папке проекта нет облака точек. В .xbin записаны сырые данные (пакеты лидара, IMU, кадры камер)' + (x.lidarReady ? ' — облако из них собирается по траектории сканера project_data/poses.csv, а её в папке проекта нет.' : ' — облако из них собирает SLAM-пересчёт в Lixel Studio.');
+      if (kit && kit.ask) await kit.ask({ title: 'Проект сканера без облака', message: msg, hint: 'Положите в папку с .xbin файл map.las со сканера, экспорт из Lixel Studio (LAS) или папку project_data с poses.csv и откройте .xbin ещё раз.', okLabel: 'Понятно', cancelLabel: 'Закрыть' });
       else toast('В папке .xbin нет облака точек (map.las или экспорт Lixel Studio)');
       return false;
     }
@@ -540,6 +543,39 @@
     const ok = await window.__bimOpenCloudPath(c.path, { fresh: true });
     if (ok && photo) setTimeout(() => toast('Цвет по фото камер: Автоочистка → «Цвет по фото сканера»'), 2500);
     return ok;
+  };
+  // Ревизия 24: облако из сырого лидара .xbin (в папке проекта нет map.las / экспорта Lixel Studio, или нужно своё облако).
+  // Точки лидара переводятся в координаты проекта по траектории poses.csv и калибровкам из .xbin; результат — LAS рядом с .xbin.
+  window.__bimXbinCloud = async function (p, info, lead) {
+    if (!API || typeof API.xbinBuildCloud !== 'function') { toast('Облако из .xbin собирается в десктоп-версии'); return false; }
+    if (!info) { try { info = await API.openXbin(p); } catch (e) { info = { ok: false, message: String((e && e.message) || e) }; } }
+    if (!info || !info.ok) { toast((info && info.message) || 'Не удалось прочитать файл .xbin'); return false; }
+    const x = info.xbin || {};
+    if (!x.lidarReady) { toast('В .xbin нет калибровок лидара и мотора — облако из него не собрать'); return false; }
+    if (!info.poses || !info.poses.n) { toast('Рядом с .xbin не найдена траектория project_data/poses.csv — без неё облако не собрать'); return false; }
+    const kit = window.__lxKit, mins = Math.max(1, Math.round((info.poses.duration || 0) / 60));
+    const allMln = Math.max(1, Math.round((info.poses.duration || 0) * 0.36));   // L2 Pro: ~360 тыс. точек/с после фильтра дальности
+    let density = 'normal';
+    if (kit && kit.form) {
+      const v = await kit.form({ title: 'Облако из сырого лидара (.xbin)', okLabel: 'Собрать облако', wide: true,
+        message: (lead ? lead + ' ' : '') + 'Точки лидара переводятся в координаты проекта по траектории сканера (' + info.poses.name + ', ' + mins + ' мин) и калибровкам из .xbin. Результат — LAS рядом с .xbin со временем точек: после сборки работают «Движущиеся объекты» и «Цвет по фото сканера».',
+        hint: 'Точность облака — как у траектории сканера (поверхности сходятся до 1 см). Это не SLAM-пересчёт Lixel Studio: если есть экспорт из Studio, он точнее на длинных маршрутах. Сборка идёт в фоне, около 1 минуты на 5–10 минут съёмки.',
+        fields: [{ key: 'density', label: 'Плотность', type: 'select', value: 'normal', options: [
+          { value: 'normal', label: 'Обычная — до 40 млн точек (до 1,4 ГБ)' },
+          { value: 'high', label: 'Высокая — до 120 млн точек (до 4 ГБ)' },
+          { value: 'all', label: 'Все точки — около ' + allMln + ' млн (' + (allMln * 34 / 1024).toFixed(1).replace('.', ',') + ' ГБ)' }] }] });
+      if (!v) return false; density = v.density || 'normal';
+    }
+    const jobId = 'xl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    const PR = window.__lxProgress;
+    const stop = PR && PR.begin ? PR.begin('Облако из .xbin', { onCancel: () => { if (API.cancelXbinCloud) API.cancelXbinCloud(jobId); } }) : null;
+    const unsub = typeof API.onXbinCloudProgress === 'function' ? API.onXbinCloudProgress(jobId, (f, lab) => { try { if (stop && stop.set) stop.set(Number(f) || 0, lab || 'Облако из .xbin…'); } catch (_) {} }) : null;
+    let r = null;
+    try { r = await API.xbinBuildCloud(p, jobId, density); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
+    finally { try { if (typeof unsub === 'function') unsub(); } catch (_) {} try { if (stop) stop(); } catch (_) {} }
+    if (!r || !r.ok) { toast(r && r.cancelled ? 'Сборка облака отменена' : ((r && r.message) || 'Не удалось собрать облако из .xbin')); return false; }
+    toast('Облако из лидара: ' + fmtMln(r.points || 0) + ' млн точек, файл ' + r.name);
+    return window.__bimOpenCloudPath(r.path, { fresh: true });
   };
   // Ревизия 19: скан проекта при открытии проекта — тем же путём, что и «Открыть облако» (крупные LAS/PLY читаются по частям).
   // Возвращает { ok, count, meta } без лишних сообщений; ошибку показывает вызывающий (multicloud.js).
