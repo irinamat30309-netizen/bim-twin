@@ -273,6 +273,11 @@
       this.canvas = canvas; this.onSelect = onSelect || function () { }; this.onHover = null; this.onMeasure = null;
       const gl = canvas.getContext('webgl2', { antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }); if (!gl) throw new Error('WebGL2 unavailable');
       this.gl = gl; this.supportsTools = true;
+      // Ревизия 26: видеокарта может сбросить изображение (нехватка видеопамяти, сброс драйвера при слишком тяжёлом кадре) — тогда
+      // холст становится пустым (белым). Отрисовка останавливается, окно получает событие bim-gl-lost и предлагает открыть облако снова
+      // с меньшим числом точек на экране.
+      this._glLost = false;
+      try { canvas.addEventListener('webglcontextlost', (e) => this._onGlLost(e), false); } catch (_) {}
       this.yaw = -0.7; this.pitch = -0.5; this.dist = 14; this.target = [0, 1.5, 0];
       this._fov = 50 * Math.PI / 180; this._run = false;
       this.showAI = true; this.selectedId = null;
@@ -750,7 +755,15 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     }
     _stopTween() { if (this._tween) { cancelAnimationFrame(this._tween); this._tween = null; } }
     // Кадры: склеиваем несколько render() в один реальный кадр через rAF (не чаще частоты монитора).
-    render() { this._sceneRev = (this._sceneRev | 0) + 1; this._queueFrame(); }
+    _onGlLost(e) {
+      try { if (e && e.preventDefault) e.preventDefault(); } catch (_) {}
+      if (this._glLost) return false; this._glLost = true;
+      const bo = this.base && this.base[0], rec = this._cloudRecord || {};
+      const detail = { loaded: (bo && (bo._gpuCount || bo.count)) || rec.loadedCount || 0, total: rec.sourceCount || 0, path: rec.sourceName || '', streaming: !!(bo && bo._stream) };
+      try { if (typeof window !== 'undefined' && window.dispatchEvent && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('bim-gl-lost', { detail })); } catch (_) {}
+      return true;
+    }
+    render() { if (this._glLost) return; this._sceneRev = (this._sceneRev | 0) + 1; this._queueFrame(); }
     // Только динамика (маркер под курсором, подсказки, превью измерения): статичную сцену из кэша не перерисовываем
     renderOverlay() { this._queueFrame(); }
     _queueFrame() { if (this._rafPending) { this._dirty = true; return; } this._rafPending = true; this._dirty = false; const self = this; requestAnimationFrame(() => { self._rafPending = false; try { self._renderNow(); } catch (e) { console.warn('render', e); } if (self._dirty) { self._dirty = false; self._queueFrame(); } }); }
@@ -1120,7 +1133,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this._decimatedFrom = 0; this._decimatedTo = 0; this._gpuShort = null;
       const target = Math.max(100000, Math.floor(Number(opts.sampleTarget || info.sampleTarget) || 4000000));
       const every = Math.max(1, Math.ceil(total / target)), cap = Math.max(1, Math.ceil(total / every));
-      const st = { total, every, cap, filled: 0, pos: new Float32Array(cap * 3), col: new Float32Array(cap * 3),
+      const srcTotal = Math.max(total, Math.floor(Number(info.sourceTotal) || 0));   // ревизия 26: в файле точек больше, чем на экране (равномерная выборка)
+      const st = { total, srcTotal, every, cap, filled: 0, pos: new Float32Array(cap * 3), col: new Float32Array(cap * 3),
         int: info.hasIntensity ? new Float32Array(cap) : null, cls: info.hasClassification ? new Uint8Array(cap) : null };
       // ревизия 17: копии частей остаются в оперативной памяти (выделение, правка, чистка, классы, сохранение — renderer/big-cloud.js + webgl-viewer-big.js)
       st.cpu = !!(this._bigInstalled && typeof window !== 'undefined' && window.BigCloud);
@@ -1135,7 +1149,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       bo._spacing = Math.min(Math.sqrt(area / Math.max(1, total)), diag * 0.02);
       this._cloudDisplay.min = this.bbox.mn[1]; this._cloudDisplay.max = this.bbox.mx[1];
       if (!this._edlAutoTried) { this._edlAutoTried = true; this._edl = false; if (typeof this.onQualityChange === 'function') { try { this.onQualityChange(); } catch (e) {} } }
-      this._cloudRecord = { sourceName: opts.sourceName || info.name || meta.name || 'Облако без имени', sourceCount: Number.isSafeInteger(total) ? total : null, loadedCount: 0,
+      this._cloudRecord = { sourceName: opts.sourceName || info.name || meta.name || 'Облако без имени', sourceCount: Number.isSafeInteger(srcTotal) ? srcTotal : null, loadedCount: 0,
         format: meta.format || '', hasRGB: meta.colored !== false, hasIntensity: !!info.hasIntensity, hasClassification: !!info.hasClassification, revision: 1 };
       this.modelDims = this._computeCloudDims(meta, total);
       this._notifyCloudChanged();
@@ -1229,7 +1243,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const area = 2 * (bw * bd + bw * bh + bd * bh) || 1, diag = Math.sqrt(bw * bw + bh * bh + bd * bd) || 8;
         bo._spacing = Math.min(Math.sqrt(area / Math.max(1, loaded)), diag * 0.02);
       }
-      if (this._cloudRecord) { this._cloudRecord.loadedCount = loaded; this._cloudRecord.sourceCount = total; }
+      if (this._cloudRecord) { this._cloudRecord.loadedCount = loaded; this._cloudRecord.sourceCount = Math.max(total, bo._stream.srcTotal || 0); }
       if (loaded >= 20000) { try { this._startSegSpacing(bo); } catch (_) {} }
       this.modelDims = this._computeCloudDims(this._srcMeta || {}, loaded);
       this._notifyCloudChanged();
@@ -2597,7 +2611,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         hasClassification: streamed ? this._octIndex.hasClassification === true : !!r.hasClassification,
         loadedCount:this.base.filter(o=>o.points).reduce((n,o)=>n+o.count,0),
         bounds:{mn:this.bbox.mn.slice(),mx:this.bbox.mx.slice()},
-        visible:this.cloudVisible!==false,streaming:!!this._octActive,
+        visible:this.cloudVisible!==false,streaming:!!this._octActive,gpuThinned:!!(this.base&&this.base[0]&&this.base[0]._stream&&this.base[0]._stream.srcTotal>this.base[0]._stream.total),
         display:Object.assign({},this._cloudDisplay,{mode:this.getColorMode()}),
         availableColorModes:this.getAvailableColorModes()
       });
