@@ -514,6 +514,33 @@
     toast('Найдено облако ' + r.name + (r.trajectoryName ? ' и траектория ' + r.trajectoryName : ' (траектория не найдена — движущиеся объекты ищутся по времени точек)'));
     return window.__bimOpenCloudPath(r.path, { fresh: true });
   };
+  // Ревизия 23: файл .xbin (сырые данные сканера Lixel) — показывается облако проекта (экспорт Lixel Studio или map.las),
+  // траектория и .xbin подключаются сами: движущиеся объекты, «Цвет по фото сканера» в Автоочистке.
+  window.__bimOpenXbin = async function (p) {
+    if (!API || typeof API.openXbin !== 'function') { toast('Файлы .xbin открываются в десктоп-версии'); return false; }
+    let r = null; try { r = await API.openXbin(p); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
+    if (!r || !r.ok) { toast((r && r.message) || 'Не удалось прочитать файл .xbin'); return false; }
+    const x = r.xbin || {}, kit = window.__lxKit, parts = [];
+    const gb = (n) => n >= 1073741824 ? (n / 1073741824).toFixed(1).replace('.', ',') + ' ГБ' : fmtSize(n);
+    parts.push('Сканер: ' + (x.model || 'XGRIDS Lixel') + (x.lidar ? ', лидар ' + x.lidar : '') + (x.cams ? ', камер: ' + x.cams + (x.camRes ? ' (' + x.camRes + ')' : '') : '') + ', файл ' + gb(x.size || 0) + '.');
+    if (r.poses && r.poses.n) parts.push('Съёмка: ' + Math.max(1, Math.round((r.poses.duration || 0) / 60)) + ' мин, путь ' + Math.round(r.poses.length || 0) + ' м (траектория ' + r.poses.name + ').');
+    if (!r.cloud) {
+      const msg = parts.join(' ') + ' В папке проекта нет облака точек. В .xbin записаны сырые данные (пакеты лидара, IMU, кадры камер) — облако из них собирает SLAM-пересчёт в Lixel Studio.';
+      if (kit && kit.ask) await kit.ask({ title: 'Проект сканера без облака', message: msg, hint: 'Положите в папку с .xbin файл map.las со сканера или экспорт из Lixel Studio (LAS) и откройте .xbin ещё раз.', okLabel: 'Понятно', cancelLabel: 'Закрыть' });
+      else toast('В папке .xbin нет облака точек (map.las или экспорт Lixel Studio)');
+      return false;
+    }
+    const c = r.cloud, KIND = { studio: 'экспорт Lixel Studio', realtime: 'облако реального времени со сканера', other: 'облако проекта' };
+    parts.push('Облако: ' + c.name + ' — ' + (KIND[c.kind] || KIND.other) + (c.points ? ', ' + fmtMln(c.points) + ' млн точек' : '') + ', ' + gb(c.size || 0) + '.');
+    if (r.others && r.others.length) parts.push('Есть ещё: ' + r.others.map(o => o.name).join(', ') + '.');
+    const photo = x.photoReady && c.hasTime && r.poses;
+    const hint = photo ? 'Цвет по кадрам камер из .xbin: Автоочистка → «Цвет по фото сканера» (файл .xbin и траектория найдутся сами).'
+      : (c.hasTime === false ? 'В облаке нет времени точек — цвет по фото камер для него недоступен.' : (!r.poses ? 'Траектория poses.csv не найдена — цвет по фото потребует выбрать её вручную.' : ''));
+    if (kit && kit.ask) { const go = await kit.ask({ title: 'Проект сканера Lixel', message: parts.join(' '), hint: hint || undefined, okLabel: 'Открыть облако', cancelLabel: 'Отмена', wide: true }); if (!go) return false; }
+    const ok = await window.__bimOpenCloudPath(c.path, { fresh: true });
+    if (ok && photo) setTimeout(() => toast('Цвет по фото камер: Автоочистка → «Цвет по фото сканера»'), 2500);
+    return ok;
+  };
   // Ревизия 19: скан проекта при открытии проекта — тем же путём, что и «Открыть облако» (крупные LAS/PLY читаются по частям).
   // Возвращает { ok, count, meta } без лишних сообщений; ошибку показывает вызывающий (multicloud.js).
   window.__bimLoadCloudForProject = async function (p, label) {
@@ -1646,6 +1673,7 @@
   }
   async function loadModelFile(file) {
     if (!current) { toast('Сначала выберите помещение'); return; }
+    if (/\.xbin$/i.test(file.name)) { const xp = selectedFilePath(file); if (!xp) { toast('Файл .xbin открывается в десктоп-версии'); return; } await window.__bimOpenXbin(xp); return; }   // ревизия 23
     toast('Открываю 3D: ' + file.name + ' (' + fmtSize(file.size) + ') …');
     const localPath = selectedFilePath(file);
     let r = null;
