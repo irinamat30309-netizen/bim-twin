@@ -136,7 +136,7 @@ test('r24: связка — проверка доступа и поток в mai
   assert.match(main, /ipcMain\.handle\('bim:xbinBuildCloud'[\s\S]{0,400}resolveAuthorizedFile\(event, String\(a\.path \|\| ''\), new Set\(\['\.xbin'\]\)\)/);
   assert.match(main, /unpackedWorker\('xbin-lidar-worker\.js'\)/); assert.match(main, /ipcMain\.on\('bim:cancelXbinCloud'/);
   assert.match(main, /fs\.rmSync\(partFile, \{ force: true \}\)/); assert.match(main, /grantExistingFile\(sender\.id, target, \{ read: true \}\)/);
-  assert.match(pre, /xbinBuildCloud: \(p, jobId, density\) => inv\('bim:xbinBuildCloud'/); assert.match(pre, /cancelXbinCloud:/); assert.match(pre, /'bim:xbinCloudProgress'/);
+  assert.match(pre, /xbinBuildCloud: \(p, jobId, density(, opts)?\) => inv\('bim:xbinBuildCloud'/); assert.match(pre, /cancelXbinCloud:/); assert.match(pre, /'bim:xbinCloudProgress'/);
   assert.match(app, /window\.__bimXbinCloud = async function/); assert.match(app, /!r\.cloud && x\.lidarReady && r\.poses/);
   assert.match(read('recolor-core.js'), /if \(!\(corr >= o\.minCorr\) && !fromXbinLidar\) throw/);   // серое облако из лидара: корреляция с фото — не проверка
   assert.match(ext, /opXbinCloud: opXbinCloud/); assert.match(cmd, /I\('opXbinCloud', 'scan-line', 'Облако из \.xbin'/);

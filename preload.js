@@ -190,7 +190,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   pickXbin: () => inv('bim:pickXbin'),
   openXbin: (p) => inv('bim:openXbin', { path: p }),   // ревизия 23: файл .xbin → облако и траектория проекта Lixel
   // ревизия 24: облако из сырого лидара .xbin (density: normal ≈ 40 млн, high ≈ 120 млн, all — все точки) с прогрессом и отменой
-  xbinBuildCloud: (p, jobId, density) => inv('bim:xbinBuildCloud', { path: p, jobId, density }),
+  // ревизия 25: opts.refine — уточнение траектории по самому облаку (точнее, дольше)
+  xbinBuildCloud: (p, jobId, density, opts) => inv('bim:xbinBuildCloud', { path: p, jobId, density, refine: !!(opts && opts.refine) }),
   onXbinCloudProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };

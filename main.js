@@ -1134,7 +1134,8 @@ function registerIpc() {
       const need = density === 'all' ? info.xbin.size * 1.2 : XBIN_DENSITY[density] * 34 * 1.05;
       try { const sf = fs.statfsSync(dir); const free = Number(sf.bavail) * Number(sf.bsize); if (Number.isFinite(free) && free < Math.min(need, info.xbin.size * 1.2)) return { ok: false, error: 'no_space', message: 'Недостаточно места на диске рядом с .xbin: нужно около ' + (need / 1073741824).toFixed(1) + ' ГБ, свободно ' + (free / 1073741824).toFixed(1) + ' ГБ.' }; } catch (_) {}
       partFile = target + '.part';
-      const opt = { maxPoints: XBIN_DENSITY[density] || 0, step: density === 'all' ? 1 : 0 };
+      // ревизия 25: refine — уточнение траектории по самому облаку (xbin-refine.js), самомаска корпуса сканера — всегда
+      const opt = { maxPoints: XBIN_DENSITY[density] || 0, step: density === 'all' ? 1 : 0, refine: a.refine === true };
       const worker = new Worker(unpackedWorker('xbin-lidar-worker.js'), { workerData: { xbinPath: abs, posesText, outPath: target, opt } });
       const r = await new Promise(resolve => {
         const job = { worker, cancelled: false, finished: false };
@@ -1154,7 +1155,8 @@ function registerIpc() {
       partFile = null;
       try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
       try { fileGrants.grantExistingFile(sender.id, info.poses.path, { read: true }); const k = path.resolve(target); scanFolderPoses.set(process.platform === 'win32' ? k.toLowerCase() : k, info.poses.path); } catch (_) {}
-      return { ok: true, path: target, name: path.basename(target), points: r.points, step: r.step, seconds: r.seconds, trajectory: info.poses.name, density };
+      const r1 = v => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null), rf = r.refine ? { residualBeforeMm: r1(r.refine.residualBeforeMm), residualAfterMm: r1(r.refine.residualAfterMm), seconds: Math.round(r.refine.seconds || 0) } : null;
+      return { ok: true, path: target, name: path.basename(target), points: r.points, step: r.step, seconds: r.seconds, trajectory: info.poses.name, density, refine: rf };
     } catch (e) {
       if (partFile) { try { fs.rmSync(partFile, { force: true }); } catch (_) {} }
       return { ok: false, error: 'xbin_lidar_failed', message: String((e && e.message) || e) };

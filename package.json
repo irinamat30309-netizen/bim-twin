@@ -81,6 +81,7 @@
       "recolor-core.js",
       "xbin-lidar.js",
       "xbin-lidar-worker.js",
+      "xbin-refine.js",
       "db/atomic-file.js",
       "scan2bim-ai-server/**"
     ],
@@ -112,6 +113,7 @@
       "xbin-project.js",
       "xbin-lidar.js",
       "xbin-lidar-worker.js",
+      "xbin-refine.js",
       "recolor-core.js",
       "recolor-host.html",
       "recolor-host-preload.js",
