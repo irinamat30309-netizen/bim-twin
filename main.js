@@ -1107,6 +1107,67 @@ function registerIpc() {
     }
     return Object.assign({ ok: true }, info);
   });
+  // Ревизия 24: облако точек из сырого лидара .xbin (когда в папке проекта нет map.las / экспорта Lixel Studio).
+  // Нужны калибровки из .xbin и траектория poses.csv проекта; результат — LAS рядом с .xbin («<имя>-lidar.las»), окну выдаётся его чтение.
+  const activeXbinCloudJobs = new Map();
+  const XBIN_DENSITY = { normal: 40e6, high: 120e6, all: 0 };
+  ipcMain.handle('bim:xbinBuildCloud', async (event, a) => {
+    let partFile = null;
+    try {
+      a = a || {};
+      const sender = ipcSender(event); if (!sender) return { ok: false, error: 'invalid_sender' };
+      const abs = resolveAuthorizedFile(event, String(a.path || ''), new Set(['.xbin']));
+      if (!abs) return { ok: false, error: 'path_not_authorized', message: 'Нет доступа к файлу .xbin — выберите его через «Открыть».' };
+      const jobId = typeof a.jobId === 'string' && /^[a-zA-Z0-9:_-]{1,128}$/.test(a.jobId) ? a.jobId : crypto.randomBytes(12).toString('hex');
+      const key = cloudJobKey(sender, 'xl:' + jobId);
+      if (activeXbinCloudJobs.has(key)) return { ok: false, error: 'duplicate_job_id' };
+      let info = null; try { info = require('./xbin-project').inspect(abs); } catch (e) { return { ok: false, error: 'xbin_invalid', message: String((e && e.message) || e) }; }
+      if (!info.xbin.lidarReady) return { ok: false, error: 'no_calibration', message: 'В .xbin нет калибровок лидара и мотора — облако из него не собрать.' };
+      if (!info.poses || !info.poses.path) return { ok: false, error: 'no_trajectory', message: 'Не найдена траектория сканера (project_data/poses.csv) в папке проекта .xbin.' };
+      const pst = fs.statSync(info.poses.path); if (pst.size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
+      const posesText = fs.readFileSync(info.poses.path, 'utf8');
+      const density = Object.prototype.hasOwnProperty.call(XBIN_DENSITY, a.density) ? a.density : 'normal';
+      const dir = path.dirname(abs), stem = path.basename(abs).replace(/\.xbin$/i, '') + '-lidar';
+      let target = null; for (let i = 0; i < 1000 && !target; i++) { const f = path.join(dir, stem + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f) && !fs.existsSync(f + '.part')) target = f; }
+      if (!target) return { ok: false, error: 'no_name' };
+      // место: ~34 байта на точку; «все точки» — до ~1 байта LAS на 0,6 байта пакетов лидара (оценка сверху — размер .xbin)
+      const need = density === 'all' ? info.xbin.size * 1.2 : XBIN_DENSITY[density] * 34 * 1.05;
+      try { const sf = fs.statfsSync(dir); const free = Number(sf.bavail) * Number(sf.bsize); if (Number.isFinite(free) && free < Math.min(need, info.xbin.size * 1.2)) return { ok: false, error: 'no_space', message: 'Недостаточно места на диске рядом с .xbin: нужно около ' + (need / 1073741824).toFixed(1) + ' ГБ, свободно ' + (free / 1073741824).toFixed(1) + ' ГБ.' }; } catch (_) {}
+      partFile = target + '.part';
+      const opt = { maxPoints: XBIN_DENSITY[density] || 0, step: density === 'all' ? 1 : 0 };
+      const worker = new Worker(unpackedWorker('xbin-lidar-worker.js'), { workerData: { xbinPath: abs, posesText, outPath: target, opt } });
+      const r = await new Promise(resolve => {
+        const job = { worker, cancelled: false, finished: false };
+        const finish = x => { if (job.finished) return; job.finished = true; activeXbinCloudJobs.delete(key); try { sender.removeListener('destroyed', onGone); } catch (_) {} resolve(x); };
+        const onGone = () => { job.cancelled = true; try { worker.terminate().catch(() => {}); } catch (_) {} };
+        activeXbinCloudJobs.set(key, job);
+        try { sender.once('destroyed', onGone); } catch (_) {}
+        worker.on('message', m => {
+          if (!m || job.finished) return;
+          if (m.type === 'progress') { try { if (!(sender.isDestroyed && sender.isDestroyed())) sender.send('bim:xbinCloudProgress', { jobId, progress: m.progress, label: m.label }); } catch (_) {} }
+          else if (m.type === 'result') finish(m.result || { ok: false });
+        });
+        worker.on('error', e => finish({ ok: false, error: String((e && e.message) || e) }));
+        worker.on('exit', code => { if (job.cancelled) finish({ ok: false, cancelled: true, error: 'cancelled' }); else finish({ ok: false, error: 'xbin_worker_exit_' + code }); });
+      });
+      if (!r.ok) { try { fs.rmSync(partFile, { force: true }); } catch (_) {} return r; }
+      partFile = null;
+      try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
+      try { fileGrants.grantExistingFile(sender.id, info.poses.path, { read: true }); const k = path.resolve(target); scanFolderPoses.set(process.platform === 'win32' ? k.toLowerCase() : k, info.poses.path); } catch (_) {}
+      return { ok: true, path: target, name: path.basename(target), points: r.points, step: r.step, seconds: r.seconds, trajectory: info.poses.name, density };
+    } catch (e) {
+      if (partFile) { try { fs.rmSync(partFile, { force: true }); } catch (_) {} }
+      return { ok: false, error: 'xbin_lidar_failed', message: String((e && e.message) || e) };
+    }
+  });
+  ipcMain.on('bim:cancelXbinCloud', (event, payload) => {
+    const jobId = typeof payload === 'string' ? payload : payload && payload.jobId;
+    if (typeof jobId !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(jobId)) return;
+    const job = activeXbinCloudJobs.get(cloudJobKey(event && event.sender, 'xl:' + jobId));
+    if (!job || job.finished || job.cancelled) return;
+    job.cancelled = true;
+    try { job.worker.terminate().catch(() => {}); } catch (_) {}
+  });
   // Цвет по фото: скрытое окно с пустой страницей без скриптов (CSP default-src 'none'), contextIsolation включена,
   // nodeIntegration выключена; кадры H.264 декодирует WebCodecs в preload (recolor-host-preload.js), расчёт — recolor-core.js.
   // Переходы и новые окна запрещены; окно закрывается по окончании задачи, при отмене — сразу.

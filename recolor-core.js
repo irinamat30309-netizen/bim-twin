@@ -103,7 +103,7 @@ function readHeader(fd) {
   if (h[104] & 0x80) throw new Error('сжатый LAS (LAZ) не поддерживается');
   const minor = h[25], off = h.readUInt32LE(96), fmt = h[104] & 0x3f, rl = h.readUInt16LE(105);
   let n = h.readUInt32LE(107); if (minor >= 4) { const n2 = Number(h.readBigUInt64LE(247)); if (n2 > 0) n = n2; }
-  return { minor, off, fmt, rl, n, rgb: RGB_OFF[fmt], tOff: T_OFF[fmt], sx: h.readDoubleLE(131), sy: h.readDoubleLE(139), sz: h.readDoubleLE(147), ox: h.readDoubleLE(155), oy: h.readDoubleLE(163), oz: h.readDoubleLE(171) };
+  return { minor, off, fmt, rl, n, soft: h.toString('latin1', 58, 90).replace(/\0[\s\S]*$/, '').trim(), rgb: RGB_OFF[fmt], tOff: T_OFF[fmt], sx: h.readDoubleLE(131), sy: h.readDoubleLE(139), sz: h.readDoubleLE(147), ox: h.readDoubleLE(155), oy: h.readDoubleLE(163), oz: h.readDoubleLE(171) };
 }
 function scanLas(fd, H, cb, per) {
   per = per || 1 << 18; const buf = Buffer.allocUnsafe(per * H.rl);
@@ -286,7 +286,10 @@ async function recolor(src, dst, a) {
       }
     }
     const corr = corrN ? corrS / corrN : 0;
-    if (!(corr >= o.minCorr)) throw new Error('фото сканера не совпадают с облаком (корреляция ' + corr.toFixed(2) + '): другая съёмка, траектория или облако сдвинуто');
+    // ревизия 24: облако, собранное из лидара этого же .xbin по этой же траектории (xbin-lidar.js), совпадает с кадрами по построению,
+    // а его серый цвет — отражательная способность лидара, а не яркость: корреляция с фото у него низкая (0,1–0,3) и проверкой не служит
+    const fromXbinLidar = /^BIM Twin xbin-lidar/.test(H.soft || '');
+    if (!(corr >= o.minCorr) && !fromXbinLidar) throw new Error('фото сканера не совпадают с облаком (корреляция ' + corr.toFixed(2) + '): другая съёмка, траектория или облако сдвинуто');
     // маска: ячейки кадра с ошибкой > 1,6 медианы — вес плавно до 0 к 2,6 медианы
     const masks = RG.map((R, ri) => {
       const S = mSum[ri], C = mCnt[ri], vals = [];
@@ -364,7 +367,7 @@ async function recolor(src, dst, a) {
     if (size > end) { const tail = Buffer.alloc(Math.min(size - end, 64 << 20)); fs.readSync(fd, tail, 0, tail.length, end); fs.writeSync(ofd, tail, 0, tail.length, wpos); }
     for (const R of rd) if (R && R.fd) fs.closeSync(R.fd);
     fs.closeSync(ofd); ofd = null;
-    return { points: H.n, inWindow: inWin, colored: changed, frames: frames.length, views, corr: +corr.toFixed(3), masked: masks.map(m => m.off), cameras: RG.length, ms: Date.now() - t0ms, color16: c16 };
+    return { points: H.n, inWindow: inWin, colored: changed, frames: frames.length, views, corr: +corr.toFixed(3), masked: masks.map(m => m.off), cameras: RG.length, lidarCloud: fromXbinLidar, ms: Date.now() - t0ms, color16: c16 };
   } finally {
     try { fs.closeSync(fd); } catch (_) {}
     if (xfd !== null) { try { fs.closeSync(xfd); } catch (_) {} }

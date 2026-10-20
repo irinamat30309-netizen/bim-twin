@@ -457,6 +457,14 @@
     return window.__bimOpenScanFolder();
   }
 
+  // Ревизия 24: «Облако из .xbin» — облако из сырого лидара сканера Lixel (реализация — window.__bimXbinCloud в app.js)
+  async function opXbinCloud() {
+    var t = T(), api = t && t.api ? t.api() : null;
+    if (!api || !api.pickXbin || typeof window.__bimXbinCloud !== 'function') { toast('Облако из .xbin собирается в десктоп-версии'); return; }
+    var px = await api.pickXbin(); if (!px || !px.ok || !px.path) { if (!(px && px.cancelled)) toast('Файл сканера не выбран'); return; }
+    return window.__bimXbinCloud(px.path);
+  }
+
   /**
    * Чистовая обработка скана (как экспорт после обработки в Lixel Studio): движущиеся объекты (по времени точек и по траектории),
    * шум (уровни мягко/обычно/сильно), тонкие стены и пол (проекция на локальную плоскость), пёстрые точки. Ревизия 19: по умолчанию
@@ -830,7 +838,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDynClean: opDynClean, opRefineScan: opRefineScan, opScanFolder: opScanFolder, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDynClean: opDynClean, opRefineScan: opRefineScan, opScanFolder: opScanFolder, opXbinCloud: opXbinCloud, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });

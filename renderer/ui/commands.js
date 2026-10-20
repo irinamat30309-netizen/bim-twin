@@ -56,6 +56,7 @@
       G('clouds', 'Облака точек', [
         I('btnOpenCloud', 'folder-open', 'Открыть облако', { sel: '#btnOpenCloud', primary: 1, tip: 'Облако помещения или файл LAS / LAZ / E57 / PLY' }),
         I('opScanFolder', 'folder', 'Папка сканера', { call: OPS_T + 'opScanFolder', tip: 'Папка проекта сканера (Lixel и др.): облако и траектория poses.csv находятся сами' }),
+        I('opXbinCloud', 'scan-line', 'Облако из .xbin', { call: OPS_T + 'opXbinCloud', tip: 'Облако из сырого лидара сканера Lixel (.xbin) по траектории poses.csv проекта' }),
         I('opPotree', 'cloud-download', 'Potree 2.0', { call: OPS_S + 'opPotree', tip: 'Открыть набор Potree 2.0 (metadata.json + octree)' })
       ]),
       G('models', 'Модели и документы', [

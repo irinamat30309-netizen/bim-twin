@@ -189,6 +189,16 @@ contextBridge.exposeInMainWorld('bimAPI', {
   findXbin: (payload) => inv('bim:findXbin', payload),   // ревизия 22: файл сканера .xbin рядом с облаком (цвет по фото)
   pickXbin: () => inv('bim:pickXbin'),
   openXbin: (p) => inv('bim:openXbin', { path: p }),   // ревизия 23: файл .xbin → облако и траектория проекта Lixel
+  // ревизия 24: облако из сырого лидара .xbin (density: normal ≈ 40 млн, high ≈ 120 млн, all — все точки) с прогрессом и отменой
+  xbinBuildCloud: (p, jobId, density) => inv('bim:xbinBuildCloud', { path: p, jobId, density }),
+  onXbinCloudProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:xbinCloudProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:xbinCloudProgress', listener); } catch (_) {} };
+  },
+  cancelXbinCloud: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelXbinCloud', { jobId }); },
   pickScanFolder: () => inv('bim:pickScanFolder'),   // ревизия 19: папка проекта сканера → облако + траектория
   dynamicClean: (payload) => inv('bim:dynamicClean', payload),
   onDynamicCleanProgress: (jobId, callback) => {

@@ -94,7 +94,8 @@ function inspect(xbinPath, opts) {
   const lidar = (/lidar_type:\s*"?([A-Za-z0-9_]+)/.exec(text) || [])[1] || null;
   const cams = calib.cams || [];
   const xbin = { path: abs, name: path.basename(abs), size, model: calib.model || null, lidar: lidar ? lidar.replace(/_lidar$/i, '').replace(/^hesai$/i, 'Hesai').replace(/^livox.*/i, 'Livox') : null,
-    cams: cams.length, camRes: cams.length ? cams[0].w + '×' + cams[0].h : null, photoReady: !!(cams.length && calib.camMotor && calib.imuMotor) };
+    cams: cams.length, camRes: cams.length ? cams[0].w + '×' + cams[0].h : null, photoReady: !!(cams.length && calib.camMotor && calib.imuMotor),
+    lidarReady: !!(calib.motorLidar && calib.imuMotor) };   // ревизия 24: облако из сырого лидара (xbin-lidar.js)
   const root = path.dirname(abs);
   const { clouds, poses } = scanFolder(root, opts.depth == null ? 3 : opts.depth);
   for (const c of clouds) { c.las = c.ext === '.las' ? lasInfo(c.path) : null; c.kind = cloudKind(c); }
