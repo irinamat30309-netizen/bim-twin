@@ -463,6 +463,7 @@
   }
   // Ревизия 17: облако больше 48 млн точек (читается частями) не имеет плоских массивов — сохраняется и экспортируется ПОТОКОМ из сегментов viewer.
   var BIG_FMT = ['ply', 'las', 'xyz', 'pts', 'pcd', 'csv', 'obj'];
+  var SAME_FMT = ['ply', 'las', 'xyz', 'pts', 'pcd', 'csv'];   // форматы, в которых рабочий файл перезаписывается на месте
   function bigViewer() { var v = viewer(); return (v && typeof v.isBigCloud === 'function' && v.isBigCloud() && typeof v.saveBigStream === 'function') ? v : null; }
   async function saveBig(bv, opts) {
     var saveGeneration = window.__pcAutosave && Number.isSafeInteger(window.__pcAutosave.editGeneration) ? window.__pcAutosave.editGeneration : undefined;
@@ -558,13 +559,22 @@
     var t = tools(); var stop = (t && t.beginProgress) ? t.beginProgress('\u0424\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 PLY\u2026') : null;
     var setP = function (f, m) { try { if (stop && stop.set) stop.set(f, m); } catch (e) {} };
     try {
-      var bytes = await plyBytes(cloud, function (f) { setP(f * 0.9, '\u0424\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 PLY\u2026'); });
+      // ревизия 27: рабочий файл сохраняется в СВОЁМ формате (работа с файлом на месте: LAS остаётся LAS, XYZ — XYZ …)
+      var wfmt = 'ply';
+      if (st.workingPath && !opts.askPath) { var wm = /\.([a-z0-9]+)$/i.exec(st.workingPath), we = wm ? wm[1].toLowerCase() : 'ply'; if (SAME_FMT.indexOf(we) >= 0) wfmt = we; }
+      var payload = null;
+      if (wfmt === 'ply') payload = { binary: await plyBytes(cloud, function (f) { setP(f * 0.9, '\u0424\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 PLY\u2026'); }) };
+      else { setP(0.3, 'Формирование ' + wfmt.toUpperCase() + '…'); await new Promise(function (r0) { setTimeout(r0, 30); }); payload = buildCloudPayload(wfmt, cloud); }
+      if (!payload || (payload.binary == null && typeof payload.text !== 'string')) throw new Error('format');
+      var bytes = payload.binary;
       setP(0.95, '\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435\u2026');
       var r;
       if (st.workingPath && !opts.askPath) {
-        r = await A.saveCloudToPath({ path: st.workingPath, binary: bytes });
+        r = await A.saveCloudToPath(bytes != null ? { path: st.workingPath, binary: bytes } : { path: st.workingPath, text: payload.text });
       } else {
-        r = await A.saveCloud({ binary: bytes, name: nowName('ply') });
+        var defName = nowName('ply');
+        try { if (window.ProjectWorkspace && window.ProjectWorkspace.cloudDefaultPath) defName = (await window.ProjectWorkspace.cloudDefaultPath('ply')) || defName; } catch (e) {}
+        r = await A.saveCloud({ binary: bytes, name: defName });
         if (r && r.ok && r.path) { st.workingPath = r.path; st.workingFmt = 'ply'; }
       }
       if (r && r.ok) {
@@ -810,6 +820,9 @@
       toast('\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u0447\u0435\u0440\u043d\u043e\u0432\u0438\u043a\u043e\u0432 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430', true); return false;
     },
     status: function () { return { dirty: st.dirty, saving: st.saving, lastSavedAt: st.lastSavedAt, workingPath: st.workingPath, intervalMin: st.intervalMin }; },
+    // ревизия 27: рабочий файл задаёт «Папка проекта» (работа с файлом на месте); null — следующее сохранение спросит путь
+    setWorkingPath: function (p) { st.workingPath = p ? String(p) : null; var m = p ? /\.([a-z0-9]+)$/i.exec(String(p)) : null; st.workingFmt = m ? m[1].toLowerCase() : 'ply'; renderChip(); return st.workingPath; },
+    saveAsNew: function () { return save({ askPath: true }); },
     formats: FORMATS,
     _state: st
   };

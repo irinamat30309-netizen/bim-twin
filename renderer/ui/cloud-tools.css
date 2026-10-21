@@ -1,0 +1,102 @@
+/* BIM Twin — ревизия 27: окно «Перед загрузкой» (bp-), «Последние действия» (hp-), «Папка проекта» (pw-). */
+
+/* ---------- Перед загрузкой ---------- */
+.modal-card.bp-card { width: min(1180px, 96vw); height: min(86vh, 900px); max-height: 86vh; }
+.bp-body { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; flex: 1 1 auto; min-height: 0; padding: 12px 14px; }
+.bp-mapcol { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+.bp-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bp-sp { flex: 1 1 auto; }
+.bp-seg { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); }
+.bp-seg button { height: 26px; padding: 0 10px; border: 0; border-radius: calc(var(--r-2) - 2px); background: transparent; color: var(--txt-2); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+.bp-seg button:hover { color: var(--txt); }
+.bp-seg button.on { background: var(--bg-4); color: var(--txt); box-shadow: var(--shadow-1); }
+.bp-map { position: relative; flex: 1 1 auto; min-height: 260px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-0, #0d0f12); cursor: crosshair; }
+.bp-map canvas { position: absolute; inset: 0; display: block; }
+.bp-maphint { position: absolute; right: 10px; left: auto; bottom: 8px; max-width: 60%; padding: 3px 8px; border-radius: var(--r-1); background: color-mix(in srgb, var(--bg-1) 82%, transparent); color: var(--txt-2); font-size: var(--fs-xs); pointer-events: none; }
+.bp-est { min-height: 20px; color: var(--txt-2); font-size: var(--fs-sm); }
+.bp-est b { color: var(--txt); }
+.bp-side { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; padding-right: 4px; }
+.bp-side section { display: flex; flex-direction: column; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.bp-side section:last-child { border-bottom: 0; }
+.bp-side h4 { margin: 0; color: var(--txt-3); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.bp-facts { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.bp-facts th { padding: 2px 8px 2px 0; color: var(--txt-3); font-weight: 400; text-align: left; vertical-align: top; white-space: nowrap; }
+.bp-facts td { padding: 2px 0; color: var(--txt); }
+.bp-pc { display: flex; flex-direction: column; gap: 3px; color: var(--txt-2); font-size: var(--fs-sm); line-height: 1.4; }
+.bp-rec { margin-top: 2px; color: var(--txt); }
+.bp-pts { display: flex; flex-direction: column; gap: 6px; }
+.bp-ptsval { display: flex; align-items: baseline; gap: 8px; }
+.bp-ptsval b { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.bp-ptsval span { color: var(--txt-3); font-size: var(--fs-sm); }
+.bp-range { position: relative; height: 22px; }
+.bp-range input[type="range"] { position: relative; z-index: 1; width: 100%; margin: 0; background: transparent; }
+.bp-mk { position: absolute; top: 15px; width: 2px; height: 7px; margin-left: -1px; border-radius: 1px; pointer-events: auto; }
+.bp-mk.rec { background: var(--ok, #3fb950); }
+.bp-mk.max { background: var(--warn, #d29922); }
+.bp-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+.bp-warn { margin: 0; padding: 6px 8px; border-radius: var(--r-1); background: var(--warn-soft, color-mix(in srgb, #d29922 16%, transparent)); color: var(--warn, #d29922); font-size: var(--fs-xs); line-height: 1.45; }
+.bp-hist { width: 100%; height: 64px; border-radius: var(--r-1); background: var(--bg-2); }
+.bp-floors { display: flex; flex-wrap: wrap; gap: 4px; }
+.bp-floors .btn.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+.bp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--txt-2); font-size: var(--fs-sm); }
+.bp-row label { display: inline-flex; align-items: center; gap: 6px; }
+.bp-row input[type="number"] { width: 76px; }
+.bp-row select { min-width: 150px; }
+.bp-span label { flex: 1 1 140px; }
+.bp-span input[type="range"] { flex: 1 1 auto; min-width: 60px; }
+.bp-chk { display: inline-flex; align-items: center; gap: 6px; color: var(--txt-2); font-size: var(--fs-sm); cursor: pointer; }
+.bp-note { margin: 0; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.45; }
+.bp-routeinfo { min-height: 1.45em; }
+.bp-actions { align-items: center; }
+.bp-actions .btn { gap: 6px; }
+@media (max-width: 980px) {
+  .bp-body { grid-template-columns: 1fr; overflow: auto; }
+  .bp-map { min-height: 320px; }
+}
+
+/* ---------- Последние действия ---------- */
+.modal-card.hp-card { width: min(640px, 96vw); }
+.hp-body { display: flex; flex-direction: column; gap: 14px; padding: 14px 18px 18px; overflow: auto; }
+.hp-sec { display: flex; flex-direction: column; gap: 8px; }
+.hp-sec-h { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.hp-sec-h .ic { color: var(--txt-3); }
+.hp-sub { color: var(--txt-3); font-size: var(--fs-xs); font-weight: 400; }
+.hp-sp { flex: 1 1 auto; }
+.hp-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.hp-item { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 4px 8px; border-radius: var(--r-1); }
+.hp-item:hover { background: var(--bg-2); }
+.hp-item.top { background: var(--bg-2); }
+.hp-n { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--bg-3); color: var(--txt-2); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.hp-dot { flex: none; width: 6px; height: 6px; margin: 0 8px; border-radius: 50%; background: var(--txt-3); }
+.hp-item.undo .hp-dot { background: var(--warn, #d29922); }
+.hp-item.load .hp-dot { background: var(--accent); }
+.hp-txt { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; font-size: var(--fs-sm); }
+.hp-txt b { font-weight: 550; }
+.hp-txt small { color: var(--txt-3); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hp-time { flex: none; color: var(--txt-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.hp-note { margin: 0; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.45; }
+.hp-journal, .hp-session { max-height: 240px; overflow: auto; }
+
+/* ---------- Папка проекта ---------- */
+.modal-card.pw-card { width: min(620px, 96vw); }
+.pw-body { display: flex; flex-direction: column; gap: 16px; padding: 14px 18px 18px; overflow: auto; }
+.pw-sec { display: flex; flex-direction: column; gap: 8px; }
+.pw-h { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.pw-h .ic { color: var(--txt-3); }
+.pw-path { padding: 6px 10px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-1); background: var(--bg-2); font: 500 var(--fs-sm)/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.pw-subs { display: flex; flex-wrap: wrap; gap: 4px; }
+.pw-subs span { padding: 1px 8px; border-radius: 999px; background: var(--bg-3); color: var(--txt-2); font-size: var(--fs-xs); }
+.pw-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.pw-acts .btn { gap: 6px; }
+.pw-file { display: flex; flex-direction: column; gap: 2px; }
+.pw-file small { color: var(--txt-2); font-size: var(--fs-sm); }
+.pw-note { margin: 0; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.45; }
+.pw-warn { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 6px 8px; border-radius: var(--r-1); background: var(--warn-soft, color-mix(in srgb, #d29922 16%, transparent)); color: var(--txt-2); font-size: var(--fs-xs); line-height: 1.45; }
+.pw-warn .ic { flex: none; margin-top: 1px; color: var(--warn, #d29922); }
+.pw-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.pw-seg button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); color: var(--txt); font: inherit; text-align: left; cursor: pointer; }
+.pw-seg button small { color: var(--txt-3); font-size: var(--fs-xs); }
+.pw-seg button:hover { border-color: var(--line-strong); }
+.pw-seg button.on { border-color: var(--accent-line); background: var(--accent-soft); }
+.pw-usage { display: flex; align-items: center; gap: 8px; color: var(--txt-2); font-size: var(--fs-sm); }
+.pw-sp { flex: 1 1 auto; }
