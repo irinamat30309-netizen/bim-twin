@@ -13,11 +13,13 @@ function building(o) {
       const t = (i + r() * 0.5) / nu * L, z = (k + r() * 0.5) / nz * H;
       if (t > L || z > H) continue;
       if (holes && holes.some(h => t >= h[0] && t <= h[1] && z >= h[2] && z <= h[3])) continue;
-      const e = gauss(r) * noise;
+      let e = gauss(r) * noise;
+      if (o.wallDip) { const q = o.wallDip, wx = x0 + (x1 - x0) * t / L, wy = y0 + (y1 - y0) * t / L, d = Math.hypot(wx - q.x, wy - q.y, z - q.z); if (d < q.r) e -= q.depth * (d < q.r * 0.7 ? 1 : (q.r - d) / (q.r * 0.3)); }
       P.push([x0 + (x1 - x0) * t / L + nx * e, y0 + (y1 - y0) * t / L + ny * e, z]);
     }
   };
-  const slab = (x0, y0, x1, y1, z) => { for (let x = x0; x <= x1; x += step) for (let y = y0; y <= y1; y += step) P.push([x + r() * step * 0.5, y + r() * step * 0.5, z + gauss(r) * noise]); };
+  const bump = (x, y, z) => { const q = o.bump; if (!q || z > 0.01) return 0; const d = Math.hypot(x - q.x, y - q.y); return d < q.r ? q.h * (d < q.r * 0.7 ? 1 : (q.r - d) / (q.r * 0.3)) : 0; };
+  const slab = (x0, y0, x1, y1, z) => { for (let x = x0; x <= x1; x += step) for (let y = y0; y <= y1; y += step) { const px = x + r() * step * 0.5, py = y + r() * step * 0.5; P.push([px, py, z + bump(px, py, z) + gauss(r) * noise]); } };
   // помещение A: x 0..6, y 0..6; B: x 6.12..10, y 0..6
   wallV(0, 0, 6, 0, [[2, 3.5, 0.9, 2.1]]);          // юг A с окном x 2..3.5
   wallV(6, 0, 6, 6, [[2.0, 2.9, 0, 2.1]]);          // перегородка, сторона A, дверь y 2.0..2.9
@@ -25,6 +27,8 @@ function building(o) {
   wallV(6.12, 0, 10, 0); wallV(10, 0, 10, 6); wallV(10, 6, 6.12, 6);
   wallV(6.12, 6, 6.12, 0, [[6 - 2.9, 6 - 2.0, 0, 2.1]]);   // перегородка, сторона B (направление сверху вниз)
   slab(0, 0, 6, 6, 0); slab(6.12, 0, 10, 6, 0); slab(0, 0, 6, 6, H); slab(6.12, 0, 10, 6, H);
+  // ревизия 32: наклон облака (мм/м): верх смещён на tilt·z, горизонтальные плоскости наклонены навстречу (малый поворот)
+  if (o.tilt) { const tu = o.tilt[0] / 1000, tv = o.tilt[1] / 1000; for (const p of P) { const x = p[0], y = p[1], z = p[2]; p[0] = x + tu * z; p[1] = y + tv * z; p[2] = z - tu * x - tv * y; } }
   // поворот на theta и сдвиг
   const th = (o.theta == null ? 17 : o.theta) * Math.PI / 180, c = Math.cos(th), s = Math.sin(th), tx = o.tx || 12.34, ty = o.ty || -5.67;
   const W = P.map(p => [500000 + tx + p[0] * c - p[1] * s, 4000000 + ty + p[0] * s + p[1] * c, 100 + p[2]]);

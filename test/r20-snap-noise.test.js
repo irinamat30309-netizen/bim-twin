@@ -95,7 +95,7 @@ test('r20: чистовая обработка по умолчанию — «с�
 
 test('r20: настройки в приложении — «максимум», «сильно» по умолчанию, «снимки», Автоочистка большого LAS', () => {
   const m = read('main.js');
-  assert.match(m, /const NOISE_LEVELS = \['soft', 'normal', 'strong', 'max'\]/);
+  assert.match(m, /const NOISE_LEVELS = \['soft', 'normal', 'strong', 'max'(, 'inspect')?\]/);   // ревизия 32: + бережный уровень для контроля геометрии
   assert.match(m, /a\.noiseLevel : 'strong'/);
   assert.match(m, /tn\('snapSpan', 0\.3, 30\)/);
   const ui = read('renderer/lixel-tools-ext.js');

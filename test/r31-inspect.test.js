@@ -230,7 +230,8 @@ test('окно контроля: классы отделки, палитры, ш
 
 test('окно контроля: вывод и CSV для Excel по результату задания', () => {
   const { d, fl } = building();
-  const r = JOB.run({ desc: d, opts: { h0: fl + 1.1, h1: fl + 1.3, floor: fl, top: fl + 2.6 } }, () => {});
+  // без выравнивания, дефектов и проёмов (ревизия 32) — вывод из двух строк, как в ревизии 31
+  const r = JOB.run({ desc: d, opts: { h0: fl + 1.1, h1: fl + 1.3, floor: fl, top: fl + 2.6, level: false, defects: false, openings: false } }, () => {});
   const v = UI.verdict(r);
   assert.equal(v.length, 2); assert.match(v[0], /^Пол: FF \d+,\d \/ FL \d+,\d — /); assert.match(v[1], /^Стены: проверено \d+, в допуске \d+, вне допуска \d+/);
   const { uv, lines } = sliceUV(), cmp = CI.compareDxf(CI.dxfSegments(DP.parse(dxfText(lines))), uv, { align: 'none' });
@@ -278,7 +279,7 @@ test('проводка: IPC, preload, поток, сборка, лента, кн
   const cp = read('renderer/cloud-preview.js');
   assert.match(cp, /data-act="inspect"/); assert.match(cp, /W\.CloudInspectUI\.open\(path, ov, st\)/); assert.match(cp, /inspect: async function/);
   const html = read('renderer/index.html'), at = (s) => html.indexOf(s);
-  for (const s of ['cloud-inspect.js?v=1331', 'cloud-inspect-ui.js?v=1331', 'cloud-preview.js?v=1331', 'cloud-report.js?v=1331', 'ui/cloud-tools.css?v=1331']) assert.ok(at(s) > 0, s);
+  for (const s of ['cloud-inspect.js?v=1332', 'cloud-inspect-ui.js?v=1332', 'cloud-preview.js?v=1331', 'cloud-report.js?v=1332', 'ui/cloud-tools.css?v=1331']) assert.ok(at(s) > 0, s);
   assert.ok(at('dxfparse.js?v=') < at('cloud-inspect.js?v=') && at('auto-plan.js?v=') < at('cloud-inspect.js?v='));
   assert.ok(at('cloud-inspect.js?v=') < at('cloud-inspect-ui.js?v=') && at('cloud-inspect-ui.js?v=') < at('cloud-preview.js?v='));
   const css = read('renderer/ui/cloud-tools.css'); for (const c of ['.ins-card', '.ins-tab', '.ins-devscale', '.ins-verdict']) assert.ok(css.includes(c), 'стиль ' + c);
