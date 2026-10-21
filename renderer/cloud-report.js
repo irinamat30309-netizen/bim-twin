@@ -197,6 +197,14 @@
     return '<table class="t">' + '<tr>' + head.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr>' +
       rows.map(function (r, i) { return '<tr' + (bad && bad[i] ? ' class="bad"' : '') + '>' + r.map(function (c) { return '<td>' + esc(c) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table>';
   }
+  function prepParts(st) {
+    var al = st.align, p = [];
+    if (al && !al.skipped && al.before != null) p.push('проходы сведены, расхождение ' + fx(al.before * 1000, 1) + ' → ' + fx(al.after * 1000, 1) + ' мм');
+    if (st.dynamic) p.push('движущиеся объекты ' + n(st.dynamic, 0) + ' т.');
+    if (st.noise) p.push('шум ' + n(st.noise, 0) + ' т.');
+    if (st.moved) p.push('выровнено на плоскость ' + n(st.moved, 0) + ' т.');
+    return p.length ? ' (' + p.join(', ') + ')' : '';
+  }
   function inspect(o) {
     o = o || {};
     var res = o.res || {}, cmp = o.cmp && o.cmp.ok ? o.cmp : null, now = new Date(), date = now.toLocaleDateString('ru-RU') + ' ' + now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -225,6 +233,9 @@
     if (res.top != null) par.push(['Проверка стен до высоты', '+' + fx(res.top, 2) + ' м над полом']);
     if (tol.floorRail != null) par.push(['Допуск просвета под рейкой пола', fx(tol.floorRail, 1) + ' мм']);
     if (o.cls || tol.plumbPerM != null) par.push(['Стены' + (o.cls ? ', класс «' + o.cls.toLowerCase() + '»' : ''), 'вертикаль ' + fx(tol.plumbPerM, 1) + ' мм/м, не больше ' + fx(tol.plumbMax, 0) + ' мм на высоту, рейка 2 м — ' + fx(tol.wallRail, 1) + ' мм']);
+    var lv = res.level, pr = res.prep;
+    par.push(['Облако', (!pr ? 'исходное, без очистки' : pr.reused ? 'очищенное ранее: ' + pr.name : 'очищено перед проверкой: ' + pr.name + prepParts(pr.stats || {})) + (res.planFrom === 'source' ? '; стены, проёмы и помещения — по исходному облаку' : '')]);
+    if (lv) par.push(['Наклон облака по стенам', lv.ok ? fx(lv.mm, 2) + ' мм/м (' + fx(lv.deg, 3) + '°) по ' + lv.n + ' стенам, погрешность ' + fx(lv.se, 2) + ' мм/м — ' + (lv.applied ? 'учтён: вертикаль стен, уклон и FL пола даны после выравнивания' : lv.significant ? 'не учтён' : 'в пределах погрешности, не учитывается') : 'не определён']);
     if (res.points) par.push(['Точек в проверке', n(res.points.used || res.points.read || 0, 0) + (res.points.read ? ' из ' + n(res.points.read, 0) + ' прочитанных' : '')]);
     if (par.length) h += '<h2>Параметры проверки</h2>' + table(par);
     var maps = (o.maps || []).filter(function (m) { return safeImg(m.src); });
@@ -262,6 +273,25 @@
         return '<div class="fig dev"><img src="' + safeImg(d.src) + '" alt=""><div class="cap">Грань ' + d.n + (d.w ? ': ' + fx(d.w.length, 2) + ' × ' + fx(d.w.height, 2) + ' м, вертикаль ' + fx(d.w.plumb, 2) + ' мм/м' : '') + ' · шкала ±' + fx(d.lim, 0) + ' мм (синий — впадина, красный — выступ)</div></div>';
       }).join('') + '</div>';
     }
+    var KN = { bump: 'бугор', dip: 'впадина', bulge: 'выступ', uneven: 'неровность', door: 'дверь', window: 'окно', closed: 'закрыт' }, dl = [];
+    if (f && f.defects) f.defects.forEach(function (d) { dl.push({ where: 'пол', place: d.room || '—', d: d }); });
+    if (w) w.walls.forEach(function (x, i) { (x.defects || []).forEach(function (d) { dl.push({ where: 'стена ' + (i + 1), place: '+' + fx(d.h, 2) + ' м', d: d }); }); });
+    if (dl.length || (f && f.defects) || (w && w.defects != null)) {
+      dl.sort(function (a, b) { return b.d.depth - a.d.depth; });
+      h += '<h2 class="pb">Местные дефекты</h2>' + table([['Найдено', 'на полу ' + (f && f.defects ? f.defects.length : 0) + ', на стенах ' + (w && w.defects != null ? w.defects : 0)],
+        ['Порог', 'отклонение от средней в окне 1 м больше ' + (f && f.defTol ? fx(f.defTol, 0) + ' мм (пол)' : '') + (w && w.defTol ? ', ' + fx(w.defTol, 0) + ' мм (стены)' : '') + ', площадь от 0,04 м²'],
+        ['Предметы на полу', f && f.defObjects ? f.defObjects + ' мест выше 15 мм — не считаются дефектами' : '—']]);
+      if (dl.length) h += rowsTable(dl.slice(0, 60).map(function (x, i) { return [String(i + 1), x.where, KN[x.d.kind] || x.d.kind, x.place, fx(x.d.u, 2) + '; ' + fx(x.d.v, 2), fx(x.d.area, 2), fx(x.d.depth, 1)]; }),
+        ['№', 'Где', 'Что', 'Место', 'X; Y, м', 'Площадь, м²', 'Глубина, мм'], dl.slice(0, 60).map(function (x) { return x.d.depth >= 10; }));
+    }
+    var op = res.openings && res.openings.ok ? res.openings.list : [];
+    if (op.length) {
+      var hd = op.filter(function (x) { return x.kind === 'door' && x.head != null; }).map(function (x) { return x.head; });
+      h += '<h2>Проёмы</h2>' + table([['Найдено', op.length + ': дверей ' + res.openings.doors + ', окон ' + res.openings.windows + ', без перемычки ' + op.filter(function (x) { return x.open; }).length],
+        ['Высота дверей', hd.length ? 'медиана ' + fx(medianOf(hd), 2) + ' м, от ' + fx(Math.min.apply(null, hd), 2) + ' до ' + fx(Math.max.apply(null, hd), 2) + ' м' : '—']]);
+      h += rowsTable(op.slice(0, 80).map(function (x, i) { return [String(i + 1), (KN[x.kind] || x.kind) + (x.open ? ', без перемычки' : ''), fx(x.width, 2), x.kind === 'window' ? fx(x.sill, 2) : x.kind === 'door' ? '0' : '—', x.head != null ? fx(x.head, 2) : '—', x.height != null ? fx(x.height, 2) : '—']; }),
+        ['№', 'Тип', 'Ширина, м', 'Низ, м', 'Верх, м', 'Высота, м'], null);
+    }
     var cs = res.corners || [];
     if (cs.length) {
       var dvs = cs.map(function (k) { return k.dev; });
@@ -284,6 +314,7 @@
         ['№', 'Слой', 'Длина, м', 'Смещение, мм', 'Наибольшее, мм', 'Покрытие, %', 'Итог'], li.map(function (i) { return lineState(cmp.lines[i], cmp.tol) !== 'совпадает'; }));
     }
     h += '<p class="note" style="margin-top:14px">Оценка по облаку точек, не заменяет инструментальный контроль. Точность ограничена шумом сканера и накопленным дрейфом траектории (у мобильных сканеров — несколько миллиметров на стенах). ' +
+      'Наклон облака находится по завалу всех стен и при заметной величине вычитается. Дефекты — местные отклонения на сетке 10 см: трещины и сколы мельче клетки не видны. ' +
       'FF/FL рассчитаны по методике ASTM E1155 на сетке облака; допуски по СП 71.13330 заданы при запуске. Мебель, откосы и проёмы исключаются по плану, но могут попадать в отдельные грани — проверяйте развёртки. Сравнение с проектом — двумерное, по срезу на высоте проверки.</p>';
     return h + '</body></html>';
   }
