@@ -10,7 +10,7 @@
  * (u = x, v = −z, h = y), поэтому фильтры загрузки (cloud-segments.filterSegment) задаются в них.
  *
  *   overview(desc, { samples, keep }) → { ok, file, bbox, grid, hist, levels, stats, time, pts }
- *   planSlice(desc, { h0, h1, high: { h0, h1 }, rect, maxPoints, onProgress, signal }) → { ok, uv: Float32Array, count, read, uvHigh?, countHigh? }
+ *   planSlice(desc, { h0, h1, high: { h0, h1, bands }, rect, maxPoints, onProgress, signal }) → { ok, uv: Float32Array, count, read, uvHigh?, countHigh? }
  *   trajectoryInfo(posesText, desc) → { n, duration, length, speed, loopGap, route: Float32Array (u,v,h,t), inside }
  *   routeMask(route, bbox, { radius, cell, from, to }) → { u0, v0, cell, nx, ny, bits: Uint8Array }
  */
@@ -397,8 +397,10 @@ function planSlice(desc, opts) {
   const rect = opts.rect || null, maxPts = Math.max(100000, Math.floor(opts.maxPoints || 12000000));
   // ревизия 29: второй, верхний срез (opts.high = { h0, h1 }, обычно у потолка) — тем же проходом: по нему план отличает стены
   // от мебели и стеллажей у стен (у них нет точек над собой)
-  const hi = opts.high && Number(opts.high.h1) > Number(opts.high.h0) ? { h0: Number(opts.high.h0), h1: Number(opts.high.h1) } : null;
-  const H = hi ? highAcc(Math.max(100000, Math.floor(opts.maxHigh || 6000000))) : null;
+  // ревизия 30: opts.high.bands = K (до 8) — колонка над срезом делится на K полос по высоте, у каждой точки — номер полосы (bandHigh)
+  const hi = opts.high && Number(opts.high.h1) > Number(opts.high.h0) ? { h0: Number(opts.high.h0), h1: Number(opts.high.h1), K: Math.max(1, Math.min(8, Math.floor(Number(opts.high.bands) || 1))) } : null;
+  if (hi) hi.band = (h) => hi.K > 1 ? Math.max(0, Math.min(hi.K - 1, Math.floor((h - hi.h0) / (hi.h1 - hi.h0) * hi.K))) : 0;
+  const H = hi ? highAcc(Math.max(100000, Math.floor(opts.maxHigh || 6000000)), hi.K) : null;
   if (desc.kind === 'e57') return planSliceE57(desc, h0, h1, rect, opts, hi, H);
   const D = makeDecoder(desc), rl = D.recLen, total = desc.count;
   const perChunk = Math.max(1, Math.floor((8 << 20) / rl)), buf = Buffer.allocUnsafe(perChunk * rl);
@@ -412,7 +414,7 @@ function planSlice(desc, opts) {
       const got = Math.floor(readExact(fd, buf, cnt * rl, D.start + first * rl) / rl);
       for (let j = 0; j < got; j++) {
         const base = j * rl, h = D.hOf(buf, base);
-        if (H && h >= hi.h0 && h <= hi.h1) { D.dec(buf, base, o); if (!rect || (o.u >= rect.u0 && o.u <= rect.u1 && o.v >= rect.v0 && o.v <= rect.v1)) H.add(o.u, o.v); if (!(h >= h0 && h <= h1)) continue; }
+        if (H && h >= hi.h0 && h <= hi.h1) { D.dec(buf, base, o); if (!rect || (o.u >= rect.u0 && o.u <= rect.u1 && o.v >= rect.v0 && o.v <= rect.v1)) H.add(o.u, o.v, hi.band(h)); if (!(h >= h0 && h <= h1)) continue; }
         if (!(h >= h0 && h <= h1)) continue;
         if (stride > 1 && (++tick % stride)) continue;
         D.dec(buf, base, o);
@@ -429,25 +431,27 @@ function planSlice(desc, opts) {
   return withHigh({ ok: true, uv: uv.slice(0, n * 2), count: n, stride, read: total, h0, h1 }, hi, H);
 }
 
-// накопитель верхнего среза: при переполнении — каждая вторая точка, дальше берётся каждая 2^k-я (равномерно по файлу)
-function highAcc(maxPts) {
-  let cap = Math.min(maxPts, 1 << 18), uv = new Float32Array(cap * 2), n = 0, stride = 1, tick = 0;
+// накопитель верхнего среза: при переполнении — каждая вторая точка, дальше берётся каждая 2^k-я (равномерно по файлу);
+// K > 1 — с номером полосы по высоте у каждой точки
+function highAcc(maxPts, K) {
+  let cap = Math.min(maxPts, 1 << 18), uv = new Float32Array(cap * 2), bd = K > 1 ? new Uint8Array(cap) : null, n = 0, stride = 1, tick = 0;
   return {
-    add(u, v) {
+    add(u, v, k) {
       if (stride > 1 && (++tick % stride)) return;
       if (n >= cap) {
-        if (cap < maxPts) { const nc = Math.min(maxPts, cap * 2), a = new Float32Array(nc * 2); a.set(uv); uv = a; cap = nc; }
-        else { let w = 0; for (let k = 0; k < n; k += 2) { uv[w * 2] = uv[k * 2]; uv[w * 2 + 1] = uv[k * 2 + 1]; w++; } n = w; stride *= 2; }
+        if (cap < maxPts) { const nc = Math.min(maxPts, cap * 2), a = new Float32Array(nc * 2); a.set(uv); uv = a; if (bd) { const c = new Uint8Array(nc); c.set(bd); bd = c; } cap = nc; }
+        else { let w = 0; for (let j = 0; j < n; j += 2) { uv[w * 2] = uv[j * 2]; uv[w * 2 + 1] = uv[j * 2 + 1]; if (bd) bd[w] = bd[j]; w++; } n = w; stride *= 2; }
       }
-      uv[n * 2] = u; uv[n * 2 + 1] = v; n++;
+      uv[n * 2] = u; uv[n * 2 + 1] = v; if (bd) bd[n] = k || 0; n++;
     },
-    done() { return { uv: uv.slice(0, n * 2), count: n, stride }; }
+    done() { return { uv: uv.slice(0, n * 2), band: bd ? bd.slice(0, n) : null, count: n, stride }; }
   };
 }
 function withHigh(res, hi, H) {
   if (!H) return res;
   const r = H.done();
-  res.uvHigh = r.uv; res.countHigh = r.count; res.hi0 = hi.h0; res.hi1 = hi.h1;
+  res.uvHigh = r.uv; res.countHigh = r.count; res.hi0 = hi.h0; res.hi1 = hi.h1; res.highBands = hi.K;
+  if (r.band) res.bandHigh = r.band;
   return res;
 }
 
@@ -463,7 +467,7 @@ function planSliceE57(desc, h0, h1, rect, opts, hi, H) {
     const h = P[i * 3 + 2] - desc.cz, hiOk = H && h >= hi.h0 && h <= hi.h1; if (!hiOk && !(h >= h0 && h <= h1)) continue;
     const u = P[i * 3] - desc.cx, v = P[i * 3 + 1] - desc.cy;
     if (rect && (u < rect.u0 || u > rect.u1 || v < rect.v0 || v > rect.v1)) continue;
-    if (hiOk) { H.add(u, v); if (!(h >= h0 && h <= h1)) continue; }
+    if (hiOk) { H.add(u, v, hi.band(h)); if (!(h >= h0 && h <= h1)) continue; }
     uv[n * 2] = u; uv[n * 2 + 1] = v; n++;
   }
   return withHigh({ ok: true, uv: uv.slice(0, n * 2), count: n, stride: Math.max(1, Math.ceil(r.total / Math.max(1, n0))), read: r.total, h0, h1 }, hi, H);
@@ -478,7 +482,7 @@ function planSliceE57Parts(desc, h0, h1, rect, opts, hi, H) {
   try {
     ES.e57Each(desc, fd, 0, desc.count, (x, y, z) => {
       const h = z - cz, inMain = h >= h0 && h <= h1;
-      if (H && h >= hi.h0 && h <= hi.h1) { const u = x - cx, v = y - cy; if (!rect || (u >= rect.u0 && u <= rect.u1 && v >= rect.v0 && v <= rect.v1)) H.add(u, v); }
+      if (H && h >= hi.h0 && h <= hi.h1) { const u = x - cx, v = y - cy; if (!rect || (u >= rect.u0 && u <= rect.u1 && v >= rect.v0 && v <= rect.v1)) H.add(u, v, hi.band(h)); }
       if (!inMain) return;
       if (stride > 1 && (++tick % stride)) return;
       const u = x - cx, v = y - cy;

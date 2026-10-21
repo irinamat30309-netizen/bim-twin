@@ -484,29 +484,70 @@
   }
 
   // Доля длины каждой грани, у которой во втором (верхнем) срезе есть точки в ±6 см от линии. Срез ненадёжен (мало точек на длинных
-  // гранях: высота выбрана выше потолка, срез пуст) — проверка не применяется
-  function lowCover(segs, uvH, bb, o) {
+  // гранях: высота выбрана выше потолка, срез пуст) — проверка не применяется.
+  // Ревизия 30: верхний срез — колонка из K полос (bandH[i] — номер полосы точки, снизу вверх). По каждому отрезку грани 10 см и
+  // каждой полосе: пусто / точки на линии / перекрытие (точки на линии и по обе стороны в 0,25–0,45 м — плита, антресоль). Опора:
+  // линия без разрывов до верха колонки; плита над непрерывной гранью (стена под антресолью); разрыв, а выше снова грань до самого
+  // верха (окно с перемычкой). Разрыв над гранью, а выше пусто, плита или труба, не доходящая до верха, — мебель под антресолью или
+  // трубами. Полосы с плохими данными (на длинных гранях меньше 40 % точек) не учитываются. K = 1 — прежняя проверка ревизии 29.
+  function lowCover(segs, uvH, bb, o, bandH, K) {
     var nH = uvH.length >> 1, pad = 0.5, W0 = bb.u1 - bb.u0 + 2 * pad, H0 = bb.v1 - bb.v0 + 2 * pad;
+    K = bandH && bandH.length >= nH && K > 1 ? Math.min(8, Math.floor(K)) : 1;
     var cell = Math.max(0.03, Math.sqrt(W0 * H0 / 40e6)), x0 = bb.u0 - pad, y0 = bb.v0 - pad, nx = Math.ceil(W0 / cell) + 1, ny = Math.ceil(H0 / cell) + 1;
     var occ = new Uint8Array(nx * ny), i;
-    for (i = 0; i < nH; i++) { var gx = Math.floor((uvH[i * 2] - x0) / cell), gy = Math.floor((uvH[i * 2 + 1] - y0) / cell); if (gx >= 0 && gy >= 0 && gx < nx && gy < ny) occ[gy * nx + gx] = 1; }
+    for (i = 0; i < nH; i++) {
+      var gx = Math.floor((uvH[i * 2] - x0) / cell), gy = Math.floor((uvH[i * 2 + 1] - y0) / cell);
+      if (gx >= 0 && gy >= 0 && gx < nx && gy < ny) occ[gy * nx + gx] |= K > 1 ? 1 << Math.min(K - 1, bandH[i]) : 1;
+    }
     var tol = Math.max(1, Math.round((o.lowTol || 0.06) / cell));
-    var hitAt = function (px, py) {
-      var cx = Math.floor((px - x0) / cell), cy = Math.floor((py - y0) / cell);
-      for (var dy = -tol; dy <= tol; dy++) { var yy = cy + dy; if (yy < 0 || yy >= ny) continue; for (var dx = -tol; dx <= tol; dx++) { var xx = cx + dx; if (xx >= 0 && xx < nx && occ[yy * nx + xx]) return true; } }
-      return false;
+    var maskAt = function (px, py) {
+      var cx = Math.floor((px - x0) / cell), cy = Math.floor((py - y0) / cell), m = 0;
+      for (var dy = -tol; dy <= tol; dy++) { var yy = cy + dy; if (yy < 0 || yy >= ny) continue; for (var dx = -tol; dx <= tol; dx++) { var xx = cx + dx; if (xx >= 0 && xx < nx) m |= occ[yy * nx + xx]; } }
+      return m;
     };
-    var cov = segs.map(function (sg) {
-      var L = Math.hypot(sg.b[0] - sg.a[0], sg.b[1] - sg.a[1]), nb = Math.max(1, Math.round(L / 0.1)), hit = 0;
+    var dN = o.areaNear || 0.25, dF = o.areaFar || 0.45;
+    var prof = segs.map(function (sg) {
+      var ex = sg.b[0] - sg.a[0], ey = sg.b[1] - sg.a[1], L = Math.hypot(ex, ey) || 1, nb = Math.max(1, Math.round(L / 0.1)), qx = -ey / L, qy = ex / L;
+      var Lm = new Uint8Array(nb), Am = new Uint8Array(nb);
       for (var b = 0; b < nb; b++) {
-        for (var t = 0; t < 3; t++) { var f = (b + (t + 0.5) / 3) / nb; if (hitAt(sg.a[0] + (sg.b[0] - sg.a[0]) * f, sg.a[1] + (sg.b[1] - sg.a[1]) * f)) { hit++; break; } }
+        for (var t = 0; t < 3; t++) {
+          var f = (b + (t + 0.5) / 3) / nb, px = sg.a[0] + ex * f, py = sg.a[1] + ey * f, m = maskAt(px, py);
+          if (!m) continue;
+          Lm[b] |= m;
+          if (K === 1) break;
+          var side1 = maskAt(px + qx * dN, py + qy * dN) | maskAt(px + qx * dF, py + qy * dF), side2 = maskAt(px - qx * dN, py - qy * dN) | maskAt(px - qx * dF, py - qy * dF);
+          Am[b] |= m & side1 & side2;
+        }
       }
-      return hit / nb;
+      return { L: L, nb: nb, Lm: Lm, Am: Am };
     });
-    var longC = []; segs.forEach(function (sg, j) { if (Math.hypot(sg.b[0] - sg.a[0], sg.b[1] - sg.a[1]) >= 2) longC.push(cov[j]); });
-    longC.sort(function (p, q2) { return p - q2; });
-    var med = longC.length ? longC[Math.floor(longC.length / 2)] : 0;
-    return { cov: cov, median: med, ok: longC.length >= 3 && med >= 0.5 };
+    var med = function (arr) { arr.sort(function (p, q2) { return p - q2; }); return arr.length ? arr[Math.floor(arr.length / 2)] : 0; };
+    var longP = prof.filter(function (pr) { return pr.L >= 2; });
+    // годные полосы: медиана доли попаданий на длинных гранях
+    var valid = [], k, bandMed = [];
+    for (k = 0; k < K; k++) {
+      var mk = med(longP.map(function (pr) { var h = 0; for (var b = 0; b < pr.nb; b++) if (pr.Lm[b] >> k & 1) h++; return h / pr.nb; }));
+      bandMed.push(mk);
+      if (mk >= (K > 1 ? 0.4 : 0.5)) valid.push(k);
+    }
+    var support = function (lm, am) {
+      var e = -1, areaBefore = false, top = 0;
+      for (var j = 0; j < valid.length; j++) {
+        var kk = valid[j], st = !(lm >> kk & 1) ? 0 : am >> kk & 1 ? 2 : 1;
+        if (st === 0 && e < 0) e = j;
+        if (st === 2 && e < 0) areaBefore = true;
+        top = st;
+      }
+      return e < 0 || areaBefore || top === 1;
+    };
+    var cov = prof.map(function (pr) {
+      if (!valid.length) return 1;
+      var h = 0; for (var b = 0; b < pr.nb; b++) if (support(pr.Lm[b], pr.Am[b])) h++;
+      return h / pr.nb;
+    });
+    var longC = []; segs.forEach(function (sg, j) { if (prof[j].L >= 2) longC.push(cov[j]); });
+    var m0 = med(longC);
+    return { cov: cov, median: K > 1 ? m0 : bandMed[0], ok: longC.length >= 3 && valid.length > 0, bands: K, validBands: valid.length };
   }
 
   function extract(uv, opts) {
@@ -618,8 +659,8 @@
     // ревизия 29: мебель и стеллажи у стен — грань в срезе есть, а у потолка (второй срез opts.uvHigh) точек на её линии нет
     var low = [], lowInfo = null;
     if (opts.uvHigh && opts.uvHigh.length >= 400 && opts.lowFilter !== false && segs.length) {
-      var LH = lowCover(segs, opts.uvHigh, bb, o);
-      lowInfo = { checked: LH.ok, median: LH.median, points: opts.uvHigh.length >> 1 };
+      var LH = lowCover(segs, opts.uvHigh, bb, o, opts.bandHigh, opts.highBands);
+      lowInfo = { checked: LH.ok, median: LH.median, points: opts.uvHigh.length >> 1, bands: LH.bands, validBands: LH.validBands };
       if (LH.ok) {
         var tall = [], cand = [], dEnd = function (p, t) { var dx = t.b[0] - t.a[0], dy = t.b[1] - t.a[1], L2 = dx * dx + dy * dy || 1, k = Math.max(0, Math.min(1, ((p[0] - t.a[0]) * dx + (p[1] - t.a[1]) * dy) / L2)); return Math.hypot(p[0] - t.a[0] - k * dx, p[1] - t.a[1] - k * dy); };
         segs.forEach(function (sg, i) { sg.cover = LH.cov[i]; (LH.cov[i] < (opts.lowCover || 0.35) ? cand : tall).push(sg); });

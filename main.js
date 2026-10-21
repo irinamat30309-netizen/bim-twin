@@ -105,6 +105,18 @@ function vId(x) { if (typeof x !== 'string' || !x) throw new Error('invalid id')
 function vStr(x) { if (typeof x !== 'string') throw new Error('invalid string'); return x; }
 function vPatch(x) { if (x == null) return x; if (typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid payload'); return x; }
 function vArgs(x) { if (x == null || typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid args'); return x; }
+// карточка проекта: только название (1–200 символов), адрес (до 300) и статус (до 40); лишние поля отбрасываются
+function vProjectCard(x, optionalName) {
+  vPatch(x); const out = {}, lim = { name: 200, address: 300, status: 40 };
+  for (const k of Object.keys(lim)) {
+    if (x == null || x[k] == null) continue;
+    const v = vStr(x[k]).trim();
+    if (v.length > lim[k]) throw new Error('слишком длинное поле: ' + k);
+    if (k === 'name' && !v) { if (optionalName) continue; throw new Error('пустое название проекта'); }
+    out[k] = v;
+  }
+  return out;
+}
 function vDocumentPatch(x) {
   const patch = Object.assign({}, vPatch(x) || {});
   for (const key of ['file', 'versions', 'is_upload', 'size']) delete patch[key];
@@ -1779,13 +1791,14 @@ function registerIpc() {
       if (!(Number.isFinite(h0) && Number.isFinite(h1) && h1 > h0 && h1 - h0 <= 2)) return { ok: false, message: 'неверная высота среза (0–2 м толщиной)' };
       const plan = {};
       if (a && a.plan && typeof a.plan === 'object') { for (const k of ['gap', 'minLen', 'maxFace', 'openMin', 'openMax', 'minRoom', 'cell']) if (Number.isFinite(Number(a.plan[k]))) plan[k] = Number(a.plan[k]); if (a.plan.ortho === true) plan.ortho = true; if (a.plan.lowFilter === false) plan.lowFilter = false; }
-      // второй, верхний срез (мебель и стеллажи у стен уходят из плана): необязателен, толщина до 1 м, выше основного
-      const hi0 = finiteOr(a && a.hi0, NaN), hi1 = finiteOr(a && a.hi1, NaN);
-      const high = Number.isFinite(hi0) && Number.isFinite(hi1) && hi1 > hi0 && hi1 - hi0 <= 1 && hi0 >= h1 && plan.lowFilter !== false ? { h0: hi0, h1: hi1 } : null;
+      // второй, верхний срез (мебель и стеллажи у стен уходят из плана): необязателен, выше основного; ревизия 30 — колонка до 2 м
+      // из hiBands (1–8) полос по высоте: мебель под антресолью и трубами тоже отличается от стен
+      const hi0 = finiteOr(a && a.hi0, NaN), hi1 = finiteOr(a && a.hi1, NaN), hiBands = Math.max(1, Math.min(8, Math.floor(finiteOr(a && a.hiBands, 1))));
+      const high = Number.isFinite(hi0) && Number.isFinite(hi1) && hi1 > hi0 && hi1 - hi0 <= 2 && hi0 >= h1 && plan.lowFilter !== false ? { h0: hi0, h1: hi1, bands: hiBands } : null;
       const jobId = overviewJobId(a), controller = new AbortController(), jk = jobId ? sender.id + ':' + jobId : null;
       if (jk) overviewJobs.set(jk, controller);
       try {
-        return await runOverviewWorker('plan', opened.desc, { h0, h1, high, rect: validRect(a && a.rect), maxPoints: 12000000, plan },
+        return await runOverviewWorker('plan', opened.desc, { h0, h1, high, maxHigh: high && high.bands > 1 ? 8000000 : 6000000, rect: validRect(a && a.rect), maxPoints: 12000000, plan },
           (p, label) => { if (jobId) try { sender.send('bim:cloudPlanProgress', { jobId, progress: p, label: label || '' }); } catch (_) {} }, controller.signal);
       } finally { if (jk) overviewJobs.delete(jk); }
     } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
@@ -3763,6 +3776,9 @@ function registerIpc() {
   ipcMain.handle('bim:createProject', (_e, patch) => store.createProject(vPatch(patch)));
   ipcMain.handle('bim:switchProject', (_e, id) => store.switchProject(vId(id)));
   ipcMain.handle('bim:deleteProject', (_e, id) => store.deleteProject(vId(id)));
+  // ревизия 30: стартовый экран — свойства любого проекта и копия его структуры
+  ipcMain.handle('bim:editProject', (_e, a) => { a = vArgs(a); return store.editProject(vId(a.id), vProjectCard(a.patch, false)); });
+  ipcMain.handle('bim:duplicateProject', (_e, a) => { a = vArgs(a); return store.duplicateProject(vId(a.id), vProjectCard(a.patch || {}, true)); });
   ipcMain.handle('bim:getProjectState', (_e, projectId) => store.getProjectState(projectId ? vId(projectId) : undefined));
   ipcMain.handle('bim:saveProjectState', (_e, a) => {
     a = vArgs(a);
