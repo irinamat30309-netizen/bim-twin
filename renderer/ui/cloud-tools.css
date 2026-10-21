@@ -174,3 +174,25 @@
 .pw-seg button:hover { color: var(--txt); }
 .pw-seg button.on { background: var(--bg-4); color: var(--txt); }
 .pw-usage { color: var(--txt-3); font-size: var(--fs-xs); font-weight: 400; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+
+/* ---------- Ревизия 31: «Контроль геометрии» (CloudInspectUI): та же раскладка, что «Перед загрузкой», панель шире ---------- */
+.ins-card .bp-body { grid-template-columns: minmax(0, 1fr) 360px; }
+.ins-map { cursor: grab; }
+.ins-map:active { cursor: grabbing; }
+.ins-tab { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.ins-tab th { position: sticky; top: 0; padding: 3px 4px; background: var(--bg-1); color: var(--txt-3); font-weight: 400; text-align: right; white-space: nowrap; }
+.ins-tab td { padding: 2px 4px; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); color: var(--txt); text-align: right; white-space: nowrap; }
+.ins-tab th:first-child, .ins-tab td:first-child { text-align: left; }
+.ins-tab td:first-child { overflow: hidden; max-width: 120px; text-overflow: ellipsis; }
+.ins-tab tr.bad td:first-child { box-shadow: inset 2px 0 0 var(--err); padding-left: 6px; }
+.ins-tab td.hl { color: var(--err); font-weight: 600; }
+.ins-walls tr[data-w], .ins-lines tr[data-l] { cursor: pointer; }
+.ins-walls tr[data-w]:hover td, .ins-lines tr[data-l]:hover td { background: var(--bg-3); }
+.ins-tab tr.sel td { background: var(--accent-soft); }
+.ins-side .bp-kpi.bad b { color: var(--err); }
+.ins-dev .ins-devimg { overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-1); background: var(--bg-0); }
+.ins-devcv { display: block; max-width: 100%; max-height: 260px; margin: 0 auto; image-rendering: pixelated; }
+.ins-devscale { display: flex; justify-content: space-between; color: var(--txt-3); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.ins-dev .ins-devimg + .ins-devscale { margin-top: -2px; }
+.ins-dxfname { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.ins-verdict { justify-content: flex-start; color: var(--txt-2); text-overflow: ellipsis; }

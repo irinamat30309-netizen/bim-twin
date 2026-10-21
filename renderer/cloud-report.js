@@ -6,6 +6,7 @@
  * ссылок: карты и снимок 3D — data:image, гистограмма высот и план — SVG.
  * Разделы: сведения о съёмке и облаке, геометрия, уровни и этажи, гистограмма высот, карты с маршрутом, план из облака (помещения,
  * проёмы, толщины стен), снимок 3D-вида, параметры загрузки и компьютер.
+ * Ревизия 31: CloudReport.inspect(o) — отдельный отчёт «Контроль геометрии» (пол FF/FL, стены, углы, сравнение с DXF).
  */
 (function (root, factory) {
   'use strict';
@@ -181,5 +182,111 @@
     h += '<p class="note" style="margin-top:14px">Сведения по выборке ' + n(Math.min((ov.sample && ov.sample.n) || 0, (ov.file && ov.file.points) || Infinity), 0) + ' точек, равномерно по файлу. Площадь поверхностей — оценка по вокселям 20 см.</p>';
     return h + '</div></body></html>';
   }
-  return { build: build, planSvg: planSvg, histSvg: histSvg, esc: esc };
+  // ------------------------------------------------------------------ ревизия 31: отчёт «Контроль геометрии»
+  // CloudReport.inspect({ fileName, project, res, cmp, dxfName, maps: [{ title, src }], dev: [{ n, lim, src, w }], verdict: [строки], cls, appVersion })
+  // res — результат bim:cloudInspect (пол, стены, углы), cmp — сравнение с DXF (CloudInspect.compareDxf). Без внешних ссылок.
+  function fx(x, d) { return x === x && x != null && isFinite(x) ? n(x, d) : '—'; }
+  function ffText(F) {
+    if (!(F > 0)) return '—';
+    return F < 20 ? 'ниже обычного' : F < 25 ? 'обычный (FF20)' : F < 35 ? 'умеренно ровный (FF25)' : F < 45 ? 'ровный (FF35)' : F < 60 ? 'очень ровный (FF45)' : 'сверхровный (FF60+)';
+  }
+  function lineState(x, tol) { return x.length < 0.5 ? 'короткая' : x.cover < 0.3 ? 'нет в облаке' : x.points >= 20 && Math.abs(x.offset) > tol * 1000 ? 'смещена' : 'совпадает'; }
+  function medianOf(a) { var s = a.filter(function (x) { return x === x && x != null; }).sort(function (p, q) { return p - q; }); return s.length ? s[s.length >> 1] : NaN; }
+  function quantOf(a, q) { var s = a.filter(function (x) { return x === x && x != null; }).sort(function (p, r) { return p - r; }); return s.length ? s[Math.min(s.length - 1, Math.floor(s.length * q))] : NaN; }
+  function rowsTable(rows, head, bad) {
+    return '<table class="t">' + '<tr>' + head.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr>' +
+      rows.map(function (r, i) { return '<tr' + (bad && bad[i] ? ' class="bad"' : '') + '>' + r.map(function (c) { return '<td>' + esc(c) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table>';
+  }
+  function inspect(o) {
+    o = o || {};
+    var res = o.res || {}, cmp = o.cmp && o.cmp.ok ? o.cmp : null, now = new Date(), date = now.toLocaleDateString('ru-RU') + ' ' + now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    var css = '@page{size:A4;margin:14mm 12mm}*{box-sizing:border-box}body{font:11px/1.45 Arial,"Liberation Sans",sans-serif;color:#0f172a;margin:0}' +
+      'h1{font-size:20px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;padding-bottom:3px;border-bottom:2px solid #0284c7;color:#0c4a6e}h3{font-size:12px;margin:10px 0 4px;color:#0c4a6e}' +
+      '.sub{color:#475569;margin-bottom:10px}.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid #cbd5e1;padding-bottom:8px}' +
+      'table{width:100%;border-collapse:collapse;margin:4px 0}th,td{text-align:left;padding:3px 6px;border-bottom:1px solid #e2e8f0;vertical-align:top}th{color:#334155;font-weight:600;width:42%}' +
+      'table tr:first-child th{background:#f1f5f9}table.t th{width:auto}table.t td,table.t th{font-size:10px;padding:2px 5px}table.t tr.bad td{color:#b91c1c}' +
+      '.fig{break-inside:avoid;margin:6px 0 10px}.fig img{width:100%;border:1px solid #cbd5e1;border-radius:3px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}' +
+      '.cap{color:#475569;font-size:10px;margin-top:2px}.kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0}.kpi div{border:1px solid #cbd5e1;border-radius:4px;padding:6px}' +
+      '.kpi b{display:block;font-size:15px;color:#0c4a6e}.kpi b.bad{color:#b91c1c}.kpi span{color:#475569;font-size:10px}.note{color:#64748b;font-size:10px}.pb{break-before:page}' +
+      '.verdict{border-left:3px solid #0284c7;background:#f0f9ff;padding:6px 10px;margin:8px 0}.verdict div{margin:2px 0}.dev img{display:block;width:auto;max-width:100%;max-height:260px;margin:0 auto}';
+    var f = res.floor && res.floor.ok ? res.floor : null, w = res.walls && res.walls.ok ? res.walls : null, F = f ? f.F || {} : {};
+    var kpi = [];
+    if (f) kpi.push([fx(F.FF, 1) + ' / ' + fx(F.FL, 1), 'FF / FL пола', false], [fx(f.plane.mmPerM, 2) + ' мм/м', 'уклон пола', false],
+      [fx(f.rail.max, 1) + ' мм', 'просвет под рейкой ' + fx(f.rail.len || 2, 0) + ' м, наибольший', f.rail.max > f.rail.tol]);
+    if (w) kpi.push([(w.checked - w.bad) + ' из ' + w.checked, 'стен в допуске', w.bad > 0]);
+    if (cmp) kpi.push([fx(cmp.within * 100, 1) + ' %', 'точек ближе ' + fx(cmp.tol * 1000, 0) + ' мм к проекту', cmp.within < 0.9]);
+    var h = '<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>' + esc('Контроль геометрии — ' + (o.fileName || '')) + '</title><style>' + css + '</style></head><body>';
+    h += '<div class="head"><div><h1>Контроль геометрии по облаку точек</h1><div class="sub">' + esc(o.fileName || '') + (o.project ? ' · проект «' + esc(o.project) + '»' : '') + '</div></div>' +
+      '<div class="sub" style="text-align:right">' + esc(date) + '<br>BIM Twin ' + esc(o.appVersion || '') + '</div></div>';
+    if (kpi.length) h += '<div class="kpi" style="grid-template-columns:repeat(' + Math.min(5, kpi.length) + ',1fr)">' + kpi.slice(0, 5).map(function (k) { return '<div><b' + (k[2] ? ' class="bad"' : '') + '>' + esc(k[0]) + '</b><span>' + esc(k[1]) + '</span></div>'; }).join('') + '</div>';
+    if (o.verdict && o.verdict.length) h += '<div class="verdict">' + o.verdict.map(function (s) { return '<div>' + esc(s) + '</div>'; }).join('') + '</div>';
+    var tol = res.tol || {}, par = [];
+    if (res.floorH != null) par.push(['Отметка пола', '+' + fx(res.floorH, 3) + ' м']);
+    if (res.top != null) par.push(['Проверка стен до высоты', '+' + fx(res.top, 2) + ' м над полом']);
+    if (tol.floorRail != null) par.push(['Допуск просвета под рейкой пола', fx(tol.floorRail, 1) + ' мм']);
+    if (o.cls || tol.plumbPerM != null) par.push(['Стены' + (o.cls ? ', класс «' + o.cls.toLowerCase() + '»' : ''), 'вертикаль ' + fx(tol.plumbPerM, 1) + ' мм/м, не больше ' + fx(tol.plumbMax, 0) + ' мм на высоту, рейка 2 м — ' + fx(tol.wallRail, 1) + ' мм']);
+    if (res.points) par.push(['Точек в проверке', n(res.points.used || res.points.read || 0, 0) + (res.points.read ? ' из ' + n(res.points.read, 0) + ' прочитанных' : '')]);
+    if (par.length) h += '<h2>Параметры проверки</h2>' + table(par);
+    var maps = (o.maps || []).filter(function (m) { return safeImg(m.src); });
+    if (maps.length) h += '<h2>Карты отклонений</h2>' + maps.map(function (m) { return '<div class="fig"><img src="' + safeImg(m.src) + '" alt=""><div class="cap">' + esc(m.title) + '</div></div>'; }).join('');
+    if (f) {
+      h += '<h2 class="pb">Пол</h2>' + table([
+        ['Проверенная площадь', fx(f.area, 1) + ' м² (клетка ' + fx(f.cell * 100, 1) + ' см)'],
+        ['FF / FL (ASTM E1155, оценка по облаку)', fx(F.FF, 1) + ' / ' + fx(F.FL, 1) + ' — ' + ffText(F.FF) + ((F.readings || F.nq) ? ', замеров ' + n(F.readings || F.nq, 0) : '')],
+        ['Уклон средней плоскости', fx(f.plane.mmPerM, 2) + ' мм/м (' + fx(Math.atan(f.plane.mmPerM / 1000) * 180 / Math.PI, 3) + '°)' + (f.plane.downDir === f.plane.downDir && f.plane.downDir != null ? ', понижение в сторону ' + fx(f.plane.downDir, 0) + '°' : '')],
+        ['Размах от средней плоскости (1–99 %)', f.flat ? fx(f.flat.p1, 1) + ' … ' + fx(f.flat.p99, 1) + ' мм' : '—'],
+        ['Размах от горизонтали (1–99 %)', f.level ? fx(f.level.p1, 1) + ' … ' + fx(f.level.p99, 1) + ' мм' : '—'],
+        ['Рейка ' + fx(f.rail.len || 2, 0) + ' м', f.rail.n ? 'мест ' + n(f.rail.n, 0) + ', p95 ' + fx(f.rail.p95, 1) + ' мм, наибольший ' + fx(f.rail.max, 1) + ' мм, больше ' + fx(f.rail.tol, 1) + ' мм — ' + fx(f.rail.over * 100, 1) + ' %' : 'нет данных'],
+        ['Шум отметок пола (СКО по клеткам)', f.sigma === f.sigma && f.sigma != null ? 'σ ≈ ' + fx(f.sigma, 2) + ' мм' + (isFinite(f.FFnoise) && f.FFnoise > 0 ? ' (предел FF от шума ≈ ' + fx(f.FFnoise, 0) + ')' : '') : '—']
+      ]);
+      if (f.rooms && f.rooms.length) h += '<h3>По помещениям</h3>' + rowsTable(f.rooms.map(function (r) {
+        return [r.name, r.kind === 'corridor' ? 'коридор' : 'помещение', fx(r.area, 1), fx(r.FF, 1), fx(r.FL, 1), fx(r.tilt, 2), fx(r.railMax, 1), fx(r.p2v, 1)];
+      }), ['Помещение', 'Тип', 'Площадь, м²', 'FF', 'FL', 'Уклон, мм/м', 'Рейка, мм', 'Размах, мм'], f.rooms.map(function (r) { return r.railMax > f.rail.tol; }));
+    }
+    if (w) {
+      var ws = w.walls, plumbs = ws.map(function (x) { return x.plumb; }), rails = ws.map(function (x) { return x.rail; });
+      h += '<h2 class="pb">Стены</h2>' + table([
+        ['Проверено граней', w.checked + ' (в допуске ' + (w.checked - w.bad) + ', вне допуска ' + w.bad + ')'],
+        ['Вертикаль', 'медиана ' + fx(medianOf(plumbs), 2) + ' мм/м, 90 % — до ' + fx(quantOf(plumbs, 0.9), 2) + ' мм/м; не в допуске ' + ws.filter(function (x) { return !x.okPlumb; }).length],
+        ['Неровность (рейка 2 м)', 'медиана ' + fx(medianOf(rails), 1) + ' мм, 90 % — до ' + fx(quantOf(rails, 0.9), 1) + ' мм; не в допуске ' + ws.filter(function (x) { return !x.okRail; }).length],
+        ['Шум облака на стенах', 'медиана ' + fx(medianOf(ws.map(function (x) { return x.noise; })), 1) + ' мм']
+      ]);
+      var order = ws.map(function (x, i) { return i; }).sort(function (a, b) { return (ws[a].ok - ws[b].ok) || (ws[b].plumb - ws[a].plumb); }).slice(0, 60);
+      h += '<h3>Грани' + (ws.length > 60 ? ' (60 из ' + ws.length + ': сначала вне допуска)' : '') + '</h3>' + rowsTable(order.map(function (i) {
+        var x = ws[i];
+        return [String(i + 1), fx(x.length, 2), fx(x.height, 2), fx(x.plumb, 2), fx(x.lean, 1), x.toward === 'room' ? 'в помещение' : x.toward === 'out' ? 'наружу' : '—', fx(x.rail, 1), fx(x.noise, 1),
+          x.ok ? 'в допуске' : !x.okPlumb && !x.okRail ? 'вертикаль и неровность' : !x.okPlumb ? 'вертикаль' : 'неровность'];
+      }), ['№', 'Длина, м', 'Высота, м', 'Вертикаль, мм/м', 'Завал, мм', 'Верх', 'Рейка, мм', 'Шум, мм', 'Итог'], order.map(function (i) { return !ws[i].ok; }));
+      var dev = (o.dev || []).filter(function (d) { return safeImg(d.src); });
+      if (dev.length) h += '<h3>Развёртки граней вне допуска</h3><div class="grid2">' + dev.map(function (d) {
+        return '<div class="fig dev"><img src="' + safeImg(d.src) + '" alt=""><div class="cap">Грань ' + d.n + (d.w ? ': ' + fx(d.w.length, 2) + ' × ' + fx(d.w.height, 2) + ' м, вертикаль ' + fx(d.w.plumb, 2) + ' мм/м' : '') + ' · шкала ±' + fx(d.lim, 0) + ' мм (синий — впадина, красный — выступ)</div></div>';
+      }).join('') + '</div>';
+    }
+    var cs = res.corners || [];
+    if (cs.length) {
+      var dvs = cs.map(function (k) { return k.dev; });
+      h += '<h2>Углы между стенами</h2>' + table([['Углов', String(cs.length)], ['Отклонение от 90°', 'медиана ' + fx(medianOf(dvs), 2) + '°, наибольшее ' + fx(Math.max.apply(null, dvs), 2) + '°']]);
+      var worst = cs.map(function (k, i) { return i; }).sort(function (a, b) { return cs[b].dev - cs[a].dev; }).slice(0, 15);
+      h += rowsTable(worst.map(function (i) { var k = cs[i]; return [String(i + 1), fx(k.at[0], 2) + '; ' + fx(k.at[1], 2), fx(k.angle, 2), fx(k.dev, 2), fx(k.mmPerM, 1)]; }), ['№', 'X; Y, м', 'Угол, °', 'От 90°, °', 'мм на 1 м'], worst.map(function (i) { return cs[i].mmPerM > 3; }));
+    }
+    if (cmp) {
+      var T = cmp.transform || {};
+      h += '<h2 class="pb">Облако против проекта' + (o.dxfName ? ' — ' + esc(o.dxfName) : '') + '</h2>' + table([
+        ['Совмещение', (T.mode === 'world' ? 'по координатам файла' : T.mode === 'none' ? 'без совмещения' : 'автоматически') + ', поворот ' + fx(T.rot, 3) + '°, единицы DXF — ' + esc(cmp.units)],
+        ['Точек среза рядом с линиями', n(cmp.points, 0) + ' из ' + n(cmp.total, 0)],
+        ['Ближе ' + fx(cmp.tol * 1000, 0) + ' мм', fx(cmp.within * 100, 1) + ' %'],
+        ['Отклонение', 'медиана ' + fx(cmp.median, 1) + ' мм, среднее ' + fx(cmp.mean, 1) + ' мм, 95 % — до ' + fx(cmp.p95, 1) + ' мм'],
+        ['Линии', cmp.lines.length + ', смещено ' + cmp.shifted + ', нет в облаке ' + cmp.missing]
+      ]);
+      var li = cmp.lines.map(function (x, i) { return i; }).filter(function (i) { return cmp.lines[i].length >= 0.5; })
+        .sort(function (a, b) { var A = lineState(cmp.lines[a], cmp.tol), B = lineState(cmp.lines[b], cmp.tol); return ((A === 'совпадает') - (B === 'совпадает')) || (Math.abs(cmp.lines[b].offset || 0) - Math.abs(cmp.lines[a].offset || 0)); }).slice(0, 60);
+      h += rowsTable(li.map(function (i) { var x = cmp.lines[i]; return [String(i + 1), x.layer || '', fx(x.length, 2), fx(x.offset, 1), fx(x.max, 1), fx(x.cover * 100, 0), lineState(x, cmp.tol)]; }),
+        ['№', 'Слой', 'Длина, м', 'Смещение, мм', 'Наибольшее, мм', 'Покрытие, %', 'Итог'], li.map(function (i) { return lineState(cmp.lines[i], cmp.tol) !== 'совпадает'; }));
+    }
+    h += '<p class="note" style="margin-top:14px">Оценка по облаку точек, не заменяет инструментальный контроль. Точность ограничена шумом сканера и накопленным дрейфом траектории (у мобильных сканеров — несколько миллиметров на стенах). ' +
+      'FF/FL рассчитаны по методике ASTM E1155 на сетке облака; допуски по СП 71.13330 заданы при запуске. Мебель, откосы и проёмы исключаются по плану, но могут попадать в отдельные грани — проверяйте развёртки. Сравнение с проектом — двумерное, по срезу на высоте проверки.</p>';
+    return h + '</body></html>';
+  }
+
+  return { build: build, inspect: inspect, planSvg: planSvg, histSvg: histSvg, esc: esc };
 });

@@ -398,6 +398,7 @@
         '</div>' +
         '<div class="form-actions bp-actions">' +
           '<button type="button" class="btn sm ghost" data-act="plan" title="План этажа из облака: стены, проёмы, размеры">' + ic('pencil-ruler', 15) + ' DXF</button>' +
+          '<button type="button" class="btn sm ghost" data-act="inspect" title="Контроль геометрии: пол FF/FL и рейка, стены по вертикали, сравнение с DXF">' + ic('ruler-dimension-line', 15) + ' Контроль</button>' +
           '<button type="button" class="btn sm ghost" data-act="report" title="PDF-отчёт по облаку">' + ic('file-text', 15) + ' PDF</button>' +
           '<div class="bp-est" aria-live="polite"></div>' +
           '<button type="button" class="btn sm" data-act="cancel">Отмена</button>' +
@@ -536,6 +537,7 @@
       };
       q('[data-act="plan"]').onclick = function () { planDxf(path, ov, st, paint, q('[data-act="plan"]')); };
       q('[data-act="report"]').onclick = function () { report(path, ov, cap, st, q('[data-act="report"]')); };
+      q('[data-act="inspect"]').onclick = function () { if (W.CloudInspectUI) W.CloudInspectUI.open(path, ov, st); else toast('Контроль геометрии недоступен', true); };
       D.addEventListener('keydown', onKey, true); W.addEventListener('resize', paint);
       D.body.appendChild(back); if (kit() && kit().hydrate) kit().hydrate(back); back.classList.add('open');
       if (ov.file.points < LARGE) { var da = q('[data-k="dontAsk"]'); if (da) da.closest('label').hidden = true; }
@@ -687,6 +689,7 @@
     openNext: function () { forceNext = true; var b = D.getElementById('btnOpenCloud'); if (b) b.click(); else toast('Откройте облако — перед загрузкой появится карта'); },
     planDxf: async function () { var c = await currentOverview(); if (c) planDxf(c.path, c.ov, null, null, null); },
     report: async function () { var c = await currentOverview(); if (c) report(c.path, c.ov, null, null, null); },
+    inspect: async function () { var c = await currentOverview(); if (c && W.CloudInspectUI) return W.CloudInspectUI.open(c.path, c.ov, null); if (c) toast('Контроль геометрии недоступен', true); return null; },
     setMode: function (m) { try { localStorage.setItem(LS_MODE, m); } catch (_) {} },
     capacity: getCapacity, mapImage: mapImage
   });

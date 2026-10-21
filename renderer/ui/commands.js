@@ -244,6 +244,9 @@
         I('btnAI', 'sparkles', null, { sel: '#btnAI' }),
         I('btnVerify', 'shield-check', null, { sel: '#btnVerify', primary: 1 })
       ]),
+      G('geom', 'Геометрия', [
+        I('cpInspect', 'ruler-dimension-line', 'Контроль геометрии', { call: 'CloudPreview.inspect', needs: 'cloud', tip: 'Пол: FF/FL, уклон, рейка 2 м; стены: вертикаль и неровность; углы; сравнение с планом DXF — по всем точкам файла' })
+      ]),
       G('compare', 'Сравнение', [
         I('btnCompare', 'columns-2', null, { sel: '#btnCompare' }),
         I('vfOpenQa', 'clipboard-check', 'Замеры и докум.', { call: '__lxVerify.open', args: [{}], tip: 'Измерения против требований из документов помещения' })
