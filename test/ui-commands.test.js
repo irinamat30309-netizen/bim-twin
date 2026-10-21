@@ -65,7 +65,8 @@ test('реестр: селекторы кнопок существуют в ра
 
 test('реестр: вызываемые функции определены в модулях', () => {
   const OWNER = { __lxToolsExt: 'lixel-tools-ext.js', __lxSprintsExt: 'lixel-sprints-ext.js', __lxDrawExt: 'lixel-draw-ext.js', __lxSmartSave: 'lixel-smart-save.js',
-    __lxScene: 'lixel-scene.js', __lxDrawUI: 'lixel-draw.js', __lxCloudUI: 'lixel-cloud-ui.js', __lxVerify: 'ui/verify.js' };
+    __lxScene: 'lixel-scene.js', __lxDrawUI: 'lixel-draw.js', __lxCloudUI: 'lixel-cloud-ui.js', __lxVerify: 'ui/verify.js',
+    CloudPreview: 'cloud-preview.js', HistoryPanel: 'history-panel.js', ProjectWorkspace: 'project-workspace.js' };
   const bad = [];
   for (const { item } of C.all()) {
     if (!item.call) continue;
@@ -82,17 +83,17 @@ test('реестр: вызываемые функции определены в 
 
 test('каждая кнопка лежит на вкладке по своей функции', () => {
   const PLACE = {
-    project: ['save', 'saveAs', 'autosave', 'btnProjectUndo', 'btnProjectRedo', 'drafts', 'btnNewProject', 'btnBackup', 'btnSettings', 'btnUsers', 'btnSync'],
-    import: ['btnOpenCloud', 'opPotree', 'modelInput', 'ifcInput', 'docInput'],
+    project: ['save', 'saveAs', 'autosave', 'btnProjectUndo', 'btnProjectRedo', 'drafts', 'histRecent', 'btnNewProject', 'projFolder', 'projBackups', 'btnBackup', 'btnSettings', 'btnUsers', 'btnSync'],
+    import: ['btnOpenCloud', 'cpPreview', 'opPotree', 'modelInput', 'ifcInput', 'docInput'],
     cloud: ['vtQuality', 'opAutoClean', 'vtEdit', 'opResample', 'opMerge', 'opOverlay', 'vtConvert', 'vtGeom', 'opDSM', 'opDTM', 'opContours', 'opGround', 'opGeoref'],
     floors: ['floorAdd', 'floorIsolate', 'floorSlice', 'floorAttach', 'floorReport', 'btnBackRoom', 'btnEdit'],
     measure: ['btnMeasure', 'mmDistance', 'mmPoint', 'mmPolyline', 'mmAngle', 'mmArea', 'mmDiameter', 'mmPlane', 'mmDeviation', 'mmCorner', 'mmSnap', 'mmList', 'mmCsv', 'mmQaReport', 'mmNotion', 'vfOpen', 'lxObjInspectBtn'],
-    draw: ['draw.pline', 'draw.line', 'draw.rect', 'draw.circle', 'draw.arc', 'draw.point', 'draw.dim', 'draw.text', 'draw.door', 'draw.window', 'draw.extend', 'draw.split', 'draw.snap', 'draw.ortho', 'draw.top', 'draw.sect', 'opWalls', 'draw.imp', 'draw.dxf'],
+    draw: ['draw.pline', 'draw.line', 'draw.rect', 'draw.circle', 'draw.arc', 'draw.point', 'draw.dim', 'draw.text', 'draw.door', 'draw.window', 'draw.extend', 'draw.split', 'draw.snap', 'draw.ortho', 'draw.top', 'draw.sect', 'opWalls', 'cpPlanDxf', 'draw.imp', 'draw.dxf'],
     bim: ['lxScan2BimBtn', 'lxScan2BimAiBtn', 'lxObjExtractBtn'],
     view: ['btnReset', 'view.top', 'view.front', 'view.side', 'view.iso', 'view.ortho', 'view.xray', 'btnSection', 'btnIsolate', 'btnLOD'],
     tour: ['tsSplatTop', 'tsSplatLcc2', 'tsMesh', 'tsConv3dgs', 'vtTour', 'tsPhoto'],
     qa: ['btnAI', 'btnVerify', 'btnCompare', 'vfOpenQa', 'opVolume', 'opCompareVolumes', 'opClosedVolume'],
-    export: ['btnExport', 'opMesh', 'opIFC4', 'opIFC']
+    export: ['btnExport', 'cpReport', 'opMesh', 'opIFC4', 'opIFC']
   };
   const wrong = [];
   for (const [tab, ids] of Object.entries(PLACE)) for (const id of ids) if (!C.byId[id] || C.byId[id].tab !== tab) wrong.push(`${id}: ожидалась вкладка ${tab}, а не ${C.byId[id] && C.byId[id].tab}`);

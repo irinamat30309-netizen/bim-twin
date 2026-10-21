@@ -245,7 +245,7 @@ test('main/preload: чтение по частям — IPC с проверкой
   assert.match(h, /resolveAuthorizedFile\(event, requested, CLOUD_EXT_ALLOW\)/, 'путь проходит ту же проверку доступа, что и обычное открытие');
   assert.match(h, /openSegmentSource\(abs\)/); assert.match(h, /CLOUD_PARTS_MIN_POINTS/); assert.match(h, /unsupported: true/);
   assert.match(h, /activeCloudParseJobs\.set\(key/, 'сессия видна общей отмене импорта');
-  assert.match(h, /readSegmentAsync\(d, from, count, \{ signal: ss\.controller\.signal(, keepPer: ss\.keepPer)? \}\)/);
+  assert.match(h, /readSegmentAsync\(d, from, count, \{ signal: ss\.controller\.signal(, keepPer: ss\.keepPer)?(, filter: ss\.filter \|\| null)? \}\)/);
   assert.match(h, /ss\.senderId !== sender\.id/, 'чужое окно сессию не читает');
   assert.match(h, /pendingClouds\.stash\(sender\.id, res/);
   assert.match(h, /bim:cloudPartsClose/); assert.match(h, /controller\.abort\(\)/);
@@ -260,7 +260,7 @@ test('окно: большой LAS/PLY читается частями (конв
   assert.match(t, /window\.CloudChunks\.resolve\(_rawAPI, light\)/); assert.match(t, /cloudPartsClose/); assert.match(t, /viewerLoaded: true/);
   assert.match(t, /return null;/, 'малые облака и прочие форматы — прежний путь');
   assert.match(t, /viewer\.clearCloud\(\)/, 'отмена убирает частично загруженное облако');
-  assert.match(a, /const parts = await tryPartsLoad\(filePath, label, extra\); if \(parts\) return parts;/);
+  assert.match(a, /const parts = await tryPartsLoad\(filePath, label, (?:extra|Object\.assign\(\{\}, extra \|\| \{\}, \{ pre \}\))\);\s*if \(parts\) (?:return parts;|\{[^\n]*return parts; \})/);
   assert.ok((a.match(/!pr\.viewerLoaded/g) || []).length >= 3, 'уже показанное по частям облако не грузится во второй раз');
   assert.match(a, /!\(v\.isStreamedCloud && v\.isStreamedCloud\(\)\)/, 'копия облака в RAM-кэш не делается');
   assert.match(a, /addEventListener\('bim-stream-limit'/);

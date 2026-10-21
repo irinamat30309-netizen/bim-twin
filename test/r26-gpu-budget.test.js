@@ -92,11 +92,11 @@ test('r26: связка — предел из окна в main, выборка �
   const m = read('main.js'), pl = read('preload.js'), a = read('renderer/app.js'), v = read('renderer/webgl-viewer.js'), ui = read('renderer/lixel-cloud-ui.js'), w = read('cloud-segment-worker.js'), s = read('cloud-segments.js');
   const h = m.slice(m.indexOf("ipcMain.handle('bim:cloudPartsOpen'"), m.indexOf("ipcMain.handle('bim:readCloudChunk'"));
   assert.match(h, /keepPerForBudget\(d\.count, d\.chunkPoints, gpuBudget\)/); assert.match(h, /total: shown, sourceTotal: d\.count/);
-  assert.match(h, /readSegmentAsync\(d, from, count, \{ signal: ss\.controller\.signal, keepPer: ss\.keepPer \}\)/);
+  assert.match(h, /readSegmentAsync\(d, from, count, \{ signal: ss\.controller\.signal, keepPer: ss\.keepPer(, filter: ss\.filter \|\| null)? \}\)/);
   assert.match(pl, /cloudPartsOpen: \(p, jobId, opts\) => inv\('bim:cloudPartsOpen', \{ path: p, jobId, maxPoints:/);
   assert.match(w, /keepPer: d\.keepPer/); assert.match(s, /keepPer: Math\.floor\(Number\(opts\.keepPer\) \|\| 0\)/);
   assert.match(a, /const GPU_POINT_BUDGET = 300000000;/); assert.match(a, /localStorage\.getItem\('bim\.gpuPointBudget'\)/);
-  assert.match(a, /API\.cloudPartsOpen\(filePath, makeCloudParseJobId\(\), \{ maxPoints: gpuPointBudget\(\) \}\)/);
+  assert.match(a, /API\.cloudPartsOpen\(filePath, makeCloudParseJobId\(\), (?:pre \? \{[^}]*\} : )?\{ maxPoints: gpuPointBudget\(\) \}\)/);
   assert.match(a, /sourceTotal: opened\.sourceTotal \|\| total/);
   assert.match(a, /addEventListener\('bim-gl-lost'/); assert.match(a, /localStorage\.setItem\('bim\.gpuPointBudget'/); assert.match(a, /sessionStorage\.setItem\('bim\.reopenCloud'/); assert.match(a, /location\.reload\(\)/);
   const gl = a.slice(a.indexOf("addEventListener('bim-gl-lost'"), a.indexOf('(function setupStreamPrefs'));
