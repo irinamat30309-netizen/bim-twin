@@ -220,6 +220,9 @@ const NOISE_LEVELS = {
   soft:   { maxNb: 2, frac: 0.02, minMean: 30, cluster: 8,  globalFrac: 0,    off: null, speck: { shareMin: 0.04 }, clampT: 24 },
   normal: { maxNb: 3, frac: 0.04, minMean: 20, cluster: 20, globalFrac: 0.05, off: { k: 3, ratio: 0.3, passes: 1 }, speck: { shareMin: 0.05 }, clampT: 16 },
   strong: { maxNb: 3, frac: 0.06, minMean: 20, cluster: 40, globalFrac: 0.1,  off: { k: 2.5, ratio: 0.3, passes: 2 }, speck: { shareMin: 0.06 }, clampT: 12 },
+  // ревизия 32: перед контролем геометрии — убрать заведомый мусор, не трогая редкие дальние полы и стены (без порога от общей
+  // плотности участка: комната, видимая через дверь, в десятки раз реже коридора у маршрута, но это настоящая поверхность)
+  inspect: { maxNb: 3, frac: 0.04, minMean: 20, cluster: 20, globalFrac: 0, off: { k: 3, ratio: 0.3, passes: 1 }, speck: { shareMin: 0.05 }, clampT: 16 },
   max:    { maxNb: 4, frac: 0.08, minMean: 20, cluster: 60, globalFrac: 0.15, off: { k: 2, ratio: 0.4, minTol: 0.01, passes: 2 }, speck: { shareMin: 0.08 }, clampT: 8 }
 };
 /** «Туман» у поверхностей: точек в кубе 15 см вокруг точки меньше frac от средней по окрестности 75 см → удалить. */

@@ -1356,6 +1356,7 @@ function registerIpc() {
       const uniqueName = (dir0, stem) => { for (let i = 0; i < 1000; i++) { const f = path.join(dir0, stem + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f)) return f; } return path.join(dir0, stem + '-' + Date.now() + '.las'); };
       let target;
       if (inPlace) target = path.resolve(abs);
+      else if (a.autoOut === true) target = uniqueName(path.dirname(abs), base + '-inspect');   // ревизия 32: подготовка облака перед контролем — рядом, без диалога
       else {
         const options = { title: 'Сохранить обработанное облако', defaultPath: path.join(path.dirname(abs), base + '-clean.las'), filters: [{ name: 'LAS', extensions: ['las'] }] };
         const res = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
@@ -1371,7 +1372,7 @@ function registerIpc() {
       try { const sf = fs.statfsSync(dir); const free = Number(sf.bavail) * Number(sf.bsize); if (Number.isFinite(free) && free < need) return { ok: false, error: 'no_space', message: 'Недостаточно места на диске: нужно около ' + (need / 1073741824).toFixed(1) + ' ГБ, свободно ' + (free / 1073741824).toFixed(1) + ' ГБ.' }; } catch (_) {}
       workDir = fs.mkdtempSync(path.join(dir, '.bimtwin-refine-'));
       tmpOut = path.join(workDir, 'out.las');
-      const NOISE_LEVELS = ['soft', 'normal', 'strong', 'max'];
+      const NOISE_LEVELS = ['soft', 'normal', 'strong', 'max', 'inspect'];
       const opt = { noise: a.noise !== false, thin: a.thin !== false, color: a.color !== false, dynamic: !!a.dynamic,
         noiseLevel: NOISE_LEVELS.includes(a.noiseLevel) ? a.noiseLevel : 'strong',
         align: a.align !== false, colorBalance: a.colorBalance !== false };   // ревизия 21: сведение проходов и ровный цвет
@@ -1811,8 +1812,15 @@ function registerIpc() {
       const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), CLOUD_EXT_ALLOW);
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       const cached = overviewCache.get(overviewKey(sender, abs));
-      const opened = cached ? { ok: true, desc: cached.desc } : openOverviewSource(abs);
+      let opened = cached ? { ok: true, desc: cached.desc } : openOverviewSource(abs);
       if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'контроль геометрии — для LAS, PLY и E57' };
+      // ревизия 32: очищенное облако проверяется в системе координат исходного (та же карта, этажи и маршрут сканера)
+      let frame = null;
+      if (!cached && a && a.frameFrom) {
+        const absF = resolveAuthorizedFile(event, String(a.frameFrom), CLOUD_EXT_ALLOW);
+        frame = absF ? overviewCache.get(overviewKey(sender, absF)) || null : null;
+        if (frame && frame.desc && opened.desc.kind === frame.desc.kind) opened = { ok: true, desc: Object.assign({}, opened.desc, { cx: frame.desc.cx, cy: frame.desc.cy, cz: frame.desc.cz }) };
+      }
       const h0 = finiteOr(a && a.h0, NaN), h1 = finiteOr(a && a.h1, NaN), floor = finiteOr(a && a.floor, NaN), top = finiteOr(a && a.top, NaN);
       if (!(Number.isFinite(h0) && Number.isFinite(h1) && h1 > h0 && h1 - h0 <= 2)) return { ok: false, message: 'неверная высота среза (0–2 м толщиной)' };
       if (!(Number.isFinite(floor) && Number.isFinite(top) && top - floor >= 0.5 && top - floor <= 12 && floor < h0)) return { ok: false, message: 'неверные отметки пола и верха стен' };
@@ -1822,14 +1830,40 @@ function registerIpc() {
       const high = Number.isFinite(hi0) && Number.isFinite(hi1) && hi1 > hi0 && hi1 - hi0 <= 2 && hi0 >= h1 && plan.lowFilter !== false ? { h0: hi0, h1: hi1, bands: hiBands } : null;
       const t = (a && a.tol && typeof a.tol === 'object') ? a.tol : {}, lim = (x, d, lo, hi) => Math.min(hi, Math.max(lo, finiteOr(x, d)));
       const tol = { floorRail: lim(t.floorRail, 4, 0.5, 50), wallRail: lim(t.wallRail, 3, 0.5, 50), plumbPerM: lim(t.plumbPerM, 2, 0.1, 50), plumbMax: lim(t.plumbMax, 10, 0.5, 200) };
-      const route = a && a.useRoute === false ? null : (cached && cached.route) || null;
+      const route = a && a.useRoute === false ? null : (cached && cached.route) || (frame && frame.route) || null;
+      const dt = (a && a.defTol && typeof a.defTol === 'object') ? a.defTol : {};
+      const defTol = { floor: lim(dt.floor, 5, 1, 50), wall: lim(dt.wall, 5, 1, 50) };
       const jobId = overviewJobId(a), controller = new AbortController(), jk = jobId ? sender.id + ':' + jobId : null;
       if (jk) overviewJobs.set(jk, controller);
       try {
         return await runOverviewWorker('inspect', opened.desc, { h0, h1, high, maxHigh: high && high.bands > 1 ? 8000000 : 6000000, rect: validRect(a && a.rect), maxPoints: 12000000, plan,
-          floor, top, tol, route, doFloor: !(a && a.floorCheck === false), doWalls: !(a && a.wallCheck === false) },
+          planDesc: frame && frame.desc && opened.desc.kind === frame.desc.kind ? frame.desc : null,
+          floor, top, tol, route, doFloor: !(a && a.floorCheck === false), doWalls: !(a && a.wallCheck === false),
+          level: !(a && a.level === false), defects: !(a && a.defects === false), openings: !(a && a.openings === false), defTol },
           (p, label) => { if (jobId) try { sender.send('bim:cloudPlanProgress', { jobId, progress: p, label: label || '' }); } catch (_) {} }, controller.signal);
       } finally { if (jk) overviewJobs.delete(jk); }
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  // ревизия 32: копия облака, очищенная для контроля, рядом с файлом («<имя>-inspect.las», «<имя>-inspect-2.las» …), новее исходника.
+  // Обычная очистка («-clean») сюда не годится: утончение поверхностей сглаживает неровность, сильный фильтр убирает редкие дальние комнаты
+  ipcMain.handle('bim:findCleanCloud', async (event, a) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, message: 'path_not_authorized' };
+      if (!/\.las$/i.test(abs)) return { ok: false, message: 'очистка — для LAS' };
+      const dir = path.dirname(abs), base = path.basename(abs).replace(/\.las$/i, ''), src = fs.statSync(abs);
+      const esc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), re = new RegExp('^' + esc + '-inspect(-\\d+)?\\.las$', 'i');
+      let best = null;
+      for (const name of fs.readdirSync(dir)) {
+        if (!re.test(name)) continue;
+        const f = path.join(dir, name); let st; try { st = fs.statSync(f); } catch (_) { continue; }
+        if (!st.isFile() || st.size < 1024 || st.mtimeMs < src.mtimeMs) continue;
+        if (!best || st.mtimeMs > best.mtime) best = { path: f, name, mtime: st.mtimeMs, size: st.size };
+      }
+      if (!best) return { ok: true, found: false };
+      try { fileGrants.grantExistingFile(sender.id, best.path, { read: true }); } catch (_) {}
+      return { ok: true, found: true, path: best.path, name: best.name, mtime: best.mtime, bytes: best.size };
     } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
   });
   // проект для сравнения с облаком: DXF (текст), выбранный в диалоге; до 100 МБ

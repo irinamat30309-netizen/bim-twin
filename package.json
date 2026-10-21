@@ -88,6 +88,7 @@
       "cloud-inspect-job.js",
       "renderer/auto-plan.js",
       "renderer/cloud-inspect.js",
+      "renderer/cloud-defects.js",
       "db/atomic-file.js",
       "scan2bim-ai-server/**"
     ],

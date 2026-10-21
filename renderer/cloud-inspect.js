@@ -422,10 +422,10 @@
       for (var ih3 = 0; ih3 < nh; ih3++) { for (var it3 = 0; it3 < nt; it3++) row[it3] = sm[it3 * nh + ih3]; rail(row, KT); }
       var gs = gaps.length ? Float64Array.from(gaps).sort() : null, plumb = fw.P.c * 1000, lean = Math.abs(fw.P.c) * H * 1000;
       out.push({ face: f.i, a: f.a, b: f.b, length: f.L, height: H, hFrom: hLo, cover: idx.length / (nt * rows.length),
-        plumb: Math.abs(plumb), lean: lean, toward: sd ? (sd * fw.P.c > 0 ? 'room' : 'out') : '', side: sd, rms: rms, noise: noise, p2v: sres.length ? quant(sres, 0.99) - quant(sres, 0.01) : NaN,
+        plumb: Math.abs(plumb), plumbS: plumb, n: [f.nx, f.ny], lean: lean, toward: sd ? (sd * fw.P.c > 0 ? 'room' : 'out') : '', side: sd, rms: rms, noise: noise, p2v: sres.length ? quant(sres, 0.99) - quant(sres, 0.01) : NaN,
         rail: gs ? gs[gs.length - 1] : NaN, railP95: gs ? quant(gs, 0.95) : NaN, railN: gaps.length,
         okPlumb: Math.abs(plumb) <= tolM && lean <= tolH, okRail: !gs || gs[gs.length - 1] <= tolR,
-        grid: { nt: nt, nh: nh, cellT: cT, cellH: cH, res: res } });
+        grid: { nt: nt, nh: nh, cellT: cT, cellH: cH, res: res }, _sm: o.keepSmooth ? sm : undefined });
     });
     out.forEach(function (w) { w.ok = w.okPlumb && w.okRail; });
     var bad = out.filter(function (w) { return !w.ok; }).length;

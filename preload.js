@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   cloudPlan: (payload) => inv('bim:cloudPlan', payload || {}),
   cloudInspect: (payload) => inv('bim:cloudInspect', payload || {}),
   pickDxfText: () => inv('bim:pickDxfText', {}),
+  findCleanCloud: (p) => inv('bim:findCleanCloud', { path: p }),
   onCloudPlanProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
