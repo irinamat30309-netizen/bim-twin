@@ -8,7 +8,7 @@ function transfer(obj) {
   const add = (v) => { if (ArrayBuffer.isView(v) && v.buffer instanceof ArrayBuffer && !seen.has(v.buffer)) { seen.add(v.buffer); list.push(v.buffer); } };
   if (obj && obj.grid) for (const k of ['count', 'hmax', 'hmin', 'rgb', 'inten']) add(obj.grid[k]);
   if (obj && obj.hist) add(obj.hist.counts);
-  if (obj) { add(obj.pts); add(obj.uv); if (obj.slice) add(obj.slice.preview); }
+  if (obj) { add(obj.pts); add(obj.uv); add(obj.uvHigh); if (obj.slice) add(obj.slice.preview); }
   return list;
 }
 try {
@@ -22,10 +22,12 @@ try {
       // план: стены, проёмы, помещения (renderer/auto-plan.js — тот же модуль, что в окне) + редкая выборка среза для подложки
       parentPort.postMessage({ type: 'progress', progress: 0.75, label: 'Ищу стены и проёмы' });
       const AP = require('./renderer/auto-plan.js');
-      const plan = AP.extract(result.uv, (d.opts && d.opts.plan) || {});
+      const popt = Object.assign({}, (d.opts && d.opts.plan) || {});
+      if (result.uvHigh && result.countHigh) popt.uvHigh = result.uvHigh;
+      const plan = AP.extract(result.uv, popt);
       const n = result.count, keep = Math.min(n, 200000), st = n / Math.max(1, keep), pv = new Float32Array(keep * 2);
       for (let j = 0; j < keep; j++) { const i = Math.floor(j * st); pv[j * 2] = result.uv[i * 2]; pv[j * 2 + 1] = result.uv[i * 2 + 1]; }
-      result = { ok: !!plan.ok, message: plan.message, plan, slice: { count: n, stride: result.stride, h0: result.h0, h1: result.h1, preview: pv } };
+      result = { ok: !!plan.ok, message: plan.message, plan, slice: { count: n, stride: result.stride, h0: result.h0, h1: result.h1, preview: pv, high: result.uvHigh ? { count: result.countHigh, h0: result.hi0, h1: result.hi1 } : null } };
     }
   } else result = OV.overview(d.desc, d.opts || {});
   parentPort.postMessage({ type: 'result', result }, transfer(result));

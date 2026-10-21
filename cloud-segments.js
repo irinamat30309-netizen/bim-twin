@@ -19,8 +19,9 @@
  *   { keepPer } (ревизия 26) — из каждого кирпича берутся первые keepPer точек (равномерная выборка для экрана), см. thinSegment
  *   { filter } (ревизия 27) — область, высота, маска маршрута, шум и доля точек из окна «Перед загрузкой», см. filterSegment
  *
- * Поддержано: LAS без сжатия (все форматы точек), бинарный PLY с вершинами (little/big endian). Остальные форматы возвращают
- * { unsupported:true } — их читает прежний путь (целиком).
+ * Поддержано: LAS без сжатия (все форматы точек), бинарный PLY с вершинами (little/big endian) и (ревизия 29) E57 — по указателю
+ * пакетов каждого скана (e57-segments.js): часть начинается сразу с нужного пакета, файл целиком не читается и в памяти не живёт.
+ * Остальные форматы возвращают { unsupported:true } — их читает прежний путь (целиком).
  */
 const fs = require('fs');
 const path = require('path');
@@ -274,13 +275,13 @@ function openSegmentSource(absPath, opts) {
   opts = opts || {};
   const abs = String(absPath || '');
   const ext = path.extname(abs).toLowerCase();
-  if (ext !== '.las' && ext !== '.ply') return { ok: false, unsupported: true, message: 'Формат читается целиком' };
+  if (ext !== '.las' && ext !== '.ply' && ext !== '.e57') return { ok: false, unsupported: true, message: 'Формат читается целиком' };
   let fd = null;
   try {
     fd = fs.openSync(abs, 'r');
     const st = fs.fstatSync(fd);
     if (!st.isFile()) return { ok: false, unsupported: true, message: 'не файл' };
-    const desc = ext === '.las' ? openLas(abs, fd, st.size) : openPly(abs, fd, st.size);
+    const desc = ext === '.las' ? openLas(abs, fd, st.size) : ext === '.e57' ? require('./e57-segments').openE57Segments(abs, fd, st.size) : openPly(abs, fd, st.size);
     desc.chunkPoints = Math.max(1000, Math.floor(Number(opts.chunkPoints) || CHUNK_POINTS));
     desc.segPoints = Math.max(desc.chunkPoints, Math.floor((Number(opts.segPoints) || SEG_POINTS) / desc.chunkPoints) * desc.chunkPoints);
     return { ok: true, desc };
@@ -419,6 +420,7 @@ function readSegment(desc, from, count, opts) {
     const nChunks = Math.ceil(count / CH), boxes = new Float32Array(nChunks * 6);
     if (desc.kind === 'las') lasFill(desc, fd, from, count, out, boxes, opts.onProgress, CH);
     else if (desc.kind === 'ply') plyFill(desc, fd, from, count, out, boxes, opts.onProgress, CH);
+    else if (desc.kind === 'e57' && desc.e57) require('./e57-segments').e57Fill(desc, fd, from, count, out, boxes, opts.onProgress, CH);
     else throw new Error('неизвестный формат сегмента');
     if (opts.shuffle !== false) shuffleChunks(out, count, CH, from / CH);
     const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];

@@ -10,7 +10,7 @@
  * (u = x, v = −z, h = y), поэтому фильтры загрузки (cloud-segments.filterSegment) задаются в них.
  *
  *   overview(desc, { samples, keep }) → { ok, file, bbox, grid, hist, levels, stats, time, pts }
- *   planSlice(desc, { h0, h1, rect, maxPoints, onProgress, signal }) → { ok, uv: Float32Array, count, read }
+ *   planSlice(desc, { h0, h1, high: { h0, h1 }, rect, maxPoints, onProgress, signal }) → { ok, uv: Float32Array, count, read, uvHigh?, countHigh? }
  *   trajectoryInfo(posesText, desc) → { n, duration, length, speed, loopGap, route: Float32Array (u,v,h,t), inside }
  *   routeMask(route, bbox, { radius, cell, from, to }) → { u0, v0, cell, nx, ny, bits: Uint8Array }
  */
@@ -96,9 +96,11 @@ function chooseCell(w, d) {
 }
 
 // ------------------------------------------------------------ E57 (ревизия 28): карта до загрузки и срез плана
-// E57 сжат по полям (CompressedVector), поэтому прочитать «блок записей подряд» нельзя: файл читается целиком, но в память
-// попадает только равномерная выборка (E57Core.read, maxPoints). Плановые координаты — от центра рамки выборки по X/Y и от низа по Z
-// (мировые координаты E57 — Z вверх), они же — origin для фильтров загрузки.
+// Ревизия 29: E57, открытый через cloud-segments (desc.e57 — указатель пакетов, e57-segments.js), читается как LAS: выборка карты —
+// окнами записей равномерно по файлу (файл целиком не читается), срез плана — по ВСЕМ точкам файла одним проходом, начало
+// координат — из openE57Segments (центр рамки по X/Y, низ по Z). Без указателя (desc из openE57 — запасной путь) — как в ревизии 28:
+// файл читается целиком, в память попадает только равномерная выборка (E57Core.read, maxPoints). Плановые координаты — от центра
+// рамки по X/Y и от низа по Z (мировые координаты E57 — Z вверх), они же — origin для фильтров загрузки.
 function e57Readers(desc, onProgress) {
   const fd = fs.openSync(desc.path, 'r');
   let high = 0, lastF = 0;
@@ -126,7 +128,34 @@ function e57Sample(desc, maxPoints, onProgress) {
   const R = e57Readers(desc, onProgress);
   try { return E57.read(R.readPhys, desc.fileSize, { maxPoints }); } finally { fs.closeSync(R.fd); }
 }
+// ревизия 29: выборка карты по указателю пакетов — блоки записей равномерно по файлу (как gatherRecords у LAS), начало координат не меняется
+function gatherE57Parts(desc, S0) {
+  const ES = require('./e57-segments');
+  const total = desc.count, S = Math.max(1000, Math.min(total, S0));
+  const B = S >= total ? 1 : Math.max(1, Math.min(4096, Math.ceil(S / 1500))), per = Math.max(1, Math.ceil(S / B));
+  const cap = Math.min(total, B * per), uu = new Float32Array(cap), vv = new Float32Array(cap), hh = new Float32Array(cap);
+  const cr = desc.hasColor ? new Uint8Array(cap * 3) : null, ii = desc.hasIntensity ? new Uint8Array(cap) : null;
+  const cx = desc.cx, cy = desc.cy, cz = desc.cz;
+  let n = 0;
+  const fd = fs.openSync(desc.path, 'r');
+  try {
+    for (let k = 0; k < B; k++) {
+      const first = Math.floor(k * total / B), next = Math.floor((k + 1) * total / B), cnt = Math.min(per, next - first);
+      if (cnt <= 0) continue;
+      ES.e57Points(desc, fd, first, cnt, (x, y, z, r, g, b, iv) => {
+        if (n >= cap) return;
+        uu[n] = x - cx; vv[n] = y - cy; hh[n] = z - cz;
+        if (cr) { cr[n * 3] = r; cr[n * 3 + 1] = g; cr[n * 3 + 2] = b; }
+        if (ii) ii[n] = Math.round(iv * 255);
+        n++;
+      });
+    }
+  } finally { fs.closeSync(fd); }
+  const stations = desc.e57.scans.map((sc) => ({ name: String(sc.name || '').slice(0, 80), points: sc.count, u: sc.T[0] - cx, v: sc.T[1] - cy, h: sc.T[2] - cz }));
+  return { uu, vv, hh, cr, ii, n, t0: Infinity, t1: -Infinity, head: { system: '', software: '', created: null }, stations };
+}
 function gatherE57(desc, S) {
+  if (desc.e57 && Number.isFinite(desc.cx)) return gatherE57Parts(desc, S);
   const r = e57Sample(desc, S);
   const n0 = r.count, P = r.pos;
   if (!(n0 > 0)) return null;
@@ -366,7 +395,11 @@ function planSlice(desc, opts) {
   const h0 = Number(opts.h0), h1 = Number(opts.h1);
   if (!(h1 > h0)) return { ok: false, message: 'неверный диапазон высоты среза' };
   const rect = opts.rect || null, maxPts = Math.max(100000, Math.floor(opts.maxPoints || 12000000));
-  if (desc.kind === 'e57') return planSliceE57(desc, h0, h1, rect, opts);
+  // ревизия 29: второй, верхний срез (opts.high = { h0, h1 }, обычно у потолка) — тем же проходом: по нему план отличает стены
+  // от мебели и стеллажей у стен (у них нет точек над собой)
+  const hi = opts.high && Number(opts.high.h1) > Number(opts.high.h0) ? { h0: Number(opts.high.h0), h1: Number(opts.high.h1) } : null;
+  const H = hi ? highAcc(Math.max(100000, Math.floor(opts.maxHigh || 6000000))) : null;
+  if (desc.kind === 'e57') return planSliceE57(desc, h0, h1, rect, opts, hi, H);
   const D = makeDecoder(desc), rl = D.recLen, total = desc.count;
   const perChunk = Math.max(1, Math.floor((8 << 20) / rl)), buf = Buffer.allocUnsafe(perChunk * rl);
   let cap = Math.min(maxPts, 1 << 20), uv = new Float32Array(cap * 2), n = 0, stride = 1, tick = 0;
@@ -379,6 +412,7 @@ function planSlice(desc, opts) {
       const got = Math.floor(readExact(fd, buf, cnt * rl, D.start + first * rl) / rl);
       for (let j = 0; j < got; j++) {
         const base = j * rl, h = D.hOf(buf, base);
+        if (H && h >= hi.h0 && h <= hi.h1) { D.dec(buf, base, o); if (!rect || (o.u >= rect.u0 && o.u <= rect.u1 && o.v >= rect.v0 && o.v <= rect.v1)) H.add(o.u, o.v); if (!(h >= h0 && h <= h1)) continue; }
         if (!(h >= h0 && h <= h1)) continue;
         if (stride > 1 && (++tick % stride)) continue;
         D.dec(buf, base, o);
@@ -392,22 +426,74 @@ function planSlice(desc, opts) {
       if (opts.onProgress) opts.onProgress(Math.min(1, (first + cnt) / total));
     }
   } finally { fs.closeSync(fd); }
-  return { ok: true, uv: uv.slice(0, n * 2), count: n, stride, read: total, h0, h1 };
+  return withHigh({ ok: true, uv: uv.slice(0, n * 2), count: n, stride, read: total, h0, h1 }, hi, H);
 }
 
-// E57: равномерная выборка всего файла (opts.e57Points, по умолчанию 10 млн) → точки в слое h0–h1 (координаты карты: origin из overview)
-function planSliceE57(desc, h0, h1, rect, opts) {
+// накопитель верхнего среза: при переполнении — каждая вторая точка, дальше берётся каждая 2^k-я (равномерно по файлу)
+function highAcc(maxPts) {
+  let cap = Math.min(maxPts, 1 << 18), uv = new Float32Array(cap * 2), n = 0, stride = 1, tick = 0;
+  return {
+    add(u, v) {
+      if (stride > 1 && (++tick % stride)) return;
+      if (n >= cap) {
+        if (cap < maxPts) { const nc = Math.min(maxPts, cap * 2), a = new Float32Array(nc * 2); a.set(uv); uv = a; cap = nc; }
+        else { let w = 0; for (let k = 0; k < n; k += 2) { uv[w * 2] = uv[k * 2]; uv[w * 2 + 1] = uv[k * 2 + 1]; w++; } n = w; stride *= 2; }
+      }
+      uv[n * 2] = u; uv[n * 2 + 1] = v; n++;
+    },
+    done() { return { uv: uv.slice(0, n * 2), count: n, stride }; }
+  };
+}
+function withHigh(res, hi, H) {
+  if (!H) return res;
+  const r = H.done();
+  res.uvHigh = r.uv; res.countHigh = r.count; res.hi0 = hi.h0; res.hi1 = hi.h1;
+  return res;
+}
+
+// E57: равномерная выборка всего файла (opts.e57Points, по умолчанию 10 млн) → точки в слое h0–h1 (координаты карты: origin из overview);
+// ревизия 29: при указателе пакетов (desc.e57) — все точки файла одним проходом, предел maxPoints — как у LAS (каждая 2^k-я точка слоя)
+function planSliceE57(desc, h0, h1, rect, opts, hi, H) {
   if (!Number.isFinite(desc.cx)) return { ok: false, message: 'сначала постройте карту облака E57' };
+  if (desc.e57) return planSliceE57Parts(desc, h0, h1, rect, opts, hi, H);
   const r = e57Sample(desc, Math.max(100000, Math.floor(opts.e57Points || 10000000)), opts.onProgress);
   const P = r.pos, n0 = r.count, uv = new Float32Array(n0 * 2);
   let n = 0;
   for (let i = 0; i < n0; i++) {
-    const h = P[i * 3 + 2] - desc.cz; if (!(h >= h0 && h <= h1)) continue;
+    const h = P[i * 3 + 2] - desc.cz, hiOk = H && h >= hi.h0 && h <= hi.h1; if (!hiOk && !(h >= h0 && h <= h1)) continue;
     const u = P[i * 3] - desc.cx, v = P[i * 3 + 1] - desc.cy;
     if (rect && (u < rect.u0 || u > rect.u1 || v < rect.v0 || v > rect.v1)) continue;
+    if (hiOk) { H.add(u, v); if (!(h >= h0 && h <= h1)) continue; }
     uv[n * 2] = u; uv[n * 2 + 1] = v; n++;
   }
-  return { ok: true, uv: uv.slice(0, n * 2), count: n, stride: Math.max(1, Math.ceil(r.total / Math.max(1, n0))), read: r.total, h0, h1 };
+  return withHigh({ ok: true, uv: uv.slice(0, n * 2), count: n, stride: Math.max(1, Math.ceil(r.total / Math.max(1, n0))), read: r.total, h0, h1 }, hi, H);
+}
+
+function planSliceE57Parts(desc, h0, h1, rect, opts, hi, H) {
+  const ES = require('./e57-segments');
+  const maxPts = Math.max(100000, Math.floor(opts.maxPoints || 12000000)), cx = desc.cx, cy = desc.cy, cz = desc.cz;
+  let cap = Math.min(maxPts, 1 << 20), uv = new Float32Array(cap * 2), n = 0, stride = 1, tick = 0;
+  const STOP = {};
+  const fd = fs.openSync(desc.path, 'r');
+  try {
+    ES.e57Each(desc, fd, 0, desc.count, (x, y, z) => {
+      const h = z - cz, inMain = h >= h0 && h <= h1;
+      if (H && h >= hi.h0 && h <= hi.h1) { const u = x - cx, v = y - cy; if (!rect || (u >= rect.u0 && u <= rect.u1 && v >= rect.v0 && v <= rect.v1)) H.add(u, v); }
+      if (!inMain) return;
+      if (stride > 1 && (++tick % stride)) return;
+      const u = x - cx, v = y - cy;
+      if (rect && (u < rect.u0 || u > rect.u1 || v < rect.v0 || v > rect.v1)) return;
+      if (n >= cap) {
+        if (cap < maxPts) { const nc = Math.min(maxPts, cap * 2), a = new Float32Array(nc * 2); a.set(uv); uv = a; cap = nc; }
+        else { let w = 0; for (let k = 0; k < n; k += 2) { uv[w * 2] = uv[k * 2]; uv[w * 2 + 1] = uv[k * 2 + 1]; w++; } n = w; stride *= 2; }
+      }
+      uv[n * 2] = u; uv[n * 2 + 1] = v; n++;
+    }, (f) => { if (opts.signal && opts.signal.aborted) throw STOP; if (opts.onProgress) opts.onProgress(Math.min(1, f)); });
+  } catch (e) {
+    if (e === STOP) return { ok: false, cancelled: true, message: 'отменено' };
+    throw e;
+  } finally { fs.closeSync(fd); }
+  return withHigh({ ok: true, uv: uv.slice(0, n * 2), count: n, stride, read: desc.count, h0, h1 }, hi, H);
 }
 
 module.exports = { openE57, overview, planSlice, trajectoryInfo, routeMask, parsePoses, makeDecoder, chooseCell, findLevels, surfaceArea, hShift };

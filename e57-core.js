@@ -567,5 +567,7 @@
     return out;
   }
 
-  return { read: read, inspect: inspect, readBuffer: readBuffer, write: write, crc32c: crc32c, parseXML: parseXML, logicalToPhysical: logicalToPhysical, physicalToLogical: physicalToLogical, version: '1223' };
+  // ревизия 29: внутренние части для чтения частями (e57-segments.js)
+  var _internal = { readHeader: readHeader, makeLogicalReader: makeLogicalReader, child: child, numVal: numVal, protoFields: protoFields, quatToMat: quatToMat, u64: u64 };
+  return { read: read, inspect: inspect, readBuffer: readBuffer, write: write, crc32c: crc32c, parseXML: parseXML, logicalToPhysical: logicalToPhysical, physicalToLogical: physicalToLogical, version: '1223', _internal: _internal };
 });

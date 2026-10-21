@@ -1535,7 +1535,8 @@ function registerIpc() {
           }
         } catch (_) {}
       };
-      // ревизия 28: E57 после окна «Перед загрузкой» — выбор области/высот/маршрута/шума и предел точек (E57 частями не читается)
+      // ревизия 28: E57 после окна «Перед загрузкой» — выбор области/высот/маршрута/шума и предел точек (ревизия 29: это запасной путь —
+      // обычно E57 читается частями, bim:cloudPartsOpen; сюда попадает, если указатель пакетов не построен)
       let e57Filter = null, readMax = maxPoints;
       if (/\.e57$/i.test(abs) && payload && typeof payload === 'object' && payload.pre === true) {
         const cachedOv = sender ? overviewCache.get(overviewKey(sender, abs)) : null;
@@ -1580,7 +1581,7 @@ function registerIpc() {
     }
     catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
   });
-  // Ревизия 16: облако крупнее CLOUD_PARTS_MIN_POINTS (LAS/PLY) читается ЧАСТЯМИ и целиком в памяти не живёт: окно просит часть за частью
+  // Ревизия 16: облако крупнее CLOUD_PARTS_MIN_POINTS (LAS/PLY, с ревизии 29 и E57) читается ЧАСТЯМИ и целиком в памяти не живёт: окно просит часть за частью
   // (bim:cloudPartsRead), каждая часть — готовые массивы (позиции Float32, цвет 3 байта, интенсивность uint16, класс uint8, рамки кирпичей)
   // и уходит в окно кусками, как обычное облако. Отказ по памяти невозможен по построению: больше одной части ничего не выделяется.
   const cloudPartSessions = new Map();
@@ -1597,6 +1598,9 @@ function registerIpc() {
       if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'формат читается целиком' };
       const d = opened.desc;
       const minPts = Number(APP_CFG.CLOUD_PARTS_MIN_POINTS) || 48000000;
+      // ревизия 29: E57 частями — начало координат карты «Перед загрузкой» (фильтр области и маршрута — в её координатах)
+      const cachedE57 = d.kind === 'e57' ? overviewCache.get(overviewKey(sender, abs)) : null;
+      if (cachedE57 && cachedE57.desc && cachedE57.desc.kind === 'e57' && Number.isFinite(cachedE57.desc.cx)) require('./e57-segments').setOrigin(d, cachedE57.desc.cx, cachedE57.desc.cy, cachedE57.desc.cz);
       // ревизия 27: фильтр окна «Перед загрузкой» (область, высота, участок маршрута, шум) — облако любого размера читается частями
       const cachedOv = overviewCache.get(overviewKey(sender, abs));
       const filter = cloudLoadFilter(payload && typeof payload === 'object' ? payload.filter : null, d, cachedOv);
@@ -1693,9 +1697,11 @@ function registerIpc() {
     overviewCache.delete(key); overviewCache.set(key, entry);
     while (overviewCache.size > 6) overviewCache.delete(overviewCache.keys().next().value);
   }
-  // ревизия 28: карта до загрузки — LAS, PLY и E57 (E57 — равномерной выборкой при чтении всего файла)
+  // ревизия 28: карта до загрузки — LAS, PLY и E57; ревизия 29: E57 — по указателю пакетов (как LAS, файл целиком не читается),
+  // запасной путь (если указатель не построен) — равномерная выборка при чтении всего файла
   function openOverviewSource(abs) {
-    if (!/\.e57$/i.test(abs)) return cloudSegments.openSegmentSource(abs);
+    const seg = cloudSegments.openSegmentSource(abs);
+    if (seg.ok || !/\.e57$/i.test(abs)) return seg;
     try { return { ok: true, desc: cloudOverview.openE57(abs, fs.statSync(abs).size) }; }
     catch (e) { return { ok: false, unsupported: true, message: 'E57 не прочитан: ' + String((e && e.message) || e) }; }
   }
@@ -1772,11 +1778,14 @@ function registerIpc() {
       const h0 = finiteOr(a && a.h0, NaN), h1 = finiteOr(a && a.h1, NaN);
       if (!(Number.isFinite(h0) && Number.isFinite(h1) && h1 > h0 && h1 - h0 <= 2)) return { ok: false, message: 'неверная высота среза (0–2 м толщиной)' };
       const plan = {};
-      if (a && a.plan && typeof a.plan === 'object') { for (const k of ['gap', 'minLen', 'maxFace', 'openMin', 'openMax', 'minRoom', 'cell']) if (Number.isFinite(Number(a.plan[k]))) plan[k] = Number(a.plan[k]); if (a.plan.ortho === true) plan.ortho = true; }
+      if (a && a.plan && typeof a.plan === 'object') { for (const k of ['gap', 'minLen', 'maxFace', 'openMin', 'openMax', 'minRoom', 'cell']) if (Number.isFinite(Number(a.plan[k]))) plan[k] = Number(a.plan[k]); if (a.plan.ortho === true) plan.ortho = true; if (a.plan.lowFilter === false) plan.lowFilter = false; }
+      // второй, верхний срез (мебель и стеллажи у стен уходят из плана): необязателен, толщина до 1 м, выше основного
+      const hi0 = finiteOr(a && a.hi0, NaN), hi1 = finiteOr(a && a.hi1, NaN);
+      const high = Number.isFinite(hi0) && Number.isFinite(hi1) && hi1 > hi0 && hi1 - hi0 <= 1 && hi0 >= h1 && plan.lowFilter !== false ? { h0: hi0, h1: hi1 } : null;
       const jobId = overviewJobId(a), controller = new AbortController(), jk = jobId ? sender.id + ':' + jobId : null;
       if (jk) overviewJobs.set(jk, controller);
       try {
-        return await runOverviewWorker('plan', opened.desc, { h0, h1, rect: validRect(a && a.rect), maxPoints: 12000000, plan },
+        return await runOverviewWorker('plan', opened.desc, { h0, h1, high, rect: validRect(a && a.rect), maxPoints: 12000000, plan },
           (p, label) => { if (jobId) try { sender.send('bim:cloudPlanProgress', { jobId, progress: p, label: label || '' }); } catch (_) {} }, controller.signal);
       } finally { if (jk) overviewJobs.delete(jk); }
     } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
