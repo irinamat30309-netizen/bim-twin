@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   cloudOverview: (p, jobId, opts) => inv('bim:cloudOverview', { path: p, jobId: jobId || null, minPoints: opts && opts.minPoints > 0 ? Number(opts.minPoints) : 0 }),
   cancelCloudOverview: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelCloudOverview', { jobId }); },
   cloudPlan: (payload) => inv('bim:cloudPlan', payload || {}),
+  cloudInspect: (payload) => inv('bim:cloudInspect', payload || {}),
+  pickDxfText: () => inv('bim:pickDxfText', {}),
   onCloudPlanProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };

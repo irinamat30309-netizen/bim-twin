@@ -85,7 +85,9 @@
       "xbin-refine.js",
       "cloud-overview.js",
       "cloud-overview-worker.js",
+      "cloud-inspect-job.js",
       "renderer/auto-plan.js",
+      "renderer/cloud-inspect.js",
       "db/atomic-file.js",
       "scan2bim-ai-server/**"
     ],
@@ -121,6 +123,7 @@
       "xbin-refine.js",
       "cloud-overview.js",
       "cloud-overview-worker.js",
+      "cloud-inspect-job.js",
       "system-capacity.js",
       "recolor-core.js",
       "recolor-host.html",

@@ -500,4 +500,46 @@ function planSliceE57Parts(desc, h0, h1, rect, opts, hi, H) {
   return withHigh({ ok: true, uv: uv.slice(0, n * 2), count: n, stride, read: desc.count, h0, h1 }, hi, H);
 }
 
-module.exports = { openE57, overview, planSlice, trajectoryInfo, routeMask, parsePoses, makeDecoder, chooseCell, findLevels, surfaceArea, hShift };
+// ревизия 31: проход по всем точкам слоя h0–h1 (контроль геометрии: пол и стены) — fn(u, v, h) в координатах карты; LAS, PLY и E57
+// (по указателю пакетов; без указателя — по выборке, как срез плана). Возвращает { ok, read, used, sampled }
+function eachPoint(desc, opts, fn) {
+  opts = opts || {};
+  const h0 = Number(opts.h0), h1 = Number(opts.h1), rect = opts.rect || null;
+  if (!(h1 > h0)) return { ok: false, message: 'неверный диапазон высоты' };
+  const inRect = rect ? (u, v) => u >= rect.u0 && u <= rect.u1 && v >= rect.v0 && v <= rect.v1 : null;
+  let used = 0;
+  if (desc.kind === 'e57') {
+    if (!Number.isFinite(desc.cx)) return { ok: false, message: 'сначала постройте карту облака E57' };
+    const cx = desc.cx, cy = desc.cy, cz = desc.cz;
+    if (!desc.e57) {
+      const r = e57Sample(desc, Math.max(100000, Math.floor(opts.e57Points || 10000000)), opts.onProgress), P = r.pos;
+      for (let i = 0; i < r.count; i++) { const h = P[i * 3 + 2] - cz; if (!(h >= h0 && h <= h1)) continue; const u = P[i * 3] - cx, v = P[i * 3 + 1] - cy; if (inRect && !inRect(u, v)) continue; used++; fn(u, v, h); }
+      return { ok: true, read: r.total, used, sampled: true };
+    }
+    const ES = require('./e57-segments'), STOP = {}, fd = fs.openSync(desc.path, 'r');
+    try {
+      ES.e57Each(desc, fd, 0, desc.count, (x, y, z) => { const h = z - cz; if (!(h >= h0 && h <= h1)) return; const u = x - cx, v = y - cy; if (inRect && !inRect(u, v)) return; used++; fn(u, v, h); },
+        (f) => { if (opts.signal && opts.signal.aborted) throw STOP; if (opts.onProgress) opts.onProgress(Math.min(1, f)); });
+    } catch (e) { if (e === STOP) return { ok: false, cancelled: true, message: 'отменено' }; throw e; }
+    finally { fs.closeSync(fd); }
+    return { ok: true, read: desc.count, used, sampled: false };
+  }
+  const D = makeDecoder(desc), rl = D.recLen, total = desc.count;
+  const perChunk = Math.max(1, Math.floor((8 << 20) / rl)), buf = Buffer.allocUnsafe(perChunk * rl), o = { u: 0, v: 0, h: 0, r: 0, g: 0, b: 0, i: 0, t: NaN };
+  const fd = fs.openSync(desc.path, 'r');
+  try {
+    for (let first = 0; first < total; first += perChunk) {
+      if (opts.signal && opts.signal.aborted) return { ok: false, cancelled: true, message: 'отменено' };
+      const cnt = Math.min(perChunk, total - first), got = Math.floor(readExact(fd, buf, cnt * rl, D.start + first * rl) / rl);
+      for (let j = 0; j < got; j++) {
+        const base = j * rl, h = D.hOf(buf, base); if (!(h >= h0 && h <= h1)) continue;
+        D.dec(buf, base, o); if (inRect && !inRect(o.u, o.v)) continue;
+        used++; fn(o.u, o.v, h);
+      }
+      if (opts.onProgress) opts.onProgress(Math.min(1, (first + cnt) / total));
+    }
+  } finally { fs.closeSync(fd); }
+  return { ok: true, read: total, used, sampled: false };
+}
+
+module.exports = { eachPoint, openE57, overview, planSlice, trajectoryInfo, routeMask, parsePoses, makeDecoder, chooseCell, findLevels, surfaceArea, hShift };

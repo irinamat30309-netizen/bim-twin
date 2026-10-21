@@ -14,7 +14,12 @@ function transfer(obj) {
 try {
   const d = workerData || {};
   let result;
-  if (d.job === 'slice' || d.job === 'plan') {
+  if (d.job === 'inspect') {
+    // ревизия 31: контроль геометрии — пол (FF/FL, уклон, рейка) и стены (вертикаль, неровность) за два прохода по файлу
+    const J = require('./cloud-inspect-job');
+    result = J.run(d, (p, label) => parentPort.postMessage({ type: 'progress', progress: p, label }));
+    parentPort.postMessage({ type: 'result', result }, J.transferList(result));
+  } else if (d.job === 'slice' || d.job === 'plan') {
     let last = 0;
     const scale = d.job === 'plan' ? 0.7 : 1;
     result = OV.planSlice(d.desc, Object.assign({}, d.opts, { onProgress: (f) => { if (f - last >= 0.01) { last = f; parentPort.postMessage({ type: 'progress', progress: f * scale, label: 'Читаю срез облака' }); } } }));
@@ -30,7 +35,7 @@ try {
       result = { ok: !!plan.ok, message: plan.message, plan, slice: { count: n, stride: result.stride, h0: result.h0, h1: result.h1, preview: pv, high: result.uvHigh ? { count: result.countHigh, h0: result.hi0, h1: result.hi1, bands: result.highBands || 1 } : null } };
     }
   } else result = OV.overview(d.desc, d.opts || {});
-  parentPort.postMessage({ type: 'result', result }, transfer(result));
+  if (d.job !== 'inspect') parentPort.postMessage({ type: 'result', result }, transfer(result));
 } catch (e) {
   parentPort.postMessage({ type: 'result', result: { ok: false, message: 'Ошибка карты облака: ' + String((e && e.message) || e) } });
 }

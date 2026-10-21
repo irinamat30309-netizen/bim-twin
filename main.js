@@ -1803,6 +1803,51 @@ function registerIpc() {
       } finally { if (jk) overviewJobs.delete(jk); }
     } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
   });
+  // ревизия 31: контроль геометрии — пол (FF/FL по ASTM E1155, уклон, рейка 2 м) и стены (вертикаль, неровность, углы)
+  // за два прохода по файлу в потоке карты облака; прогресс — тем же каналом, что у плана
+  ipcMain.handle('bim:cloudInspect', async (event, a) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, message: 'path_not_authorized' };
+      const cached = overviewCache.get(overviewKey(sender, abs));
+      const opened = cached ? { ok: true, desc: cached.desc } : openOverviewSource(abs);
+      if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'контроль геометрии — для LAS, PLY и E57' };
+      const h0 = finiteOr(a && a.h0, NaN), h1 = finiteOr(a && a.h1, NaN), floor = finiteOr(a && a.floor, NaN), top = finiteOr(a && a.top, NaN);
+      if (!(Number.isFinite(h0) && Number.isFinite(h1) && h1 > h0 && h1 - h0 <= 2)) return { ok: false, message: 'неверная высота среза (0–2 м толщиной)' };
+      if (!(Number.isFinite(floor) && Number.isFinite(top) && top - floor >= 0.5 && top - floor <= 12 && floor < h0)) return { ok: false, message: 'неверные отметки пола и верха стен' };
+      const plan = {};
+      if (a && a.plan && typeof a.plan === 'object') { for (const k of ['gap', 'minLen', 'maxFace', 'openMin', 'openMax', 'minRoom', 'cell']) if (Number.isFinite(Number(a.plan[k]))) plan[k] = Number(a.plan[k]); if (a.plan.ortho === true) plan.ortho = true; if (a.plan.lowFilter === false) plan.lowFilter = false; }
+      const hi0 = finiteOr(a && a.hi0, NaN), hi1 = finiteOr(a && a.hi1, NaN), hiBands = Math.max(1, Math.min(8, Math.floor(finiteOr(a && a.hiBands, 1))));
+      const high = Number.isFinite(hi0) && Number.isFinite(hi1) && hi1 > hi0 && hi1 - hi0 <= 2 && hi0 >= h1 && plan.lowFilter !== false ? { h0: hi0, h1: hi1, bands: hiBands } : null;
+      const t = (a && a.tol && typeof a.tol === 'object') ? a.tol : {}, lim = (x, d, lo, hi) => Math.min(hi, Math.max(lo, finiteOr(x, d)));
+      const tol = { floorRail: lim(t.floorRail, 4, 0.5, 50), wallRail: lim(t.wallRail, 3, 0.5, 50), plumbPerM: lim(t.plumbPerM, 2, 0.1, 50), plumbMax: lim(t.plumbMax, 10, 0.5, 200) };
+      const route = a && a.useRoute === false ? null : (cached && cached.route) || null;
+      const jobId = overviewJobId(a), controller = new AbortController(), jk = jobId ? sender.id + ':' + jobId : null;
+      if (jk) overviewJobs.set(jk, controller);
+      try {
+        return await runOverviewWorker('inspect', opened.desc, { h0, h1, high, maxHigh: high && high.bands > 1 ? 8000000 : 6000000, rect: validRect(a && a.rect), maxPoints: 12000000, plan,
+          floor, top, tol, route, doFloor: !(a && a.floorCheck === false), doWalls: !(a && a.wallCheck === false) },
+          (p, label) => { if (jobId) try { sender.send('bim:cloudPlanProgress', { jobId, progress: p, label: label || '' }); } catch (_) {} }, controller.signal);
+      } finally { if (jk) overviewJobs.delete(jk); }
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  // проект для сравнения с облаком: DXF (текст), выбранный в диалоге; до 100 МБ
+  ipcMain.handle('bim:pickDxfText', async (event) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const owner = BrowserWindow.fromWebContents(sender);
+      const dirs = projectFolderInfo(false);
+      const opts = { title: 'Проект для сравнения (DXF)', defaultPath: dirs && dirs.drawings || undefined, properties: ['openFile'], filters: [{ name: 'Чертёж DXF', extensions: ['dxf'] }] };
+      const pick = owner ? await dialog.showOpenDialog(owner, opts) : await dialog.showOpenDialog(opts);
+      if (pick.canceled || !pick.filePaths || !pick.filePaths[0]) return { ok: false, canceled: true };
+      const file = pick.filePaths[0];
+      if (!/\.dxf$/i.test(file)) return { ok: false, message: 'нужен файл DXF' };
+      const st = fs.statSync(file);
+      if (st.size > 100 * 1024 * 1024) return { ok: false, message: 'DXF больше 100 МБ' };
+      return { ok: true, name: path.basename(file), bytes: st.size, text: fs.readFileSync(file, 'utf8') };
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
   // PDF-отчёт: HTML окна → скрытое окно без JavaScript → printToPDF (A4) → диалог сохранения (по умолчанию «Отчёты» папки проекта)
   ipcMain.handle('bim:saveReportPdf', async (event, a) => {
     let tmp = null, win = null;
