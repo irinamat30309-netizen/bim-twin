@@ -82,33 +82,34 @@
     var f = folderCache, st = loadState(), s = smart(), ss = s && s.status ? s.status() : {}, why = inPlaceBlock(st), wp = ss.workingPath || null;
     var mode = !wp ? 'Правки ещё не сохранялись — Ctrl+S спросит, куда сохранить' : (st.path && wp === st.path ? 'Правки сохраняются прямо в исходный файл' : 'Правки сохраняются в ' + base(wp));
     var h = '';
-    h += '<section class="pw-sec"><div class="pw-h">' + ic('folder', 15) + '<span>Папка проекта</span></div>';
-    if (f && f.path) {
-      h += '<div class="pw-path" title="' + esc(f.path) + '">' + esc(f.path) + '</div>' +
-        '<div class="pw-subs">' + ['clouds', 'drawings', 'reports', 'exports'].map(function (k) { return f[k] ? '<span>' + esc(base(f[k])) + '</span>' : ''; }).join('') + '</div>' +
-        '<p class="pw-note">Здесь по умолчанию сохраняются облака (Облака), планы DXF (Чертежи), PDF-отчёты (Отчёты) и выгрузки (Экспорт). Папка не удаляется при закрытии программы.</p>';
-    } else h += '<p class="pw-note">Папка проекта недоступна в этой версии.</p>';
-    h += '<div class="pw-acts"><button type="button" class="btn sm" data-a="open"' + (f && f.path ? '' : ' disabled') + '>' + ic('folder-open', 15) + '<span>Открыть папку</span></button>' +
-      '<button type="button" class="btn sm" data-a="choose">' + ic('settings', 15) + '<span>Изменить расположение…</span></button></div></section>';
-    h += '<section class="pw-sec"><div class="pw-h">' + ic('save', 15) + '<span>Открытое облако</span></div>';
-    if (!st.hasCloud) h += '<p class="pw-note">Облако не открыто.</p>';
+    // папка проекта: путь одной строкой и две кнопки-иконки
+    h += '<section class="pw-sec"><div class="pw-h">Папка проекта</div>';
+    h += '<div class="pw-row">' + ic('folder', 16) + (f && f.path ? '<span class="pw-path" title="' + esc(f.path + '\nОблака, планы DXF, PDF-отчёты и выгрузки сохраняются сюда по умолчанию. Папка не удаляется при закрытии программы.') + '">' + esc(f.path) + '</span>' : '<span class="pw-path pw-dim">Недоступна в этой версии</span>') +
+      '<button type="button" class="btn xs ghost pw-ib" data-a="open" title="Открыть папку" aria-label="Открыть папку"' + (f && f.path ? '' : ' disabled') + '>' + ic('folder-open', 15) + '</button>' +
+      '<button type="button" class="btn xs ghost pw-ib" data-a="choose" title="Изменить расположение…" aria-label="Изменить расположение">' + ic('settings', 15) + '</button></div>';
+    if (f && f.path) h += '<div class="pw-subs">' + ['clouds', 'drawings', 'reports', 'exports'].map(function (k) { return f[k] ? '<span>' + esc(base(f[k])) + '</span>' : ''; }).join('') + '</div>';
+    h += '</section>';
+    // открытое облако: файл, куда идут правки, два способа сохранения
+    h += '<section class="pw-sec"><div class="pw-h">Открытое облако</div>';
+    if (!st.hasCloud) h += '<div class="pw-row pw-dim">' + ic('layers', 16) + '<span>Облако не открыто</span></div>';
     else {
-      h += '<div class="pw-file"><b>' + esc(base(st.path) || 'без файла') + '</b><small>' + esc(mode) + '</small></div>';
-      h += '<div class="pw-acts"><button type="button" class="btn sm' + (why ? '' : ' primary') + '" data-a="inplace"' + (why || (wp && wp === st.path) ? ' disabled' : '') + '>' + ic('pencil', 15) + '<span>Работать с файлом на месте</span></button>' +
-        '<button type="button" class="btn sm" data-a="asnew">' + ic('copy', 15) + '<span>Сохранить как новое…</span></button>' +
-        (wp ? '<button type="button" class="btn sm" data-a="save">' + ic('save', 15) + '<span>Сохранить</span></button>' : '') + '</div>';
-      h += why ? '<p class="pw-warn">' + ic('info', 14) + '<span>' + esc(why) + '</span></p>' : '<p class="pw-note">На месте: файл не копируется, место на диске не расходуется. Как новое: исходный файл не меняется, копия ложится в папку проекта.</p>';
+      var here = !!(wp && st.path && wp === st.path);
+      h += '<div class="pw-row">' + ic('layers', 16) + '<div class="pw-file"><b title="' + esc(st.path || '') + '">' + esc(base(st.path) || 'без файла') + '</b><small>' + esc(mode) + '</small></div>' +
+        (wp ? '<button type="button" class="btn xs pw-ib" data-a="save" title="Сохранить (Ctrl+S)" aria-label="Сохранить">' + ic('save', 15) + '</button>' : '') + '</div>';
+      h += '<div class="pw-acts">' +
+        '<button type="button" class="pw-opt' + (here ? ' on' : '') + '" data-a="inplace"' + (why || here ? ' disabled' : '') + ' title="Файл не копируется, место на диске не расходуется">' + ic(here ? 'check' : 'pencil', 15) + '<span><b>На месте</b><small>правки в исходный файл</small></span></button>' +
+        '<button type="button" class="pw-opt' + (wp && !here ? ' on' : '') + '" data-a="asnew" title="Исходный файл не меняется, копия ложится в папку проекта (Облака)">' + ic('copy', 15) + '<span><b>Как новое…</b><small>копия в папку проекта</small></span></button></div>';
+      if (why) h += '<p class="pw-warn">' + ic('info', 14) + '<span>' + esc(why) + '</span></p>';
     }
     h += '</section>';
-    h += '<section class="pw-sec"><div class="pw-h">' + ic('hard-drive', 15) + '<span>Резервные копии перед перезаписью</span></div>';
+    // резервные копии перед перезаписью
     var pol = (bk && bk.policy) || 'several';
+    h += '<section class="pw-sec"><div class="pw-h">Резервные копии<span class="pw-sp"></span><span class="pw-usage" title="Копия нужна, чтобы вернуть файл после неудачной перезаписи">' + (bk ? (bk.files || 0) + ' ' + plural(bk.files || 0) + ' · ' + fmtBytes(bk.bytes) : 'объём неизвестен') + '</span>' +
+      '<button type="button" class="btn xs ghost pw-ib" data-a="clear" title="Удалить копии" aria-label="Удалить копии"' + (bk && bk.files ? '' : ' disabled') + '>' + ic('trash-2', 15) + '</button></div>';
     h += '<div class="pw-seg" role="radiogroup" aria-label="Резервные копии">' +
-      [['none', 'Не хранить', 'экономит место'], ['one', 'Одна', 'предыдущая версия'], ['several', 'Несколько', 'до 8 версий']].map(function (o) {
-        return '<button type="button" role="radio" aria-checked="' + (pol === o[0]) + '" class="' + (pol === o[0] ? 'on' : '') + '" data-pol="' + o[0] + '"><b>' + o[1] + '</b><small>' + o[2] + '</small></button>';
-      }).join('') + '</div>';
-    h += '<div class="pw-usage">' + (bk ? 'Сейчас: ' + (bk.files || 0) + ' ' + plural(bk.files || 0) + ', ' + fmtBytes(bk.bytes) : 'Объём копий неизвестен') + '<span class="pw-sp"></span>' +
-      '<button type="button" class="btn xs danger" data-a="clear"' + (bk && bk.files ? '' : ' disabled') + '>' + ic('trash-2', 14) + '<span>Удалить копии</span></button></div>';
-    h += '<p class="pw-note">Копия нужна, чтобы вернуть файл после неудачной перезаписи. Для облаков в десятки гигабайт выберите «Одна» или «Не хранить».</p></section>';
+      [['none', 'Не хранить', 'Экономит место — для облаков в десятки гигабайт'], ['one', 'Одна', 'Предыдущая версия'], ['several', 'Несколько', 'До 8 версий']].map(function (o) {
+        return '<button type="button" role="radio" aria-checked="' + (pol === o[0]) + '" class="' + (pol === o[0] ? 'on' : '') + '" data-pol="' + o[0] + '" title="' + esc(o[2]) + '">' + o[1] + '</button>';
+      }).join('') + '</div></section>';
     body.innerHTML = h;
     var on = function (sel, fn) { Array.prototype.forEach.call(body.querySelectorAll(sel), function (b) { b.onclick = function () { fn(b); }; }); };
     on('[data-a="open"]', async function () { var a = A(); if (a && a.projectFolder) { var r = await a.projectFolder('open'); if (r && r.ok === false && r.message) toast(r.message, true); } });

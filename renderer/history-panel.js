@@ -171,42 +171,56 @@
     if (o.revision != null && op.operation === 'project.state.update') parts.push('версия ' + o.revision);
     return parts.join(' · ');
   }
+  // вкладка окна: правки облака / журнал проекта / события сеанса
+  var tab = '';
   function render() {
     if (!openBack) return;
     var body = openBack.querySelector('.hp-body'); if (!body) return;
-    var list = entries(), ps = W.BimProjectState, now = Date.now(), h = '';
-    h += '<section class="hp-sec"><div class="hp-sec-h">' + ic('undo-2', 15) + '<span>Правки облака</span><span class="hp-sub">можно отменить</span></div>';
-    if (streamed()) h += '<p class="hp-note">Облако открыто по частям: правки точек для него недоступны, отменять нечего.</p>';
-    else if (!list.length) h += '<p class="hp-note">Пока нет правок, которые можно отменить. Здесь появятся удаление точек, обрезка, чистка, выравнивание и другие изменения облака.</p>';
-    else {
-      h += '<ol class="hp-list">';
-      list.forEach(function (e, i) {
-        h += '<li class="hp-item' + (i === 0 ? ' top' : '') + '"><span class="hp-n">' + e.steps + '</span><div class="hp-txt"><b>' + esc(e.label) + '</b>' + (e.detail ? '<small>' + esc(e.detail) + '</small>' : '') + '</div>' +
-          '<span class="hp-time" title="' + esc(fmtTime(e.at)) + '">' + (e.at ? esc(ago(e.at, now)) : '') + '</span>' +
-          '<button type="button" class="btn xs' + (i === 0 ? ' primary' : '') + '" data-undo="' + e.steps + '">' + ic('undo-2', 14) + '<span>' + (i === 0 ? 'Отменить' : 'Отменить до этого') + '</span></button></li>';
-      });
-      h += '</ol><p class="hp-note">Хранится до 6 последних правок; у облаков больше 4 млн точек — 2, больше 12 млн — 1 (каждая копия занимает оперативную память). Горячая клавиша: Ctrl+Z.</p>';
-    }
-    h += '</section>';
-    h += '<section class="hp-sec"><div class="hp-sec-h">' + ic('history', 15) + '<span>Изменения проекта</span><span class="hp-sp"></span>' +
-      '<button type="button" class="btn xs" data-proj="undo"' + (ps && ps.canUndo ? '' : ' disabled') + '>' + ic('undo-2', 14) + '<span>Отменить</span></button>' +
-      '<button type="button" class="btn xs" data-proj="redo"' + (ps && ps.canRedo ? '' : ' disabled') + '>' + ic('redo-2', 14) + '<span>Повторить</span></button></div>';
-    if (!journal.length) h += '<p class="hp-note">Журнал пуст.</p>';
-    else {
-      h += '<ul class="hp-list hp-journal">';
-      journal.slice(0, 40).forEach(function (op) {
-        var t = Date.parse(op.createdAt || '') || 0, det = opDetail(op);
-        h += '<li class="hp-item"><span class="hp-dot"></span><div class="hp-txt"><b>' + esc(opLabel(op.operation)) + '</b>' + (det ? '<small>' + esc(det) + '</small>' : '') + '</div><span class="hp-time" title="' + esc(fmtTime(t)) + '">' + (t ? esc(ago(t, now)) : '') + '</span></li>';
-      });
-      h += '</ul>';
-    }
-    h += '</section>';
-    if (session.length) {
-      h += '<section class="hp-sec"><div class="hp-sec-h">' + ic('list', 15) + '<span>В этом сеансе</span></div><ul class="hp-list hp-session">';
-      session.slice().reverse().slice(0, 40).forEach(function (e) { h += '<li class="hp-item ' + esc(e.kind) + '"><span class="hp-dot"></span><div class="hp-txt">' + esc(e.text) + '</div><span class="hp-time">' + esc(fmtTime(e.at)) + '</span></li>'; });
-      h += '</ul></section>';
+    var list = entries(), ps = W.BimProjectState, now = Date.now(), h = '', st = streamed();
+    if (!tab) tab = list.length || st ? 'cloud' : journal.length ? 'proj' : 'cloud';
+    var tabs = [['cloud', 'Облако', st ? 0 : list.length, 'Правки облака, которые можно отменить (Ctrl+Z)'],
+      ['proj', 'Проект', journal.length, 'Журнал изменений проекта'], ['sess', 'Сеанс', session.length, 'События этого сеанса']];
+    h += '<div class="hp-bar"><div class="hp-seg" role="tablist">' + tabs.map(function (t) {
+      return '<button type="button" role="tab" data-tab="' + t[0] + '" class="' + (tab === t[0] ? 'on' : '') + '" aria-selected="' + (tab === t[0]) + '" title="' + esc(t[3]) + '">' +
+        esc(t[1]) + (t[2] ? '<span class="hp-cnt">' + (t[2] > 99 ? '99+' : t[2]) + '</span>' : '') + '</button>';
+    }).join('') + '</div><span class="hp-sp"></span>';
+    if (tab === 'proj') h += '<button type="button" class="btn xs ghost hp-ib" data-proj="undo" title="Отменить изменение проекта" aria-label="Отменить изменение проекта"' + (ps && ps.canUndo ? '' : ' disabled') + '>' + ic('undo-2', 15) + '</button>' +
+      '<button type="button" class="btn xs ghost hp-ib" data-proj="redo" title="Повторить изменение проекта" aria-label="Повторить изменение проекта"' + (ps && ps.canRedo ? '' : ' disabled') + '>' + ic('redo-2', 15) + '</button>';
+    h += '</div>';
+    var empty = function (icon, text) { return '<div class="hp-empty">' + ic(icon, 22) + '<span>' + esc(text) + '</span></div>'; };
+    if (tab === 'cloud') {
+      if (st) h += empty('layers', 'Облако открыто по частям — правки точек недоступны');
+      else if (!list.length) h += empty('undo-2', 'Нет правок для отмены');
+      else {
+        h += '<ol class="hp-list">';
+        list.forEach(function (e, i) {
+          var t = i === 0 ? 'Отменить' : 'Отменить до этого (' + e.steps + ' ' + plural(e.steps, 'шаг', 'шага', 'шагов') + ')';
+          h += '<li class="hp-item' + (i === 0 ? ' top' : '') + '"><span class="hp-n">' + e.steps + '</span><div class="hp-txt"><b>' + esc(e.label) + '</b>' + (e.detail ? '<small>' + esc(e.detail) + '</small>' : '') + '</div>' +
+            '<span class="hp-time" title="' + esc(fmtTime(e.at)) + '">' + (e.at ? esc(ago(e.at, now)) : '') + '</span>' +
+            '<button type="button" class="btn xs hp-ib' + (i === 0 ? ' primary' : ' ghost') + '" data-undo="' + e.steps + '" title="' + esc(t) + '" aria-label="' + esc(t) + '">' + ic('undo-2', 15) + '</button></li>';
+        });
+        h += '</ol>';
+      }
+    } else if (tab === 'proj') {
+      if (!journal.length) h += empty('history', 'Журнал пуст');
+      else {
+        h += '<ul class="hp-list">';
+        journal.slice(0, 60).forEach(function (op) {
+          var t = Date.parse(op.createdAt || '') || 0, det = opDetail(op);
+          h += '<li class="hp-item"><span class="hp-dot"></span><div class="hp-txt"><b>' + esc(opLabel(op.operation)) + '</b>' + (det ? '<small>' + esc(det) + '</small>' : '') + '</div><span class="hp-time" title="' + esc(fmtTime(t)) + '">' + (t ? esc(ago(t, now)) : '') + '</span></li>';
+        });
+        h += '</ul>';
+      }
+    } else {
+      if (!session.length) h += empty('list', 'Событий пока нет');
+      else {
+        h += '<ul class="hp-list">';
+        session.slice().reverse().slice(0, 60).forEach(function (e) { h += '<li class="hp-item ' + esc(e.kind) + '"><span class="hp-dot"></span><div class="hp-txt">' + esc(e.text) + '</div><span class="hp-time">' + esc(fmtTime(e.at)) + '</span></li>'; });
+        h += '</ul>';
+      }
     }
     body.innerHTML = h;
+    Array.prototype.forEach.call(body.querySelectorAll('[data-tab]'), function (b) { b.onclick = function () { tab = b.getAttribute('data-tab'); render(); }; });
     Array.prototype.forEach.call(body.querySelectorAll('[data-undo]'), function (b) { b.onclick = function () { undoSteps(Number(b.getAttribute('data-undo')) || 1); }; });
     Array.prototype.forEach.call(body.querySelectorAll('[data-proj]'), function (b) { b.onclick = function () { projectMove(b.getAttribute('data-proj')); }; });
   }
@@ -227,6 +241,7 @@
   var tick = 0;
   async function open() {
     if (openBack) { refresh(true); return; }
+    tab = '';
     install(viewer());
     var back = D.createElement('div'); back.className = 'modal hp-modal';
     back.innerHTML = '<div class="modal-card hp-card" role="dialog" aria-modal="true" aria-labelledby="hpTitle">' +

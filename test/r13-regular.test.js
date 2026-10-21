@@ -15,7 +15,7 @@ test('main (ревизия 13, дополнено в 15): потоковый р�
 
 test('окно: parseCloud сначала без урезания; «максимум возможного» — только после согласия в диалоге', () => {
   const a = read('renderer/app.js');
-  assert.match(a, /parseCloudWithProgressOnce\(filePath, label, \{ allowReduced: false \}\)/);
+  assert.match(a, /parseCloudWithProgressOnce\(filePath, label, \{ allowReduced: false(, pre: preE57)? \}\)/);
   assert.match(a, /Открыть максимум возможного/);
   assert.ok(!/preview: true/.test(a.slice(a.indexOf('async function parseCloudWithProgressOnce'), a.indexOf('async function parseCloudWithProgressOnce') + 2500)));
 });
