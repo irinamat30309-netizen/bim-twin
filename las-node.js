@@ -1543,7 +1543,24 @@ function finalizeWorldCoords(world, col, count, upAxis, extra, attributes) {
 // ============================================================
 // E57 (ASTM) — через ./e57-core, чтение страниц с диска
 // ============================================================
-function parseE57File(fd, fileSize, maxPoints, onProgress) {
+// ревизия 28: filter — выбор окна «Перед загрузкой» (область, высоты, участок маршрута, шум) в координатах карты облака:
+// u = x − origin.cx, v = y − origin.cy, h = z − origin.cz (origin — из карты E57, cloud-overview). Отбор — cloud-segments.filterKeep.
+function filterWorldE57(r, filter) {
+  const o = filter.origin, n = r.count, W = r.pos, P = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { P[i * 3] = W[i * 3] - o.cx; P[i * 3 + 1] = W[i * 3 + 2] - o.cz; P[i * 3 + 2] = -(W[i * 3 + 1] - o.cy); }
+  const K = require('./cloud-segments').filterKeep(P, n, Object.assign({}, filter, { hShift: 0 })), keep = K.keep, m = K.kept;
+  const pos = new Float64Array(m * 3), col = r.col ? new Float32Array(m * 3) : null, inten = r.intensity ? new Float32Array(m) : null;
+  let w = 0;
+  for (let i = 0; i < n; i++) {
+    if (!keep[i]) continue;
+    pos[w * 3] = W[i * 3]; pos[w * 3 + 1] = W[i * 3 + 1]; pos[w * 3 + 2] = W[i * 3 + 2];
+    if (col) { col[w * 3] = r.col[i * 3]; col[w * 3 + 1] = r.col[i * 3 + 1]; col[w * 3 + 2] = r.col[i * 3 + 2]; }
+    if (inten) inten[w] = r.intensity[i];
+    w++;
+  }
+  return { pos, col, intensity: inten, count: m, read: n };
+}
+function parseE57File(fd, fileSize, maxPoints, onProgress, filter) {
   const E57 = require('./e57-core');
   let highWater = 0;
   const readPhys = (o, l) => {
@@ -1552,10 +1569,18 @@ function parseE57File(fd, fileSize, maxPoints, onProgress) {
     progressAt(onProgress, 'read-e57', 0.05 + 0.88 * highWater / Math.max(1, fileSize), { bytesRead: highWater, bytesTotal: fileSize });
     return new Uint8Array(b.buffer, b.byteOffset, got);
   };
-  const r = E57.read(readPhys, fileSize, { maxPoints });
-  if (!r.count) throw new Error('в E57 нет корректных точек');
+  const r0 = E57.read(readPhys, fileSize, { maxPoints });
+  if (!r0.count) throw new Error('в E57 нет корректных точек');
+  let r = r0, filtered = null;
+  if (filter && filter.origin && Number.isFinite(filter.origin.cx)) {
+    const f = filterWorldE57(r0, filter);
+    if (!f.count) throw new Error('выбранной области, высотам и участку маршрута не соответствует ни одна точка E57');
+    filtered = { read: f.read, kept: f.count, rect: !!filter.rect, h: !!filter.h, route: !!filter.mask, noise: !!filter.noise };
+    // станции сканов остаются только сведениями (диапазоны индексов после отбора не сохраняются)
+    r = { pos: f.pos, col: r0.col ? f.col : null, intensity: f.intensity, count: f.count, total: r0.total, scans: r0.scans.map((s) => Object.assign({}, s, { start: 0, count: 0 })), crs: r0.crs };
+  }
   return finalizeWorldZup(r.pos, r.col, r.count, {
-    total: r.total, format: 'E57 (' + r.scans.length + ' скан.)',
+    total: r.total, format: 'E57 (' + r.scans.length + ' скан.)', filtered,
     crsWkt: r.crs || null, scans: r.scans.map((s) => ({
       name: s.name, start: s.start, count: s.count,
       recordCount: s.recordCount, pose: s.pose
@@ -2160,7 +2185,7 @@ function parseCloudFile(absPath, opts) {
     if (ext === 'las') return parseLASFile(fd, st.size, maxPoints, opts && opts.onProgress);
     if (ext === 'laz') return { ok: false, message: 'Для LAZ используйте асинхронный parseCloudFileAsync().' };
     if (ext === 'ply') return parsePLYFile(fd, st.size, maxPoints, opts && opts.onProgress);
-    if (ext === 'e57') return parseE57File(fd, st.size, maxPoints, opts && opts.onProgress);
+    if (ext === 'e57') return parseE57File(fd, st.size, maxPoints, opts && opts.onProgress, opts && opts.filter);
     if (ext === 'pcd') return parsePCDFile(fd, st.size, maxPoints, opts && opts.onProgress, opts && opts.scratchBaseDir);
     if (ext === 'ptx') return parsePTXFile(fd, st.size, maxPoints, opts && opts.onProgress);
     if (ext === 'xyz' || ext === 'pts' || ext === 'txt' || ext === 'csv' || ext === 'xyzrgb') return parseTextCloudFile(fd, st.size, maxPoints, ext, opts && opts.onProgress);
@@ -2277,7 +2302,8 @@ async function parseCloudFileAsync(absPath, opts) {
           absPath: absolutePath,
           maxPoints: appliedBudget,
           pointShare: Number(opts.pointShare) > 0 ? Number(opts.pointShare) : 1,
-          scratchBaseDir: workerScratchDir
+          scratchBaseDir: workerScratchDir,
+          filter: opts.filter || null
         }
       });
     } catch (e) {

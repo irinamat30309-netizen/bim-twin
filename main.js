@@ -1535,8 +1535,21 @@ function registerIpc() {
           }
         } catch (_) {}
       };
+      // ревизия 28: E57 после окна «Перед загрузкой» — выбор области/высот/маршрута/шума и предел точек (E57 частями не читается)
+      let e57Filter = null, readMax = maxPoints;
+      if (/\.e57$/i.test(abs) && payload && typeof payload === 'object' && payload.pre === true) {
+        const cachedOv = sender ? overviewCache.get(overviewKey(sender, abs)) : null;
+        if (cachedOv && cachedOv.desc && cachedOv.desc.kind === 'e57' && Number.isFinite(cachedOv.desc.cx)) {
+          const d = cachedOv.desc, total = Math.max(1, d.count || 1);
+          e57Filter = cloudLoadFilter(payload.filter, d, cachedOv);
+          if (e57Filter) e57Filter.origin = { cx: d.cx, cy: d.cy, cz: d.cz };
+          const gpu = Math.floor(finiteOr(payload.maxPoints, 0)), est = Math.min(total, Math.max(1, Math.floor(finiteOr(payload.estimate, total))));
+          // предел — для точек ПОСЛЕ отбора: читаем столько, чтобы после фильтра осталось ≈ gpu
+          if (gpu > 0) readMax = Math.min(maxPoints, Math.max(200000, Math.ceil(gpu * (e57Filter ? total / est : 1))));
+        }
+      }
       try {
-        const result = await cloud.parseCloudFileAsync(abs, { maxPoints, pointShare, signal: controller.signal, onProgress, memoryGuard: allowReduced ? undefined : false });
+        const result = await cloud.parseCloudFileAsync(abs, { maxPoints: readMax, pointShare, signal: controller.signal, onProgress, memoryGuard: allowReduced ? undefined : false, filter: e57Filter });
         if (result && result.ok === false && !result.cancelled && !allowReduced && /out of memory|allocation failed|Array buffer allocation|Invalid typed array length|Invalid array length|Cannot create a (Buffer|string)|ERR_MEMORY|не хватает памяти|недостаточно.*памят/i.test(String(result.message || ''))) {
           // реальный сбой выделения памяти: ничего не режем молча — окно спросит, открыть ли максимум возможного
           let canLoad = 0; try { if (peek) canLoad = cloud.effectivePointBudget(peek, {}); } catch (_) { canLoad = 0; }
@@ -1680,14 +1693,20 @@ function registerIpc() {
     overviewCache.delete(key); overviewCache.set(key, entry);
     while (overviewCache.size > 6) overviewCache.delete(overviewCache.keys().next().value);
   }
+  // ревизия 28: карта до загрузки — LAS, PLY и E57 (E57 — равномерной выборкой при чтении всего файла)
+  function openOverviewSource(abs) {
+    if (!/\.e57$/i.test(abs)) return cloudSegments.openSegmentSource(abs);
+    try { return { ok: true, desc: cloudOverview.openE57(abs, fs.statSync(abs).size) }; }
+    catch (e) { return { ok: false, unsupported: true, message: 'E57 не прочитан: ' + String((e && e.message) || e) }; }
+  }
   function overviewJobId(a) { const j = a && a.jobId; return typeof j === 'string' && /^[a-zA-Z0-9:_-]{1,128}$/.test(j) ? j : null; }
   ipcMain.handle('bim:cloudOverview', async (event, a) => {
     try {
       const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
       const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), CLOUD_EXT_ALLOW);
       if (!abs) return { ok: false, message: 'path_not_authorized' };
-      const opened = cloudSegments.openSegmentSource(abs);
-      if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'карта до загрузки — для LAS и PLY' };
+      const opened = openOverviewSource(abs);
+      if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'карта до загрузки — для LAS, PLY и E57' };
       const minPoints = Math.max(0, finiteOr(a && a.minPoints, 0));
       if (opened.desc.count < minPoints) return { ok: false, small: true, points: opened.desc.count, message: 'облако небольшое — открывается сразу' };
       const jobId = overviewJobId(a), controller = new AbortController(), jk = jobId ? sender.id + ':' + jobId : null;
@@ -1696,6 +1715,8 @@ function registerIpc() {
       try { res = await runOverviewWorker('overview', opened.desc, { samples: 4000000, keep: 300000 }, null, controller.signal); }
       finally { if (jk) overviewJobs.delete(jk); }
       if (!res || !res.ok) return res || { ok: false, message: 'карта облака не построена' };
+      // E57: начало координат карты выбирается по выборке в потоке — запоминаем его для среза плана и фильтра загрузки
+      if (opened.desc.kind === 'e57') Object.assign(opened.desc, { cx: res.origin.cx, cy: res.origin.cy, cz: res.origin.cz, count: res.file.points, hasColor: res.file.colored, hasIntensity: res.file.intensity });
       // траектория сканера рядом с облаком (poses.csv проекта Lixel) — маршрут на карте, длительность и длина пути
       let route = null;
       const tf = findTrajectoryNear(abs);
@@ -1746,8 +1767,8 @@ function registerIpc() {
       const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), CLOUD_EXT_ALLOW);
       if (!abs) return { ok: false, message: 'path_not_authorized' };
       const cached = overviewCache.get(overviewKey(sender, abs));
-      const opened = cached ? { ok: true, desc: cached.desc } : cloudSegments.openSegmentSource(abs);
-      if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'план из облака — для LAS и PLY' };
+      const opened = cached ? { ok: true, desc: cached.desc } : openOverviewSource(abs);
+      if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'план из облака — для LAS, PLY и E57' };
       const h0 = finiteOr(a && a.h0, NaN), h1 = finiteOr(a && a.h1, NaN);
       if (!(Number.isFinite(h0) && Number.isFinite(h1) && h1 > h0 && h1 - h0 <= 2)) return { ok: false, message: 'неверная высота среза (0–2 м толщиной)' };
       const plan = {};

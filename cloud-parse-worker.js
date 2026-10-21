@@ -55,6 +55,7 @@ async function run() {
       maxPoints: workerData.maxPoints,
       pointShare: workerData.pointShare,
       scratchBaseDir: workerData.scratchBaseDir,
+      filter: workerData.filter || null,
       onProgress: progress
     });
   }

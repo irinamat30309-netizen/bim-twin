@@ -278,6 +278,22 @@
     return { pos: pos.subarray(0, oi * 3), col: col, intensity: inten, count: oi, total: total, scans: scanList, colored: anyColor, hasIntensity: anyInt, crs: coordinateMetadata };
   }
 
+  // ревизия 28: только заголовок и XML (без точек) — число точек и сканов для окна «Перед загрузкой»
+  function inspect(readPhys, fileLen) {
+    var hdr = readHeader(readPhys, fileLen), readLogical = makeLogicalReader(readPhys, fileLen);
+    var xmlBytes = readLogical(physicalToLogical(hdr.xmlPhysicalOffset), hdr.xmlLogicalLength);
+    var xml = (typeof TextDecoder !== 'undefined') ? new TextDecoder('utf-8').decode(xmlBytes) : Buffer.from(xmlBytes).toString('utf8');
+    var rootN = parseXML(xml), d3 = child(rootN, 'data3D'), scans = d3 ? d3.children : [];
+    var list = scans.map(function (sc) {
+      var pts = child(sc, 'points'), proto = pts ? child(pts, 'prototype') : null, names = proto ? proto.children.map(function (c) { return c.name; }) : [];
+      return { name: (child(sc, 'name') || {}).text || '', count: pts ? Number(pts.attrs.recordCount || 0) : 0,
+        color: names.indexOf('colorRed') >= 0, intensity: names.indexOf('intensity') >= 0 };
+    });
+    return { total: list.reduce(function (a, x) { return a + x.count; }, 0), scans: list,
+      color: list.some(function (x) { return x.color; }), intensity: list.some(function (x) { return x.intensity; }),
+      crs: !!String((child(rootN, 'coordinateMetadata') || {}).text || '').trim() };
+  }
+
   function readBuffer(u8, opts) {
     if (u8 instanceof ArrayBuffer) u8 = new Uint8Array(u8);
     return read(function (o, l) { return u8.subarray(o, o + l); }, u8.length, opts);
@@ -551,5 +567,5 @@
     return out;
   }
 
-  return { read: read, readBuffer: readBuffer, write: write, crc32c: crc32c, parseXML: parseXML, logicalToPhysical: logicalToPhysical, physicalToLogical: physicalToLogical, version: '1223' };
+  return { read: read, inspect: inspect, readBuffer: readBuffer, write: write, crc32c: crc32c, parseXML: parseXML, logicalToPhysical: logicalToPhysical, physicalToLogical: physicalToLogical, version: '1223' };
 });
