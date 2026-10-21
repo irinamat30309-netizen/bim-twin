@@ -183,13 +183,14 @@
   // равномерной выборкой по всему облаку: 670 млн точек — это ~10 ГБ видеопамяти и ~12 ГБ памяти, видеокарта сбрасывает изображение
   // и окно просмотра становится белым. После такого сброса предел уменьшается вдвое (bim.gpuPointBudget).
   const GPU_POINT_BUDGET = 300000000;
-  function gpuPointBudget() { let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {} return v >= 10000000 ? Math.floor(v) : GPU_POINT_BUDGET; }
+  function gpuPointBudget() { let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {} if (v >= 10000000) return Math.floor(v); try { const rc = window.__bimPcCapacity && window.__bimPcCapacity.recommendation; if (rc && rc.points >= 10000000) return Math.floor(rc.points); } catch (_) {} return GPU_POINT_BUDGET; }
   window.__bimGpuPointBudget = gpuPointBudget;
   async function tryPartsLoad(filePath, label, extra) {
     extra = extra || {};
     if (!API || typeof API.cloudPartsOpen !== 'function' || typeof API.cloudPartsRead !== 'function' || !viewer || typeof viewer.beginCloudStream !== 'function' || !window.CloudChunks) return null;
     let opened = null;
-    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), { maxPoints: gpuPointBudget() }); } catch (e) { return null; }
+    const pre = extra.pre && !extra.pre.cancelled ? extra.pre : null;   // ревизия 27: выбор окна «Перед загрузкой» (предел, область, высоты, маршрут, шум)
+    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), pre ? { maxPoints: pre.maxPoints, filter: pre.filter || null, estimate: pre.estimate, force: true } : { maxPoints: gpuPointBudget() }); } catch (e) { return null; }
     if (!opened || !opened.ok || !opened.token) return null;
     const token = opened.token, nParts = Math.max(1, opened.segments | 0), total = Number(opened.total) || 0;
     const closeSession = () => { try { return Promise.resolve(API.cloudPartsClose({ token })).catch(() => {}); } catch (_) { return Promise.resolve(); } };
@@ -235,7 +236,18 @@
     }
   }
   async function parseCloudWithProgress(filePath, label, extra) {
-    if (!(extra && extra.noParts)) { const parts = await tryPartsLoad(filePath, label, extra); if (parts) return parts; }
+    if (!(extra && extra.noParts)) {
+      let pre = null;
+      if (window.CloudPreview) {
+        try {
+          if (extra && extra.skipPreview) pre = window.CloudPreview.lastFor(filePath);
+          else pre = await window.CloudPreview.maybeOpen(filePath, { label });
+        } catch (e) { pre = null; try { console.warn('[cloud] окно перед загрузкой:', e); } catch (_) {} }
+        if (pre && pre.cancelled) return { ok: false, cancelled: true, message: 'Импорт отменён' };
+      }
+      const parts = await tryPartsLoad(filePath, label, Object.assign({}, extra || {}, { pre }));
+      if (parts) { if (parts.ok) { parts.path = filePath; try { if (window.CloudPreview) window.CloudPreview.afterLoad(pre, parts); } catch (_) {} } return parts; }
+    }
     const first = await parseCloudWithProgressOnce(filePath, label, { allowReduced: false });
     if (!(first && first.tooBig)) return first;
     const k = window.__lxKit; let yes = false;
@@ -603,7 +615,7 @@
         const cc = cloudCacheMap.get(p); lastCloudPath = p; lastCloudCount = (cc && cc.count) || 0;
         return { ok: true, count: lastCloudCount, meta: (cc && cc.meta) || {} };
       }
-      const pr = await parseCloudWithProgress(p, label || String(p).split(/[\\/]/).pop());
+      const pr = await parseCloudWithProgress(p, label || String(p).split(/[\\/]/).pop(), { skipPreview: true });
       if (!pr || !pr.ok) return pr || { ok: false };
       if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: p }); cacheCloud(p, pr); }
       lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || pr.count || (pr.pos ? pr.pos.length / 3 : 0);
@@ -955,7 +967,7 @@
   async function reloadLastCloud(progressLabel, startMsg) {
     toast(startMsg);
     try {
-      const pr = await parseCloudWithProgress(lastCloudPath, progressLabel);
+      const pr = await parseCloudWithProgress(lastCloudPath, progressLabel, { skipPreview: true });
       if (pr && pr.ok) {
         if (pr.kind === 'mesh') viewer.loadColoredMesh(pr);
         else { if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: lastCloudPath, preserveView: true }); cacheCloud(lastCloudPath, pr); } lastCloudOffset = (pr.meta && pr.meta.offset) || null; lastCloudCount = (pr.meta && pr.meta.points) || pr.count || 0; }
@@ -1599,6 +1611,7 @@
   }
   var lastCloudOffset = null;  // смещение центрирования последнего облака (для выравнивания станций E57)
   var lastCloudPath = null;    // путь к файлу последнего .las облака (для потокового octree, пункт 4)
+  window.__bimLastCloudPath = () => lastCloudPath;   // ревизия 27: карта, план DXF и отчёт по открытому облаку
   var lastCloudCount = 0;      // число точек последнего облака (выбор: полный буфер vs стриминг)
   var activeOctreeDir = null;  // временный дисковый индекс текущего stream-сеанса
   var octreeNodeErrorToastAt = 0;
@@ -3366,7 +3379,7 @@
             const nPts = bo.pos.length / 3, iv = viewer._intensityValues, cl = viewer._classificationLabels;
             (viewer._undo = viewer._undo || []).push({ pos: bo.pos.slice(), col: bo.col ? bo.col.slice() : null,
               intensity: iv && iv.length === nPts ? iv.slice() : null, classification: cl && cl.length === nPts ? cl.slice() : null,
-              srcXform: viewer._srcXform || null, crsWkt: viewer._srcCrs || null });
+              srcXform: viewer._srcXform || null, crsWkt: viewer._srcCrs || null, tool: String(name || 'edit'), pointCountBefore: nPts });
             const keepUndo = nPts > 12e6 ? 1 : (nPts > 4e6 ? 2 : 3);
             while (viewer._undo.length > keepUndo) viewer._undo.shift();
           }
