@@ -310,6 +310,34 @@ class JsonStore {
     this.data.sectionPresets = Array.isArray(target.sectionPresets) ? target.sectionPresets : [];
     this._save(); return this.data.project;
   }
+  // ревизия 30: карточка любого проекта (не только активного) — название, адрес, статус; со стартового экрана
+  editProject(id, patch) {
+    const p = id === this.data.project.id ? this.data.project : (((this.data.projectsArchive || {})[id] || {}).project || null);
+    if (!p) return null;
+    for (const k of ['name', 'address', 'status']) if (patch && typeof patch[k] === 'string') p[k] = patch[k];
+    this._save();
+    return { id: p.id, name: p.name, address: p.address, status: p.status };
+  }
+  // копия структуры проекта: этажи, помещения и элементы с новыми id; документы, модели, облака и история не копируются
+  // (их файлы принадлежат исходному проекту). Активный проект не меняется
+  duplicateProject(id, patch) {
+    const src = id === this.data.project.id ? { project: this.data.project, floors: this.data.floors, rooms: this.data.rooms }
+      : (this.data.projectsArchive || {})[id];
+    if (!src || !src.project) return null;
+    const nid = genId('prj'), fmap = {};
+    const project = { id: nid, name: (patch && patch.name) || ((src.project.name || 'Проект') + ' (копия)'), address: src.project.address || '', status: src.project.status || 'проект' };
+    const floors = (src.floors || []).map(f => { const c = JSON.parse(JSON.stringify(f)); c.id = fmap[f.id] = genId('floor'); c.project_id = nid; return c; });
+    const rooms = (src.rooms || []).filter(r => fmap[r.floor_id]).map(r => {
+      const c = JSON.parse(JSON.stringify(r)); c.id = genId('room'); c.floor_id = fmap[r.floor_id];
+      c.elements = (r.elements || []).map(e => Object.assign(JSON.parse(JSON.stringify(e)), { id: genId('el'), ai_status: 'none' }));
+      c.documents = []; c.findings = []; delete c.model_name; delete c.model_file; delete c.model_mime;
+      return c;
+    });
+    this.data.projectsArchive = this.data.projectsArchive || {};
+    this.data.projectsArchive[nid] = { project, floors, rooms, sectionPresets: [] };
+    this._save();
+    return { id: nid, name: project.name, address: project.address, status: project.status, floors: floors.length, rooms: rooms.length };
+  }
   deleteProject(id) {
     if (id === this.data.project.id) {
       const ids = Object.keys(this.data.projectsArchive || {});

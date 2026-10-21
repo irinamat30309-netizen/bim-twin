@@ -137,6 +137,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   createProject: (patch) => inv('bim:createProject', patch),
   switchProject: (id) => inv('bim:switchProject', id),
   deleteProject: (id) => inv('bim:deleteProject', id),
+  editProject: (id, patch) => inv('bim:editProject', { id, patch: patch || {} }),
+  duplicateProject: (id, patch) => inv('bim:duplicateProject', { id, patch: patch || {} }),
   getProjectState: (projectId) => inv('bim:getProjectState', projectId),
   saveProjectState: (payload) => inv('bim:saveProjectState', payload),
   undoProjectState: (payload) => inv('bim:undoProjectState', payload || {}),

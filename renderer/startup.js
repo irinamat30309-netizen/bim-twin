@@ -6,8 +6,8 @@
   var W = window, D = document, ROOT = D.documentElement;
   var $ = function (id) { return D.getElementById(id); };
   var api = W.bimAPI || null, kit = W.__lxKit || null;
-  var projects = [], selected = null, query = '', opening = false, loadSeq = 0;
-  var STATUS = { active: 'Активный', draft: 'Черновик', archived: 'В архиве', done: 'Завершён' };   // служебные значения статуса → подписи
+  var projects = [], selected = null, query = '', opening = false, loadSeq = 0, working = false;
+  var STATUS = { 'проект': 'Проект', active: 'Активный', draft: 'Черновик', done: 'Завершён', archived: 'В архиве' };   // служебные значения статуса → подписи
 
   /* ---------- Мелкие помощники ---------- */
   function el(tag, cls, text) { var n = D.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
@@ -56,11 +56,13 @@
   /* ---------- Карточки ---------- */
   function visible() {
     var q = query.trim().toLowerCase();
-    return q ? projects.filter(function (p) { return ((p.name || '') + ' ' + (p.address || '')).toLowerCase().indexOf(q) > -1; }) : projects;
+    var list = q ? projects.filter(function (p) { return ((p.name || '') + ' ' + (p.address || '')).toLowerCase().indexOf(q) > -1; }) : projects.slice();
+    // проекты в архиве — в конце списка, порядок остальных не меняется
+    return list.filter(function (p) { return p.status !== 'archived'; }).concat(list.filter(function (p) { return p.status === 'archived'; }));
   }
   function cards() { return [].slice.call($('projects').querySelectorAll('.st-card[role="radio"]')); }
   function card(p, i) {
-    var b = el('button', 'st-card'); b.type = 'button'; b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', 'false'); b.tabIndex = -1;
+    var b = el('button', 'st-card' + (p.status === 'archived' ? ' is-archived' : '')); b.type = 'button'; b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', 'false'); b.tabIndex = -1;
     b.dataset.id = p.id; b.style.setProperty('--i', String(Math.min(i, 12)));
     var text = el('span', 'st-card-text');
     text.appendChild(el('span', 'st-card-name', p.name || 'Без названия'));
@@ -72,7 +74,99 @@
     b.appendChild(glyph('st-card-ico', 'building-2')); b.appendChild(text); b.appendChild(meta); b.appendChild(glyph('st-card-check', 'check'));
     b.addEventListener('click', function () { choose(p.id); });
     b.addEventListener('dblclick', function () { choose(p.id); openSelected(); });
-    return b;
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); choose(p.id); projectMenu(p, kit && kit.pointAnchor ? kit.pointAnchor(e.clientX, e.clientY) : b); });
+    // карточка — кнопка выбора, поэтому кнопка «Действия» — соседний элемент в общей обёртке (кнопка в кнопке недопустима)
+    var slot = el('div', 'st-slot'); slot.style.setProperty('--i', String(Math.min(i, 12)));
+    var more = el('button', 'icon-btn st-more'); more.type = 'button'; more.tabIndex = -1;
+    more.setAttribute('aria-label', 'Действия с проектом «' + (p.name || 'Без названия') + '»'); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('data-tip', 'Действия с проектом');
+    more.appendChild(glyph(null, 'ellipsis', 16));
+    more.addEventListener('click', function (e) { e.stopPropagation(); choose(p.id); projectMenu(p, more); });
+    slot.appendChild(b); slot.appendChild(more);
+    return slot;
+  }
+
+  /* ---------- Действия с проектом: меню карточки (кнопка «...», правый клик, Shift+F10) ---------- */
+  function byId(id) { return projects.filter(function (x) { return x.id === id; })[0] || null; }
+  function projectMenu(p, anchor) {
+    if (!kit || !kit.menu) return;
+    var arch = p.status === 'archived', only = projects.length < 2;
+    kit.menu(anchor, [
+      { label: 'Открыть', ico: 'arrow-right', onClick: function () { choose(p.id); openSelected(); } },
+      { sep: true },
+      { label: 'Переименовать…', sub: 'F2', ico: 'pencil', onClick: function () { renameProject(p); } },
+      { label: 'Свойства…', sub: 'Название, адрес, статус', ico: 'square-pen', onClick: function () { editProject(p); } },
+      { label: 'Дублировать', sub: 'Копия этажей и помещений', ico: 'copy', disabled: !api || !api.duplicateProject, onClick: function () { duplicateProject(p); },
+        tip: 'Новый проект с той же структурой: этажи, помещения, элементы. Облака, документы и история не копируются.' },
+      { label: arch ? 'Вернуть из архива' : 'В архив', ico: arch ? 'rotate-ccw' : 'inbox', onClick: function () { setStatus(p, arch ? 'active' : 'archived'); } },
+      { sep: true },
+      { label: 'Удалить…', sub: only ? 'Единственный проект удалить нельзя' : 'Del', ico: 'trash-2', danger: true, disabled: only || !api || !api.deleteProject, onClick: function () { deleteProject(p); } }
+    ], { title: p.name || 'Без названия', minWidth: 248 });
+  }
+  async function guard(run, label) {
+    if (working) return; working = true;
+    try { await run(); } catch (e) { say(label + ': ' + why(e), 'err'); }
+    finally { working = false; }
+  }
+  async function reloadKeep(id) { await load(); if (id && byId(id)) choose(id, true); }
+  function checkName(v) { v = String(v).trim(); return !v ? 'Введите название проекта' : v.length > 200 ? 'Название длиннее 200 символов' : null; }
+  async function renameProject(p) {
+    if (!kit || !kit.ask || !api || !api.editProject) return;
+    var name = await kit.ask({ title: 'Переименовать проект', input: true, value: p.name || '', okLabel: 'Сохранить', placeholder: 'Название проекта', validate: checkName });
+    if (name == null || String(name).trim() === (p.name || '')) return;
+    await guard(async function () {
+      await api.editProject(p.id, { name: String(name).trim() });
+      await reloadKeep(p.id); say('Проект переименован', 'ok');
+    }, 'Не удалось переименовать');
+  }
+  async function editProject(p) {
+    if (!kit || !kit.form || !api || !api.editProject) return;
+    var opts = Object.keys(STATUS).map(function (k) { return { value: k, label: STATUS[k] }; });
+    if (p.status && !STATUS[p.status]) opts.unshift({ value: p.status, label: p.status });
+    var v = await kit.form({
+      title: 'Свойства проекта', okLabel: 'Сохранить',
+      fields: [
+        { key: 'name', label: 'Название', type: 'text', value: p.name || '', maxLength: 200 },
+        { key: 'address', label: 'Адрес', type: 'text', value: p.address || '', placeholder: 'Город, улица, дом', maxLength: 300 },
+        { key: 'status', label: 'Статус', type: 'select', value: p.status || 'проект', options: opts }
+      ],
+      validate: function (x) { return checkName(x.name) || (String(x.address).length > 300 ? 'Адрес длиннее 300 символов' : ''); }
+    });
+    if (!v) return;
+    await guard(async function () {
+      await api.editProject(p.id, { name: v.name, address: v.address, status: v.status });
+      await reloadKeep(p.id); say('Свойства проекта сохранены', 'ok');
+    }, 'Не удалось сохранить свойства');
+  }
+  async function setStatus(p, status) {
+    if (!api || !api.editProject) return;
+    await guard(async function () {
+      await api.editProject(p.id, { status: status });
+      await reloadKeep(p.id); say(status === 'archived' ? 'Проект перенесён в архив' : 'Проект возвращён из архива', 'ok');
+    }, 'Не удалось изменить статус');
+  }
+  async function duplicateProject(p) {
+    if (!api || !api.duplicateProject) return;
+    await guard(async function () {
+      var r = await api.duplicateProject(p.id, {});
+      if (!r || !r.id) throw new Error('проект не найден');
+      await reloadKeep(r.id);
+      say('Создана копия «' + r.name + '»: ' + r.rooms + ' ' + plural(r.rooms, ['помещение', 'помещения', 'помещений']), 'ok');
+    }, 'Не удалось дублировать');
+  }
+  async function deleteProject(p) {
+    if (!kit || !kit.ask || !api || !api.deleteProject) return;
+    if (projects.length < 2) { say('Единственный проект удалить нельзя — сначала создайте другой', 'warn'); return; }
+    var ok = await kit.ask({
+      title: 'Удалить проект?', danger: true, okLabel: 'Удалить',
+      message: '«' + (p.name || 'Без названия') + '» будет удалён вместе с этажами, помещениями, историей изменений и копиями файлов в хранилище приложения. Исходные файлы облаков на диске останутся. Отменить удаление нельзя.'
+    });
+    if (!ok) return;
+    await guard(async function () {
+      var r = await api.deleteProject(p.id);
+      if (r && r.error === 'last_project') { say('Единственный проект удалить нельзя', 'warn'); return; }
+      if (selected === p.id) selected = null;
+      await load(); say('Проект «' + (p.name || 'Без названия') + '» удалён', 'ok');
+    }, 'Не удалось удалить');
   }
   function tipTruncated() {   // длинное имя или адрес — полный текст в подсказке
     cards().forEach(function (c) {
@@ -124,7 +218,7 @@
     if (!list.length) { host.hidden = true; showState('', 'search', 'Ничего не найдено', 'Измените запрос или очистите поиск.', { label: 'Сбросить поиск', run: function () { $('search').value = ''; query = ''; render(); } }); return; }
     list.forEach(function (p, i) { host.appendChild(card(p, i)); });
     if (!query.trim()) {
-      var nb = el('button', 'st-card st-new'); nb.type = 'button'; nb.style.setProperty('--i', String(Math.min(list.length, 12)));
+      var nb = el('button', 'st-card st-new'); nb.type = 'button'; nb.style.setProperty('--i', String(Math.min(list.length, 12))); nb.setAttribute('aria-label', 'Новый проект');
       nb.appendChild(glyph('st-card-ico', 'plus')); nb.appendChild(el('b', null, 'Новый проект'));
       nb.addEventListener('click', createProject); host.appendChild(nb);
     }
@@ -230,10 +324,16 @@
     $('autoFloors').addEventListener('change', function (e) { store('bim.start.autoFloors', e.target.checked ? '1' : '0'); });
     $('projects').addEventListener('keydown', function (e) {
       var k = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Home: 'home', End: 'end' }[e.key];
-      if (k && e.target && e.target.getAttribute && e.target.getAttribute('role') === 'radio') { e.preventDefault(); move(k); }
+      if (k && e.target && e.target.getAttribute && e.target.getAttribute('role') === 'radio') { e.preventDefault(); move(k); return; }
+      // клавиши карточки: F2 — переименовать, Del — удалить, Shift+F10 / клавиша меню — действия
+      var p = e.target && e.target.getAttribute && e.target.getAttribute('role') === 'radio' ? byId(e.target.dataset.id) : null;
+      if (!p) return;
+      if (e.key === 'F2') { e.preventDefault(); renameProject(p); }
+      else if (e.key === 'Delete') { e.preventDefault(); deleteProject(p); }
+      else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) { e.preventDefault(); projectMenu(p, e.target); }
     });
     D.addEventListener('keydown', function (e) {
-      if (D.querySelector('.lx-ask') || $('viewProjects').hidden) return;
+      if (D.querySelector('.lx-ask') || D.querySelector('.lx-pop') || $('viewProjects').hidden) return;
       var typing = e.target && /^(input|textarea|select)$/i.test(e.target.tagName);
       if (e.key === 'Enter' && !typing && selected && !(e.target && e.target.closest && e.target.closest('button:not(.st-card)'))) { e.preventDefault(); openSelected(); }
       else if ((e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N' || e.key === 'т' || e.key === 'Т')) { e.preventDefault(); createProject(); }

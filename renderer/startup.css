@@ -93,6 +93,19 @@ body.st-leaving .st-shell { opacity: 0; transform: scale(.994); pointer-events: 
 .st-card-check svg.ic { width: 11px; height: 11px; stroke-width: 3; }
 .st-card[aria-checked="true"] .st-card-check { opacity: 1; transform: none; }
 
+/* ревизия 30: обёртка карточки с кнопкой «Действия» (меню: переименовать, свойства, дублировать, архив, удалить) */
+.st-slot { position: relative; display: grid; min-width: 0; }
+.st-slot > .st-card { height: 100%; }
+.st-more {
+  position: absolute; right: 10px; bottom: 10px; width: 28px; height: 28px; border-radius: var(--r-2); color: var(--txt-3);
+  opacity: 0; transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.st-slot:hover .st-more, .st-slot:focus-within .st-more, .st-more[aria-expanded="true"], .st-slot > .st-card[aria-checked="true"] + .st-more { opacity: 1; }
+.st-more:hover, .st-more[aria-expanded="true"] { background: var(--bg-3); color: var(--txt); }
+.st-slot > .st-card .st-card-meta { padding-right: 34px; }
+.st-card.is-archived { border-style: dashed; background: transparent; }
+.st-card.is-archived .st-card-name, .st-card.is-archived .st-card-ico { color: var(--txt-3); }
+
 .st-new { grid-template-columns: 1fr; align-content: center; justify-items: center; gap: 8px; border-style: dashed; background: transparent; color: var(--txt-2); text-align: center; }
 .st-new:hover { border-color: var(--accent-line); background: var(--accent-soft); box-shadow: none; color: var(--accent); transform: none; }
 .st-new .st-card-ico { background: var(--bg-2); }

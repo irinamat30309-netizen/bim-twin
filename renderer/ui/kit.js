@@ -354,7 +354,7 @@
 
   /* ---------- Диалог с несколькими полями (параметры операций над облаком) ----------
    * form({ title, message, hint, okLabel, cancelLabel, wide, validate(values)→текст ошибки|'' ,
-   *        fields:[{ key, label, type:'number'|'select'|'checkbox', value, min, max, step, unit, hint, options:[{value,label}],
+   *        fields:[{ key, label, type:'number'|'select'|'checkbox'|'text', value, placeholder, maxLength, min, max, step, unit, hint, options:[{value,label}],
    *                  showIf(values)→bool }] }) → Promise: объект значений или null при отмене.
    *   number → Number, select → строка, checkbox → boolean. Esc и клик по фону — отмена, Enter — применить. */
   function form(o) {
@@ -363,7 +363,7 @@
     return new Promise(function (resolve) {
       var prev = D.activeElement, done = false, tid = 'lxAskT' + (++askSeq);
       var back = D.createElement('div'); back.className = 'modal lx-ask';
-      var card = D.createElement('div'); card.className = 'modal-card ' + (o.wide ? 'md' : 'sm');
+      var card = D.createElement('div'); card.className = 'modal-card ' + (o.wide ? 'md' : 'sm') + (o.className ? ' ' + String(o.className) : '');
       card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-labelledby', tid);
       var head = D.createElement('div'); head.className = 'modal-head';
       head.innerHTML = '<span id="' + tid + '">' + esc(o.title || 'Параметры') + '</span><button type="button" class="x" data-ico="x" aria-label="Закрыть"></button>';
@@ -379,6 +379,9 @@
           ctl.value = String(f.value);
         } else if (f.type === 'checkbox') {
           ctl = D.createElement('input'); ctl.type = 'checkbox'; ctl.checked = !!f.value;
+        } else if (f.type === 'text') {
+          ctl = D.createElement('input'); ctl.type = 'text'; ctl.value = f.value == null ? '' : String(f.value); ctl.autocomplete = 'off'; ctl.spellcheck = false;
+          if (f.placeholder) ctl.placeholder = f.placeholder; if (f.maxLength) ctl.maxLength = f.maxLength;
         } else {
           ctl = D.createElement('input'); ctl.type = 'number'; ctl.value = f.value == null ? '' : String(f.value); ctl.autocomplete = 'off';
           if (f.step) ctl.step = f.step; if (f.min != null) ctl.min = f.min; if (f.max != null) ctl.max = f.max;
@@ -405,6 +408,7 @@
           var c = ctls[f.key];
           if (f.type === 'checkbox') v[f.key] = !!c.checked;
           else if (f.type === 'select') v[f.key] = c.value;
+          else if (f.type === 'text') v[f.key] = String(c.value).trim();
           else v[f.key] = c.value === '' ? NaN : Number(String(c.value).replace(',', '.'));
         });
         return v;
@@ -456,7 +460,7 @@
       D.addEventListener('keydown', onKey, true);
       refresh();
       D.body.appendChild(back); hydrate(back); back.classList.add('open');
-      setTimeout(function () { var first = order.length ? ctls[order[0].key] : ok; try { first.focus({ preventScroll: true }); if (first.select && first.type === 'number') first.select(); } catch (e) {} }, 30);
+      setTimeout(function () { var first = order.length ? ctls[order[0].key] : ok; try { first.focus({ preventScroll: true }); if (first.select && (first.type === 'number' || first.type === 'text')) first.select(); } catch (e) {} }, 30);
     });
   }
 

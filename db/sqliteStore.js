@@ -399,6 +399,37 @@ class SqliteStore {
     this.updateSettings({ activeProjectId: id }); return p;
   }
   switchProject(id) { if (this.db.prepare('SELECT 1 FROM projects WHERE id=?').get(id)) this.updateSettings({ activeProjectId: id }); return this.db.prepare('SELECT * FROM projects WHERE id=?').get(id); }
+  // ревизия 30: карточка любого проекта (не только активного) — название, адрес, статус; со стартового экрана
+  editProject(id, patch) {
+    const p = this.db.prepare('SELECT * FROM projects WHERE id=?').get(id); if (!p) return null;
+    const m = Object.assign({}, p);
+    for (const k of ['name', 'address', 'status']) if (patch && typeof patch[k] === 'string') m[k] = patch[k];
+    this.db.prepare('UPDATE projects SET name=?,address=?,status=? WHERE id=?').run(m.name, m.address, m.status, id);
+    return { id: m.id, name: m.name, address: m.address, status: m.status };
+  }
+  // копия структуры проекта: этажи, помещения и элементы с новыми id; документы, модели, облака и история не копируются
+  // (их файлы принадлежат исходному проекту). Активный проект не меняется
+  duplicateProject(id, patch) {
+    const src = this.db.prepare('SELECT * FROM projects WHERE id=?').get(id); if (!src) return null;
+    const run = () => {
+      const nid = genId('prj'), name = (patch && patch.name) || ((src.name || 'Проект') + ' (копия)');
+      this.db.prepare('INSERT INTO projects(id,name,address,status) VALUES (?,?,?,?)').run(nid, name, src.address || '', src.status || 'проект');
+      let nf = 0, nr = 0;
+      for (const f of this.db.prepare('SELECT * FROM floors WHERE project_id=? ORDER BY number').all(id)) {
+        const fid = genId('floor'); nf++;
+        this.db.prepare('INSERT INTO floors(id,project_id,number,name) VALUES (?,?,?,?)').run(fid, nid, f.number, f.name);
+        for (const r of this.db.prepare('SELECT * FROM rooms WHERE floor_id=?').all(f.id)) {
+          const rid = genId('room'); nr++;
+          this.db.prepare('INSERT INTO rooms(id,floor_id,name,number,type,area_m2,height_m,material,cost,status) VALUES (?,?,?,?,?,?,?,?,?,?)')
+            .run(rid, fid, r.name, r.number, r.type, r.area_m2, r.height_m, r.material, r.cost, r.status);
+          for (const e of this.db.prepare('SELECT * FROM elements WHERE room_id=?').all(r.id))
+            this.db.prepare('INSERT INTO elements(id,room_id,ifc_guid,type,name,ai_status) VALUES (?,?,?,?,?,?)').run(genId('el'), rid, e.ifc_guid, e.type, e.name, 'none');
+        }
+      }
+      return { id: nid, name, address: src.address || '', status: src.status || 'проект', floors: nf, rooms: nr };
+    };
+    return typeof this.db.transaction === 'function' ? this.db.transaction(run)() : run();
+  }
   deleteProject(id) {
     const others = this.db.prepare('SELECT id FROM projects WHERE id<>?').all(id).map(p => p.id);
     if (!others.length) return { error: 'last_project' };
