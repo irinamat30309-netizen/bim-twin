@@ -300,6 +300,9 @@
     }
     // план из облака поверх карты
     if (st.plan && st.plan.ok) {
+      // мебель и стеллажи у стен (второй срез) — тонкие серые линии под стенами
+      cx.strokeStyle = 'rgba(148,163,184,.75)'; cx.lineWidth = 1;
+      (st.plan.low || []).forEach(function (f) { var a1 = vw.to(f.a[0], f.a[1]), b1 = vw.to(f.b[0], f.b[1]); cx.beginPath(); cx.moveTo(a1[0], a1[1]); cx.lineTo(b1[0], b1[1]); cx.stroke(); });
       cx.strokeStyle = '#38bdf8'; cx.lineWidth = 2;
       st.plan.faces.forEach(function (f) { var a1 = vw.to(f.a[0], f.a[1]), b1 = vw.to(f.b[0], f.b[1]); cx.beginPath(); cx.moveTo(a1[0], a1[1]); cx.lineTo(b1[0], b1[1]); cx.stroke(); });
       cx.strokeStyle = '#fb923c'; cx.setLineDash([4, 3]);
@@ -554,7 +557,8 @@
       { key: 'th', label: 'Толщина среза', type: 'number', value: 0.1, step: 0.01, min: 0.02, max: 0.5, unit: 'м' },
       { key: 'units', label: 'Единицы', type: 'select', value: 'mm', options: [{ value: 'mm', label: 'миллиметры' }, { value: 'm', label: 'метры' }] },
       { key: 'origin', label: 'Координаты', type: 'select', value: ov.file.crs || (ov.origin && ov.origin.zup && Math.abs(ov.origin.cx) > 1000) ? 'world' : 'local', options: [{ value: 'local', label: 'местные (от угла плана)' }, { value: 'world', label: 'как в облаке' }] },
-      { key: 'ortho', label: 'Стены под прямым углом', type: 'checkbox', value: false });
+      { key: 'ortho', label: 'Стены под прямым углом', type: 'checkbox', value: false },
+      { key: 'furn', label: 'Убирать мебель (второй срез)', type: 'checkbox', value: true, hint: 'Второй срез у потолка: грани без точек над собой — стеллажи и шкафы, они уходят в слой A-FURN' });
     if (hasRoute) fields.push({ key: 'route', label: 'Маршрут сканера', type: 'checkbox', value: true });
     if (st && st.rect) fields.push({ key: 'onlyRect', label: 'Только область с карты', type: 'checkbox', value: true });
     var v = await k.form({ title: 'План в DXF', wide: true, message: floors.length ? 'Пол ' + (floor ? floor.name.toLowerCase() : '') + ': +' + fmtNum(floorH, 2) + ' м. Размеры — объекты DIMENSION.' : 'Этажи не найдены — срез от низа облака.', fields: fields, okLabel: 'Построить' });
@@ -567,8 +571,8 @@
       for (var i = 0; i < list.length; i++) {
         var f = list[i], id = jobId(), h0 = f.floor + v.hc - v.th / 2, h1 = f.floor + v.hc + v.th / 2, lab = list.length > 1 ? f.name + ' (' + (i + 1) + ' из ' + list.length + ')' : 'План из облака…';
         var off = A.onCloudPlanProgress ? A.onCloudPlanProgress(id, function (p, l) { if (act) act.set((i + Math.max(0, Math.min(1, +p || 0))) / list.length, lab); }) : function () {};
-        var r;
-        try { r = await A.cloudPlan({ path: path, jobId: id, h0: h0, h1: h1, rect: v.onlyRect && st && st.rect ? st.rect : null, plan: { ortho: !!v.ortho } }); } finally { off(); }
+        var r, hi = v.furn ? highBand(f, h1) : null;
+        try { r = await A.cloudPlan({ path: path, jobId: id, h0: h0, h1: h1, hi0: hi ? hi[0] : null, hi1: hi ? hi[1] : null, rect: v.onlyRect && st && st.rect ? st.rect : null, plan: { ortho: !!v.ortho, lowFilter: v.furn ? undefined : false } }); } finally { off(); }
         if (!r || !r.ok || !r.plan || !r.plan.ok) { fails.push(f.name + ': ' + ((r && (r.message || (r.plan && r.plan.message))) || 'нет стен в срезе')); continue; }
         tot += (r.slice && r.slice.count) || 0;
         items.push({ plan: r.plan, floor: f, title: (list.length > 1 || floors.length > 1 ? f.name + ' — ' : stem(path) + ' — ') + 'план на +' + fmtNum(v.hc, 2) + ' м над полом',
@@ -591,10 +595,19 @@
     } catch (e) { toast('Ошибка плана: ' + (e && e.message || e), true); }
     finally { if (act) act.done(); if (btn && k.busy) k.busy(btn, false); }
   }
+  // второй срез для отбора мебели: на 2,3–2,4 м над полом (выше шкафов и стеллажей); низкий потолок — на 15–25 см под ним
+  function highBand(f, h1) {
+    var a = f.floor + 2.3, b = f.floor + 2.4;
+    if (f.ceiling != null && f.ceiling - f.floor < 2.6) { a = f.ceiling - 0.25; b = f.ceiling - 0.15; }
+    return a > h1 + 0.3 ? [a, b] : null;
+  }
   function plural(n, a, b, c) { var m = Math.abs(n) % 100, d = m % 10; return n + ' ' + (m > 10 && m < 20 ? c : d === 1 ? a : d >= 2 && d <= 4 ? b : c); }
   function summary(plan) {
+    var nc = plan.stats.corridors || 0, nl = plan.low ? plan.low.length : 0;
     return plural(plan.stats.faces, 'грань', 'грани', 'граней') + ' стен, ' + plural(plan.stats.openings, 'проём', 'проёма', 'проёмов') + ', ' + plural(plan.rooms.length, 'помещение', 'помещения', 'помещений') +
-      (plan.rooms.length ? ': ' + plan.rooms.slice(0, 4).map(function (x) { return fmtNum(x.area, 2) + ' м²'; }).join(', ') : '');
+      (nc ? ' (' + plural(nc, 'коридор', 'коридора', 'коридоров') + ')' : '') +
+      (plan.rooms.length ? ': ' + plan.rooms.slice(0, 4).map(function (x) { return fmtNum(x.area, 2) + ' м²'; }).join(', ') : '') +
+      (nl ? '; мебель у стен убрана — ' + plural(nl, 'грань', 'грани', 'граней') + ' в слое A-FURN' : '');
   }
   var lastPlan = new Map(), lastPlans = new Map();
 
