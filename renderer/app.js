@@ -236,8 +236,8 @@
     }
   }
   async function parseCloudWithProgress(filePath, label, extra) {
+    let pre = null;
     if (!(extra && extra.noParts)) {
-      let pre = null;
       if (window.CloudPreview) {
         try {
           if (extra && extra.skipPreview) pre = window.CloudPreview.lastFor(filePath);
@@ -248,7 +248,10 @@
       const parts = await tryPartsLoad(filePath, label, Object.assign({}, extra || {}, { pre }));
       if (parts) { if (parts.ok) { parts.path = filePath; try { if (window.CloudPreview) window.CloudPreview.afterLoad(pre, parts); } catch (_) {} } return parts; }
     }
-    const first = await parseCloudWithProgressOnce(filePath, label, { allowReduced: false });
+    // ревизия 28: E57 (частями не читается) — выбор окна «Перед загрузкой» применяется при чтении целиком
+    const preE57 = pre && !pre.cancelled && /\.e57$/i.test(String(filePath || '')) ? pre : null;
+    const first = await parseCloudWithProgressOnce(filePath, label, { allowReduced: false, pre: preE57 });
+    if (first && first.ok && preE57) { try { if (window.CloudPreview) window.CloudPreview.afterLoad(preE57, Object.assign({ path: filePath, total: first.meta && first.meta.total }, first)); } catch (_) {} }
     if (!(first && first.tooBig)) return first;
     const k = window.__lxKit; let yes = false;
     if (k && k.ask) {
@@ -273,7 +276,7 @@
       panel.update(event);
     });
     try {
-      const result = await API.parseCloud(filePath, jobId, { onProgress: (f) => panel.update({ phase: 'transfer', fraction: f }), allowReduced: allowReduced });
+      const result = await API.parseCloud(filePath, jobId, { onProgress: (f) => panel.update({ phase: 'transfer', fraction: f }), allowReduced: allowReduced, pre: mode.pre || null });
       if (result && result.ok) panel.update({ phase: 'done', fraction: 1, pointsLoaded: result.count || (result.pos && result.pos.length / 3) || 0 });
       else if (result && result.cancelled) panel.update({ phase: 'cancelled', fraction: 0 });
       else if (result && result.tooBig) panel.update({ phase: 'cancelled', fraction: 0 });
