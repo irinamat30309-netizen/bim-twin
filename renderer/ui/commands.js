@@ -39,10 +39,13 @@
       G('history', 'История', [
         S('btnProjectUndo', 'undo-2', 'Отменить', { sel: '#btnProjectUndo', tip: 'Отменить последнее сохранённое изменение проекта' }),
         S('btnProjectRedo', 'redo-2', 'Повторить', { sel: '#btnProjectRedo', tip: 'Повторить отменённое изменение проекта' }),
-        S('drafts', 'history', 'Черновики', { call: '__lxSmartSave.openAutosaveHistory', tip: 'Версии автосохранения: просмотр и восстановление' })
+        S('drafts', 'history', 'Черновики', { call: '__lxSmartSave.openAutosaveHistory', tip: 'Версии автосохранения: просмотр и восстановление' }),
+        S('histRecent', 'list', 'Последние действия', { call: 'HistoryPanel.open', tip: 'Список правок облака с отменой до выбранной, журнал изменений проекта и события сеанса' })
       ]),
       G('proj', 'Проект', [
         I('btnNewProject', 'folder-plus', 'Новый проект', { sel: '#btnNewProject' }),
+        I('projFolder', 'folder', 'Папка проекта', { call: 'ProjectWorkspace.open', tip: 'Постоянная папка проекта (облака, чертежи, отчёты), работа с файлом на месте, «Сохранить как новое»' }),
+        S('projBackups', 'hard-drive', 'Резервные копии', { call: 'ProjectWorkspace.backups', tip: 'Сколько предыдущих версий облака хранить перед перезаписью (экономия места) и их удаление' }),
         I('btnBackup', 'database-backup', null, { sel: '#btnBackup' }),
         I('btnSettings', 'settings', null, { sel: '#btnSettings' })
       ]),
@@ -55,6 +58,7 @@
     { id: 'import', label: 'Импорт', groups: [
       G('clouds', 'Облака точек', [
         I('btnOpenCloud', 'folder-open', 'Открыть облако', { sel: '#btnOpenCloud', primary: 1, tip: 'Облако помещения или файл LAS / LAZ / E57 / PLY' }),
+        I('cpPreview', 'map', 'Карта до загрузки', { call: 'CloudPreview.openNext', tip: 'Открыть облако LAS или PLY через окно «Перед загрузкой»: карта площадки, сведения, число точек, область, высоты, маршрут, шум' }),
         I('opScanFolder', 'folder', 'Папка сканера', { call: OPS_T + 'opScanFolder', tip: 'Папка проекта сканера (Lixel и др.): облако и траектория poses.csv находятся сами' }),
         I('opXbinCloud', 'scan-line', 'Облако из .xbin', { call: OPS_T + 'opXbinCloud', tip: 'Облако из сырого лидара сканера Lixel (.xbin) по траектории poses.csv проекта' }),
         I('opPotree', 'cloud-download', 'Potree 2.0', { call: OPS_S + 'opPotree', tip: 'Открыть набор Potree 2.0 (metadata.json + octree)' })
@@ -181,7 +185,8 @@
       ]),
       G('fromcloud', 'Из облака', [
         I('draw.sect', 'scan-line', 'Сечение', { slot: 1, needs: 'cloud' }),
-        I('opWalls', 'brick-wall', 'Стены → DXF', { call: OPS_S + 'opWalls', needs: 'cloud', tip: 'Детекция стен и план этажа в DXF' })
+        I('opWalls', 'brick-wall', 'Стены → DXF', { call: OPS_S + 'opWalls', needs: 'cloud', tip: 'Детекция стен и план этажа в DXF' }),
+        I('cpPlanDxf', 'pencil-ruler', 'План из облака', { call: 'CloudPreview.planDxf', needs: 'cloud', tip: 'Обмерный план этажа в DXF по всем точкам файла: стены, проёмы, размеры, толщины, помещения и площади' })
       ]),
       G('dxf', 'DXF', [
         I('draw.imp', 'file-up', 'Импорт', { slot: 1 }),
@@ -252,7 +257,8 @@
 
     { id: 'export', label: 'Экспорт', groups: [
       G('report', 'Отчёт', [
-        I('btnExport', 'file-output', null, { sel: '#btnExport' })
+        I('btnExport', 'file-output', null, { sel: '#btnExport' }),
+        I('cpReport', 'file-text', 'PDF-отчёт', { call: 'CloudPreview.report', needs: 'cloud', tip: 'Отчёт по облаку в PDF: сведения, карта площадки, уровни, план, снимок 3D, параметры загрузки' })
       ]),
       { id: 'cloudfmt', label: 'Облако точек', dynamic: 'cloud', items: [] },
       G('cloudextra', 'Прочее', [

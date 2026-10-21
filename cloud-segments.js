@@ -17,6 +17,7 @@
  *   readSegment(desc, from, count, { onProgress }) → { ok, pos, col, intensity, classification, count, chunkPoints, chunkBoxes, bbox }
  *   readSegmentAsync(desc, from, count, { signal }) → то же, но в отдельном потоке (главный процесс не блокируется)
  *   { keepPer } (ревизия 26) — из каждого кирпича берутся первые keepPer точек (равномерная выборка для экрана), см. thinSegment
+ *   { filter } (ревизия 27) — область, высота, маска маршрута, шум и доля точек из окна «Перед загрузкой», см. filterSegment
  *
  * Поддержано: LAS без сжатия (все форматы точек), бинарный PLY с вершинами (little/big endian). Остальные форматы возвращают
  * { unsupported:true } — их читает прежний путь (целиком).
@@ -323,6 +324,77 @@ function thinSegment(res, keepPer) {
   return Object.assign({}, res, { pos, col, intensity, classification, count: m, chunkPoints: keepPer, sourceCount: n });
 }
 
+// Ревизия 27: фильтры загрузки (окно «Перед загрузкой»): область на карте, высота, не дальше R от маршрута сканера, одиночные точки (шум)
+// и равномерная доля ratio. Координаты фильтра — плановые (u = x окна, v = −z окна, h = y окна + hShift), как у карты (cloud-overview.js).
+// Точки внутри кирпичей уже перемешаны: из прошедших фильтр точек каждого кирпича берётся первая доля ratio — выборка остаётся равномерной.
+// Результат — новые массивы с кирпичами по CH2 точек и их рамками (окно рисует и отсекает их как обычно).
+function noiseTables(bits) { const size = 1 << bits; return { size, a: new Uint16Array(size), b: new Uint16Array(size) }; }
+function filterSegment(res, filter) {
+  if (!res || res.ok === false || !filter) return res;
+  const n = Math.floor(res.count), CH = Math.max(1, Math.floor(res.chunkPoints)), P = res.pos;
+  const rect = filter.rect, hr = filter.h, mask = filter.mask, hs = Number(filter.hShift) || 0;
+  const ratio = filter.ratio > 0 && filter.ratio < 1 ? filter.ratio : 1;
+  const keep = new Uint8Array(n);
+  let kept = 0;
+  for (let i = 0; i < n; i++) {
+    const u = P[i * 3], h = P[i * 3 + 1] + hs, v = -P[i * 3 + 2];
+    if (rect && (u < rect.u0 || u > rect.u1 || v < rect.v0 || v > rect.v1)) continue;
+    if (hr && (h < hr.min || h > hr.max)) continue;
+    if (mask) {
+      const cx = Math.floor((u - mask.u0) / mask.cell), cy = Math.floor((v - mask.v0) / mask.cell);
+      if (cx < 0 || cy < 0 || cx >= mask.nx || cy >= mask.ny || !mask.bits[cy * mask.nx + cx]) continue;
+    }
+    keep[i] = 1; kept++;
+  }
+  // одиночные точки: в вокселе (по всей части) меньше min точек — шум. Подсчёт — двумя хеш-таблицами (минимум из двух):
+  // совпадения ключей только увеличивают счёт, поэтому настоящая точка из-за совпадения не удаляется никогда.
+  if (filter.noise && kept) {
+    const vx = Math.max(0.02, Number(filter.noise.voxel) || 0.1), mn = Math.max(2, Math.floor(filter.noise.min) || 3);
+    const T = noiseTables(22), M = T.size - 1, inv = 1 / vx;
+    const key = (i, out) => {
+      const a = Math.floor(P[i * 3] * inv), b = Math.floor(P[i * 3 + 1] * inv), c = Math.floor(P[i * 3 + 2] * inv);
+      out[0] = ((Math.imul(a, 73856093) ^ Math.imul(b, 19349663) ^ Math.imul(c, 83492791)) >>> 0) & M;
+      out[1] = ((Math.imul(a, 2654435761) + Math.imul(b, 40503) * 31 + Math.imul(c, 2246822519)) >>> 9) & M;
+    };
+    const k2 = [0, 0];
+    for (let i = 0; i < n; i++) { if (!keep[i]) continue; key(i, k2); if (T.a[k2[0]] < 65535) T.a[k2[0]]++; if (T.b[k2[1]] < 65535) T.b[k2[1]]++; }
+    for (let i = 0; i < n; i++) { if (!keep[i]) continue; key(i, k2); if (Math.min(T.a[k2[0]], T.b[k2[1]]) < mn) { keep[i] = 0; kept--; } }
+  }
+  // доля ratio в каждом кирпиче
+  if (ratio < 1) {
+    for (let a = 0; a < n; a += CH) {
+      const e = Math.min(n, a + CH); let m = 0; for (let i = a; i < e; i++) m += keep[i];
+      let take = Math.max(m ? 1 : 0, Math.round(m * ratio));
+      for (let i = a; i < e; i++) { if (!keep[i]) continue; if (take > 0) take--; else { keep[i] = 0; kept--; } }
+    }
+  }
+  const pos = new Float32Array(kept * 3), col = res.col ? new Uint8Array(kept * 3) : null;
+  const intensity = res.intensity ? new Uint16Array(kept) : null, classification = res.classification ? new Uint8Array(kept) : null;
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    if (!keep[i]) continue;
+    pos[o * 3] = P[i * 3]; pos[o * 3 + 1] = P[i * 3 + 1]; pos[o * 3 + 2] = P[i * 3 + 2];
+    if (col) { col[o * 3] = res.col[i * 3]; col[o * 3 + 1] = res.col[i * 3 + 1]; col[o * 3 + 2] = res.col[i * 3 + 2]; }
+    if (intensity) intensity[o] = res.intensity[i];
+    if (classification) classification[o] = res.classification[i];
+    o++;
+  }
+  const CH2 = Math.max(1000, Math.min(CH, Math.round(CH * ratio)));
+  const nc = Math.ceil(kept / CH2), boxes = new Float32Array(Math.max(1, nc) * 6);
+  const mn3 = [Infinity, Infinity, Infinity], mx3 = [-Infinity, -Infinity, -Infinity];
+  for (let c = 0; c < nc; c++) {
+    let a0 = Infinity, a1 = Infinity, a2 = Infinity, b0 = -Infinity, b1 = -Infinity, b2 = -Infinity;
+    for (let i = c * CH2, e = Math.min(kept, (c + 1) * CH2); i < e; i++) {
+      const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+      if (x < a0) a0 = x; if (x > b0) b0 = x; if (y < a1) a1 = y; if (y > b1) b1 = y; if (z < a2) a2 = z; if (z > b2) b2 = z;
+    }
+    boxes.set([a0, a1, a2, b0, b1, b2], c * 6);
+    if (a0 < mn3[0]) mn3[0] = a0; if (a1 < mn3[1]) mn3[1] = a1; if (a2 < mn3[2]) mn3[2] = a2; if (b0 > mx3[0]) mx3[0] = b0; if (b1 > mx3[1]) mx3[1] = b1; if (b2 > mx3[2]) mx3[2] = b2;
+  }
+  return Object.assign({}, res, { pos, col, intensity, classification, count: kept, chunkPoints: CH2, chunkBoxes: nc ? boxes : new Float32Array(0),
+    bbox: kept ? { mn: mn3, mx: mx3 } : res.bbox, sourceCount: n, filtered: true });
+}
+
 function readSegment(desc, from, count, opts) {
   opts = opts || {};
   from = Math.floor(from); count = Math.floor(count);
@@ -346,6 +418,7 @@ function readSegment(desc, from, count, opts) {
     const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
     for (let c = 0; c < nChunks; c++) for (let k = 0; k < 3; k++) { if (boxes[c * 6 + k] < mn[k]) mn[k] = boxes[c * 6 + k]; if (boxes[c * 6 + 3 + k] > mx[k]) mx[k] = boxes[c * 6 + 3 + k]; }
     const res = { ok: true, pos: out.pos, col: out.col, intensity: out.intensity, classification: out.classification, count, chunkPoints: CH, chunkBoxes: boxes, bbox: { mn, mx }, from };
+    if (opts.filter) return filterSegment(res, opts.filter);
     return opts.keepPer > 0 && opts.keepPer < CH ? thinSegment(res, opts.keepPer) : res;
   } catch (e) {
     return { ok: false, message: 'Ошибка чтения облака: ' + String((e && e.message) || e) };
@@ -372,7 +445,7 @@ function readSegmentAsync(desc, from, count, opts) {
       resolve(r);
     };
     const onAbort = () => { aborted = true; done({ ok: false, cancelled: true, message: 'Импорт отменён' }); };
-    try { worker = new Worker(workerPath, { workerData: { desc, from, count, shuffle: opts.shuffle !== false, keepPer: Math.floor(Number(opts.keepPer) || 0) } }); }
+    try { worker = new Worker(workerPath, { workerData: { desc, from, count, shuffle: opts.shuffle !== false, keepPer: Math.floor(Number(opts.keepPer) || 0), filter: opts.filter || null } }); }
     catch (e) { done({ ok: false, message: 'Не удалось запустить поток чтения: ' + String((e && e.message) || e) }); return; }
     if (signal) { signal.addEventListener('abort', onAbort, { once: true }); if (signal.aborted) onAbort(); }
     worker.on('message', (m) => { if (m && m.type === 'result') done(m.result || { ok: false, message: 'пустой ответ потока чтения' }); });
@@ -381,4 +454,4 @@ function readSegmentAsync(desc, from, count, opts) {
   });
 }
 
-module.exports = { openSegmentSource, readSegment, readSegmentAsync, shuffleChunks, thinSegment, thinnedCount, keepPerForBudget, SEG_POINTS, CHUNK_POINTS };
+module.exports = { openSegmentSource, readSegment, readSegmentAsync, shuffleChunks, thinSegment, filterSegment, thinnedCount, keepPerForBudget, SEG_POINTS, CHUNK_POINTS };

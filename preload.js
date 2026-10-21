@@ -21,7 +21,24 @@ contextBridge.exposeInMainWorld('bimAPI', {
   readPicked: (p) => inv('bim:readPicked', p),
   parseCloud: (p, jobId, opts) => inv('bim:parseCloud', jobId ? { path: p, jobId, preview: !!(opts && opts.preview), allowReduced: !!(opts && opts.allowReduced) } : p),
   readCloudChunk: (a) => inv('bim:readCloudChunk', a),
-  cloudPartsOpen: (p, jobId, opts) => inv('bim:cloudPartsOpen', { path: p, jobId, maxPoints: opts && opts.maxPoints > 0 ? Number(opts.maxPoints) : 0 }),
+  cloudPartsOpen: (p, jobId, opts) => inv('bim:cloudPartsOpen', { path: p, jobId, maxPoints: opts && opts.maxPoints > 0 ? Number(opts.maxPoints) : 0,
+    filter: opts && opts.filter && typeof opts.filter === 'object' ? opts.filter : null, estimate: opts && opts.estimate > 0 ? Number(opts.estimate) : 0, force: !!(opts && opts.force) }),
+  // ревизия 27: карта облака до загрузки, мощность ПК, план из облака (DXF), PDF-отчёт, папка проекта, работа с файлом на месте
+  systemCapacity: (opts) => inv('bim:systemCapacity', { refresh: !!(opts && opts.refresh), renderer: opts && typeof opts.renderer === 'string' ? opts.renderer : '' }),
+  cloudOverview: (p, jobId, opts) => inv('bim:cloudOverview', { path: p, jobId: jobId || null, minPoints: opts && opts.minPoints > 0 ? Number(opts.minPoints) : 0 }),
+  cancelCloudOverview: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelCloudOverview', { jobId }); },
+  cloudPlan: (payload) => inv('bim:cloudPlan', payload || {}),
+  onCloudPlanProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:cloudPlanProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:cloudPlanProgress', listener); } catch (_) {} };
+  },
+  saveReportPdf: (payload) => inv('bim:saveReportPdf', payload || {}),
+  projectFolder: (action) => inv('bim:projectFolder', { action: action || 'get' }),
+  grantWorkInPlace: (p) => inv('bim:grantWorkInPlace', { path: p }),
+  cloudBackups: (payload) => inv('bim:cloudBackups', payload || {}),
   cloudPartsRead: (a) => inv('bim:cloudPartsRead', a),
   cloudPartsClose: (a) => inv('bim:cloudPartsClose', a),
   releaseCloud: (a) => inv('bim:releaseCloud', a),

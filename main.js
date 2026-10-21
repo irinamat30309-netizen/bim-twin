@@ -306,6 +306,11 @@ function safeFilePart(p) {
   const name = path.basename(String(p || 'cloud').replace(/\\/g, '/')).normalize('NFC');
   return name.replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '_').slice(0, 120) || 'cloud.bin';
 }
+// ревизия 27: сколько резервных копий перезаписанного облака хранить (настройка cloudBackups: none — ни одной, one — последнюю, several — до 8)
+function cloudBackupPolicy() {
+  try { const v = store && store.getSettings ? (store.getSettings() || {}).cloudBackups : ''; return v === 'none' || v === 'one' ? v : 'several'; } catch (_) { return 'several'; }
+}
+function cloudBackupKeep() { const p = cloudBackupPolicy(); return p === 'none' ? 0 : p === 'one' ? 1 : 8; }
 function pruneCloudHistory(dir, keep) {
   try {
     const rows = fs.readdirSync(dir).filter(n => /^rev-.*\.bak$/i.test(n)).map(n => {
@@ -325,7 +330,7 @@ async function saveCloudOutput(target, data, options) {
     const stat = fs.statSync(abs);
     if (!stat.isFile()) throw new Error('output path is not a regular file');
     previousHash = await sha256File(abs);
-    if (previousHash !== outputHash) {
+    if (previousHash !== outputHash && cloudBackupKeep() > 0) {
       const dir = cloudHistoryDir(abs);
       fs.mkdirSync(dir, { recursive: true });
       const backupName = 'rev-' + Date.now() + '-' + previousHash.slice(0, 16) + '-' + safeFilePart(abs) + '.bak';
@@ -338,7 +343,7 @@ async function saveCloudOutput(target, data, options) {
         try { fs.unlinkSync(backupPath); } catch (_) {}
         throw new Error('Не удалось сохранить предыдущую версию файла; исходник оставлен без изменений: ' + String(e && e.message || e));
       }
-      pruneCloudHistory(dir, 8);
+      pruneCloudHistory(dir, cloudBackupKeep());
     }
   }
   atomicWriteFileSync(abs, bytes, { mode: 0o600 });
@@ -379,7 +384,7 @@ async function saveCloudOutputFromTemp(target, tempPath, options) {
     const targetStat = fs.statSync(abs);
     if (!targetStat.isFile()) throw new Error('output path is not a regular file');
     previousHash = await sha256File(abs);
-    if (previousHash !== outputHash) {
+    if (previousHash !== outputHash && cloudBackupKeep() > 0) {
       const dir = cloudHistoryDir(abs);
       fs.mkdirSync(dir, { recursive: true });
       const backupName = 'rev-' + Date.now() + '-' + previousHash.slice(0, 16) + '-' + safeFilePart(abs) + '.bak';
@@ -392,7 +397,7 @@ async function saveCloudOutputFromTemp(target, tempPath, options) {
         try { fs.unlinkSync(backupPath); } catch (_) {}
         throw new Error('Не удалось сохранить предыдущую версию файла; исходник оставлен без изменений: ' + String(e && e.message || e));
       }
-      pruneCloudHistory(dir, 8);
+      pruneCloudHistory(dir, cloudBackupKeep());
     }
   }
   const durabilityWarnings = [];
@@ -1579,7 +1584,10 @@ function registerIpc() {
       if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'формат читается целиком' };
       const d = opened.desc;
       const minPts = Number(APP_CFG.CLOUD_PARTS_MIN_POINTS) || 48000000;
-      if (!(payload && payload.force === true) && d.count <= minPts) return { ok: false, unsupported: true, small: true, total: d.count, message: 'облако небольшое — читается целиком' };
+      // ревизия 27: фильтр окна «Перед загрузкой» (область, высота, участок маршрута, шум) — облако любого размера читается частями
+      const cachedOv = overviewCache.get(overviewKey(sender, abs));
+      const filter = cloudLoadFilter(payload && typeof payload === 'object' ? payload.filter : null, d, cachedOv);
+      if (!(payload && payload.force === true) && !filter && d.count <= minPts) return { ok: false, unsupported: true, small: true, total: d.count, message: 'облако небольшое — читается целиком' };
       const token = crypto.randomBytes(12).toString('hex');
       const controller = new AbortController();
       const key = jobId ? cloudJobKey(sender, jobId) : null;
@@ -1590,11 +1598,19 @@ function registerIpc() {
       // ревизия 26: окно передаёт, сколько точек видеокарта показывает надёжно (maxPoints); облако крупнее читается равномерной выборкой
       // (первые keepPer точек каждого перемешанного кирпича). Файл не меняется; sourceTotal — сколько точек в нём.
       const gpuBudget = Math.floor(Number(payload && typeof payload === 'object' ? payload.maxPoints : 0) || 0);
-      const keepPer = cloudSegments.keepPerForBudget(d.count, d.chunkPoints, gpuBudget);
-      const shown = cloudSegments.thinnedCount(d.count, d.chunkPoints, keepPer);
-      cloudPartSessions.set(token, { senderId: sender.id, desc: d, controller, key, keepPer });
+      let keepPer = cloudSegments.keepPerForBudget(d.count, d.chunkPoints, gpuBudget);
+      let shown = cloudSegments.thinnedCount(d.count, d.chunkPoints, keepPer);
+      if (filter) {
+        // с фильтром доля точек каждого кирпича = бюджет / оценка окна (сколько точек проходит фильтр — по выборке карты)
+        const est = Math.min(d.count, Math.max(1, Math.floor(finiteOr(payload.estimate, d.count))));
+        filter.ratio = gpuBudget > 0 && est > gpuBudget ? gpuBudget / est : 1;
+        keepPer = d.chunkPoints;
+        shown = Math.min(d.count, Math.ceil(Math.min(est, gpuBudget > 0 ? gpuBudget : est) * 1.15) + 1000);
+      }
+      cloudPartSessions.set(token, { senderId: sender.id, desc: d, controller, key, keepPer, filter });
       try { sender.once('destroyed', () => { const ss = cloudPartSessions.get(token); if (ss) { try { ss.controller.abort(); } catch (_) {} cloudPartSessions.delete(token); if (ss.key) activeCloudParseJobs.delete(ss.key); } }); } catch (_) {}
-      return { ok: true, token, total: shown, sourceTotal: d.count, thinned: keepPer < d.chunkPoints ? { keepPer, chunkPoints: d.chunkPoints, budget: gpuBudget } : null,
+      return { ok: true, token, total: shown, sourceTotal: d.count, thinned: keepPer < d.chunkPoints ? { keepPer, chunkPoints: d.chunkPoints, budget: gpuBudget } : (filter && filter.ratio < 1 ? { ratio: filter.ratio, budget: gpuBudget } : null),
+        filtered: filter ? { rect: !!filter.rect, h: !!filter.h, route: !!filter.mask, noise: !!filter.noise, ratio: filter.ratio } : null, estimated: !!filter,
         segPoints: d.segPoints, chunkPoints: keepPer, segments: Math.ceil(d.count / d.segPoints), bbox: d.bbox, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity, hasClassification: d.hasClassification };
     } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
   });
@@ -1607,7 +1623,7 @@ function registerIpc() {
       const d = ss.desc;
       if (!Number.isInteger(k) || k < 0 || k * d.segPoints >= d.count) return { ok: false, message: 'неверный номер части' };
       const from = k * d.segPoints, count = Math.min(d.segPoints, d.count - from);
-      const res = await cloudSegments.readSegmentAsync(d, from, count, { signal: ss.controller.signal, keepPer: ss.keepPer });
+      const res = await cloudSegments.readSegmentAsync(d, from, count, { signal: ss.controller.signal, keepPer: ss.keepPer, filter: ss.filter || null });
       if (!res || res.ok === false) return res || { ok: false, message: 'часть облака не прочитана' };
       if (ss.controller.signal.aborted) return { ok: false, cancelled: true, message: 'Импорт отменён' };
       const light = pendingClouds.stash(sender.id, res, APP_CFG.IPC_CHUNK_POINTS || 4000000);
@@ -1628,6 +1644,238 @@ function registerIpc() {
       if (ss.key) activeCloudParseJobs.delete(ss.key);
       return true;
     } catch (_) { return false; }
+  });
+  // ---------- Ревизия 27: карта облака до загрузки, мощность ПК, план DXF, PDF-отчёт, папка проекта, работа с файлом на месте ----------
+  const systemCapacity = require('./system-capacity');
+  const cloudOverview = require('./cloud-overview');
+  let capacityCache = null;
+  ipcMain.handle('bim:systemCapacity', async (event, a) => {
+    try {
+      if (!ipcSender(event)) return { ok: false, message: 'нет доступа' };
+      const refresh = !!(a && a.refresh);
+      if (capacityCache && !refresh && Date.now() - capacityCache.at < 60000) return capacityCache.value;
+      const rendererName = a && typeof a.renderer === 'string' ? a.renderer.slice(0, 200) : '';
+      const value = await systemCapacity.probe({ app, os: require('os'), execFile: require('child_process').execFile, platform: process.platform, rendererName });
+      capacityCache = { at: Date.now(), value };
+      return value;
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  // поток карты/среза: главный процесс не блокируется; отмена — по AbortSignal (поток завершается)
+  function runOverviewWorker(job, desc, opts, onProgress, signal) {
+    return new Promise((resolve) => {
+      let w = null, done = false;
+      const finish = (r) => { if (done) return; done = true; try { if (w) w.terminate(); } catch (_) {} resolve(r); };
+      try { w = new Worker(unpackedWorker('cloud-overview-worker.js'), { workerData: { job, desc, opts } }); }
+      catch (e) { finish({ ok: false, message: 'поток карты облака не запущен: ' + String((e && e.message) || e) }); return; }
+      if (signal) { if (signal.aborted) { finish({ ok: false, cancelled: true, message: 'отменено' }); return; } signal.addEventListener('abort', () => finish({ ok: false, cancelled: true, message: 'отменено' }), { once: true }); }
+      w.on('message', (m) => { if (m && m.type === 'progress') { if (onProgress) try { onProgress(m.progress, m.label); } catch (_) {} } else if (m && m.type === 'result') finish(m.result || { ok: false }); });
+      w.on('error', (e) => finish({ ok: false, message: String((e && e.message) || e) }));
+      w.on('exit', (code) => finish({ ok: false, message: 'поток карты облака завершился (' + code + ')' }));
+    });
+  }
+  const overviewCache = new Map();   // окно + файл → { desc, origin, bbox, route } для фильтра «по маршруту» и чертежа
+  const overviewJobs = new Map();
+  function overviewKey(sender, abs) { return sender.id + '|' + (process.platform === 'win32' ? abs.toLowerCase() : abs); }
+  function rememberOverview(key, entry) {
+    overviewCache.delete(key); overviewCache.set(key, entry);
+    while (overviewCache.size > 6) overviewCache.delete(overviewCache.keys().next().value);
+  }
+  function overviewJobId(a) { const j = a && a.jobId; return typeof j === 'string' && /^[a-zA-Z0-9:_-]{1,128}$/.test(j) ? j : null; }
+  ipcMain.handle('bim:cloudOverview', async (event, a) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, message: 'path_not_authorized' };
+      const opened = cloudSegments.openSegmentSource(abs);
+      if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'карта до загрузки — для LAS и PLY' };
+      const minPoints = Math.max(0, finiteOr(a && a.minPoints, 0));
+      if (opened.desc.count < minPoints) return { ok: false, small: true, points: opened.desc.count, message: 'облако небольшое — открывается сразу' };
+      const jobId = overviewJobId(a), controller = new AbortController(), jk = jobId ? sender.id + ':' + jobId : null;
+      if (jk) overviewJobs.set(jk, controller);
+      let res;
+      try { res = await runOverviewWorker('overview', opened.desc, { samples: 4000000, keep: 300000 }, null, controller.signal); }
+      finally { if (jk) overviewJobs.delete(jk); }
+      if (!res || !res.ok) return res || { ok: false, message: 'карта облака не построена' };
+      // траектория сканера рядом с облаком (poses.csv проекта Lixel) — маршрут на карте, длительность и длина пути
+      let route = null;
+      const tf = findTrajectoryNear(abs);
+      if (tf) {
+        try {
+          const st = fs.statSync(tf);
+          if (st.size < 400 * 1024 * 1024) {
+            const tr = cloudOverview.trajectoryInfo(fs.readFileSync(tf, 'utf8'), res.origin, res.bbox);
+            if (tr) { res.trajectory = Object.assign({ file: path.basename(tf) }, tr); route = tr.route; }
+          }
+        } catch (_) {}
+      }
+      rememberOverview(overviewKey(sender, abs), { desc: opened.desc, origin: res.origin, bbox: res.bbox, route, at: Date.now() });
+      res.capabilities = { color: !!opened.desc.hasColor, intensity: !!opened.desc.hasIntensity, classification: !!opened.desc.hasClassification,
+        partsMin: Number(APP_CFG.CLOUD_PARTS_MIN_POINTS) || 48000000 };
+      return res;
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  ipcMain.on('bim:cancelCloudOverview', (event, a) => {
+    const sender = ipcSender(event), jobId = overviewJobId(a); if (!sender || !jobId) return;
+    const c = overviewJobs.get(sender.id + ':' + jobId); if (c) try { c.abort(); } catch (_) {}
+  });
+  function finiteOr(x, d) { const v = Number(x); return Number.isFinite(v) ? v : d; }
+  function validRect(r) {
+    if (!r || typeof r !== 'object') return null;
+    const u0 = finiteOr(r.u0, NaN), u1 = finiteOr(r.u1, NaN), v0 = finiteOr(r.v0, NaN), v1 = finiteOr(r.v1, NaN);
+    return [u0, u1, v0, v1].every(Number.isFinite) && u1 > u0 && v1 > v0 ? { u0, u1, v0, v1 } : null;
+  }
+  // фильтр окна «Перед загрузкой» → проверенный фильтр чтения частей (cloud-segments.filterSegment)
+  function cloudLoadFilter(raw, desc, cached) {
+    if (!raw || typeof raw !== 'object') return null;
+    const f = {};
+    const rect = validRect(raw.rect); if (rect) f.rect = rect;
+    if (raw.h && typeof raw.h === 'object') { const a = finiteOr(raw.h.min, NaN), b = finiteOr(raw.h.max, NaN); if (Number.isFinite(a) && Number.isFinite(b) && b > a) f.h = { min: a, max: b }; }
+    if (raw.route && typeof raw.route === 'object' && cached && cached.route && cached.route.length >= 8) {
+      const radius = Math.min(500, Math.max(0.5, finiteOr(raw.route.radius, 10)));
+      const from = Math.min(1, Math.max(0, finiteOr(raw.route.from, 0))), to = Math.min(1, Math.max(0, finiteOr(raw.route.to, 1)));
+      if (to > from) f.mask = cloudOverview.routeMask(cached.route, cached.bbox, { radius, from, to });
+    }
+    if (raw.noise && typeof raw.noise === 'object') f.noise = { voxel: Math.min(1, Math.max(0.02, finiteOr(raw.noise.voxel, 0.1))), min: Math.min(50, Math.max(2, Math.floor(finiteOr(raw.noise.min, 3)))) };
+    if (!f.rect && !f.h && !f.mask && !f.noise) return null;
+    f.hShift = cloudOverview.hShift(desc);
+    return f;
+  }
+  ipcMain.handle('bim:cloudPlan', async (event, a) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), CLOUD_EXT_ALLOW);
+      if (!abs) return { ok: false, message: 'path_not_authorized' };
+      const cached = overviewCache.get(overviewKey(sender, abs));
+      const opened = cached ? { ok: true, desc: cached.desc } : cloudSegments.openSegmentSource(abs);
+      if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'план из облака — для LAS и PLY' };
+      const h0 = finiteOr(a && a.h0, NaN), h1 = finiteOr(a && a.h1, NaN);
+      if (!(Number.isFinite(h0) && Number.isFinite(h1) && h1 > h0 && h1 - h0 <= 2)) return { ok: false, message: 'неверная высота среза (0–2 м толщиной)' };
+      const plan = {};
+      if (a && a.plan && typeof a.plan === 'object') { for (const k of ['gap', 'minLen', 'maxFace', 'openMin', 'openMax', 'minRoom', 'cell']) if (Number.isFinite(Number(a.plan[k]))) plan[k] = Number(a.plan[k]); if (a.plan.ortho === true) plan.ortho = true; }
+      const jobId = overviewJobId(a), controller = new AbortController(), jk = jobId ? sender.id + ':' + jobId : null;
+      if (jk) overviewJobs.set(jk, controller);
+      try {
+        return await runOverviewWorker('plan', opened.desc, { h0, h1, rect: validRect(a && a.rect), maxPoints: 12000000, plan },
+          (p, label) => { if (jobId) try { sender.send('bim:cloudPlanProgress', { jobId, progress: p, label: label || '' }); } catch (_) {} }, controller.signal);
+      } finally { if (jk) overviewJobs.delete(jk); }
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  // PDF-отчёт: HTML окна → скрытое окно без JavaScript → printToPDF (A4) → диалог сохранения (по умолчанию «Отчёты» папки проекта)
+  ipcMain.handle('bim:saveReportPdf', async (event, a) => {
+    let tmp = null, win = null;
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const html = a && typeof a.html === 'string' ? a.html : '';
+      if (!html || html.length > 200 * 1024 * 1024) return { ok: false, message: 'пустой или слишком большой отчёт' };
+      const name = safeFilePart(String((a && a.name) || 'Отчёт по облаку.pdf')).replace(/\.pdf$/i, '') + '.pdf';
+      const dirs = projectFolderInfo(true);
+      const owner = BrowserWindow.fromWebContents(sender);
+      const opts = { title: 'Сохранить PDF-отчёт', defaultPath: path.join(dirs && dirs.reports || app.getPath('documents'), name), filters: [{ name: 'PDF', extensions: ['pdf'] }] };
+      const pick = owner ? await dialog.showSaveDialog(owner, opts) : await dialog.showSaveDialog(opts);
+      if (pick.canceled || !pick.filePath) return { ok: false, canceled: true };
+      tmp = path.join(app.getPath('temp'), 'bim-report-' + crypto.randomBytes(8).toString('hex') + '.html');
+      fs.writeFileSync(tmp, html, { encoding: 'utf8', mode: 0o600 });
+      win = new BrowserWindow({ show: false, width: 1240, height: 1754, webPreferences: { javascript: false, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } });
+      win.webContents.on('will-navigate', (e) => e.preventDefault());
+      win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      await win.loadFile(tmp);
+      const pdf = await win.webContents.printToPDF({ pageSize: 'A4', printBackground: true, landscape: !!(a && a.landscape), margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 } });
+      const saved = await saveCloudOutput(pick.filePath, pdf, { operation: 'cloud.report.pdf', format: 'pdf' });
+      grantExistingOutput(event, saved.path);
+      return { ok: true, path: saved.path, bytes: saved.bytes };
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+    finally { try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {} if (tmp) try { fs.unlinkSync(tmp); } catch (_) {} }
+  });
+  // Папка проекта: постоянное место для облаков, чертежей, отчётов и экспорта (не временная папка и не userData)
+  const PROJECT_SUBDIRS = { clouds: 'Облака', drawings: 'Чертежи', reports: 'Отчёты', exports: 'Экспорт' };
+  function projectFolderInfo(create) {
+    let settings = {}; try { settings = store && store.getSettings ? store.getSettings() || {} : {}; } catch (_) {}
+    let root = typeof settings.projectsRoot === 'string' && settings.projectsRoot ? settings.projectsRoot : '';
+    if (!root) { try { root = path.join(app.getPath('documents'), 'BIM Twin', 'Проекты'); } catch (_) { return null; } }
+    let project = null; try { project = store && store.getData ? store.getData().project : null; } catch (_) {}
+    const pname = safeFilePart(project && project.name || 'Проект').replace(/\.+$/, '') || 'Проект';
+    const dir = path.join(root, pname), out = { ok: true, root, path: dir, name: pname };
+    for (const k of Object.keys(PROJECT_SUBDIRS)) out[k] = path.join(dir, PROJECT_SUBDIRS[k]);
+    if (create) {
+      try {
+        for (const k of Object.keys(PROJECT_SUBDIRS)) fs.mkdirSync(out[k], { recursive: true });
+        const pj = path.join(dir, 'project.json');
+        if (!fs.existsSync(pj)) fs.writeFileSync(pj, JSON.stringify({ app: 'BIM Twin', project: project && project.id || null, name: pname, created: new Date().toISOString() }, null, 2));
+      } catch (e) { out.ok = false; out.message = String((e && e.message) || e); }
+    }
+    return out;
+  }
+  ipcMain.handle('bim:projectFolder', async (event, a) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const action = a && typeof a.action === 'string' ? a.action : 'get';
+      if (action === 'choose') {
+        const owner = BrowserWindow.fromWebContents(sender);
+        const opts = { title: 'Где хранить проекты (облака, чертежи, отчёты)', properties: ['openDirectory', 'createDirectory'] };
+        const r = owner ? await dialog.showOpenDialog(owner, opts) : await dialog.showOpenDialog(opts);
+        if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+        if (store && store.updateSettings) store.updateSettings({ projectsRoot: r.filePaths[0] });
+      }
+      const info = projectFolderInfo(action !== 'peek');
+      if (!info) return { ok: false, message: 'папка документов недоступна' };
+      if (action === 'open' && info.ok) { const err = await shell.openPath(info.path); if (err) return Object.assign(info, { ok: false, message: err }); }
+      return info;
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  // Работа с исходным файлом на месте: после подтверждения окно получает право перезаписывать открытый файл (без копии в папке проекта)
+  ipcMain.handle('bim:grantWorkInPlace', async (event, a) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const abs = resolveAuthorizedFile(event, String((a && a.path) || ''), new Set(['.ply', '.las', '.xyz', '.pts', '.pcd', '.csv']));
+      if (!abs) return { ok: false, message: 'файл не открыт в этом окне или формат не перезаписывается (PLY, LAS, XYZ, PTS, PCD, CSV)' };
+      const owner = BrowserWindow.fromWebContents(sender);
+      const keep = cloudBackupKeep();
+      const mb = { type: 'question', buttons: ['Работать с файлом на месте', 'Отмена'], defaultId: 0, cancelId: 1, title: 'Работа с файлом на месте',
+        message: 'Сохранять правки облака прямо в «' + path.basename(abs) + '»?',
+        detail: 'Файл не копируется — место на диске не расходуется. ' + (keep > 0 ? 'Перед каждой перезаписью предыдущая версия сохраняется (' + (keep === 1 ? 'одна последняя' : 'до ' + keep + ' последних') + ', настройка «Резервные копии облака»).' : 'Резервные копии отключены: перезапись нельзя будет откатить.') };
+      const r = owner ? await dialog.showMessageBox(owner, mb) : await dialog.showMessageBox(mb);
+      if (r.response !== 0) return { ok: false, canceled: true };
+      const g = grantExistingOutput(event, abs);
+      return g ? { ok: true, path: abs } : { ok: false, message: 'право на запись не выдано' };
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
+  // Резервные копии перезаписанных облаков (userData/cloud-history): сколько места занимают и очистка
+  function cloudHistoryRoot() { return path.join(app.getPath('userData'), 'cloud-history'); }
+  function cloudHistoryUsage() {
+    let bytes = 0, files = 0;
+    try {
+      for (const d of fs.readdirSync(cloudHistoryRoot(), { withFileTypes: true })) {
+        if (!d.isDirectory()) continue;
+        const dir = path.join(cloudHistoryRoot(), d.name);
+        for (const n of fs.readdirSync(dir)) { if (!/^rev-.*\.bak$/i.test(n)) continue; try { bytes += fs.statSync(path.join(dir, n)).size; files++; } catch (_) {} }
+      }
+    } catch (_) {}
+    return { bytes, files };
+  }
+  ipcMain.handle('bim:cloudBackups', async (event, a) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const action = a && typeof a.action === 'string' ? a.action : 'usage';
+      if (action === 'set') {
+        const policy = ['none', 'one', 'several'].includes(a.policy) ? a.policy : 'several';
+        if (store && store.updateSettings) store.updateSettings({ cloudBackups: policy });
+      }
+      if (action === 'clear') {
+        const owner = BrowserWindow.fromWebContents(sender), u = cloudHistoryUsage();
+        const mb = { type: 'warning', buttons: ['Удалить копии', 'Отмена'], defaultId: 1, cancelId: 1, title: 'Резервные копии облаков',
+          message: 'Удалить резервные копии перезаписанных облаков (' + u.files + ' шт., ' + (u.bytes / 1073741824).toFixed(2) + ' ГБ)?', detail: 'Сами облака не удаляются; откатить прежние перезаписи будет нельзя.' };
+        const r = owner ? await dialog.showMessageBox(owner, mb) : await dialog.showMessageBox(mb);
+        if (r.response !== 0) return Object.assign({ ok: false, canceled: true, policy: cloudBackupPolicy() }, u);
+        try {
+          for (const d of fs.readdirSync(cloudHistoryRoot(), { withFileTypes: true })) {
+            if (!d.isDirectory()) continue;
+            const dir = path.join(cloudHistoryRoot(), d.name);
+            for (const n of fs.readdirSync(dir)) if (/^rev-.*\.bak$/i.test(n)) try { fs.unlinkSync(path.join(dir, n)); } catch (_) {}
+          }
+        } catch (_) {}
+      }
+      return Object.assign({ ok: true, policy: cloudBackupPolicy(), keep: cloudBackupKeep(), dir: cloudHistoryRoot() }, cloudHistoryUsage());
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
   });
   ipcMain.handle('bim:readCloudChunk', (event, req) => {
     try {
