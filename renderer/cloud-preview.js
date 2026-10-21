@@ -81,22 +81,64 @@
     var frac = pass / n;
     return { frac: frac, points: Math.round(total * frac), sample: pass };
   }
-  // этажи по горизонтальным плоскостям: соседние уровни ближе 0,6 м — одно перекрытие (потолок ниже + пол выше)
-  function storeys(levels, bbox) {
+  // этажи. По маршруту сканера (если есть): сканер идёт на высоте 0,4–2,3 м над полом, поэтому пол каждого этажа —
+  // самый большой горизонтальный уровень в этом окне под высотой маршрута, потолок — самый большой уровень над ней.
+  // Без маршрута: этаж — крупный уровень (≥ 35 % площади наибольшего), над которым есть ещё ≥ 1,8 м облака;
+  // соседние уровни ближе 0,6 м — одно перекрытие (потолок ниже + пол выше). Верх облака — по ядру (без одиночных выбросов).
+  function storeys(levels, bbox, route) {
     var L = (levels || []).slice().sort(function (a, b) { return a.h - b.h; });
     if (!L.length) return [];
+    bbox = bbox || {};
+    var top = bbox.core && isFinite(bbox.core.h1) ? bbox.core.h1 : bbox.h1;
+    var maxA = L.reduce(function (m, x) { return Math.max(m, x.area || 0); }, 0) || 1;
+    var bigOf = function (lo, hi, minA) { var best = null; L.forEach(function (l) { if (l.h > lo && l.h < hi && (l.area || 0) >= minA && (!best || (l.area || 0) > (best.area || 0))) best = l; }); return best; };
+    var out = [], i;
+    var walks = route && route.length >= 32 ? walkLevels(route) : [];
+    if (walks.length) {
+      var fl = [];
+      walks.forEach(function (hr) { var f = bigOf(hr - 2.3, hr - 0.3, maxA * 0.1); if (f && !fl.some(function (x) { return Math.abs(x.h - f.h) < 0.5; })) fl.push({ h: f.h, area: f.area || 0, walk: hr }); });
+      fl.sort(function (a, b) { return a.h - b.h; });
+      for (i = 0; i < fl.length; i++) {
+        var nf = fl[i + 1], c = bigOf(fl[i].walk + 0.3, nf ? nf.h - 0.05 : Infinity, maxA * 0.1);
+        var ceil = c ? c.h : null;
+        out.push({ name: 'Этаж ' + (i + 1), floor: fl[i].h, ceiling: ceil, min: fl[i].h - 0.1, max: ceil != null ? ceil + 0.1 : (nf ? nf.h - 0.1 : (top != null ? top : fl[i].h + 3)) + (nf ? 0 : 0.1), area: fl[i].area, walk: fl[i].walk });
+      }
+      if (out.length) return out;
+    }
+    var big = L.filter(function (l) { return (l.area || 0) >= maxA * 0.35; });
     var slabs = [], cur = null;
-    L.forEach(function (l) { if (cur && l.h - cur.top <= 0.6) { cur.top = l.h; cur.items.push(l); } else { cur = { bottom: l.h, top: l.h, items: [l] }; slabs.push(cur); } });
-    var out = [];
-    for (var i = 0; i < slabs.length; i++) {
-      var floorH = slabs[i].top, next = slabs[i + 1];
-      var top = next ? next.bottom : bbox.h1;
-      if (top - floorH < 1.6) continue;   // ниже 1,6 м — не этаж (антресоль, приямок)
-      out.push({ name: 'Этаж ' + (out.length + 1), floor: floorH, ceiling: next ? next.bottom : null, min: floorH - 0.1, max: (next ? next.bottom : bbox.h1) + 0.1,
+    big.forEach(function (l) { if (cur && l.h - cur.top <= 0.6) { cur.top = l.h; cur.items.push(l); } else { cur = { bottom: l.h, top: l.h, items: [l] }; slabs.push(cur); } });
+    for (i = 0; i < slabs.length; i++) {
+      var floorH = slabs[i].top, next = null;
+      for (var j = i + 1; j < slabs.length; j++) if (slabs[j].bottom - floorH >= 1.6) { next = slabs[j]; break; }
+      var roof = next ? next.bottom : top;
+      if (roof == null || roof - floorH < 1.6) continue;   // ниже 1,6 м — не этаж (антресоль, приямок, кровля)
+      out.push({ name: 'Этаж ' + (out.length + 1), floor: floorH, ceiling: next ? next.bottom : null, min: floorH - 0.1, max: roof + 0.1,
         area: slabs[i].items.reduce(function (m, x) { return Math.max(m, x.area || 0); }, 0) });
+      if (next) i = slabs.indexOf(next) - 1;
     }
     return out;
   }
+  // высоты, на которых сканер шёл по этажу (пики высот маршрута; лестницы между ними — редкие значения)
+  function walkLevels(route) {
+    var m = route.length / 4, hs = [], i;
+    for (i = 0; i < m; i++) { var h = route[i * 4 + 2]; if (isFinite(h)) hs.push(h); }
+    if (hs.length < 8) return [];
+    var lo = Math.min.apply(null, hs), bin = 0.25, nb = Math.floor((Math.max.apply(null, hs) - lo) / bin) + 1, cnt = new Array(nb).fill(0);
+    hs.forEach(function (h) { cnt[Math.floor((h - lo) / bin)]++; });
+    var mx = Math.max.apply(null, cnt), out = [], run = null;
+    for (i = 0; i <= nb; i++) {
+      var on = i < nb && cnt[i] >= Math.max(3, mx * 0.08);
+      if (on) { if (!run) run = []; run.push(i); }
+      else if (run) {
+        var a = lo + run[0] * bin, b = lo + (run[run.length - 1] + 1) * bin, sel = hs.filter(function (h) { return h >= a && h < b; }).sort(function (x, y) { return x - y; });
+        if (sel.length) out.push(sel[Math.floor(sel.length / 2)]);
+        run = null;
+      }
+    }
+    return out;
+  }
+  function ovRoute(ov) { var tr = ov && ov.trajectory; return tr && tr.route && tr.aligned !== false ? tr.route : null; }
   function niceScale(px, metersPerPx) {   // длина масштабной линейки: 1, 2, 5 × 10^k метров около px пикселей
     var m = px * metersPerPx, p = Math.pow(10, Math.floor(Math.log10(Math.max(1e-9, m)))), best = p;
     [1, 2, 5, 10].forEach(function (k) { if (k * p <= m) best = k * p; });
@@ -132,11 +174,12 @@
     rows.push(['Площадь застройки (вид сверху)', fmtNum(st.footprint, 1) + ' м²']);
     rows.push(['Площадь поверхностей', '≈ ' + fmtNum(st.surface, 0) + ' м²']);
     rows.push(['Плотность', fmtInt(st.perM2) + ' точек/м² плана · шаг ≈ ' + fmtNum((st.spacing || 0) * 1000, 1) + ' мм']);
+    if (ov.stations && ov.stations.length) rows.push(['Станции сканов', String(ov.stations.length)]);
     rows.push(['Атрибуты', ['XYZ', f.colored ? 'цвет RGB' : '', f.intensity ? 'интенсивность' : '', f.classification ? 'классы' : '', f.crs ? 'система координат' : ''].filter(Boolean).join(', ')]);
     return rows;
   }
 
-  var pure = { sliderToPoints: sliderToPoints, pointsToSlider: pointsToSlider, routeMaskJS: routeMaskJS, estimate: estimate, storeys: storeys,
+  var pure = { sliderToPoints: sliderToPoints, pointsToSlider: pointsToSlider, routeMaskJS: routeMaskJS, estimate: estimate, storeys: storeys, walkLevels: walkLevels,
     niceScale: niceScale, turbo: turbo, facts: facts, fmtMln: fmtMln, fmtNum: fmtNum, fmtDur: fmtDur, fmtBytes: fmtBytes };
   if (!W || typeof document === 'undefined') return pure;
 
@@ -245,6 +288,16 @@
       cx.font = '600 11px Inter, Arial, sans-serif'; cx.fillStyle = '#e8edf5';
       cx.fillText('Старт', s0[0] + 9, s0[1] - 8); cx.fillText('Финиш', s1[0] + 9, s1[1] + 14);
     }
+    // станции сканов E57 (позы сканов): белые ромбы с номером
+    if (ov.stations && ov.stations.length > 1 && ov.stations.length <= 500) {
+      cx.font = '600 10px Inter, Arial, sans-serif'; cx.lineWidth = 1.5;
+      ov.stations.forEach(function (sn, i) {
+        var q = vw.to(sn.u, sn.v);
+        cx.fillStyle = '#f8fafc'; cx.strokeStyle = '#0f141b'; cx.beginPath();
+        cx.moveTo(q[0], q[1] - 5); cx.lineTo(q[0] + 5, q[1]); cx.lineTo(q[0], q[1] + 5); cx.lineTo(q[0] - 5, q[1]); cx.closePath(); cx.fill(); cx.stroke();
+        if (ov.stations.length <= 60) { cx.fillStyle = '#e8edf5'; cx.fillText(String(i + 1), q[0] + 7, q[1] - 5); }
+      });
+    }
     // план из облака поверх карты
     if (st.plan && st.plan.ok) {
       cx.strokeStyle = '#38bdf8'; cx.lineWidth = 2;
@@ -284,49 +337,67 @@
       var recPts = rec ? rec.points : budget, safePts = rec ? rec.safeMax : budget;
       var st = { view: ov.grid.rgb && ov.file.colored ? 'rgb' : 'density', rect: null, hf: null, route: null, radius: 15, noise: 'none',
         color: ov.file.colored ? 'rgb' : 'elev', points: Math.min(total, saved >= 1e6 ? saved : Math.min(recPts, budget)), showRoute: true, plan: null };
-      var tr = ov.trajectory, hasRoute = !!(tr && tr.route && tr.aligned !== false), floors = storeys(ov.levels, ov.bbox);
+      var tr = ov.trajectory, hasRoute = !!(tr && tr.route && tr.aligned !== false), floors = storeys(ov.levels, ov.bbox, ovRoute(ov));
       var back = D.createElement('div'); back.className = 'modal bp-modal';
+      var F = ov.file || {}, S = ov.stats || {};
+      // плитки сверху панели: главное о скане одним взглядом (подробности — во вкладке «Сведения»)
+      var kpis = [[fmtMln(total), 'млн точек', fmtInt(total) + ' точек в файле'], [fmtNum(S.footprint, 0), 'м² плана', 'Площадь застройки (вид сверху)'],
+        tr ? [fmtNum(tr.length, 0), 'м · ' + fmtDur(tr.duration).replace(/ \d+ с$/, ''), 'Путь сканера и длительность съёмки'] : [fmtNum(S.h, 1), 'м высота', 'Высота облака'],
+        [fmtNum((S.spacing || 0) * 1000, (S.spacing || 0) < 0.01 ? 1 : 0), 'мм шаг', 'Средний шаг точек']];
+      var noiseSeg = [['none', 'Нет', 'Шум не удалять'], ['low', 'Слабо', 'Убрать одиночные точки (воксель 15 см)'], ['mid', 'Средне', 'Воксель 10 см, не меньше 3 точек'], ['high', 'Сильно', 'Воксель 8 см, не меньше 5 точек']];
       back.innerHTML =
         '<div class="modal-card bp-card" role="dialog" aria-modal="true" aria-labelledby="bpTitle">' +
-        '<div class="modal-head"><span id="bpTitle">Перед загрузкой — ' + esc(label || baseName(path)) + '</span><button type="button" class="x" data-ico="x" aria-label="Закрыть"></button></div>' +
+        '<div class="modal-head"><span id="bpTitle">' + esc(label || baseName(path)) + '</span><span class="bp-headsub">' + esc((F.format || '') + ' · ' + fmtBytes(F.size)) + '</span>' +
+          '<button type="button" class="x" data-ico="x" aria-label="Закрыть"></button></div>' +
         '<div class="bp-body">' +
           '<div class="bp-mapcol">' +
-            '<div class="bp-bar"><div class="bp-seg" role="group" aria-label="Окраска карты">' +
-              '<button type="button" data-view="density">Плотность</button><button type="button" data-view="height">Высота</button>' +
-              (ov.grid.rgb ? '<button type="button" data-view="rgb">Цвет</button>' : '') + (ov.grid.inten ? '<button type="button" data-view="intensity">Интенсивность</button>' : '') +
-            '</div><span class="bp-sp"></span>' +
-            (hasRoute ? '<label class="bp-chk"><input type="checkbox" data-k="showRoute" checked> Маршрут</label>' : '') +
-            '<button type="button" class="btn xs ghost" data-act="clearRect">Вся площадь</button></div>' +
-            '<div class="bp-map"><canvas></canvas><div class="bp-maphint">Протяните мышью рамку — будет загружена только эта область</div></div>' +
-            '<div class="bp-est" aria-live="polite"></div>' +
+            '<div class="bp-map"><canvas></canvas>' +
+              '<div class="bp-over bp-tl"><div class="bp-seg" role="group" aria-label="Окраска карты">' +
+                '<button type="button" data-view="density">Плотность</button><button type="button" data-view="height">Высота</button>' +
+                (ov.grid.rgb ? '<button type="button" data-view="rgb">Цвет</button>' : '') + (ov.grid.inten ? '<button type="button" data-view="intensity">Интенсивность</button>' : '') +
+              '</div></div>' +
+              '<div class="bp-over bp-tr">' +
+                (hasRoute ? '<label class="bp-pill" title="Показать маршрут сканера"><input type="checkbox" data-k="showRoute" checked><span>Маршрут</span></label>' : '') +
+                '<button type="button" class="bp-pill" data-act="clearRect" title="Сбросить рамку — вся площадь">' + ic('map', 14) + '<span>Вся площадь</span></button>' +
+              '</div>' +
+              '<div class="bp-maphint">Рамка мышью — область загрузки</div>' +
+            '</div>' +
           '</div>' +
           '<div class="bp-side">' +
-            '<section><h4>Сведения</h4><table class="bp-facts"></table></section>' +
-            '<section><h4>Компьютер</h4><div class="bp-pc"></div></section>' +
-            '<section><h4>Число точек на экране</h4><div class="bp-pts">' +
-              '<div class="bp-ptsval"><b></b><span></span></div>' +
-              '<div class="bp-range"><input type="range" min="0" max="1000" step="1" aria-label="Число точек"><i class="bp-mk rec" title="Рекомендовано для этого компьютера"></i><i class="bp-mk max" title="Наибольшее надёжное"></i></div>' +
-              '<div class="bp-presets"><button type="button" class="btn xs" data-pre="fast">Быстро</button><button type="button" class="btn xs" data-pre="rec">Рекомендовано</button><button type="button" class="btn xs" data-pre="max">Наибольшее надёжное</button><button type="button" class="btn xs" data-pre="all">Все точки</button></div>' +
-              '<p class="bp-warn" hidden></p></div></section>' +
-            '<section><h4>Высота и этажи</h4><canvas class="bp-hist" height="64"></canvas>' +
-              '<div class="bp-floors"></div>' +
-              '<div class="bp-row"><label>от <input type="number" step="0.05" data-k="hmin"> м</label><label>до <input type="number" step="0.05" data-k="hmax"> м</label><button type="button" class="btn xs ghost" data-act="clearH">Все высоты</button></div></section>' +
-            (hasRoute ? '<section><h4>Маршрут сканера</h4>' +
-              '<label class="bp-chk"><input type="checkbox" data-k="routeOn"> Только точки около маршрута</label>' +
-              '<div class="bp-row"><label>Дальность <input type="number" min="1" max="200" step="1" data-k="radius" value="15"> м</label></div>' +
-              '<div class="bp-row bp-span"><label>Участок с <input type="range" min="0" max="100" value="0" data-k="rfrom"></label><label>по <input type="range" min="0" max="100" value="100" data-k="rto"></label></div>' +
-              '<p class="bp-note bp-routeinfo"></p></section>' : '') +
-            '<section><h4>Очистка и цвет</h4>' +
-              '<div class="bp-row"><label>Шум (одиночные точки) <select data-k="noise"><option value="none">Не удалять</option><option value="low">Слабо</option><option value="mid">Средне</option><option value="high">Сильно</option></select></label></div>' +
-              '<div class="bp-row"><label>Окраска после загрузки <select data-k="color">' + (ov.file.colored ? '<option value="rgb">Цвет сканера</option>' : '') + '<option value="elev">Высота</option>' +
-                (ov.file.intensity ? '<option value="intensity">Интенсивность</option>' : '') + (ov.file.classification ? '<option value="classification">Классы</option>' : '') + '</select></label></div>' +
-              '<label class="bp-chk"><input type="checkbox" data-k="dontAsk"> Показывать это окно только для облаков больше 20 млн точек</label></section>' +
+            '<div class="bp-kpis">' + kpis.map(function (k) { return '<div class="bp-kpi" title="' + esc(k[2]) + '"><b>' + esc(k[0]) + '</b><span>' + esc(k[1]) + '</span></div>'; }).join('') + '</div>' +
+            '<div class="bp-tabs" role="tablist"><button type="button" role="tab" data-tab="load" class="on">Загрузка</button><button type="button" role="tab" data-tab="info">Сведения</button></div>' +
+            '<div class="bp-pane" data-pane="load">' +
+              '<section><h4>Точки на экране</h4><div class="bp-pts">' +
+                '<div class="bp-ptsval"><b></b><span></span></div>' +
+                '<div class="bp-range"><input type="range" min="0" max="1000" step="1" aria-label="Число точек"><i class="bp-mk rec" title="Рекомендовано для этого компьютера"></i><i class="bp-mk max" title="Наибольшее надёжное"></i></div>' +
+                '<div class="bp-seg bp-presets" role="group" aria-label="Предел точек"><button type="button" data-pre="fast" title="До 20 млн точек — быстро">Быстро</button><button type="button" data-pre="rec" title="Рекомендовано для этого компьютера">Рекоменд.</button><button type="button" data-pre="max" title="Наибольшее надёжное для этого компьютера">Максимум</button><button type="button" data-pre="all" title="Все точки файла">Все</button></div>' +
+                '<p class="bp-warn" hidden></p></div></section>' +
+              '<section><h4>Высота</h4><canvas class="bp-hist" height="56"></canvas>' +
+                '<div class="bp-floors"></div>' +
+                '<div class="bp-row"><label>от <input type="number" step="0.05" data-k="hmin"></label><label>до <input type="number" step="0.05" data-k="hmax"> м</label><button type="button" class="btn xs ghost" data-act="clearH" title="Все высоты">Сброс</button></div></section>' +
+              (hasRoute ? '<section><h4>Маршрут</h4>' +
+                '<div class="bp-row"><label class="bp-chk" title="Загрузить только точки около маршрута сканера"><input type="checkbox" data-k="routeOn"> Около маршрута</label>' +
+                  '<label title="Дальность от маршрута"><input type="number" min="1" max="200" step="1" data-k="radius" value="15"> м</label></div>' +
+                '<div class="bp-row bp-span"><input type="range" min="0" max="100" value="0" data-k="rfrom" aria-label="Участок с" title="Начало участка"><input type="range" min="0" max="100" value="100" data-k="rto" aria-label="Участок по" title="Конец участка"></div>' +
+                '<p class="bp-note bp-routeinfo"></p></section>' : '') +
+              '<section><h4>Очистка</h4>' +
+                '<div class="bp-seg bp-noise" role="group" aria-label="Шум">' + noiseSeg.map(function (x) { return '<button type="button" data-noise="' + x[0] + '" title="' + esc(x[2]) + '">' + x[1] + '</button>'; }).join('') + '</div>' +
+                '<select data-k="noise" hidden aria-hidden="true">' + noiseSeg.map(function (x) { return '<option value="' + x[0] + '">' + x[1] + '</option>'; }).join('') + '</select>' +
+                '<div class="bp-row"><label>Окраска <select data-k="color">' + (F.colored ? '<option value="rgb">Цвет сканера</option>' : '') + '<option value="elev">Высота</option>' +
+                  (F.intensity ? '<option value="intensity">Интенсивность</option>' : '') + (F.classification ? '<option value="classification">Классы</option>' : '') + '</select></label></div>' +
+                '<label class="bp-chk" title="Небольшие облака будут открываться сразу"><input type="checkbox" data-k="dontAsk"> Только для облаков больше 20 млн</label></section>' +
+            '</div>' +
+            '<div class="bp-pane" data-pane="info" hidden>' +
+              '<section><table class="bp-facts"></table></section>' +
+              '<section><h4>Компьютер</h4><div class="bp-pc"></div></section>' +
+            '</div>' +
           '</div>' +
         '</div>' +
         '<div class="form-actions bp-actions">' +
-          '<button type="button" class="btn sm" data-act="plan">' + ic('pencil-ruler', 15) + ' План в DXF…</button>' +
-          '<button type="button" class="btn sm" data-act="report">' + ic('file-text', 15) + ' PDF-отчёт…</button>' +
-          '<span class="bp-sp"></span><button type="button" class="btn sm" data-act="cancel">Отмена</button>' +
+          '<button type="button" class="btn sm ghost" data-act="plan" title="План этажа из облака: стены, проёмы, размеры">' + ic('pencil-ruler', 15) + ' DXF</button>' +
+          '<button type="button" class="btn sm ghost" data-act="report" title="PDF-отчёт по облаку">' + ic('file-text', 15) + ' PDF</button>' +
+          '<div class="bp-est" aria-live="polite"></div>' +
+          '<button type="button" class="btn sm" data-act="cancel">Отмена</button>' +
           '<button type="button" class="btn sm primary" data-act="load">Загрузить</button></div>' +
         '</div>';
       var card = back.querySelector('.bp-card'), cv = back.querySelector('.bp-map canvas'), q = function (s) { return back.querySelector(s); };
@@ -335,15 +406,17 @@
       q('.bp-facts').innerHTML = facts(ov).map(function (r) { return '<tr><th>' + esc(r[0]) + '</th><td>' + esc(r[1]) + '</td></tr>'; }).join('');
       if (cap && cap.ok) {
         var gpu = cap.gpu || {}, ram = cap.ram || {};
-        q('.bp-pc').innerHTML = '<div>' + esc(gpu.name || 'Видеокарта не определена') + (gpu.vramTotal ? ' · ' + fmtBytes(gpu.vramTotal) + ' видеопамяти' + (gpu.vramFree ? ' (свободно ' + fmtBytes(gpu.vramFree) + ')' : '') : '') + '</div>' +
-          '<div>Оперативная память: ' + fmtBytes(ram.total) + ' (свободно ' + fmtBytes(ram.free) + ')</div>' +
-          (rec ? '<div class="bp-rec">Рекомендовано: <b>' + fmtMln(rec.points) + ' млн</b> точек · наибольшее надёжное: <b>' + fmtMln(rec.safeMax) + ' млн</b>' +
-            (rec.notes && rec.notes.length ? '<br><span class="bp-note">' + esc(rec.notes.join('; ')) + '</span>' : '') + '</div>' : '');
-      } else q('.bp-pc').textContent = 'Сведения о компьютере недоступны — принят предел ' + fmtMln(budget) + ' млн точек.';
+        q('.bp-pc').innerHTML = '<div>' + esc(gpu.name || 'Видеокарта не определена') + (gpu.vramTotal ? ' · ' + fmtBytes(gpu.vramTotal) + (gpu.vramFree ? ' (свободно ' + fmtBytes(gpu.vramFree) + ')' : '') : '') + '</div>' +
+          '<div>Память ' + fmtBytes(ram.total) + ' (свободно ' + fmtBytes(ram.free) + ')</div>' +
+          (rec ? '<div class="bp-rec">Рекомендовано <b>' + fmtMln(rec.points) + ' млн</b> · максимум <b>' + fmtMln(rec.safeMax) + ' млн</b></div>' +
+            (rec.notes && rec.notes.length ? '<div class="bp-note">' + esc(rec.notes.join('; ')) + '</div>' : '') : '');
+      } else q('.bp-pc').textContent = 'Сведения о компьютере недоступны — предел ' + fmtMln(budget) + ' млн точек.';
+      // вкладки
+      back.querySelectorAll('[data-tab]').forEach(function (t) { t.onclick = function () { var k = t.getAttribute('data-tab'); back.querySelectorAll('[data-tab]').forEach(function (x) { x.classList.toggle('on', x === t); x.setAttribute('aria-selected', x === t ? 'true' : 'false'); }); back.querySelectorAll('[data-pane]').forEach(function (p) { p.hidden = p.getAttribute('data-pane') !== k; }); if (k === 'load') paintHist(); }; });
       // этажи
       var fl = q('.bp-floors');
-      fl.innerHTML = floors.map(function (f, i) { return '<button type="button" class="btn xs" data-floor="' + i + '" title="Загрузить высоты ' + fmtNum(f.min, 2) + '…' + fmtNum(f.max, 2) + ' м">' + esc(f.name) + ' · пол ' + fmtNum(f.floor, 2) + ' м</button>'; }).join('') +
-        (floors.length ? '<button type="button" class="btn xs" data-act="noCeil" title="Срезать потолок выбранного этажа (15 см ниже перекрытия)">Без потолка</button>' : '<span class="bp-note">Горизонтальные перекрытия не найдены — задайте высоты вручную</span>');
+      fl.innerHTML = floors.map(function (f, i) { return '<button type="button" class="btn xs" data-floor="' + i + '" title="' + esc(f.name) + ': пол ' + fmtNum(f.floor, 2) + ' м, высоты ' + fmtNum(f.min, 2) + '…' + fmtNum(f.max, 2) + ' м">' + esc(f.name.replace(/^Этаж /, 'Эт. ')) + ' <small>' + fmtNum(f.floor, 1) + '</small></button>'; }).join('') +
+        (floors.length ? '<button type="button" class="btn xs" data-act="noCeil" title="Срезать потолок выбранного этажа (15 см ниже перекрытия)">Без потолка</button>' : '<span class="bp-note">Этажи не найдены — высоты вручную</span>');
       function setView(v) { st.view = v; back.querySelectorAll('[data-view]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-view') === v); }); paint(); }
       var mask = null, maskKey = '';
       function curFilter() {
@@ -362,20 +435,21 @@
       function update() {
         var e = est(), after = e.points, load = Math.min(after, st.points);
         q('.bp-ptsval b').textContent = st.points >= total ? 'Все точки' : fmtMln(st.points) + ' млн';
-        q('.bp-ptsval span').textContent = ' из ' + fmtMln(total) + ' млн в файле';
+        q('.bp-ptsval span').textContent = 'из ' + fmtMln(total) + ' млн';
         var warn = q('.bp-warn');
-        if (st.points > safePts) { warn.hidden = false; warn.textContent = 'Больше наибольшего надёжного для этого компьютера (' + fmtMln(safePts) + ' млн): видеокарта может сбросить изображение (белый экран).'; }
+        if (st.points > safePts) { warn.hidden = false; warn.textContent = 'Больше надёжного максимума (' + fmtMln(safePts) + ' млн) — возможен белый экран'; warn.title = 'Видеокарта этого компьютера может сбросить изображение'; }
         else warn.hidden = true;
         var share = after > 0 ? load / after : 1;
-        q('.bp-est').innerHTML = '<b>Будет загружено ≈ ' + fmtMln(load) + ' млн точек</b>' +
-          (curFilter() ? ' · после области и фильтров ≈ ' + fmtMln(after) + ' млн (' + fmtNum(e.frac * 100, 1) + ' % файла)' : '') +
-          (share < 0.999 ? ' · равномерно 1 из ' + fmtNum(1 / Math.max(1e-6, share), 1) : '') +
-          ' · ≈ ' + fmtBytes(load * 16) + ' видеопамяти, ≈ ' + fmtBytes(load * 20) + ' оперативной' + (st.noise !== 'none' ? ' · шум убирается при чтении' : '');
-        var lb = q('[data-act="load"]'); lb.textContent = 'Загрузить ≈ ' + fmtMln(load) + ' млн';
+        var fl0 = curFilter(), estEl = q('.bp-est');
+        estEl.innerHTML = (fl0 ? '<span>' + fmtNum(e.frac * 100, e.frac < 0.1 ? 1 : 0) + ' % файла</span>' : '') +
+          (share < 0.999 ? '<span>1 из ' + fmtNum(1 / Math.max(1e-6, share), 1) + '</span>' : '') + '<span>' + fmtBytes(load * 16) + ' видео</span>';
+        estEl.title = 'Будет загружено ≈ ' + fmtMln(load) + ' млн точек' + (fl0 ? ' (после области и фильтров ≈ ' + fmtMln(after) + ' млн)' : '') +
+          (share < 0.999 ? ', равномерно 1 из ' + fmtNum(1 / Math.max(1e-6, share), 1) : '') + '; ≈ ' + fmtBytes(load * 16) + ' видеопамяти, ≈ ' + fmtBytes(load * 20) + ' оперативной' + (st.noise !== 'none' ? '; шум убирается при чтении' : '');
+        var lb = q('[data-act="load"]'); lb.textContent = 'Загрузить ' + fmtMln(load) + ' млн';
         lb.disabled = after <= 0;
         if (hasRoute) {
           var ri = q('.bp-routeinfo');
-          if (ri) { var a0 = st.route ? st.route.from : 0, a1 = st.route ? st.route.to : 1; ri.textContent = 'Участок: ' + fmtDur(tr.duration * a0) + ' — ' + fmtDur(tr.duration * a1) + ' от начала съёмки (≈ ' + fmtNum(tr.length * (a1 - a0), 0) + ' м пути)'; }
+          if (ri) { var a0 = st.route ? st.route.from : 0, a1 = st.route ? st.route.to : 1; ri.textContent = fmtDur(tr.duration * a0) + ' — ' + fmtDur(tr.duration * a1) + ' · ' + fmtNum(tr.length * (a1 - a0), 0) + ' м'; ri.title = 'Участок маршрута от начала съёмки'; }
         }
         paintHist();
       }
@@ -398,7 +472,12 @@
         vw = drawMap(cv, ov, st, { dpr: dpr, drag: drag });
       }
       function setPoints(p) { st.points = Math.max(Math.min(total, MIN_POINTS), Math.min(total, Math.round(p))); range.value = String(pointsToSlider(st.points, total)); paintRange(); update(); }
-      function paintRange() { range.style.setProperty('--f', String(range.value / 1000)); }
+      function paintRange() {
+        range.style.setProperty('--f', String(range.value / 1000));
+        var near = function (x) { return Math.abs(pointsToSlider(x, total) - (+range.value)) <= 2; };
+        var val = { fast: Math.min(20e6, recPts), rec: recPts, max: safePts, all: total }, pick = ['all', 'max', 'rec', 'fast'].filter(function (k) { return near(val[k]); })[0] || '';
+        back.querySelectorAll('[data-pre]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-pre') === pick); });
+      }
       var mkRec = q('.bp-mk.rec'), mkMax = q('.bp-mk.max');
       mkRec.style.left = (pointsToSlider(recPts, total) / 10) + '%'; mkMax.style.left = (pointsToSlider(safePts, total) / 10) + '%';
       if (recPts >= total) mkRec.hidden = true; if (safePts >= total) mkMax.hidden = true;
@@ -422,7 +501,10 @@
         [ron, rad, rf, rt].forEach(function (e) { e.addEventListener('input', syncRoute); e.addEventListener('change', syncRoute); });
         q('[data-k="showRoute"]').addEventListener('change', function (e) { st.showRoute = e.target.checked; paint(); });
       }
-      q('[data-k="noise"]').addEventListener('change', function (e) { st.noise = e.target.value; update(); });
+      var noiseSel = q('[data-k="noise"]');
+      function setNoise(v) { st.noise = v; noiseSel.value = v; back.querySelectorAll('[data-noise]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-noise') === v); }); update(); }
+      noiseSel.addEventListener('change', function (e) { setNoise(e.target.value); });
+      back.querySelectorAll('[data-noise]').forEach(function (b) { b.onclick = function () { setNoise(b.getAttribute('data-noise')); }; });
       var colorSel = q('[data-k="color"]'); colorSel.value = st.color; colorSel.addEventListener('change', function () { st.color = colorSel.value; });
       q('[data-act="clearRect"]').onclick = function () { st.rect = null; update(); paint(); };
       q('[data-act="clearH"]').onclick = function () { curFloor = null; fl.querySelectorAll('[data-floor]').forEach(function (x) { x.classList.remove('on'); }); setH(null); };
@@ -454,52 +536,67 @@
       D.addEventListener('keydown', onKey, true); W.addEventListener('resize', paint);
       D.body.appendChild(back); if (kit() && kit().hydrate) kit().hydrate(back); back.classList.add('open');
       if (ov.file.points < LARGE) { var da = q('[data-k="dontAsk"]'); if (da) da.closest('label').hidden = true; }
-      setView(st.view); setPoints(st.points);
+      setView(st.view); setPoints(st.points); setNoise(st.noise);
       requestAnimationFrame(function () { paint(); paintHist(); });
       void card;
     });
   }
 
-  // ------------------------------------------------------------------ план из облака → DXF
+  // ------------------------------------------------------------------ план из облака → DXF (текущий этаж или все этажи в одном файле)
   async function planDxf(path, ov, st, repaint, btn) {
     var A = api(), k = kit(); if (!A || !A.cloudPlan || !k || !k.form) { toast('План из облака доступен в настольной версии', true); return; }
-    var floors = storeys(ov.levels, ov.bbox), floor = st && st.hf ? (floors.find(function (f) { return f.min <= st.hf.min + 0.2 && f.max >= st.hf.min; }) || floors[0]) : floors[0];
+    var floors = storeys(ov.levels, ov.bbox, ovRoute(ov)), floor = st && st.hf ? (floors.find(function (f) { return f.min <= st.hf.min + 0.2 && f.max >= st.hf.min; }) || floors[0]) : floors[0];
     var floorH = floor ? floor.floor : (ov.levels && ov.levels[0] ? ov.levels[0].h : (ov.bbox.core || ov.bbox).h0);
-    var v = await k.form({ title: 'План из облака (DXF для AutoCAD)', wide: true,
-      message: 'Горизонтальный срез облака на заданной высоте над полом → грани стен, проёмы, толщины стен, помещения с площадями и размеры. Пол: +' + fmtNum(floorH, 2) + ' м' + (floor ? ' (' + floor.name + ')' : '') + '.',
-      fields: [
-        { key: 'hc', label: 'Высота среза над полом', type: 'number', value: 1.2, step: 0.05, min: 0.2, max: 4, unit: 'м', hint: 'Выше мебели и ниже окон-верхов: 1,1–1,3 м' },
-        { key: 'th', label: 'Толщина среза', type: 'number', value: 0.1, step: 0.01, min: 0.02, max: 0.5, unit: 'м' },
-        { key: 'units', label: 'Единицы чертежа', type: 'select', value: 'mm', options: [{ value: 'mm', label: 'миллиметры' }, { value: 'm', label: 'метры' }] },
-        { key: 'origin', label: 'Координаты', type: 'select', value: ov.file.crs || (ov.origin && ov.origin.zup && Math.abs(ov.origin.cx) > 1000) ? 'world' : 'local', options: [{ value: 'local', label: 'местные (от угла плана)' }, { value: 'world', label: 'как в облаке (мировые)' }] },
-        { key: 'ortho', label: 'Стены только под прямым углом', type: 'checkbox', value: false },
-        { key: 'route', label: 'Маршрут сканера на чертеже', type: 'checkbox', value: !!(ov.trajectory && ov.trajectory.aligned !== false) },
-        { key: 'onlyRect', label: 'Только выбранная на карте область', type: 'checkbox', value: !!(st && st.rect), showIf: function () { return !!(st && st.rect); } }
-      ], okLabel: 'Построить план' });
+    var hasRoute = !!ovRoute(ov), fields = [];
+    if (floors.length > 1) fields.push({ key: 'which', label: 'Этажи', type: 'select', value: 'cur', options: [{ value: 'cur', label: (floor ? floor.name : 'Текущий') + ' (пол +' + fmtNum(floorH, 2) + ' м)' }, { value: 'all', label: 'Все этажи (' + floors.length + ') — в одном DXF' }] });
+    fields.push(
+      { key: 'hc', label: 'Срез над полом', type: 'number', value: 1.2, step: 0.05, min: 0.2, max: 4, unit: 'м', hint: 'Выше мебели, ниже верха окон: 1,1–1,3 м' },
+      { key: 'th', label: 'Толщина среза', type: 'number', value: 0.1, step: 0.01, min: 0.02, max: 0.5, unit: 'м' },
+      { key: 'units', label: 'Единицы', type: 'select', value: 'mm', options: [{ value: 'mm', label: 'миллиметры' }, { value: 'm', label: 'метры' }] },
+      { key: 'origin', label: 'Координаты', type: 'select', value: ov.file.crs || (ov.origin && ov.origin.zup && Math.abs(ov.origin.cx) > 1000) ? 'world' : 'local', options: [{ value: 'local', label: 'местные (от угла плана)' }, { value: 'world', label: 'как в облаке' }] },
+      { key: 'ortho', label: 'Стены под прямым углом', type: 'checkbox', value: false });
+    if (hasRoute) fields.push({ key: 'route', label: 'Маршрут сканера', type: 'checkbox', value: true });
+    if (st && st.rect) fields.push({ key: 'onlyRect', label: 'Только область с карты', type: 'checkbox', value: true });
+    var v = await k.form({ title: 'План в DXF', wide: true, message: floors.length ? 'Пол ' + (floor ? floor.name.toLowerCase() : '') + ': +' + fmtNum(floorH, 2) + ' м. Размеры — объекты DIMENSION.' : 'Этажи не найдены — срез от низа облака.', fields: fields, okLabel: 'Построить' });
     if (!v) return;
-    var id = jobId(), act = k.activity ? k.activity('План из облака…') : null, off = A.onCloudPlanProgress ? A.onCloudPlanProgress(id, function (p, l) { if (act) act.set(p, l || 'План из облака…'); }) : function () {};
+    var list = v.which === 'all' ? floors : [floor || { name: 'Этаж 1', floor: floorH }];
+    var act = k.activity ? k.activity('План из облака…') : null;
     if (btn && k.busy) k.busy(btn, true);
-    var h0 = floorH + v.hc - v.th / 2, h1 = floorH + v.hc + v.th / 2;
+    var items = [], fails = [], tot = 0;
     try {
-      var r = await A.cloudPlan({ path: path, jobId: id, h0: h0, h1: h1, rect: v.onlyRect && st && st.rect ? st.rect : null, plan: { ortho: !!v.ortho } });
-      if (!r || !r.ok || !r.plan || !r.plan.ok) { toast('План не построен: ' + ((r && (r.message || (r.plan && r.plan.message))) || 'нет стен в срезе'), true); return; }
-      var plan = r.plan; if (st) { st.plan = plan; if (repaint) repaint(); }
-      lastPlan.set(path, plan);
-      var AP = W.AutoPlan, title = stem(path) + ' — план на +' + fmtNum(v.hc, 2) + ' м над полом';
-      var text = AP.toDXF(plan, { units: v.units, origin: v.origin, world: { cx: ov.origin.cx, cy: ov.origin.cy }, route: v.route && ov.trajectory ? ov.trajectory.route : null, title: title,
-        subtitle: 'BIM Twin · срез ' + fmtNum(h0, 2) + '…' + fmtNum(h1, 2) + ' м · точек в срезе ' + fmtInt(r.slice && r.slice.count) });
+      for (var i = 0; i < list.length; i++) {
+        var f = list[i], id = jobId(), h0 = f.floor + v.hc - v.th / 2, h1 = f.floor + v.hc + v.th / 2, lab = list.length > 1 ? f.name + ' (' + (i + 1) + ' из ' + list.length + ')' : 'План из облака…';
+        var off = A.onCloudPlanProgress ? A.onCloudPlanProgress(id, function (p, l) { if (act) act.set((i + Math.max(0, Math.min(1, +p || 0))) / list.length, lab); }) : function () {};
+        var r;
+        try { r = await A.cloudPlan({ path: path, jobId: id, h0: h0, h1: h1, rect: v.onlyRect && st && st.rect ? st.rect : null, plan: { ortho: !!v.ortho } }); } finally { off(); }
+        if (!r || !r.ok || !r.plan || !r.plan.ok) { fails.push(f.name + ': ' + ((r && (r.message || (r.plan && r.plan.message))) || 'нет стен в срезе')); continue; }
+        tot += (r.slice && r.slice.count) || 0;
+        items.push({ plan: r.plan, floor: f, title: (list.length > 1 || floors.length > 1 ? f.name + ' — ' : stem(path) + ' — ') + 'план на +' + fmtNum(v.hc, 2) + ' м над полом',
+          subtitle: 'BIM Twin · ' + stem(path) + ' · срез ' + fmtNum(h0, 2) + '…' + fmtNum(h1, 2) + ' м · точек ' + fmtInt(r.slice && r.slice.count) });
+      }
+      if (!items.length) { toast('План не построен — ' + fails.join('; '), true); return; }
+      var plan = items[0].plan; if (st) { st.plan = plan; if (repaint) repaint(); }
+      lastPlan.set(path, plan); lastPlans.set(path, items);
+      var AP = W.AutoPlan, o = { units: v.units, origin: v.origin, world: { cx: ov.origin.cx, cy: ov.origin.cy }, route: v.route && hasRoute ? ov.trajectory.route : null };
+      var text = items.length > 1 ? AP.toDXF(items.map(function (x) { return { plan: x.plan, title: x.title, subtitle: x.subtitle }; }), o)
+        : AP.toDXF(plan, Object.assign(o, { title: items[0].title, subtitle: items[0].subtitle }));
       var dirs = A.projectFolder ? await A.projectFolder('get') : null;
-      var name = stem(path) + '-план.dxf', def = dirs && dirs.ok ? joinPath(dirs.drawings, name) : name;
+      var name = stem(path) + (items.length > 1 ? '-планы.dxf' : '-план.dxf'), def = dirs && dirs.ok ? joinPath(dirs.drawings, name) : name;
       var sv = await A.exportFile({ text: text, ext: 'dxf', name: def, title: 'Сохранить план DXF', filterName: 'Чертёж AutoCAD DXF' });
-      var pl = function (n, a, b, c) { var m = Math.abs(n) % 100, d = m % 10; return n + ' ' + (m > 10 && m < 20 ? c : d === 1 ? a : d >= 2 && d <= 4 ? b : c); };
-      var sum = pl(plan.stats.faces, 'грань', 'грани', 'граней') + ' стен, ' + pl(plan.stats.openings, 'проём', 'проёма', 'проёмов') + ', ' + pl(plan.rooms.length, 'помещение', 'помещения', 'помещений') + (plan.rooms.length ? ': ' + plan.rooms.slice(0, 4).map(function (x) { return fmtNum(x.area, 2) + ' м²'; }).join(', ') : '');
-      if (sv && sv.ok) toast('Готово: план сохранён — ' + sv.path + ' (' + sum + ')');
+      var sum = items.length > 1 ? plural(items.length, 'этаж', 'этажа', 'этажей') + ': ' + items.map(function (x) { return x.floor.name + ' — ' + summary(x.plan); }).join('; ') : summary(plan);
+      if (fails.length) sum += '. Не построено: ' + fails.join('; ');
+      if (sv && sv.ok) toast('Готово: ' + baseName(sv.path) + ' (' + sum + ')');
       else if (!(sv && sv.canceled)) toast('Не удалось сохранить DXF: ' + ((sv && sv.error) || ''), true);
       else toast('План построен (' + sum + '), файл не сохранён');
     } catch (e) { toast('Ошибка плана: ' + (e && e.message || e), true); }
-    finally { off(); if (act) act.done(); if (btn && k.busy) k.busy(btn, false); }
+    finally { if (act) act.done(); if (btn && k.busy) k.busy(btn, false); }
   }
-  var lastPlan = new Map();
+  function plural(n, a, b, c) { var m = Math.abs(n) % 100, d = m % 10; return n + ' ' + (m > 10 && m < 20 ? c : d === 1 ? a : d >= 2 && d <= 4 ? b : c); }
+  function summary(plan) {
+    return plural(plan.stats.faces, 'грань', 'грани', 'граней') + ' стен, ' + plural(plan.stats.openings, 'проём', 'проёма', 'проёмов') + ', ' + plural(plan.rooms.length, 'помещение', 'помещения', 'помещений') +
+      (plan.rooms.length ? ': ' + plan.rooms.slice(0, 4).map(function (x) { return fmtNum(x.area, 2) + ' м²'; }).join(', ') : '');
+  }
+  var lastPlan = new Map(), lastPlans = new Map();
 
   // ------------------------------------------------------------------ PDF-отчёт
   async function report(path, ov, cap, st, btn) {
@@ -516,8 +613,9 @@
       try { if (v && v.canvas && v.base && v.base.length) { v.render(); snap = v.canvas.toDataURL('image/jpeg', 0.88); } } catch (_) {}
       var ver = ''; try { ver = A.getVersion ? await A.getVersion() : ''; } catch (_) {}
       var project = ''; try { var dd = A.getData ? await A.getData() : null; project = dd && dd.project ? dd.project.name || '' : ''; } catch (_) {}
-      var html = W.CloudReport.build({ ov: ov, capacity: cap, plan: plan, maps: maps, snapshot: snap, fileName: baseName(path), project: project, appVersion: ver,
-        load: lastPre.get(path) || null, facts: facts(ov), storeys: storeys(ov.levels, ov.bbox) });
+      var many = lastPlans.get(path), plans = many && many.length > 1 ? many.map(function (x) { return { plan: x.plan, title: x.floor.name + ', пол +' + fmtNum(x.floor.floor, 2) + ' м' }; }) : null;
+      var html = W.CloudReport.build({ ov: ov, capacity: cap, plan: plan, plans: plans, maps: maps, snapshot: snap, fileName: baseName(path), project: project, appVersion: ver,
+        load: lastPre.get(path) || null, facts: facts(ov), storeys: storeys(ov.levels, ov.bbox, ovRoute(ov)) });
       var r = await A.saveReportPdf({ html: html, name: stem(path) + ' — отчёт.pdf' });
       if (r && r.ok) toast('Готово: PDF-отчёт сохранён — ' + r.path); else if (!(r && r.canceled)) toast('Не удалось сохранить PDF: ' + ((r && r.message) || ''), true);
     } catch (e) { toast('Ошибка отчёта: ' + (e && e.message || e), true); }
@@ -541,7 +639,7 @@
   }
   async function maybeOpen(path, o) {
     o = o || {};
-    if (!/\.(las|ply)$/i.test(String(path || ''))) return null;
+    if (!/\.(las|ply|e57)$/i.test(String(path || ''))) return null;
     var force = forceNext || !!o.force; forceNext = false;
     var m = mode(); if (m === 'never' && !force) return null;
     var ov = await overviewFor(path, force, m === 'large' ? LARGE : 1000000);
@@ -562,8 +660,8 @@
   }
   async function currentOverview() {
     var p = W.__bimLastCloudPath ? W.__bimLastCloudPath() : null;
-    if (!p) { toast('Сначала откройте облако LAS или PLY', true); return null; }
-    if (!/\.(las|ply)$/i.test(p)) { toast('Карта и отчёт до загрузки — для облаков LAS и PLY', true); return null; }
+    if (!p) { toast('Сначала откройте облако LAS, PLY или E57', true); return null; }
+    if (!/\.(las|ply|e57)$/i.test(p)) { toast('Карта и отчёт до загрузки — для облаков LAS, PLY и E57', true); return null; }
     var ov = lastOv.get(p) || await overviewFor(p, true);
     if (!ov) { toast('Не удалось построить карту облака', true); return null; }
     return { path: p, ov: ov };

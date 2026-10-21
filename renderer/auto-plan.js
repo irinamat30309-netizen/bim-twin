@@ -345,6 +345,16 @@
     closeCorners(segs, o.snap);
     segs.forEach(function (s) { s.length = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]); });
     segs = segs.filter(function (s) { return s.length >= o.minLen; });
+    // мусор реальных сканов: короткие (< 0,8 м) грани, рядом с концами которых нет других граней (мебель, люди, предметы в срезе)
+    var clutter = 0;
+    if (opts.clutter !== false && segs.length > 8) {
+      var near = function (p, t) { var dx = t.b[0] - t.a[0], dy = t.b[1] - t.a[1], L2 = dx * dx + dy * dy || 1, k = Math.max(0, Math.min(1, ((p[0] - t.a[0]) * dx + (p[1] - t.a[1]) * dy) / L2)); return Math.hypot(p[0] - t.a[0] - k * dx, p[1] - t.a[1] - k * dy); };
+      var keep = segs.filter(function (sg) {
+        if (sg.length >= (opts.clutterLen || 0.8)) return true;
+        return segs.some(function (t) { return t !== sg && (near(sg.a, t) < 0.3 || near(sg.b, t) < 0.3 || near(t.a, sg) < 0.3 || near(t.b, sg) < 0.3); });
+      });
+      clutter = segs.length - keep.length; segs = keep;
+    }
     var openSegs = openings.map(function (p) { return { a: toWorld(p.phi, p.x0, p.y), b: toWorld(p.phi, p.x1, p.y), width: p.width, phi: p.phi }; });
     // стены: пары параллельных граней 5–60 см с перекрытием
     var walls = [];
@@ -365,7 +375,7 @@
     var rms = opts.rooms === false ? [] : rooms(segs, openSegs, bb, { minRoom: o.minRoom, mainPhi: dirs[0], segs: segs });
     var total = segs.reduce(function (s, x) { return s + x.length; }, 0);
     return { ok: true, faces: segs, openings: openSegs, walls: walls, rooms: rms, directions: dirs.map(function (d) { return d / DEG; }), bbox: bb,
-      stats: { points: n, cell: o.cell, threshold: o.thr, faces: segs.length, openings: openSegs.length, walls: walls.length, rooms: rms.length, faceLength: total } };
+      stats: { points: n, cell: o.cell, threshold: o.thr, clutter: clutter, faces: segs.length, openings: openSegs.length, walls: walls.length, rooms: rms.length, faceLength: total } };
   }
 
   // ------------------------------------------------------------------ DXF R12
@@ -378,106 +388,142 @@
   function num(v) { if (!isFinite(v)) v = 0; var s = (+v).toFixed(4); return s.replace(/0+$/, '').replace(/\.$/, '.0'); }
   function fmtLen(m, units) { return units === 'm' ? (Math.round(m * 1000) / 1000).toFixed(3).replace('.', ',') : String(Math.round(m * 1000)); }
 
+  // Чертёж в DXF R12. plan — план одного этажа или массив [{ plan, title, subtitle, layerPrefix }] (несколько этажей).
+  // Размеры — настоящие объекты DIMENSION (выровненные) с блоком геометрии *Dn (o.dims === 'lines' — прежние линии и текст).
   function toDXF(plan, o) {
     o = o || {};
     var units = o.units === 'm' ? 'm' : 'mm', k = units === 'mm' ? 1000 : 1;
-    var ox = 0, oy = 0;
-    if (o.origin === 'world' && o.world) { ox = o.world.cx || 0; oy = o.world.cy || 0; }
-    else if (plan.bbox) { ox = -Math.floor(plan.bbox.u0); oy = -Math.floor(plan.bbox.v0); }   // местные: от угла плана, целые метры
-    var P = function (p) { return [(p[0] + ox) * k, (p[1] + oy) * k]; };
-    var ents = [], ext = { a: Infinity, b: Infinity, c: -Infinity, d: -Infinity };
+    var asDims = o.dims !== 'lines';
+    var items = Array.isArray(plan) ? plan.filter(function (it) { return it && it.plan; }) : [{ plan: plan, title: o.title, subtitle: o.subtitle }];
+    var multi = Array.isArray(plan);
+    var ents = [], blocks = [], ext = { a: Infinity, b: Infinity, c: -Infinity, d: -Infinity }, layerSet = {}, layerOrder = [];
+    var nDim = 0, dimCount = 0;
+    var baseLayers = [['A-WALL', 7], ['A-OPEN', 3], ['A-DIMS', 2], ['A-THK', 8], ['A-ROOM', 4], ['A-ROUTE', 1], ['A-INFO', 7]];
+    function addLayer(name, color) { if (!layerSet[name]) { layerSet[name] = 1; layerOrder.push([name, color]); } }
+    addLayer('0', 7);
     function grow(q) { if (q[0] < ext.a) ext.a = q[0]; if (q[0] > ext.c) ext.c = q[0]; if (q[1] < ext.b) ext.b = q[1]; if (q[1] > ext.d) ext.d = q[1]; }
-    function line(layer, a, b, color) { var A = P(a), B = P(b); grow(A); grow(B); ents.push('0\nLINE\n8\n' + layer + '\n' + (color != null ? '62\n' + color + '\n' : '') + '10\n' + num(A[0]) + '\n20\n' + num(A[1]) + '\n30\n0.0\n11\n' + num(B[0]) + '\n21\n' + num(B[1]) + '\n31\n0.0\n'); }
-    function text(layer, p, h, s, rot, center) {
-      var A = P(p); grow(A);
-      var t = '0\nTEXT\n8\n' + layer + '\n10\n' + num(A[0]) + '\n20\n' + num(A[1]) + '\n30\n0.0\n40\n' + num(h * k) + '\n1\n' + esc(s) + '\n';
-      if (rot) t += '50\n' + num(rot) + '\n';
-      if (center) t += '72\n1\n11\n' + num(A[0]) + '\n21\n' + num(A[1]) + '\n31\n0.0\n';
-      ents.push(t);
-    }
-    function pline(layer, pts, closed) {
-      var t = '0\nPOLYLINE\n8\n' + layer + '\n66\n1\n70\n' + (closed ? 1 : 0) + '\n';
-      pts.forEach(function (p) { var A = P(p); grow(A); t += '0\nVERTEX\n8\n' + layer + '\n10\n' + num(A[0]) + '\n20\n' + num(A[1]) + '\n30\n0.0\n'; });
-      ents.push(t + '0\nSEQEND\n8\n' + layer + '\n');
-    }
-    // размер: выносные линии, размерная линия с засечками 45°, текст над ней (длина в мм или м)
-    function dim(a, b, off, label, th) {
-      var d = [b[0] - a[0], b[1] - a[1]], L = Math.hypot(d[0], d[1]); if (L < 1e-6) return;
-      var nrm = [-d[1] / L, d[0] / L], A2 = [a[0] + nrm[0] * off, a[1] + nrm[1] * off], B2 = [b[0] + nrm[0] * off, b[1] + nrm[1] * off];
-      var ext1 = off > 0 ? 1 : -1;
-      line('A-DIMS', [a[0] + nrm[0] * 0.05 * ext1, a[1] + nrm[1] * 0.05 * ext1], [A2[0] + nrm[0] * 0.08 * ext1, A2[1] + nrm[1] * 0.08 * ext1]);
-      line('A-DIMS', [b[0] + nrm[0] * 0.05 * ext1, b[1] + nrm[1] * 0.05 * ext1], [B2[0] + nrm[0] * 0.08 * ext1, B2[1] + nrm[1] * 0.08 * ext1]);
-      line('A-DIMS', A2, B2);
-      var tk = 0.06, u = [d[0] / L, d[1] / L], s45 = [(u[0] + nrm[0]) * tk, (u[1] + nrm[1]) * tk];
-      line('A-DIMS', [A2[0] - s45[0], A2[1] - s45[1]], [A2[0] + s45[0], A2[1] + s45[1]]);
-      line('A-DIMS', [B2[0] - s45[0], B2[1] - s45[1]], [B2[0] + s45[0], B2[1] + s45[1]]);
-      var ang = Math.atan2(d[1], d[0]) / DEG; if (ang > 90.01) ang -= 180; if (ang <= -90.01) ang += 180;
-      var mid = [(A2[0] + B2[0]) / 2 + nrm[0] * 0.04 * (off >= 0 ? 1 : -1), (A2[1] + B2[1]) / 2 + nrm[1] * 0.04 * (off >= 0 ? 1 : -1)];
-      text('A-DIMS', mid, th || 0.12, label, ang, true);
-    }
-    var faces = plan.faces || [];
-    faces.forEach(function (s) { line('A-WALL', s.a, s.b); });
-    (plan.openings || []).forEach(function (p) { line('A-OPEN', p.a, p.b); });
-    // размеры граней — внутрь помещения (сторона, где ближе центр помещения), длинные грани
-    var centers = (plan.rooms || []).map(function (r) { return r.center; });
-    var midOf = function (s) { return [(s.a[0] + s.b[0]) / 2, (s.a[1] + s.b[1]) / 2]; };
-    // у двух граней одной стены (перегородки) размеры расходятся наружу — иначе тексты ложатся друг на друга
-    var partner = {};
-    (plan.walls || []).forEach(function (w) { if (faces[w.i] && faces[w.j]) { partner[w.i] = faces[w.j]; partner[w.j] = faces[w.i]; } });
-    var awayFrom = function (mid, nrm, other) { var m = midOf(other); return ((m[0] - mid[0]) * nrm[0] + (m[1] - mid[1]) * nrm[1]) >= 0 ? -1 : 1; };
-    faces.forEach(function (s, fi) {
-      if (s.length < (o.minDim || 0.4)) return;
-      var d = [s.b[0] - s.a[0], s.b[1] - s.a[1]], L = s.length, nrm = [-d[1] / L, d[0] / L], mid = midOf(s);
-      var side = 1;
-      if (partner[fi]) side = awayFrom(mid, nrm, partner[fi]);
-      else if (centers.length) {
-        var best = Infinity; centers.forEach(function (c) { var dd = Math.hypot(c[0] - mid[0], c[1] - mid[1]); if (dd < best) { best = dd; side = ((c[0] - mid[0]) * nrm[0] + (c[1] - mid[1]) * nrm[1]) >= 0 ? 1 : -1; } });
+    var shiftX = 0;   // для нескольких этажей в местных координатах — этажи рядом слева направо
+    items.forEach(function (it, idx) {
+      var pl = it.plan, pre = multi ? (it.layerPrefix || ('F' + (idx + 1) + '-')) : '';
+      baseLayers.forEach(function (l) { addLayer(pre + l[0], l[1]); });
+      var ox = 0, oy = 0;
+      if (o.origin === 'world' && o.world) { ox = o.world.cx || 0; oy = o.world.cy || 0; }
+      else if (pl.bbox) { ox = -Math.floor(pl.bbox.u0) + shiftX; oy = -Math.floor(pl.bbox.v0); }   // местные: от угла плана, целые метры
+      var P = function (p) { return [(p[0] + ox) * k, (p[1] + oy) * k]; };
+      var lext = { a: Infinity, b: Infinity, c: -Infinity, d: -Infinity };
+      function g2(q) { grow(q); if (q[0] < lext.a) lext.a = q[0]; if (q[0] > lext.c) lext.c = q[0]; if (q[1] < lext.b) lext.b = q[1]; if (q[1] > lext.d) lext.d = q[1]; }
+      function lineS(layer, A, B, color) { return '0\nLINE\n8\n' + layer + '\n' + (color != null ? '62\n' + color + '\n' : '') + '10\n' + num(A[0]) + '\n20\n' + num(A[1]) + '\n30\n0.0\n11\n' + num(B[0]) + '\n21\n' + num(B[1]) + '\n31\n0.0\n'; }
+      function textS(layer, A, H, s, rot, center) {
+        var t = '0\nTEXT\n8\n' + layer + '\n10\n' + num(A[0]) + '\n20\n' + num(A[1]) + '\n30\n0.0\n40\n' + num(H) + '\n1\n' + esc(s) + '\n';
+        if (rot) t += '50\n' + num(rot) + '\n';
+        if (center) t += '72\n1\n11\n' + num(A[0]) + '\n21\n' + num(A[1]) + '\n31\n0.0\n';
+        return t;
       }
-      dim(s.a, s.b, 0.35 * side, fmtLen(L, units));
-    });
-    var ops = plan.openings || [];
-    ops.forEach(function (p, pi) {
-      var d = [p.b[0] - p.a[0], p.b[1] - p.a[1]], L = Math.hypot(d[0], d[1]) || 1, nrm = [-d[1] / L, d[0] / L], mid = midOf(p), side = -1;
-      // тот же проём, видимый с другой грани стены (дверь в перегородке), — размер по другую сторону
-      ops.forEach(function (q, qi) {
-        if (qi === pi) return; var m = midOf(q), dd = Math.hypot(m[0] - mid[0], m[1] - mid[1]);
-        var dq = [q.b[0] - q.a[0], q.b[1] - q.a[1]], cr = Math.abs(d[0] * dq[1] - d[1] * dq[0]) / (L * (Math.hypot(dq[0], dq[1]) || 1));
-        if (dd < 0.5 && cr < 0.05) side = awayFrom(mid, nrm, q);
+      function line(layer, a, b, color) { var A = P(a), B = P(b); g2(A); g2(B); ents.push(lineS(pre + layer, A, B, color)); }
+      function text(layer, p, h, s, rot, center) { var A = P(p); g2(A); ents.push(textS(pre + layer, A, h * k, s, rot, center)); }
+      function pline(layer, pts, closed) {
+        var L = pre + layer, t = '0\nPOLYLINE\n8\n' + L + '\n66\n1\n70\n' + (closed ? 1 : 0) + '\n';
+        pts.forEach(function (p) { var A = P(p); g2(A); t += '0\nVERTEX\n8\n' + L + '\n10\n' + num(A[0]) + '\n20\n' + num(A[1]) + '\n30\n0.0\n'; });
+        ents.push(t + '0\nSEQEND\n8\n' + L + '\n');
+      }
+      // размер: выносные линии, размерная линия с засечками 45°, текст над ней (длина в мм или м)
+      function dim(a, b, off, label, th) {
+        var d = [b[0] - a[0], b[1] - a[1]], L = Math.hypot(d[0], d[1]); if (L < 1e-6) return;
+        var nrm = [-d[1] / L, d[0] / L], A2 = [a[0] + nrm[0] * off, a[1] + nrm[1] * off], B2 = [b[0] + nrm[0] * off, b[1] + nrm[1] * off];
+        var e1 = off > 0 ? 1 : -1, tk = 0.06, u = [d[0] / L, d[1] / L], s45 = [(u[0] + nrm[0]) * tk, (u[1] + nrm[1]) * tk];
+        var ang = Math.atan2(d[1], d[0]) / DEG; if (ang > 90.01) ang -= 180; if (ang <= -90.01) ang += 180;
+        var mid = [(A2[0] + B2[0]) / 2 + nrm[0] * 0.04 * e1, (A2[1] + B2[1]) / 2 + nrm[1] * 0.04 * e1];
+        var segs = [
+          [[a[0] + nrm[0] * 0.05 * e1, a[1] + nrm[1] * 0.05 * e1], [A2[0] + nrm[0] * 0.08 * e1, A2[1] + nrm[1] * 0.08 * e1]],
+          [[b[0] + nrm[0] * 0.05 * e1, b[1] + nrm[1] * 0.05 * e1], [B2[0] + nrm[0] * 0.08 * e1, B2[1] + nrm[1] * 0.08 * e1]],
+          [A2, B2],
+          [[A2[0] - s45[0], A2[1] - s45[1]], [A2[0] + s45[0], A2[1] + s45[1]]],
+          [[B2[0] - s45[0], B2[1] - s45[1]], [B2[0] + s45[0], B2[1] + s45[1]]]];
+        dimCount++;
+        if (!asDims) { segs.forEach(function (sg) { line('A-DIMS', sg[0], sg[1]); }); text('A-DIMS', mid, th || 0.12, label, ang, true); return; }
+        // DIMENSION (выровненный, 70 = 1 + 128: текст в заданной точке) + анонимный блок *Dn с отрисовкой
+        var name = '*D' + (++nDim), Ly = pre + 'A-DIMS', body = '';
+        segs.forEach(function (sg) { var S0 = P(sg[0]), S1 = P(sg[1]); g2(S0); g2(S1); body += lineS(Ly, S0, S1); });
+        var M = P(mid); g2(M);
+        body += textS(Ly, M, (th || 0.12) * k, label, ang, true);
+        [P(a), P(b), P(B2)].forEach(function (q) { body += '0\nPOINT\n8\nDEFPOINTS\n10\n' + num(q[0]) + '\n20\n' + num(q[1]) + '\n30\n0.0\n'; });
+        blocks.push('0\nBLOCK\n8\n0\n2\n' + name + '\n70\n1\n10\n0.0\n20\n0.0\n30\n0.0\n3\n' + name + '\n' + body + '0\nENDBLK\n8\n0\n');
+        var D10 = P(B2), A13 = P(a), B14 = P(b);
+        ents.push('0\nDIMENSION\n8\n' + Ly + '\n2\n' + name + '\n3\nSTANDARD\n10\n' + num(D10[0]) + '\n20\n' + num(D10[1]) + '\n30\n0.0\n11\n' + num(M[0]) + '\n21\n' + num(M[1]) + '\n31\n0.0\n70\n129\n' +
+          (units === 'm' ? '1\n' + esc(label) + '\n' : '') + '13\n' + num(A13[0]) + '\n23\n' + num(A13[1]) + '\n33\n0.0\n14\n' + num(B14[0]) + '\n24\n' + num(B14[1]) + '\n34\n0.0\n');
+      }
+      var faces = pl.faces || [];
+      faces.forEach(function (s) { line('A-WALL', s.a, s.b); });
+      (pl.openings || []).forEach(function (p) { line('A-OPEN', p.a, p.b); });
+      // размеры граней — внутрь помещения (сторона, где ближе центр помещения), длинные грани
+      var centers = (pl.rooms || []).map(function (r) { return r.center; });
+      var midOf = function (s) { return [(s.a[0] + s.b[0]) / 2, (s.a[1] + s.b[1]) / 2]; };
+      // у двух граней одной стены (перегородки) размеры расходятся наружу — иначе тексты ложатся друг на друга
+      var partner = {};
+      (pl.walls || []).forEach(function (w) { if (faces[w.i] && faces[w.j]) { partner[w.i] = faces[w.j]; partner[w.j] = faces[w.i]; } });
+      var awayFrom = function (mid, nrm, other) { var m = midOf(other); return ((m[0] - mid[0]) * nrm[0] + (m[1] - mid[1]) * nrm[1]) >= 0 ? -1 : 1; };
+      faces.forEach(function (s, fi) {
+        if (s.length < (o.minDim || 0.4)) return;
+        var d = [s.b[0] - s.a[0], s.b[1] - s.a[1]], L = s.length, nrm = [-d[1] / L, d[0] / L], mid = midOf(s);
+        var side = 1;
+        if (partner[fi]) side = awayFrom(mid, nrm, partner[fi]);
+        else if (centers.length) {
+          var best = Infinity; centers.forEach(function (c) { var dd = Math.hypot(c[0] - mid[0], c[1] - mid[1]); if (dd < best) { best = dd; side = ((c[0] - mid[0]) * nrm[0] + (c[1] - mid[1]) * nrm[1]) >= 0 ? 1 : -1; } });
+        }
+        dim(s.a, s.b, 0.35 * side, fmtLen(L, units));
       });
-      dim(p.a, p.b, 0.25 * side, fmtLen(p.width, units), 0.1);
+      var ops = pl.openings || [];
+      ops.forEach(function (p, pi) {
+        var d = [p.b[0] - p.a[0], p.b[1] - p.a[1]], L = Math.hypot(d[0], d[1]) || 1, nrm = [-d[1] / L, d[0] / L], mid = midOf(p), side = -1;
+        // тот же проём, видимый с другой грани стены (дверь в перегородке), — размер по другую сторону
+        ops.forEach(function (q, qi) {
+          if (qi === pi) return; var m = midOf(q), dd = Math.hypot(m[0] - mid[0], m[1] - mid[1]);
+          var dq = [q.b[0] - q.a[0], q.b[1] - q.a[1]], cr = Math.abs(d[0] * dq[1] - d[1] * dq[0]) / (L * (Math.hypot(dq[0], dq[1]) || 1));
+          if (dd < 0.5 && cr < 0.05) side = awayFrom(mid, nrm, q);
+        });
+        dim(p.a, p.b, 0.25 * side, fmtLen(p.width, units), 0.1);
+      });
+      (pl.walls || []).forEach(function (w) {
+        var A = faces[w.i], B = faces[w.j]; if (!A || !B) return;
+        var m = [(A.a[0] + A.b[0] + B.a[0] + B.b[0]) / 4, (A.a[1] + A.b[1] + B.a[1] + B.b[1]) / 4];
+        text('A-THK', m, 0.08, fmtLen(w.thickness, units), 0, true);
+      });
+      (pl.rooms || []).forEach(function (r) {
+        text('A-ROOM', [r.center[0], r.center[1] + 0.2], 0.22, r.name, 0, true);
+        text('A-ROOM', [r.center[0], r.center[1] - 0.15], 0.18, (Math.round(r.area * 10) / 10).toFixed(1).replace('.', ',') + ' м²', 0, true);
+        if (r.size) text('A-ROOM', [r.center[0], r.center[1] - 0.45], 0.12, fmtLen(r.size[0], units) + ' x ' + fmtLen(r.size[1], units), 0, true);
+      });
+      // габаритные размеры (вдоль главного направления) — снаружи плана
+      if (faces.length && pl.directions && pl.directions.length) {
+        var phi = pl.directions[0] * DEG, cs = Math.cos(phi), sn = Math.sin(phi), xa = Infinity, ya = Infinity, xb = -Infinity, yb = -Infinity;
+        faces.forEach(function (s) { [s.a, s.b].forEach(function (p) { var X = p[0] * cs + p[1] * sn, Y = -p[0] * sn + p[1] * cs; if (X < xa) xa = X; if (X > xb) xb = X; if (Y < ya) ya = Y; if (Y > yb) yb = Y; }); });
+        dim(toWorld(phi, xa, ya), toWorld(phi, xb, ya), -1.0, fmtLen(xb - xa, units), 0.18);
+        dim(toWorld(phi, xa, yb), toWorld(phi, xa, ya), -1.0, fmtLen(yb - ya, units), 0.18);
+      }
+      var route = it.route || (!multi ? o.route : null);
+      if (route && route.length >= 8) {
+        var rp = []; for (var i = 0; i < route.length; i += 4) rp.push([route[i], route[i + 1]]);
+        pline('A-ROUTE', rp, false);
+      }
+      if (lext.a < Infinity) {
+        var tl = [(lext.a / k) - ox, (lext.b / k) - oy - 1.6];
+        text('A-INFO', tl, 0.25, it.title || o.title || 'Обмерный план по облаку точек', 0, false);
+        text('A-INFO', [tl[0], tl[1] - 0.4], 0.14, 'Единицы: ' + (units === 'mm' ? 'миллиметры' : 'метры') + '. ' + (it.subtitle || o.subtitle || ''), 0, false);
+        shiftX += (lext.c - lext.a) / k + 4;
+      }
     });
-    (plan.walls || []).forEach(function (w) {
-      var A = faces[w.i], B = faces[w.j]; if (!A || !B) return;
-      var m = [(A.a[0] + A.b[0] + B.a[0] + B.b[0]) / 4, (A.a[1] + A.b[1] + B.a[1] + B.b[1]) / 4];
-      text('A-THK', m, 0.08, fmtLen(w.thickness, units), 0, true);
-    });
-    (plan.rooms || []).forEach(function (r) {
-      text('A-ROOM', [r.center[0], r.center[1] + 0.2], 0.22, r.name, 0, true);
-      text('A-ROOM', [r.center[0], r.center[1] - 0.15], 0.18, (Math.round(r.area * 10) / 10).toFixed(1).replace('.', ',') + ' м²', 0, true);
-      if (r.size) text('A-ROOM', [r.center[0], r.center[1] - 0.45], 0.12, fmtLen(r.size[0], units) + ' x ' + fmtLen(r.size[1], units), 0, true);
-    });
-    // габаритные размеры (вдоль главного направления) — снаружи плана
-    if (faces.length && plan.directions && plan.directions.length) {
-      var phi = plan.directions[0] * DEG, cs = Math.cos(phi), sn = Math.sin(phi), xa = Infinity, ya = Infinity, xb = -Infinity, yb = -Infinity;
-      faces.forEach(function (s) { [s.a, s.b].forEach(function (p) { var X = p[0] * cs + p[1] * sn, Y = -p[0] * sn + p[1] * cs; if (X < xa) xa = X; if (X > xb) xb = X; if (Y < ya) ya = Y; if (Y > yb) yb = Y; }); });
-      dim(toWorld(phi, xa, ya), toWorld(phi, xb, ya), -1.0, fmtLen(xb - xa, units), 0.18);
-      dim(toWorld(phi, xa, yb), toWorld(phi, xa, ya), -1.0, fmtLen(yb - ya, units), 0.18);
-    }
-    if (o.route && o.route.length >= 8) {
-      var rp = []; for (var i = 0; i < o.route.length; i += 4) rp.push([o.route[i], o.route[i + 1]]);
-      pline('A-ROUTE', rp, false);
-    }
-    if (ext.a < Infinity) {
-      var tl = [(ext.a / k) - ox, (ext.b / k) - oy - 1.6];
-      text('A-INFO', tl, 0.25, o.title || 'Обмерный план по облаку точек', 0, false);
-      text('A-INFO', [tl[0], tl[1] - 0.4], 0.14, 'Единицы: ' + (units === 'mm' ? 'миллиметры' : 'метры') + '. ' + (o.subtitle || ''), 0, false);
-    }
-    var layers = [['0', 7], ['A-WALL', 7], ['A-OPEN', 3], ['A-DIMS', 2], ['A-THK', 8], ['A-ROOM', 4], ['A-ROUTE', 1], ['A-INFO', 7]];
-    var h = '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1251\n9\n$INSBASE\n10\n0.0\n20\n0.0\n30\n0.0\n9\n$EXTMIN\n10\n' + num(ext.a) + '\n20\n' + num(ext.b) + '\n30\n0.0\n9\n$EXTMAX\n10\n' + num(ext.c) + '\n20\n' + num(ext.d) + '\n30\n0.0\n9\n$LUNITS\n70\n2\n9\n$LUPREC\n70\n' + (units === 'mm' ? 0 : 3) + '\n0\nENDSEC\n';
-    var t = '0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n1\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0.0\n0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n' + layers.length + '\n';
-    layers.forEach(function (l) { t += '0\nLAYER\n2\n' + l[0] + '\n70\n0\n62\n' + l[1] + '\n6\nCONTINUOUS\n'; });
-    t += '0\nENDTAB\n0\nTABLE\n2\nSTYLE\n70\n1\n0\nSTYLE\n2\nSTANDARD\n70\n0\n40\n0.0\n41\n1.0\n50\n0.0\n71\n0\n42\n2.5\n3\ntxt\n4\n\n0\nENDTAB\n0\nENDSEC\n';
-    return h + t + '0\nSECTION\n2\nENTITIES\n' + ents.join('') + '0\nENDSEC\n0\nEOF\n';
+    if (asDims && nDim) addLayer('DEFPOINTS', 7);
+    var tk = asDims ? '0.06' : '0.0', H12 = function (v) { return num(v * k); };
+    var h = '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1251\n9\n$INSBASE\n10\n0.0\n20\n0.0\n30\n0.0\n9\n$EXTMIN\n10\n' + num(ext.a) + '\n20\n' + num(ext.b) + '\n30\n0.0\n9\n$EXTMAX\n10\n' + num(ext.c) + '\n20\n' + num(ext.d) + '\n30\n0.0\n9\n$LUNITS\n70\n2\n9\n$LUPREC\n70\n' + (units === 'mm' ? 0 : 3) +
+      '\n9\n$DIMSTYLE\n2\nSTANDARD\n9\n$DIMTXT\n40\n' + H12(0.12) + '\n9\n$DIMTSZ\n40\n' + H12(+tk) + '\n9\n$DIMEXO\n40\n' + H12(0.05) + '\n9\n$DIMEXE\n40\n' + H12(0.08) + '\n9\n$DIMGAP\n40\n' + H12(0.03) + '\n9\n$DIMTAD\n70\n1\n9\n$DIMTIH\n70\n0\n9\n$DIMTOH\n70\n0\n9\n$DIMZIN\n70\n8\n0\nENDSEC\n';
+    var t = '0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n1\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0.0\n0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n' + layerOrder.length + '\n';
+    layerOrder.forEach(function (l) { t += '0\nLAYER\n2\n' + l[0] + '\n70\n0\n62\n' + l[1] + '\n6\nCONTINUOUS\n'; });
+    t += '0\nENDTAB\n0\nTABLE\n2\nSTYLE\n70\n1\n0\nSTYLE\n2\nSTANDARD\n70\n0\n40\n0.0\n41\n1.0\n50\n0.0\n71\n0\n42\n2.5\n3\ntxt\n4\n\n0\nENDTAB\n';
+    t += '0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nACAD\n70\n0\n0\nENDTAB\n';
+    t += '0\nTABLE\n2\nDIMSTYLE\n70\n1\n0\nDIMSTYLE\n2\nSTANDARD\n70\n0\n3\n\n4\n\n5\n\n6\n\n7\n\n40\n1.0\n41\n' + H12(0.06) + '\n42\n' + H12(0.05) + '\n43\n' + H12(0.38) + '\n44\n' + H12(0.08) + '\n45\n0.0\n46\n0.0\n47\n0.0\n48\n0.0\n140\n' + H12(0.12) +
+      '\n141\n0.0\n142\n' + H12(+tk) + '\n143\n25.4\n144\n1.0\n145\n0.0\n146\n1.0\n147\n' + H12(0.03) + '\n71\n0\n72\n0\n73\n0\n74\n0\n75\n0\n76\n0\n77\n1\n78\n8\n170\n0\n171\n2\n172\n0\n173\n0\n174\n0\n175\n0\n176\n0\n177\n0\n178\n0\n0\nENDTAB\n0\nENDSEC\n';
+    var b = '0\nSECTION\n2\nBLOCKS\n' + blocks.join('') + '0\nENDSEC\n';
+    return h + t + b + '0\nSECTION\n2\nENTITIES\n' + ents.join('') + '0\nENDSEC\n0\nEOF\n';
   }
 
   return { extract: extract, toDXF: toDXF, directions: directions, angDiff: angDiff, _esc: esc };

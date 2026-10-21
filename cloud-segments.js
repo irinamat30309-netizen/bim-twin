@@ -329,11 +329,9 @@ function thinSegment(res, keepPer) {
 // Точки внутри кирпичей уже перемешаны: из прошедших фильтр точек каждого кирпича берётся первая доля ratio — выборка остаётся равномерной.
 // Результат — новые массивы с кирпичами по CH2 точек и их рамками (окно рисует и отсекает их как обычно).
 function noiseTables(bits) { const size = 1 << bits; return { size, a: new Uint16Array(size), b: new Uint16Array(size) }; }
-function filterSegment(res, filter) {
-  if (!res || res.ok === false || !filter) return res;
-  const n = Math.floor(res.count), CH = Math.max(1, Math.floor(res.chunkPoints)), P = res.pos;
+// ревизия 28: отбор точек (координаты окна: u = x, h = y + hShift, v = −z) → { keep: Uint8Array, kept } — общий для частей LAS/PLY и E57
+function filterKeep(P, n, filter) {
   const rect = filter.rect, hr = filter.h, mask = filter.mask, hs = Number(filter.hShift) || 0;
-  const ratio = filter.ratio > 0 && filter.ratio < 1 ? filter.ratio : 1;
   const keep = new Uint8Array(n);
   let kept = 0;
   for (let i = 0; i < n; i++) {
@@ -360,6 +358,14 @@ function filterSegment(res, filter) {
     for (let i = 0; i < n; i++) { if (!keep[i]) continue; key(i, k2); if (T.a[k2[0]] < 65535) T.a[k2[0]]++; if (T.b[k2[1]] < 65535) T.b[k2[1]]++; }
     for (let i = 0; i < n; i++) { if (!keep[i]) continue; key(i, k2); if (Math.min(T.a[k2[0]], T.b[k2[1]]) < mn) { keep[i] = 0; kept--; } }
   }
+  return { keep, kept };
+}
+function filterSegment(res, filter) {
+  if (!res || res.ok === false || !filter) return res;
+  const n = Math.floor(res.count), CH = Math.max(1, Math.floor(res.chunkPoints)), P = res.pos;
+  const ratio = filter.ratio > 0 && filter.ratio < 1 ? filter.ratio : 1;
+  const K = filterKeep(P, n, filter), keep = K.keep;
+  let kept = K.kept;
   // доля ratio в каждом кирпиче
   if (ratio < 1) {
     for (let a = 0; a < n; a += CH) {
@@ -454,4 +460,4 @@ function readSegmentAsync(desc, from, count, opts) {
   });
 }
 
-module.exports = { openSegmentSource, readSegment, readSegmentAsync, shuffleChunks, thinSegment, filterSegment, thinnedCount, keepPerForBudget, SEG_POINTS, CHUNK_POINTS };
+module.exports = { filterKeep, openSegmentSource, readSegment, readSegmentAsync, shuffleChunks, thinSegment, filterSegment, thinnedCount, keepPerForBudget, SEG_POINTS, CHUNK_POINTS };

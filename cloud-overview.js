@@ -95,10 +95,62 @@ function chooseCell(w, d) {
   return Math.ceil(raw);
 }
 
-function overview(desc, opts) {
-  opts = opts || {};
+// ------------------------------------------------------------ E57 (ревизия 28): карта до загрузки и срез плана
+// E57 сжат по полям (CompressedVector), поэтому прочитать «блок записей подряд» нельзя: файл читается целиком, но в память
+// попадает только равномерная выборка (E57Core.read, maxPoints). Плановые координаты — от центра рамки выборки по X/Y и от низа по Z
+// (мировые координаты E57 — Z вверх), они же — origin для фильтров загрузки.
+function e57Readers(desc, onProgress) {
+  const fd = fs.openSync(desc.path, 'r');
+  let high = 0, lastF = 0;
+  const readPhys = (o, l) => {
+    const b = Buffer.alloc(l), got = readExact(fd, b, l, o);
+    if (o + got > high) high = o + got;
+    if (onProgress) { const f = Math.min(1, high / Math.max(1, desc.fileSize)); if (f - lastF >= 0.01) { lastF = f; onProgress(f); } }
+    return new Uint8Array(b.buffer, b.byteOffset, got);
+  };
+  return { fd, readPhys };
+}
+function openE57(abs, size) {
+  const E57 = require('./e57-core');
+  const desc = { kind: 'e57', path: abs, fileSize: size, count: 0, hasColor: false, hasIntensity: false, hasClassification: false, meta: { format: 'E57' }, zup: true };
+  const R = e57Readers(desc, null);
+  try {
+    const inf = E57.inspect(R.readPhys, size);
+    desc.count = inf.total; desc.hasColor = inf.color; desc.hasIntensity = inf.intensity; desc.scans = inf.scans.length;
+    desc.meta = { format: 'E57 (' + inf.scans.length + ' скан.)', crsWkt: inf.crs ? 'E57' : null };
+  } finally { fs.closeSync(R.fd); }
+  return desc;
+}
+function e57Sample(desc, maxPoints, onProgress) {
+  const E57 = require('./e57-core');
+  const R = e57Readers(desc, onProgress);
+  try { return E57.read(R.readPhys, desc.fileSize, { maxPoints }); } finally { fs.closeSync(R.fd); }
+}
+function gatherE57(desc, S) {
+  const r = e57Sample(desc, S);
+  const n0 = r.count, P = r.pos;
+  if (!(n0 > 0)) return null;
+  let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity;
+  for (let i = 0; i < n0; i++) { const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2]; if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y; if (z < mnz) mnz = z; }
+  // центр и низ — как при загрузке (las-node finalizeWorldZup), только по выборке
+  desc.cx = (mnx + mxx) / 2; desc.cy = (mny + mxy) / 2; desc.cz = mnz;
+  desc.count = r.total; desc.hasColor = !!r.colored; desc.hasIntensity = !!r.hasIntensity;
+  desc.meta = { format: 'E57 (' + r.scans.length + ' скан.)', crsWkt: r.crs || null };
+  const uu = new Float32Array(n0), vv = new Float32Array(n0), hh = new Float32Array(n0);
+  const cr = r.colored ? new Uint8Array(n0 * 3) : null, ii = r.hasIntensity ? new Uint8Array(n0) : null;
+  for (let i = 0; i < n0; i++) {
+    uu[i] = P[i * 3] - desc.cx; vv[i] = P[i * 3 + 1] - desc.cy; hh[i] = P[i * 3 + 2] - desc.cz;
+    if (cr) { cr[i * 3] = Math.max(0, Math.min(255, r.col[i * 3] * 255)); cr[i * 3 + 1] = Math.max(0, Math.min(255, r.col[i * 3 + 1] * 255)); cr[i * 3 + 2] = Math.max(0, Math.min(255, r.col[i * 3 + 2] * 255)); }
+    if (ii) ii[i] = Math.max(0, Math.min(255, Math.round(r.intensity[i] * 255)));
+  }
+  // станции (позы сканов): у наземного сканера это точки стояния, у мобильного — обычно одна поза на весь проход
+  const stations = r.scans.map((sc) => ({ name: String(sc.name || '').slice(0, 80), points: sc.recordCount,
+    u: sc.pose.T[0] - desc.cx, v: sc.pose.T[1] - desc.cy, h: sc.pose.T[2] - desc.cz }));
+  return { uu, vv, hh, cr, ii, n: n0, t0: Infinity, t1: -Infinity, head: { system: '', software: '', created: null }, stations };
+}
+function gatherRecords(desc, S0) {
   const total = desc.count;
-  const S = Math.max(1000, Math.min(total, Math.floor(opts.samples || 4000000)));
+  const S = Math.max(1000, Math.min(total, S0));
   const B = Math.max(1, Math.min(4096, Math.ceil(S / 1500))), per = Math.max(1, Math.ceil(S / B));
   const D = makeDecoder(desc), rl = D.recLen;
   const uu = new Float32Array(B * per), vv = new Float32Array(B * per), hh = new Float32Array(B * per);
@@ -126,7 +178,15 @@ function overview(desc, opts) {
       }
     }
   } finally { fs.closeSync(fd); }
-  if (n < 10) return { ok: false, message: 'в файле не нашлось точек для карты' };
+  return { uu, vv, hh, cr, ii, n, t0, t1, head, stations: null };
+}
+
+function overview(desc, opts) {
+  opts = opts || {};
+  const S0 = Math.max(1000, Math.floor(opts.samples || 4000000));
+  const G = desc.kind === 'e57' ? gatherE57(desc, S0) : gatherRecords(desc, Math.min(desc.count, S0));
+  if (!G || G.n < 10) return { ok: false, message: 'в файле не нашлось точек для карты' };
+  const { uu, vv, hh, n, t0, t1, head } = G, total = desc.count, cr = G.cr, ii = G.ii;
   // габариты по выборке (обрезаем 0,05 % крайних — одиночные выбросы на сотни метров не растягивают карту)
   const qs = (arr) => { const step = Math.max(1, Math.floor(n / 200000)), a = []; for (let i = 0; i < n; i += step) a.push(arr[i]); a.sort((x, y) => x - y); return [a[Math.floor(a.length * 0.0005)], a[Math.min(a.length - 1, Math.floor(a.length * 0.9995))], a[0], a[a.length - 1]]; };
   const qu = qs(uu), qv = qs(vv), qh = qs(hh);
@@ -171,7 +231,7 @@ function overview(desc, opts) {
     file: { name: path.basename(desc.path), size: desc.fileSize, format: desc.meta && desc.meta.format || desc.kind.toUpperCase(), points: total,
       system: head.system, software: head.software, created: head.created, crs: !!(desc.meta && desc.meta.crsWkt), colored: !!desc.hasColor,
       intensity: !!desc.hasIntensity, classification: !!desc.hasClassification },
-    origin: { cx: desc.cx, cy: desc.cy, cz: desc.cz, zup: desc.kind === 'las' || !!desc.zup, hShift: hShift(desc) },
+    origin: { cx: desc.cx, cy: desc.cy, cz: desc.cz, zup: desc.kind === 'las' || desc.kind === 'e57' || !!desc.zup, hShift: hShift(desc) },
     bbox: { u0: qu[2], u1: qu[3], v0: qv[2], v1: qv[3], h0: qh[2], h1: qh[3], core: { u0: qu[0], u1: qu[1], v0: qv[0], v1: qv[1], h0: qh[0], h1: qh[1] } },
     grid: { nx, ny, cell, u0, v0, count, hmax, hmin, rgb, inten },
     hist: { h0: hb0, step: hs, counts: hist },
@@ -185,6 +245,7 @@ function overview(desc, opts) {
   const keepN = Math.min(n, Math.floor(opts.keep || 300000)), kstep = n / keepN, pts = new Float32Array(keepN * 3);
   for (let j = 0; j < keepN; j++) { const i = Math.floor(j * kstep); pts[j * 3] = uu[i]; pts[j * 3 + 1] = vv[i]; pts[j * 3 + 2] = hh[i]; }
   res.pts = pts;
+  if (G.stations && G.stations.length) res.stations = G.stations.slice(0, 2000);
   return res;
 }
 
@@ -305,6 +366,7 @@ function planSlice(desc, opts) {
   const h0 = Number(opts.h0), h1 = Number(opts.h1);
   if (!(h1 > h0)) return { ok: false, message: 'неверный диапазон высоты среза' };
   const rect = opts.rect || null, maxPts = Math.max(100000, Math.floor(opts.maxPoints || 12000000));
+  if (desc.kind === 'e57') return planSliceE57(desc, h0, h1, rect, opts);
   const D = makeDecoder(desc), rl = D.recLen, total = desc.count;
   const perChunk = Math.max(1, Math.floor((8 << 20) / rl)), buf = Buffer.allocUnsafe(perChunk * rl);
   let cap = Math.min(maxPts, 1 << 20), uv = new Float32Array(cap * 2), n = 0, stride = 1, tick = 0;
@@ -333,4 +395,19 @@ function planSlice(desc, opts) {
   return { ok: true, uv: uv.slice(0, n * 2), count: n, stride, read: total, h0, h1 };
 }
 
-module.exports = { overview, planSlice, trajectoryInfo, routeMask, parsePoses, makeDecoder, chooseCell, findLevels, surfaceArea, hShift };
+// E57: равномерная выборка всего файла (opts.e57Points, по умолчанию 10 млн) → точки в слое h0–h1 (координаты карты: origin из overview)
+function planSliceE57(desc, h0, h1, rect, opts) {
+  if (!Number.isFinite(desc.cx)) return { ok: false, message: 'сначала постройте карту облака E57' };
+  const r = e57Sample(desc, Math.max(100000, Math.floor(opts.e57Points || 10000000)), opts.onProgress);
+  const P = r.pos, n0 = r.count, uv = new Float32Array(n0 * 2);
+  let n = 0;
+  for (let i = 0; i < n0; i++) {
+    const h = P[i * 3 + 2] - desc.cz; if (!(h >= h0 && h <= h1)) continue;
+    const u = P[i * 3] - desc.cx, v = P[i * 3 + 1] - desc.cy;
+    if (rect && (u < rect.u0 || u > rect.u1 || v < rect.v0 || v > rect.v1)) continue;
+    uv[n * 2] = u; uv[n * 2 + 1] = v; n++;
+  }
+  return { ok: true, uv: uv.slice(0, n * 2), count: n, stride: Math.max(1, Math.ceil(r.total / Math.max(1, n0))), read: r.total, h0, h1 };
+}
+
+module.exports = { openE57, overview, planSlice, trajectoryInfo, routeMask, parsePoses, makeDecoder, chooseCell, findLevels, surfaceArea, hShift };

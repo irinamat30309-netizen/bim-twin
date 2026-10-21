@@ -1,7 +1,7 @@
 /*
  * cloud-report.js — PDF-отчёт по облаку точек (ревизия 27), как отчёт проекта в Lixel Studio.
  *
- * CloudReport.build({ ov, capacity, plan, maps, snapshot, fileName, project, appVersion, load, facts, storeys }) → строка HTML (A4).
+ * CloudReport.build({ ov, capacity, plan | plans: [{ plan, title }], maps, snapshot, fileName, project, appVersion, load, facts, storeys }) → строка HTML (A4).
  * HTML печатается в PDF главным процессом (bim:saveReportPdf: скрытое окно без JavaScript → printToPDF). Всё внутри — без внешних
  * ссылок: карты и снимок 3D — data:image, гистограмма высот и план — SVG.
  * Разделы: сведения о съёмке и облаке, геометрия, уровни и этажи, гистограмма высот, карты с маршрутом, план из облака (помещения,
@@ -27,11 +27,16 @@
     for (i = 0; i < H.counts.length; i++) {
       var z = H.h0 + i * H.step; if (z < h0 || z > h1) continue;
       var bh = Math.sqrt(H.counts[i] / mx) * (Ht - 40);
-      bars += '<rect x="' + X(z).toFixed(1) + '" y="' + (Ht - 22 - bh).toFixed(1) + '" width="' + Math.max(0.8, X(z + H.step) - X(z)).toFixed(2) + '" height="' + bh.toFixed(1) + '" fill="#64748b"/>';
+      bars += '<rect x="' + X(z).toFixed(1) + '" y="' + (Ht - 22 - bh).toFixed(1) + '" width="' + Math.max(0.8, X(z + H.step) - X(z) + 0.4).toFixed(2) + '" height="' + bh.toFixed(1) + '" fill="#64748b"/>';
     }
-    var marks = (levels || []).map(function (l) { var x = X(l.h).toFixed(1); return '<line x1="' + x + '" y1="8" x2="' + x + '" y2="' + (Ht - 22) + '" stroke="#0284c7" stroke-width="1.4"/><text x="' + x + '" y="8" font-size="10" fill="#0369a1" text-anchor="middle">' + n(l.h, 2) + '</text>'; }).join('');
+    // отметки уровней: близкие подписи — во второй ряд, чтобы не слипались
+    var lastX = -1e9, row = 0;
+    var marks = (levels || []).slice().sort(function (a, b) { return a.h - b.h; }).map(function (l) {
+      var xv = X(l.h), x = xv.toFixed(1); row = xv - lastX < 30 ? (row ? 0 : 1) : 0; lastX = xv;
+      return '<line x1="' + x + '" y1="' + (row ? 19 : 8) + '" x2="' + x + '" y2="' + (Ht - 22) + '" stroke="#0284c7" stroke-width="1.4"/><text x="' + x + '" y="' + (row ? 18 : 8) + '" font-size="10" fill="#0369a1" text-anchor="middle">' + n(l.h, 2) + '</text>';
+    }).join('');
     var ticks = '', step = Math.max(0.5, Math.pow(10, Math.floor(Math.log10(Math.max(0.1, h1 - h0)))) / (h1 - h0 < 3 ? 2 : 1));
-    for (var t = Math.ceil(h0 / step) * step; t <= h1; t += step) ticks += '<text x="' + X(t).toFixed(1) + '" y="' + (Ht - 6) + '" font-size="10" fill="#475569" text-anchor="middle">' + n(t, step < 1 ? 1 : 0) + '</text>';
+    for (var t = Math.ceil(h0 / step) * step; t <= h1; t += step) if (X(t) < W - 80) ticks += '<text x="' + X(t).toFixed(1) + '" y="' + (Ht - 6) + '" font-size="10" fill="#475569" text-anchor="middle">' + n(t, step < 1 ? 1 : 0) + '</text>';
     return '<svg viewBox="0 0 ' + W + ' ' + Ht + '" width="100%" xmlns="http://www.w3.org/2000/svg"><line x1="40" y1="' + (Ht - 22) + '" x2="' + (W - 20) + '" y2="' + (Ht - 22) + '" stroke="#94a3b8"/>' + bars + marks + ticks +
       '<text x="' + (W - 20) + '" y="' + (Ht - 6) + '" font-size="10" fill="#475569" text-anchor="end">высота, м</text></svg>';
   }
@@ -41,19 +46,74 @@
     plan.faces.forEach(function (f) { [f.a, f.b].forEach(function (p) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }); });
     var pad = Math.max(0.6, (x1 - x0) * 0.06), W = 700, s = Math.min((W - 20) / (x1 - x0 + 2 * pad), 560 / (y1 - y0 + 2 * pad)), Ht = (y1 - y0 + 2 * pad) * s + 10;
     var P = function (p) { return [((p[0] - x0 + pad) * s + 10).toFixed(1), ((y1 - p[1] + pad) * s + 5).toFixed(1)]; };
-    var out = '';
-    plan.faces.forEach(function (f) {
-      var a = P(f.a), b = P(f.b);
-      out += '<line x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b[0] + '" y2="' + b[1] + '" stroke="#0f172a" stroke-width="2"/>';
-      if (f.length >= 0.6) {
-        var mx = (+a[0] + +b[0]) / 2, my = (+a[1] + +b[1]) / 2, ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
-        if (ang > 90) ang -= 180; if (ang < -90) ang += 180;
-        out += '<text x="' + mx.toFixed(1) + '" y="' + (my - 4).toFixed(1) + '" font-size="9" fill="#0369a1" text-anchor="middle" transform="rotate(' + ang.toFixed(1) + ' ' + mx.toFixed(1) + ' ' + my.toFixed(1) + ')">' + Math.round(f.length * 1000) + '</text>';
+    var out = '', txt = '';
+    // подписи не должны налезать друг на друга: каждая подпись — повёрнутый прямоугольник, ставим по очереди
+    // (сначала помещения, затем грани от длинных к коротким) в первое свободное место; не нашлось — подпись не рисуем
+    var placed = [];
+    var hit = function (A, B) {
+      var ax = [[Math.cos(A.r), Math.sin(A.r)], [-Math.sin(A.r), Math.cos(A.r)], [Math.cos(B.r), Math.sin(B.r)], [-Math.sin(B.r), Math.cos(B.r)]];
+      for (var k = 0; k < 4; k++) {
+        var u = ax[k], d = Math.abs((B.x - A.x) * u[0] + (B.y - A.y) * u[1]);
+        var ra = A.w * Math.abs(Math.cos(A.r) * u[0] + Math.sin(A.r) * u[1]) + A.h * Math.abs(-Math.sin(A.r) * u[0] + Math.cos(A.r) * u[1]);
+        var rb = B.w * Math.abs(Math.cos(B.r) * u[0] + Math.sin(B.r) * u[1]) + B.h * Math.abs(-Math.sin(B.r) * u[0] + Math.cos(B.r) * u[1]);
+        if (d >= ra + rb) return false;
+      }
+      return true;
+    };
+    var free = function (bx) {
+      if (bx.x - bx.w < 0 || bx.x + bx.w > W || bx.y < 0 || bx.y > Ht + 4) return false;
+      for (var q = 0; q < placed.length; q++) if (hit(bx, placed[q])) return false;
+      return true;
+    };
+    var halo = ' paint-order="stroke" stroke="#fff" stroke-width="3" stroke-linejoin="round"';
+    var faces = plan.faces, partner = {}, centers = (plan.rooms || []).map(function (r) { return r.center; });
+    (plan.walls || []).forEach(function (w) { if (faces[w.i] && faces[w.j]) { partner[w.i] = faces[w.j]; partner[w.j] = faces[w.i]; } });
+    var minLab = faces.length > 120 ? 2 : faces.length > 50 ? 1.2 : 0.6, off = Math.max(0.18, 11 / s);
+    faces.forEach(function (f) { var a = P(f.a), b = P(f.b); out += '<line x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b[0] + '" y2="' + b[1] + '" stroke="#0f172a" stroke-width="2"/>'; });
+    (plan.openings || []).forEach(function (o) { var a = P(o.a), b = P(o.b); out += '<line x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b[0] + '" y2="' + b[1] + '" stroke="#ea580c" stroke-width="2" stroke-dasharray="5 3"/>'; });
+    (plan.rooms || []).forEach(function (r) {
+      var c = P(r.center), cx = +c[0], cy = +c[1], nm = String(r.name || ''), ar = n(r.area, 2) + ' м²';
+      var w2 = Math.max(nm.length * 3.4, ar.length * 2.9) + 2, dys = [0, -26, 26, -52, 52, -78, 78];
+      for (var k = 0; k < dys.length; k++) {
+        var bx = { x: cx, y: cy + dys[k] + 3, w: w2, h: 12, r: 0 };
+        if (!free(bx)) continue;
+        placed.push(bx);
+        txt += '<text x="' + cx.toFixed(1) + '" y="' + (cy + dys[k]).toFixed(1) + '" font-size="11" font-weight="600" fill="#0f172a" text-anchor="middle"' + halo + '>' + esc(nm) + '</text>' +
+          '<text x="' + cx.toFixed(1) + '" y="' + (cy + dys[k] + 13).toFixed(1) + '" font-size="10" fill="#334155" text-anchor="middle"' + halo + '>' + ar + '</text>';
+        return;
       }
     });
-    (plan.openings || []).forEach(function (o) { var a = P(o.a), b = P(o.b); out += '<line x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b[0] + '" y2="' + b[1] + '" stroke="#ea580c" stroke-width="2" stroke-dasharray="5 3"/>'; });
-    (plan.rooms || []).forEach(function (r) { var c = P(r.center); out += '<text x="' + c[0] + '" y="' + c[1] + '" font-size="11" font-weight="600" fill="#0f172a" text-anchor="middle">' + esc(r.name) + '</text><text x="' + c[0] + '" y="' + (+c[1] + 13) + '" font-size="10" fill="#334155" text-anchor="middle">' + n(r.area, 2) + ' м²</text>'; });
+    // подписи длин граней: со стороны помещения; у двух граней одной стены (перегородки) — врозь
+    faces.map(function (f, fi) { return { f: f, fi: fi, L: f.length || Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]) }; })
+      .filter(function (e) { return e.L >= minLab; })
+      .sort(function (x, y) { return y.L - x.L; })
+      .forEach(function (e) {
+        var f = e.f, fi = e.fi, L = e.L;
+        var d = [(f.b[0] - f.a[0]) / L, (f.b[1] - f.a[1]) / L], nrm = [-d[1], d[0]], mid = [(f.a[0] + f.b[0]) / 2, (f.a[1] + f.b[1]) / 2], side = 1;
+        var dot = function (q) { return (q[0] - mid[0]) * nrm[0] + (q[1] - mid[1]) * nrm[1]; };
+        if (partner[fi]) side = dot([(partner[fi].a[0] + partner[fi].b[0]) / 2, (partner[fi].a[1] + partner[fi].b[1]) / 2]) >= 0 ? -1 : 1;
+        else if (centers.length) { var best = Infinity; centers.forEach(function (c) { var dd = Math.hypot(c[0] - mid[0], c[1] - mid[1]); if (dd < best) { best = dd; side = dot(c) >= 0 ? 1 : -1; } }); }
+        var ang = Math.atan2(-(d[1]), d[0]) * 180 / Math.PI;
+        if (ang > 90) ang -= 180; if (ang < -90) ang += 180;
+        var label = String(Math.round(L * 1000)), hw = label.length * 2.7 + 1.5, rad = ang * Math.PI / 180;
+        var tries = [side, -side, 2.1 * side, -2.1 * side, 0.55 * side];
+        for (var k = 0; k < tries.length; k++) {
+          var t = P([mid[0] + nrm[0] * off * tries[k], mid[1] + nrm[1] * off * tries[k]]), bx = { x: +t[0], y: +t[1], w: hw, h: 5.5, r: rad };
+          if (!free(bx)) continue;
+          placed.push(bx);
+          txt += '<text x="' + t[0] + '" y="' + t[1] + '" font-size="9" fill="#0369a1" text-anchor="middle" dominant-baseline="middle"' + halo + ' transform="rotate(' + ang.toFixed(1) + ' ' + t[0] + ' ' + t[1] + ')">' + label + '</text>';
+          return;
+        }
+      });
+    out += txt;
     return '<svg viewBox="0 0 ' + W + ' ' + Ht.toFixed(0) + '" width="100%" style="max-height:120mm" xmlns="http://www.w3.org/2000/svg">' + out + '</svg>';
+  }
+  // таблица размеров; длинный список (реальные сканы: десятки проёмов) — одной строкой: число, диапазон, медиана
+  function sizes(list, key, one, what, many) {
+    if (!list || !list.length) return '';
+    if (list.length <= 12) return table(list.map(function (p, i) { return [one + ' ' + (i + 1), n(p[key] * 1000, 0) + ' мм']; }), [one, what]);
+    var v = list.map(function (p) { return p[key] * 1000; }).sort(function (x, y) { return x - y; });
+    return table([[many, list.length + ' шт. · ' + n(v[0], 0) + '–' + n(v[v.length - 1], 0) + ' мм, медиана ' + n(v[Math.floor(v.length / 2)], 0) + ' мм']]);
   }
   function table(rows, head) {
     return '<table>' + (head ? '<tr>' + head.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join('') + '</tr>' : '') +
@@ -90,14 +150,15 @@
     if (maps.length) {
       h += '<h2>Карты площадки (вид сверху)</h2><div class="grid2">' + maps.map(function (m) { return '<div class="fig"><img src="' + safeImg(m.src) + '" alt=""><div class="cap">' + esc(m.title) + (tr ? ' · маршрут: зелёный — начало, красный — конец' : '') + '</div></div>'; }).join('') + '</div>';
     }
-    var plan = o.plan;
-    if (plan && plan.ok) {
-      h += '<h2 class="pb">План из облака</h2><div class="fig">' + planSvg(plan) + '<div class="cap">Грани стен (мм), проёмы — пунктир. Срез облака на заданной высоте над полом.</div></div>';
+    var plans = (o.plans && o.plans.length ? o.plans : o.plan ? [{ plan: o.plan, title: '' }] : []).filter(function (x) { return x && x.plan && x.plan.ok; });
+    plans.forEach(function (it, pi) {
+      var plan = it.plan;
+      h += '<h2' + (pi === 0 ? ' class="pb"' : '') + '>План из облака' + (it.title ? ' — ' + esc(it.title) : '') + '</h2><div class="fig">' + planSvg(plan) + '<div class="cap">Грани стен (мм), проёмы — пунктир. Срез облака на заданной высоте над полом.</div></div>';
       if (plan.rooms && plan.rooms.length) h += table(plan.rooms.map(function (r) { return [r.name, n(r.area, 2) + ' м²', r.size ? n(r.size[0], 3) + ' × ' + n(r.size[1], 3) + ' м' : '']; }), ['Помещение', 'Площадь', 'Размеры (по осям плана)']);
-      if (plan.openings && plan.openings.length) h += table(plan.openings.map(function (p, i) { return ['Проём ' + (i + 1), n(p.width * 1000, 0) + ' мм']; }), ['Проём', 'Ширина']);
-      if (plan.walls && plan.walls.length) h += table(plan.walls.map(function (w, i) { return ['Стена ' + (i + 1), n(w.thickness * 1000, 0) + ' мм']; }), ['Стена (две грани)', 'Толщина']);
-      h += '<p class="note">Точность размеров определяется плотностью и шумом облака в срезе (обычно ±5–10 мм у плотных сканов). Проверьте ключевые размеры инструментом «Расстояние».</p>';
-    }
+      h += sizes(plan.openings, 'width', 'Проём', 'Ширина', 'Проёмы');
+      h += sizes(plan.walls, 'thickness', 'Стена', 'Толщина', 'Стены (две грани)');
+      if (pi === plans.length - 1) h += '<p class="note">Точность размеров определяется плотностью и шумом облака в срезе (обычно ±5–10 мм у плотных сканов). Проверьте ключевые размеры инструментом «Расстояние».</p>';
+    });
     var snap = safeImg(o.snapshot);
     if (snap) h += '<div class="fig"><h2>3D-вид облака</h2><img src="' + snap + '" alt=""></div>';
     var cap = o.capacity, rec = cap && cap.recommendation;
