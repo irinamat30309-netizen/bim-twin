@@ -1833,14 +1833,31 @@ function registerIpc() {
       const route = a && a.useRoute === false ? null : (cached && cached.route) || (frame && frame.route) || null;
       const dt = (a && a.defTol && typeof a.defTol === 'object') ? a.defTol : {};
       const defTol = { floor: lim(dt.floor, 5, 1, 50), wall: lim(dt.wall, 5, 1, 50) };
+      // ревизия 33: балки, трубы, короба, лотки под потолком (до перекрытия mepTop), высота в свету; классы точек — новый LAS рядом
+      const mep = !!(a && a.mep === true), mepTop = finiteOr(a && a.mepTop, NaN), clear = lim(a && a.clear, 2.0, 1.5, 6);
+      let classOut = null, classErr = null;
+      if (a && a.classify === true) {
+        if (opened.desc.kind !== 'las' || !/\.las$/i.test(abs)) classErr = 'классы точек — для LAS';
+        else {
+          const dir = path.dirname(abs), base = path.basename(abs).replace(/\.las$/i, '') + '-classified';
+          for (let i = 0; i < 1000 && !classOut; i++) { const f = path.join(dir, base + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f)) classOut = f; }
+          const need = validRect(a && a.rect) ? 0 : Number(opened.desc.fileSize || 0) * 1.02 + 64 * 1024 * 1024;
+          try { const sf = fs.statfsSync(dir), free = Number(sf.bavail) * Number(sf.bsize); if (need && Number.isFinite(free) && free < need) { classErr = 'недостаточно места на диске для классов точек: нужно около ' + (need / 1073741824).toFixed(1) + ' ГБ, свободно ' + (free / 1073741824).toFixed(1) + ' ГБ'; classOut = null; } } catch (_) {}
+        }
+      }
       const jobId = overviewJobId(a), controller = new AbortController(), jk = jobId ? sender.id + ':' + jobId : null;
       if (jk) overviewJobs.set(jk, controller);
       try {
-        return await runOverviewWorker('inspect', opened.desc, { h0, h1, high, maxHigh: high && high.bands > 1 ? 8000000 : 6000000, rect: validRect(a && a.rect), maxPoints: 12000000, plan,
+        const rect = validRect(a && a.rect);
+        const r = await runOverviewWorker('inspect', opened.desc, { h0, h1, high, maxHigh: high && high.bands > 1 ? 8000000 : 6000000, rect, maxPoints: 12000000, plan,
           planDesc: frame && frame.desc && opened.desc.kind === frame.desc.kind ? frame.desc : null,
           floor, top, tol, route, doFloor: !(a && a.floorCheck === false), doWalls: !(a && a.wallCheck === false),
-          level: !(a && a.level === false), defects: !(a && a.defects === false), openings: !(a && a.openings === false), defTol },
+          level: !(a && a.level === false), defects: !(a && a.defects === false), openings: !(a && a.openings === false), defTol,
+          mep, mepTop: Number.isFinite(mepTop) && mepTop > floor + 2 && mepTop < floor + 12 ? mepTop : NaN, clear, classOut, classRect: classOut && rect ? rect : null },
           (p, label) => { if (jobId) try { sender.send('bim:cloudPlanProgress', { jobId, progress: p, label: label || '' }); } catch (_) {} }, controller.signal);
+        if (r && r.ok && classErr) r.classify = { ok: false, message: classErr };
+        if (r && r.classify && r.classify.ok && r.classify.path) { try { fileGrants.grantExistingFile(sender.id, r.classify.path, { read: true }); } catch (_) {} r.classify.name = path.basename(r.classify.path); }
+        return r;
       } finally { if (jk) overviewJobs.delete(jk); }
     } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
   });
