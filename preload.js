@@ -1,12 +1,16 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const inv = (ch, payload) => ipcRenderer.invoke(ch, payload);
-const snd = (ch, payload) => ipcRenderer.send(ch, payload);
+const inv = (ch, ...payload) => ipcRenderer.invoke(ch, ...payload);
+const snd = (ch, ...payload) => ipcRenderer.send(ch, ...payload);
 
 contextBridge.exposeInMainWorld('bimAPI', {
   platform: process.platform,
   getPathForFile: (file) => {
-    try { return webUtils && file ? webUtils.getPathForFile(file) : ''; } catch (_) { return ''; }
+    try {
+      const p = webUtils && file ? webUtils.getPathForFile(file) : '';
+      if (!p) return '';
+      return ipcRenderer.sendSync('bim:authorizePickedPath', p) === true ? p : '';
+    } catch (_) { return ''; }
   },
   winMin: () => snd('bim:win:min'),
   winMax: () => snd('bim:win:max'),
@@ -15,7 +19,33 @@ contextBridge.exposeInMainWorld('bimAPI', {
   getMode: () => inv('bim:getMode'),
   readFile: (p) => inv('bim:readFile', p),
   readPicked: (p) => inv('bim:readPicked', p),
-  parseCloud: (p, jobId) => inv('bim:parseCloud', jobId ? { path: p, jobId } : p),
+  parseCloud: (p, jobId, opts) => inv('bim:parseCloud', jobId ? Object.assign({ path: p, jobId, preview: !!(opts && opts.preview), allowReduced: !!(opts && opts.allowReduced) },
+    opts && opts.pre && typeof opts.pre === 'object' ? { pre: true, filter: opts.pre.filter || null, maxPoints: Number(opts.pre.maxPoints) || 0, estimate: Number(opts.pre.estimate) || 0 } : {}) : p),
+  readCloudChunk: (a) => inv('bim:readCloudChunk', a),
+  cloudPartsOpen: (p, jobId, opts) => inv('bim:cloudPartsOpen', { path: p, jobId, maxPoints: opts && opts.maxPoints > 0 ? Number(opts.maxPoints) : 0,
+    filter: opts && opts.filter && typeof opts.filter === 'object' ? opts.filter : null, estimate: opts && opts.estimate > 0 ? Number(opts.estimate) : 0, force: !!(opts && opts.force) }),
+  // ревизия 27: карта облака до загрузки, мощность ПК, план из облака (DXF), PDF-отчёт, папка проекта, работа с файлом на месте
+  systemCapacity: (opts) => inv('bim:systemCapacity', { refresh: !!(opts && opts.refresh), renderer: opts && typeof opts.renderer === 'string' ? opts.renderer : '' }),
+  cloudOverview: (p, jobId, opts) => inv('bim:cloudOverview', { path: p, jobId: jobId || null, minPoints: opts && opts.minPoints > 0 ? Number(opts.minPoints) : 0 }),
+  cancelCloudOverview: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelCloudOverview', { jobId }); },
+  cloudPlan: (payload) => inv('bim:cloudPlan', payload || {}),
+  cloudInspect: (payload) => inv('bim:cloudInspect', payload || {}),
+  pickDxfText: () => inv('bim:pickDxfText', {}),
+  findCleanCloud: (p) => inv('bim:findCleanCloud', { path: p }),
+  onCloudPlanProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:cloudPlanProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:cloudPlanProgress', listener); } catch (_) {} };
+  },
+  saveReportPdf: (payload) => inv('bim:saveReportPdf', payload || {}),
+  projectFolder: (action) => inv('bim:projectFolder', { action: action || 'get' }),
+  grantWorkInPlace: (p) => inv('bim:grantWorkInPlace', { path: p }),
+  cloudBackups: (payload) => inv('bim:cloudBackups', payload || {}),
+  cloudPartsRead: (a) => inv('bim:cloudPartsRead', a),
+  cloudPartsClose: (a) => inv('bim:cloudPartsClose', a),
+  releaseCloud: (a) => inv('bim:releaseCloud', a),
   onCloudParseProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => {
@@ -52,6 +82,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   ccFolder: () => inv('bim:ccFolder'),
   geomStatus: () => inv('bim:geomStatus'),
   s2bStatus: () => inv('bim:s2bStatus'),
+  s2bAuth: () => inv('bim:s2bAuth'),
   s2bRestart: () => inv('bim:s2bRestart'),
   deviation: (a) => inv('bim:deviation', a),
   registerClouds: (a) => inv('bim:registerClouds', a),
@@ -109,6 +140,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   createProject: (patch) => inv('bim:createProject', patch),
   switchProject: (id) => inv('bim:switchProject', id),
   deleteProject: (id) => inv('bim:deleteProject', id),
+  editProject: (id, patch) => inv('bim:editProject', { id, patch: patch || {} }),
+  duplicateProject: (id, patch) => inv('bim:duplicateProject', { id, patch: patch || {} }),
   getProjectState: (projectId) => inv('bim:getProjectState', projectId),
   saveProjectState: (payload) => inv('bim:saveProjectState', payload),
   undoProjectState: (payload) => inv('bim:undoProjectState', payload || {}),
@@ -117,6 +150,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   recordProjectOperation: (entry) => inv('bim:recordProjectOperation', entry),
   listProjectOperations: (payload) => inv('bim:listProjectOperations', payload || {}),
   saveProjectClassification: (payload) => inv('bim:saveProjectClassification', payload),
+  clearProjectClassification: (payload) => inv('bim:clearProjectClassification', payload),
   loadProjectClassification: (payload) => inv('bim:loadProjectClassification', payload || {}),
   listSectionPresets: () => inv('bim:listSectionPresets'),
   saveSectionPreset: (preset) => inv('bim:saveSectionPreset', preset),
@@ -150,6 +184,11 @@ contextBridge.exposeInMainWorld('bimAPI', {
   saveCloud: (payload) => inv('bim:saveCloud', payload),
   // v1156 — умное сохранение: экспорт в любой формат (диалог), тихое сохранение в путь, закрытие с вопросом
   exportFile: (payload) => inv('bim:exportFile', payload),
+  // Bounded-memory single-scan PTX export; every token is scoped to this renderer.
+  beginExportStream: (payload) => inv('bim:beginExportStream', payload),
+  writeExportStreamChunk: (payload) => inv('bim:writeExportStreamChunk', payload),
+  finishExportStream: (streamId) => inv('bim:finishExportStream', { streamId }),
+  cancelExportStream: (streamId) => inv('bim:cancelExportStream', { streamId }),
   saveCloudToPath: (payload) => inv('bim:saveCloudToPath', payload),
   setDirty: (v) => ipcRenderer.send('bim:setDirty', v),
   setProjectDirty: (v) => ipcRenderer.send('bim:setProjectDirty', v),
@@ -167,7 +206,63 @@ contextBridge.exposeInMainWorld('bimAPI', {
   importStations: () => inv('bim:importStations'),
   saveStations: (payload) => inv('bim:saveStations', payload),
 
+  // Удаление движущихся объектов по траектории сканера (LAS с временем точек + poses.csv)
+  findTrajectory: (payload) => inv('bim:findTrajectory', payload),
+  pickTrajectory: () => inv('bim:pickTrajectory'),
+  findXbin: (payload) => inv('bim:findXbin', payload),   // ревизия 22: файл сканера .xbin рядом с облаком (цвет по фото)
+  pickXbin: () => inv('bim:pickXbin'),
+  openXbin: (p) => inv('bim:openXbin', { path: p }),   // ревизия 23: файл .xbin → облако и траектория проекта Lixel
+  // ревизия 24: облако из сырого лидара .xbin (density: normal ≈ 40 млн, high ≈ 120 млн, all — все точки) с прогрессом и отменой
+  // ревизия 25: opts.refine — уточнение траектории по самому облаку (точнее, дольше)
+  xbinBuildCloud: (p, jobId, density, opts) => inv('bim:xbinBuildCloud', { path: p, jobId, density, refine: !!(opts && opts.refine) }),
+  onXbinCloudProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:xbinCloudProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:xbinCloudProgress', listener); } catch (_) {} };
+  },
+  cancelXbinCloud: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelXbinCloud', { jobId }); },
+  pickScanFolder: () => inv('bim:pickScanFolder'),   // ревизия 19: папка проекта сканера → облако + траектория
+  dynamicClean: (payload) => inv('bim:dynamicClean', payload),
+  onDynamicCleanProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:dynamicCleanProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:dynamicCleanProgress', listener); } catch (_) {} };
+  },
+  cancelDynamicClean: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelDynamicClean', { jobId }); },
+  // Чистовая обработка скана в новый LAS (выбор файла результата — в диалоге главного процесса)
+  refineScan: (payload) => inv('bim:refineScan', payload),
+  onRefineScanProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:refineScanProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:refineScanProgress', listener); } catch (_) {} };
+  },
+  cancelRefineScan: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelRefineScan', { jobId }); },
+
   // Пункт 4 (patch 28): дисковый octree — сборка на диск и потоковая подгрузка узлов
   buildOctree: (payload) => inv('bim:buildOctree', payload),
-  readOctreeNode: (payload) => inv('bim:readOctreeNode', payload)
+  readOctreeNode: (payload) => inv('bim:readOctreeNode', payload),
+  deleteOctree: (payload) => inv('bim:deleteOctree', payload),
+  onOctreeProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => {
+      if (!payload || payload.jobId !== jobId) return;
+      try { callback(payload.progress); } catch (_) {}
+    };
+    ipcRenderer.on('bim:octreeProgress', listener);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      try { ipcRenderer.removeListener('bim:octreeProgress', listener); } catch (_) {}
+    };
+  },
+  cancelOctreeBuild: (jobId) => {
+    if (typeof jobId === 'string' && jobId) snd('bim:cancelOctreeBuild', { jobId });
+  }
 });

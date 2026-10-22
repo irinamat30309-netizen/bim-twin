@@ -47,11 +47,15 @@ async function run() {
   if (ext === 'laz') {
     result = await Cloud.parseLAZFile(absPath, {
       maxPoints: workerData.maxPoints,
+      pointShare: workerData.pointShare,
       onProgress: progress
     });
   } else {
     result = Cloud.parseCloudFile(absPath, {
       maxPoints: workerData.maxPoints,
+      pointShare: workerData.pointShare,
+      scratchBaseDir: workerData.scratchBaseDir,
+      filter: workerData.filter || null,
       onProgress: progress
     });
   }

@@ -20,10 +20,12 @@
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 let child = null;
 let upgradeTimer = null;
 const PORT = 8765;
+const AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
 let state = { running: false, starting: false, bootstrapping: false, phase: 'idle', gpu: null, port: PORT, python: null, dir: null, venv: false, error: null };
 
 function logFile() {
@@ -113,7 +115,16 @@ function launchLite(py, dir, venv) {
   const out = outFd();
   const args = ['server_lite.py'];
   try {
-    child = spawn(py, args, { cwd: dir, windowsHide: true, env: Object.assign({}, process.env, { PORT: String(PORT), HOST: '127.0.0.1' }), stdio: ['ignore', out, out] });
+    child = spawn(py, args, {
+      cwd: dir,
+      windowsHide: true,
+      env: Object.assign({}, process.env, {
+        PORT: String(PORT),
+        HOST: '127.0.0.1',
+        BIMTWIN_S2B_TOKEN: AUTH_TOKEN
+      }),
+      stdio: ['ignore', out, out]
+    });
   } catch (e) {
     state.starting = false; state.running = false; state.error = 'spawn_failed_lite:' + (e && e.message || e); child = null;
     log('lite spawn failed: ' + state.error); return state;
@@ -130,7 +141,15 @@ function launch(py, dir, venv) {
   // Слушаем 127.0.0.1 (IPv4) — совпадает с нормализацией клиента (обход ::1).
   const args = ['-m', 'uvicorn', 'server:app', '--host', '127.0.0.1', '--port', String(PORT)];
   try {
-    child = spawn(py, args, { cwd: dir, windowsHide: true, env: Object.assign({}, process.env, { PORT: String(PORT) }), stdio: ['ignore', out, out] });
+    child = spawn(py, args, {
+      cwd: dir,
+      windowsHide: true,
+      env: Object.assign({}, process.env, {
+        PORT: String(PORT),
+        BIMTWIN_S2B_TOKEN: AUTH_TOKEN
+      }),
+      stdio: ['ignore', out, out]
+    });
   } catch (e) {
     state.starting = false; state.running = false; state.error = 'spawn_failed:' + (e && e.message || e); child = null;
     log('spawn failed: ' + state.error); return state;
@@ -340,7 +359,8 @@ function stop() {
 }
 
 function status() { return Object.assign({}, state, { hasDir: !!serverDir() }); }
+function authToken() { return AUTH_TOKEN; }
 
 // install() — явная установка опционального AI/GPU-стека (один раз, по кнопке/бату).
 function install() { return start({ install: true }); }
-module.exports = { start: start, stop: stop, status: status, install: install, PORT: PORT };
+module.exports = { start: start, stop: stop, status: status, authToken: authToken, install: install, PORT: PORT };

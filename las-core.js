@@ -45,7 +45,10 @@
     var fmt = r.u8(104) & 0x3f;
     var recLen = r.u16(105);
     var count = r.u32(107);
-    if (count === 0 && verMinor >= 4 && r.big64) count = r.big64(247);
+    if (verMinor >= 4 && r.big64) {
+      var extendedCount = r.big64(247);
+      if (Number.isFinite(extendedCount) && extendedCount > 0) count = extendedCount;
+    }
     var scale = { x: r.f64(131), y: r.f64(139), z: r.f64(147) };
     var offset = { x: r.f64(155), y: r.f64(163), z: r.f64(171) };
     var colorOff = LAS_COLOR_OFFSETS[fmt];
@@ -89,8 +92,16 @@
   }
   function keepSampledIndex(gi, stride) {
     if (stride <= 1) return true;
-    var win = (gi / stride) | 0;
-    return (gi - win * stride) === sampleOffset(win, stride);
+    if (stride === (stride | 0)) {   // целый шаг: как раньше
+      var win = (gi / stride) | 0;
+      return (gi - win * stride) === sampleOffset(win, stride);
+    }
+    // Дробный шаг (ревизия 8): окна [ceil(w·s), ceil((w+1)·s)) разной длины floor/ceil(s); в каждом — одна точка со случайным смещением.
+    // Так бюджет точек используется целиком (раньше шаг округлялся вверх: 271 млн при бюджете 135 млн давали 90 млн — каждую 3-ю).
+    var w = Math.floor(gi / stride), a = Math.ceil(w * stride), b = Math.ceil((w + 1) * stride);
+    if (gi < a) { w--; a = Math.ceil(w * stride); b = Math.ceil((w + 1) * stride); }
+    else if (gi >= b) { w++; a = Math.ceil(w * stride); b = Math.ceil((w + 1) * stride); }
+    return gi === a + sampleOffset(w, b - a);
   }
 
   function plyUpAxis(comments, firstXYZ, ranges) {
