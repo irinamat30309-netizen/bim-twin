@@ -27,6 +27,38 @@ function building(o) {
   wallV(6.12, 0, 10, 0); wallV(10, 0, 10, 6); wallV(10, 6, 6.12, 6);
   wallV(6.12, 6, 6.12, 0, [[6 - 2.9, 6 - 2.0, 0, 2.1]]);   // перегородка, сторона B (направление сверху вниз)
   slab(0, 0, 6, 6, 0); slab(6.12, 0, 10, 6, 0); slab(0, 0, 6, 6, H); slab(6.12, 0, 10, 6, H);
+  // ревизия 33: элементы под потолком — труба (видна снизу и с боков, до 0,5 r над осью), короб (низ и бока), балка (до перекрытия,
+  // перекрытие над ней сканеру не видно), шкаф (от пола) и светильник (короткий)
+  if (o.mep) {
+    const st = o.mepStep || 0.012;
+    for (const m of o.mep) {
+      const L = Math.hypot(m.x1 - m.x0, m.y1 - m.y0), dx = (m.x1 - m.x0) / L, dy = (m.y1 - m.y0) / L, nx = -dy, ny = dx;
+      if (m.type === 'pipe') {
+        const r0 = m.d / 2, na = Math.ceil((Math.PI * 4 / 3 * r0) / st);
+        for (let t = 0; t <= L; t += st) for (let k = 0; k <= na; k++) {
+          const ph = (-2 / 3 + 4 / 3 * (k + r() * 0.5) / na) * Math.PI, tt = t + r() * st * 0.5, e = gauss(r) * noise;
+          P.push([m.x0 + dx * tt + nx * (r0 + e) * Math.sin(ph), m.y0 + dy * tt + ny * (r0 + e) * Math.sin(ph), m.zc - (r0 + e) * Math.cos(ph)]);
+        }
+      } else {
+        const hw = m.w / 2;
+        for (let t = 0; t <= L; t += st) {
+          if (!m.floor) for (let q = -hw; q <= hw; q += st) P.push([m.x0 + dx * t + nx * q, m.y0 + dy * t + ny * q, m.z0 + gauss(r) * noise]);
+          for (let z = m.z0; z <= m.z1; z += st) for (const sg of [-1, 1]) P.push([m.x0 + dx * t + nx * hw * sg, m.y0 + dy * t + ny * hw * sg, z]);
+          if (m.lid) for (let q = -hw; q <= hw; q += st) P.push([m.x0 + dx * t + nx * q, m.y0 + dy * t + ny * q, m.z1]);
+        }
+        if (m.z1 >= H - 1e-6 || m.floor) {   // перекрытие над балкой и пол под шкафом не видны
+          let w = 0;
+          for (let i = 0; i < P.length; i++) {
+            const p = P[i], t = (p[0] - m.x0) * dx + (p[1] - m.y0) * dy, q = (p[0] - m.x0) * nx + (p[1] - m.y0) * ny;
+            if (!(Math.abs(p[2] - (m.floor ? 0 : H)) <= 0.02 && t >= 0 && t <= L && Math.abs(q) < hw - 0.005)) P[w++] = p;
+          }
+          P.length = w;
+        }
+      }
+    }
+  }
+  // ревизия 33: произвольные точки в локальных осях (крона, решётка)
+  if (o.extra) for (const p of o.extra) P.push([p[0], p[1], p[2]]);
   // ревизия 32: наклон облака (мм/м): верх смещён на tilt·z, горизонтальные плоскости наклонены навстречу (малый поворот)
   if (o.tilt) { const tu = o.tilt[0] / 1000, tv = o.tilt[1] / 1000; for (const p of P) { const x = p[0], y = p[1], z = p[2]; p[0] = x + tu * z; p[1] = y + tv * z; p[2] = z - tu * x - tv * y; } }
   // поворот на theta и сдвиг

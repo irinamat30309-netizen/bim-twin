@@ -146,11 +146,11 @@ test('r25: повторный проход — общая карта съёмк�
 
 test('r25: связка — опция refine в preload/main/воркере, флажок и выбор облака в окне, самомаска, сборка пакета, заголовок LAS', () => {
   const pre = read('preload.js'), main = read('main.js'), app = read('renderer/app.js'), pkg = JSON.parse(read('package.json')), xl = read('xbin-lidar.js');
-  assert.match(pre, /xbinBuildCloud: \(p, jobId, density, opts\) => inv\('bim:xbinBuildCloud', \{ path: p, jobId, density, refine: !!\(opts && opts\.refine\) \}\)/);
-  assert.match(main, /refine: a\.refine === true \};/);
+  assert.match(pre, /xbinBuildCloud: \(p, jobId, density, opts\) => inv\('bim:xbinBuildCloud', \{ path: p, jobId, density, refine: !!\(opts && opts\.refine\)(, color: [^}]+)? \}\)/);   // ревизия 36: + цвет по фото
+  assert.match(main, /refine: a\.refine === true(, edge: a\.edge !== false)? \};/);
   assert.match(main, /new Worker\(unpackedWorker\('xbin-lidar-worker\.js'\), \{ workerData: \{ xbinPath: abs, posesText, outPath: target, opt \} \}\)/);
   assert.match(app, /key: 'refine', label: 'Уточнить траекторию по облаку \(точнее, дольше\)', type: 'checkbox', value: true/);
-  assert.match(app, /API\.xbinBuildCloud\(p, jobId, density, \{ refine \}\)/);
+  assert.match(app, /API\.xbinBuildCloud\(p, jobId, density, \{ refine(, color)?(, edge)? \}\)/);   // ревизия 37: + фильтр краёв
   assert.match(app, /if \(v\.src === 'lidar'\) return window\.__bimXbinCloud\(p, r, ''\);/);
   assert.match(xl, /if \(o\.refine\) \{\s+const XR = require\('\.\/xbin-refine'\);/);
   assert.match(xl, /'BIM Twin xbin-lidar r25'/);

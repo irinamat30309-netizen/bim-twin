@@ -6,7 +6,9 @@
 'use strict';
 const ELEMENT_RE = /^IFC(WALL|DOOR|WINDOW|SLAB|BEAM|COLUMN|MEMBER|PLATE|COVERING|RAILING|STAIR|ROOF|DUCT\w*|PIPE\w*|CABLE\w*|FLOW\w*|AIRTERMINAL\w*|FAN\w*|PUMP\w*|VALVE\w*|SANITARY\w*|FURNISH\w*|BUILDINGELEMENTPROXY)$/;
 
-function stripStr(v) { if (v == null) return null; v = v.trim(); if (v === '$' || v === '*') return null; if (v[0] === "'" && v[v.length - 1] === "'") return v.slice(1, -1).replace(/''/g, "'"); return v; }
+// ревизия 39: кодировки STEP для не-ASCII (\X2\…\X0\ — UTF-16, \X\hh — ISO 8859-1, \S\c — верхняя половина)
+function decodeStep(s) { return s.replace(/\\X2\\([0-9A-Fa-f]+)\\X0\\/g, (m, h) => { let o = ''; for (let i = 0; i + 3 < h.length; i += 4) o += String.fromCharCode(parseInt(h.substr(i, 4), 16)); return o; }).replace(/\\X\\([0-9A-Fa-f]{2})/g, (m, h) => String.fromCharCode(parseInt(h, 16))).replace(/\\S\\(.)/g, (m, c) => String.fromCharCode(c.charCodeAt(0) + 128)).replace(/\\\\/g, '\\'); }
+function stripStr(v) { if (v == null) return null; v = v.trim(); if (v === '$' || v === '*') return null; if (v[0] === "'" && v[v.length - 1] === "'") return decodeStep(v.slice(1, -1).replace(/''/g, "'")); return v; }
 
 function splitStatements(text) {
   let s = text; const di = s.indexOf('DATA;'); if (di >= 0) { const ei = s.indexOf('ENDSEC;', di); s = s.substring(di + 5, ei >= 0 ? ei : s.length); }

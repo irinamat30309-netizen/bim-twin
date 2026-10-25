@@ -9,7 +9,7 @@ REM    automatic GPU + neural-net setup in a separate window.
 REM    The app keeps working and switches to GPU automatically.
 REM ============================================================
 
-echo ==== BIM-Twin START.bat v1202 ====
+echo ==== BIM-Twin START.bat v1340 ====
 echo.
 
 REM ---- Automatic GPU + neural-net setup (one click) ----
@@ -35,6 +35,37 @@ goto :gpuend
 :gpuskip
 echo [BIM-Twin] install-ai-gpu.bat not found - skipping GPU setup.
 :gpuend
+
+REM ---- r34: local AI assistant (Ollama + Qwen), one-time automatic setup ----
+REM  Picks the smartest model that fits this PC (Qwen 3.6 27B / 35B-A3B, Qwen 3.5 9B / 4B / 2B),
+REM  downloads it once into %LOCALAPPDATA%\BIMTwin\ollama and runs only on 127.0.0.1.
+REM  Disable: set BIMTWIN_AI_AUTOSETUP=0 before running START.bat.
+if "%BIMTWIN_AI_AUTOSETUP%"=="0" goto :aiend
+if exist "%LOCALAPPDATA%\BIMTwin\ollama\ready.flag" goto :aidone
+if exist "%LOCALAPPDATA%\BIMTwin\ollama\setup.lock" goto :aibusy
+if exist "dist\win-unpacked\BIM Twin.exe" goto :aiexe
+where node >nul 2>&1
+if errorlevel 1 goto :ainone
+echo [BIM-Twin] Setting up the local AI assistant in a separate window (one time, the app keeps working)...
+start "BIM-Twin AI assistant setup" /min node "%~dp0ai\setup-cli.js"
+goto :aiend
+:aiexe
+if not exist "dist\win-unpacked\resources\app.asar.unpacked\ai\setup-cli.js" goto :ainone
+echo [BIM-Twin] Setting up the local AI assistant in a separate window (one time, the app keeps working)...
+setlocal
+set ELECTRON_RUN_AS_NODE=1
+start "BIM-Twin AI assistant setup" /min "dist\win-unpacked\BIM Twin.exe" "dist\win-unpacked\resources\app.asar.unpacked\ai\setup-cli.js"
+endlocal
+goto :aiend
+:aidone
+echo [BIM-Twin] AI assistant model is installed.
+goto :aiend
+:aibusy
+echo [BIM-Twin] AI assistant setup is already running.
+goto :aiend
+:ainone
+echo [BIM-Twin] AI assistant: the app will set the model up by itself on first start.
+:aiend
 
 echo.
 echo [BIM-Twin] Launching the application (it starts the AI server automatically)...

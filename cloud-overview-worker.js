@@ -19,6 +19,11 @@ try {
     const J = require('./cloud-inspect-job');
     result = J.run(d, (p, label) => parentPort.postMessage({ type: 'progress', progress: p, label }));
     parentPort.postMessage({ type: 'result', result }, J.transferList(result));
+  } else if (d.job === 'scan2bim') {
+    // ревизия 39: BIM-модель по облаку — этажи, стены, проёмы, материалы, перекрытия, колонны, объекты (три прохода по файлу)
+    const J = require('./scan2bim-job');
+    result = J.run(d, (p, label) => parentPort.postMessage({ type: 'progress', progress: p, label }));
+    parentPort.postMessage({ type: 'result', result });
   } else if (d.job === 'slice' || d.job === 'plan') {
     let last = 0;
     const scale = d.job === 'plan' ? 0.7 : 1;
@@ -35,7 +40,7 @@ try {
       result = { ok: !!plan.ok, message: plan.message, plan, slice: { count: n, stride: result.stride, h0: result.h0, h1: result.h1, preview: pv, high: result.uvHigh ? { count: result.countHigh, h0: result.hi0, h1: result.hi1, bands: result.highBands || 1 } : null } };
     }
   } else result = OV.overview(d.desc, d.opts || {});
-  if (d.job !== 'inspect') parentPort.postMessage({ type: 'result', result }, transfer(result));
+  if (d.job !== 'inspect' && d.job !== 'scan2bim') parentPort.postMessage({ type: 'result', result }, transfer(result));
 } catch (e) {
   parentPort.postMessage({ type: 'result', result: { ok: false, message: 'Ошибка карты облака: ' + String((e && e.message) || e) } });
 }

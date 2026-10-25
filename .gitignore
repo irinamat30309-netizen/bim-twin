@@ -27,6 +27,9 @@ test/fixtures/*
 !test/fixtures/laz12-sample.laz.b64
 !test/fixtures/laz14-sample.laz.b64
 !test/fixtures/laz-decimation-200005.laz.b64
+!test/fixtures/assistant-inspection.json
+!test/fixtures/norms-test-sp.pdf
+!test/fixtures/norms-test-sp.pdf.b64
 scan2bim-ai-server/test_local.py
 QA-run-stage*-latest.log
 bim-twin-handoff-*.docx
