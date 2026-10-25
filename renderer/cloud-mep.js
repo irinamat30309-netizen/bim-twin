@@ -112,16 +112,31 @@
     // 1. верх колонки
     var top = new Int16Array(N).fill(-1);
     for (col = 0; col < N; col++) for (w = W - 1; w >= 0; w--) { var x = solid[col * W + w]; if (x) { top[col] = w * 32 + bitTop(x); break; } }
-    // 2. потолок: квадраты 0,5 м — 75-й процентиль верха колонок (если в квадрате занято от 15 % колонок), затем наибольший из 3 × 3
+    // 2. потолок: квадраты 0,5 м — 75-й процентиль верха колонок (если в квадрате занято от 15 % колонок и верх ровный), затем наибольший из 3 × 3
     var B = Math.max(2, Math.round(0.5 / cell)), ga = Math.ceil(na / B), gb = Math.ceil(nb / B), blk = new Int16Array(ga * gb).fill(-1), buf = [];
+    var blk0 = new Int16Array(ga * gb).fill(-1), blkP = new Int16Array(ga * gb).fill(-1), blkQ = new Float32Array(ga * gb), qS = Math.max(1, Math.round(0.1 / dz)), capS = Math.max(1, Math.round((o.cap != null ? o.cap : 0.1) / dz)), ceilQ = o.ceilQ != null ? +o.ceilQ : 0.5;
     for (var by = 0; by < gb; by++) for (var bx = 0; bx < ga; bx++) {
       buf.length = 0;
       for (j = by * B; j < Math.min(nb, by * B + B); j++) for (i = bx * B; i < Math.min(na, bx * B + B); i++) { var tp = top[j * na + i]; if (tp >= 0) buf.push(tp); }
-      if (buf.length >= 0.15 * B * B) blk[by * ga + bx] = Math.round(pct(buf, 0.75));
+      if (buf.length < 0.15 * B * B) continue;
+      var pv = Math.round(pct(buf, 0.75)), nq = 0;
+      // потолок — ровный слой внутри полосы: верх колонок у 75-го процентиля (±0,1 м) хотя бы у половины колонок квадрата;
+      // упор в верх полосы — облако идёт выше (крона дерева, высокий зал), потолок не измерен; рыхлый верх — крона, не плита
+      for (var qi = 0; qi < buf.length; qi++) if (Math.abs(buf[qi] - pv) <= qS) nq++;
+      blkQ[by * ga + bx] = nq / buf.length; blkP[by * ga + bx] = pv;
+      if (pv <= ns - 1 - capS && nq >= ceilQ * buf.length) blk0[by * ga + bx] = pv;
+    }
+    // плита сплошная: в 3 × 3 не меньше 4 ровных квадратов на одной высоте (±0,15 м) — отдельные «ровные» пятна в кроне отпадают
+    var tolS = Math.max(1, Math.round(0.15 / dz));
+    for (by = 0; by < gb; by++) for (bx = 0; bx < ga; bx++) {
+      var p0 = blk0[by * ga + bx]; if (p0 < 0) continue; var cnt0 = 0;
+      for (var y8 = Math.max(0, by - 1); y8 <= Math.min(gb - 1, by + 1); y8++) for (var x8 = Math.max(0, bx - 1); x8 <= Math.min(ga - 1, bx + 1); x8++) { var p8 = blk0[y8 * ga + x8]; if (p8 >= 0 && Math.abs(p8 - p0) <= tolS) cnt0++; }
+      if (cnt0 >= 4) blk[by * ga + bx] = p0;
     }
     var ceilB = new Int16Array(ga * gb).fill(-1);
     for (by = 0; by < gb; by++) for (bx = 0; bx < ga; bx++) {
-      if (blk[by * ga + bx] < 0) continue; var m = -1;
+      // квадрат с неровным верхом (балка во всю ширину квадрата, край плиты) берёт потолок соседей, если облако не уходит выше полосы
+      if (blk[by * ga + bx] < 0 && !(blkQ[by * ga + bx] > 0 && blkP[by * ga + bx] <= ns - 1 - capS)) continue; var m = -1;
       for (var yy = Math.max(0, by - 1); yy <= Math.min(gb - 1, by + 1); yy++) for (var xx = Math.max(0, bx - 1); xx <= Math.min(ga - 1, bx + 1); xx++) if (blk[yy * ga + xx] > m) m = blk[yy * ga + xx];
       ceilB[by * ga + bx] = m;
     }
@@ -164,7 +179,7 @@
       if (any) cols++;
     }
     // 5. по двум направлениям плана
-    var list = [], segs = 0;
+    var list = [], segs = 0, clutter = 0, grille = 0;
     for (var dir = 0; dir < 2; dir++) {
       var L1 = dir === 0 ? na : nb, L2 = dir === 0 ? nb : na, nk = Math.floor(L1 / segC), P = new Uint8Array(L2 * ns);
       var colOf = dir === 0 ? function (a, c2) { return c2 * na + a; } : function (a, c2) { return a * na + c2; };
@@ -232,6 +247,19 @@
         var cs2 = cl.length ? median(cl) : ns - 1;
         el.ceilS = cs2; el.touch = el.s1 >= cs2 - gapS - 1;
         el.vox = 0; for (var a6 = el.i0; a6 <= el.i1; a6++) el.vox += cnt(a6);
+        // по сторонам на высоте элемента: доля занятых колонок в полосах 0,1–0,5 м слева и справа (крона, решётка — занято с обеих сторон)
+        var sideOf = function (jA, jB) {
+          var occ = 0, tot = 0;
+          for (var a7 = el.i0; a7 <= el.i1; a7++) for (var j7 = Math.max(0, jA); j7 <= Math.min(L2 - 1, jB); j7++) {
+            var cn7 = colOf(a7, j7), hit7 = 0; tot++;
+            for (var s7 = el.s0; s7 <= el.s1 && !hit7; s7++) if (solid[cn7 * W + (s7 >> 5)] & (1 << (s7 & 31))) hit7 = 1;
+            occ += hit7;
+          }
+          return tot ? occ / tot : 0;
+        };
+        var sw = Math.max(2, Math.round(0.4 / cell)), sg = Math.max(1, Math.round(0.1 / cell));
+        el.side = [sideOf(el.j0 - sg - sw, el.j0 - sg - 1), sideOf(el.j1 + sg + 1, el.j1 + sg + sw)];
+        if (el.side[0] + el.side[1] >= (o.sideMax || 0.8)) { clutter++; return; }
         list.push(el);
       });
     }
@@ -261,7 +289,7 @@
       var ct = Math.cos(th), st2 = Math.sin(th), P0 = [t0 * ct - crossC * st2, t0 * st2 + crossC * ct], P1 = [t1 * ct - crossC * st2, t1 * st2 + crossC * ct];
       var bottom = z0 + el.s0 * dz, topZ = z0 + (el.s1 + 1) * dz, ceil = z0 + el.ceilS * dz;
       var width = (el.j1 - el.j0 + 1) * cell, e = { dir: el.dir, th: th, t0: t0, t1: t1, q: crossC, a: P0, b: P1, length: t1 - t0, width: width, bottom: bottom, top: el.touch ? ceil : topZ,
-        ceiling: ceil, touch: el.touch, vox: el.vox, src: 'grid' };
+        ceiling: ceil, touch: el.touch, vox: el.vox, side: el.side, src: 'grid' };
       e.depth = e.top - e.bottom;
       e.kind = el.touch && width >= 0.1 ? 'beam' : width <= 0.3 && e.depth >= 0.4 * width ? 'pipe' : e.depth <= 0.15 ? 'tray' : 'duct';
       if (e.kind === 'pipe') e.d = width;
@@ -270,6 +298,7 @@
     // вертикальные пластины (уступ потолка, торец короба): узкие и глубокие — не элементы
     if (o.debug) out.forEach(function (e) { o.debug.push({ el: true, dir: e.dir, kind: e.kind, length: e.length, width: e.width, depth: e.depth, bottom: e.bottom }); });
     out = out.filter(function (e) { return !(e.width <= 0.1 + 1e-9 && e.depth >= 0.3); });
+    var gr0 = dropGrille(out, { cell: cell }); out = gr0.list; grille = gr0.n;
     // дубли по двум направлениям (квадратные пятна до 1,2 м): оставляется более длинный
     out.sort(function (x, y) { return y.length - x.length; });
     var res = [];
@@ -280,9 +309,37 @@
     res.forEach(function (e, n) { e.id = n + 1; clearOf(e, floor, floorAt, o.clear); });
     // потолок: высоты квадратов (75-й процентиль верха), 0,5 м — для классов точек и подписи
     var ceilH = new Float32Array(ga * gb).fill(NaN); for (k = 0; k < ga * gb; k++) if (blk[k] >= 0) ceilH[k] = z0 + (blk[k] + 1) * dz;
-    var cz = []; for (k = 0; k < ga * gb; k++) if (blk[k] >= 0) cz.push(ceilH[k]);
+    var cz = [], nRej = 0; for (k = 0; k < ga * gb; k++) { if (blk[k] >= 0) cz.push(ceilH[k]); else if (blkQ[k] > 0) nRej++; }
     return { ok: true, list: res, ceiling: { phi: acc.phi, a0: acc.a0, b0: acc.b0, cell: B * cell, nx: ga, ny: gb, h: ceilH, median: cz.length ? median(cz) : NaN },
-      stats: { cell: cell, dz: dz, columns: N, hangVox: hang, hangCols: cols, segs: segs, points: acc.count(), minBottom: minBottom } };
+      stats: { cell: cell, dz: dz, columns: N, hangVox: hang, hangCols: cols, segs: segs, points: acc.count(), minBottom: minBottom, ceilBlocks: cz.length, ceilRejected: nRej, clutter: clutter, grille: grille } };
+  }
+  // решётка, ограждение, переплёт: три и больше тонких прута одно над другим (та же ось в плане, перекрытие по длине от половины,
+  // низ отличается от 0,15 м) — не трубы. Номера и пучки пересчитываются.
+  function dropGrille(list, o) {
+    o = o || {};
+    var cell = o.cell || 0.05, thin = Math.max(0.12, 1.5 * cell), tolQ = Math.max(0.1, 1.5 * cell);
+    var isThin = function (e) { return e.width <= thin + 1e-9 && (e.depth != null ? e.depth : e.top - e.bottom) <= thin + 1e-9; };
+    var ax = list.map(function (e) {
+      var c = Math.cos(e.th), s = Math.sin(e.th), ta = e.a[0] * c + e.a[1] * s, tb = e.b[0] * c + e.b[1] * s;
+      return { t0: Math.min(ta, tb), t1: Math.max(ta, tb), q: (-e.a[0] * s + e.a[1] * c - e.b[0] * s + e.b[1] * c) / 2, c: c, s: s };
+    });
+    var drop = list.map(function (e, i) {
+      if (!isThin(e)) return false; var hs = [e.bottom], A = ax[i];
+      list.forEach(function (f, k) {
+        if (k === i || f.dir !== e.dir || !isThin(f)) return;
+        var B = ax[k], qf = (-f.a[0] * A.s + f.a[1] * A.c - f.b[0] * A.s + f.b[1] * A.c) / 2; if (Math.abs(qf - A.q) > tolQ) return;
+        var ov = Math.min(A.t1, B.t1) - Math.max(A.t0, B.t0); if (ov < 0.5 * Math.min(A.t1 - A.t0, B.t1 - B.t0)) return;
+        if (hs.every(function (h) { return Math.abs(h - f.bottom) >= 0.15; })) hs.push(f.bottom);
+      });
+      return hs.length >= 3;
+    });
+    var n = drop.filter(Boolean).length; if (!n) return { list: list, n: 0 };
+    var res = list.filter(function (e, i) { return !drop[i]; });
+    if (res.some(function (e) { return e.id != null; })) {
+      var gc = {}; res.forEach(function (e) { if (e.group) gc[e.group] = (gc[e.group] || 0) + 1; });
+      res.forEach(function (e, k) { e.id = k + 1; if (e.group) { if (gc[e.group] < 2) { delete e.group; delete e.groupN; } else e.groupN = gc[e.group]; } });
+    }
+    return { list: res, n: n };
   }
   // прямоугольник элемента в рамке плана (a, b): элементы идут по направлениям плана
   function rectAB(e) { var h = e.width / 2; return e.dir === 0 ? [e.t0, e.q - h, e.t1, e.q + h] : [-e.q - h, e.t0, -e.q + h, e.t1]; }
@@ -615,6 +672,6 @@
       'FILE_NAME(' + str(o.fileName || 'mep.ifc') + ",'" + date + "',(''),(''),'BIM Twin','BIM Twin','');", "FILE_SCHEMA(('IFC4'));", 'ENDSEC;', 'DATA;'].concat(L, ['ENDSEC;', 'END-ISO-10303-21;']).join('\n') + '\n';
   }
 
-  return { mepAcc: mepAcc, mepFind: mepFind, refineAcc: refineAcc, refine: refine, circleFit: circleFit, splitProfile: splitProfile, summary: summary, sizeText: sizeText,
+  return { mepAcc: mepAcc, mepFind: mepFind, refineAcc: refineAcc, refine: refine, dropGrille: dropGrille, circleFit: circleFit, splitProfile: splitProfile, summary: summary, sizeText: sizeText,
     csvRows: csvRows, toDxfEntities: toDxfEntities, toIfc: toIfc, KIND: KIND, KIND_LONG: KIND_LONG, LAYER: LAYER };
 });

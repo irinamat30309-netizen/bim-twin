@@ -73,7 +73,7 @@ function roundPts(v) {
   return Math.max(step, Math.floor(v / step) * step);
 }
 /*
- * Рекомендация: видеокарте — не больше половины свободной видеопамяти (наибольшее надёжное — 3/4), окну — не больше половины
+ * Рекомендация: видеокарте — не больше 30 % свободной видеопамяти (наибольшее надёжное — 42 %), окну — не больше половины
  * свободной оперативной памяти за вычетом 2 ГБ на систему (наибольшее — 3/4). Встроенная графика делит оперативную память: ей — не больше
  * четверти оперативной памяти. Неизвестная видеокарта — считаем 4 ГБ.
  */
@@ -87,12 +87,16 @@ function recommend(info) {
   if (!vramTotal) { vramTotal = 4 * GB; notes.push('видеопамять не определена — принято 4 ГБ'); }
   if (!vramFree || vramFree > vramTotal) vramFree = Math.max(vramTotal * 0.5, vramTotal - 1.2 * GB);
   const ramFree = Math.max(0.5 * GB, ramFree0 - 2 * GB);
-  const gpuRec = vramFree * 0.5 / GPU_BYTES_PER_POINT, gpuMax = vramFree * 0.65 / GPU_BYTES_PER_POINT;
+  // ревизия 37: по опыту (RTX 5070 12 ГБ: 220 млн работает, 430 млн — сброс изображения) — видеокарте не больше 30 % свободной
+  // видеопамяти рекомендовано и 42 % наибольшее: Windows (ANGLE/Direct3D) держит копии буферов и сбрасывает долгие кадры
+  const gpuRec = vramFree * 0.3 / GPU_BYTES_PER_POINT, gpuMax = vramFree * 0.42 / GPU_BYTES_PER_POINT;
+  const resetAt = num(info.gpuResetAt);
   const ramRec = ramFree * 0.5 / RAM_BYTES_PER_POINT, ramMax = ramFree * 0.75 / RAM_BYTES_PER_POINT;
   const limitedBy = gpuRec <= ramRec ? 'gpu' : 'ram';
   // встроенной графике много точек не по силам и по скорости: не больше 50 млн рекомендовано и 100 млн наибольшее
   const capRec = integrated ? 50e6 : 1.5e9, capMax = integrated ? 100e6 : 2e9;
-  const points = roundPts(Math.min(gpuRec, ramRec, capRec)), safeMax = Math.max(points, roundPts(Math.min(gpuMax, ramMax, capMax)));
+  let points = roundPts(Math.min(gpuRec, ramRec, capRec)), safeMax = Math.max(points, roundPts(Math.min(gpuMax, ramMax, capMax)));
+  if (resetAt >= 1e6) { safeMax = Math.min(safeMax, roundPts(resetAt * 0.7)); points = Math.min(points, roundPts(resetAt * 0.5)); notes.push('видеокарта сбрасывала изображение при ' + Math.round(resetAt / 1e6) + ' млн точек — пределы снижены'); }
   return { points, safeMax, minimum: 1000000, perPointGpu: GPU_BYTES_PER_POINT, perPointRam: RAM_BYTES_PER_POINT, limitedBy,
     vramTotal, vramFree, ramTotal, ramFree: ramFree0, notes };
 }
