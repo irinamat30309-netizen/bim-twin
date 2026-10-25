@@ -181,6 +181,7 @@ test('r21: сведение и ровный цвет подключены: сб�
   const ui = read('renderer/lixel-tools-ext.js');
   assert.ok(/key: 'align', label: 'Свести проходы/.test(ui) && /key: 'colorBalance'/.test(ui));
   assert.ok(/align: values\.align !== false, colorBalance:/.test(ui));
-  assert.ok(/Траектория сканера рядом с файлом не найдена/.test(ui), 'подсказка без траектории');
-  assert.ok(/проходы сведены/.test(ui) && /яркость проходов/.test(ui), 'итоги в сообщении');
+  // ревизия 44: без траектории — без длинной подсказки: проходы сводятся по времени точек автоматически
+  assert.ok(/value: found \? 'auto' : 'none'/.test(ui), 'без траектории — по времени точек');
+  assert.ok(/проходы сведены/.test(ui) && /стены и цвет выровнены/.test(ui), 'итоги в сообщении (ревизия 44: одной строкой)');
 });

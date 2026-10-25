@@ -279,7 +279,7 @@ test('проводка: IPC, preload, поток, сборка, лента, кн
   const cp = read('renderer/cloud-preview.js');
   assert.match(cp, /data-act="inspect"/); assert.match(cp, /W\.CloudInspectUI\.open\(path, ov, st\)/); assert.match(cp, /inspect: async function/);
   const html = read('renderer/index.html'), at = (s) => html.indexOf(s);
-  for (const s of ['cloud-inspect.js?v=1332', 'cloud-inspect-ui.js?v=1332', 'cloud-preview.js?v=1331', 'cloud-report.js?v=1332', 'ui/cloud-tools.css?v=1331']) assert.ok(at(s) > 0, s);
+  for (const s of ['cloud-inspect.js?v=1332', 'cloud-inspect-ui.js?v=1333', 'cloud-preview.js?v=1331', 'cloud-report.js?v=1333', 'ui/cloud-tools.css?v=1333']) assert.ok(at(s) > 0, s);
   assert.ok(at('dxfparse.js?v=') < at('cloud-inspect.js?v=') && at('auto-plan.js?v=') < at('cloud-inspect.js?v='));
   assert.ok(at('cloud-inspect.js?v=') < at('cloud-inspect-ui.js?v=') && at('cloud-inspect-ui.js?v=') < at('cloud-preview.js?v='));
   const css = read('renderer/ui/cloud-tools.css'); for (const c of ['.ins-card', '.ins-tab', '.ins-devscale', '.ins-verdict']) assert.ok(css.includes(c), 'стиль ' + c);

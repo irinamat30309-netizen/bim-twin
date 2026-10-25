@@ -212,7 +212,45 @@
     }
     $('cpDimensions').textContent = info.bounds.mx.map((x, i) => 'XYZ'[i] + ': ' + (x - info.bounds.mn[i]).toFixed(3)).join('  ·  ');
     if (window.__bimRefreshQuality) window.__bimRefreshQuality();
-    $('cpColorNote').textContent = info.hasRGB ? '' : 'В исходнике нет RGB: используется цвет парсера. Доступна окраска по высоте.';
+    colorNote(v, info);
+  }
+
+  // Ревизия 36: серое облако — RGB есть, но R = G = B почти у всех точек (облако из лидара .xbin пишет в RGB яркость отражения).
+  // Тогда «RGB» в «Отображении» не даст цвета — показываем причину и кнопку «Раскрасить по фото камер».
+  function isGrayColors(col, n) {
+    if (!col || !(n > 0)) return false;
+    const m = Math.min(n, Math.floor(col.length / 3)); if (m < 16) return false;
+    const scaled = !(col instanceof Uint8Array || col instanceof Uint8ClampedArray), tol = scaled ? 4 / 255 : 4;
+    const step = Math.max(1, Math.floor(m / 4096)); let seen = 0, gray = 0;
+    for (let i = 0; i < m && seen < 4096; i += step) {
+      const r = col[i * 3], g = col[i * 3 + 1], b = col[i * 3 + 2]; seen++;
+      if (Math.abs(r - g) <= tol && Math.abs(g - b) <= tol && Math.abs(r - b) <= tol) gray++;
+    }
+    return seen >= 16 && gray >= seen * 0.97;
+  }
+  let grayCache = { col: null, len: 0, gray: false };
+  function cloudIsGray(v, info) {
+    if (!info || !info.hasRGB || info.streaming) return false;
+    const bo = v && v.base && v.base.find(o => o && o.points && o.col);
+    if (!bo) return false;
+    const len = Math.min(bo.col.length, (bo.count || bo.col.length / 3) * 3);
+    if (grayCache.col !== bo.col || Math.abs(grayCache.len - len) > len * 0.25) grayCache = { col: bo.col, len, gray: isGrayColors(bo.col, len / 3) };
+    return grayCache.gray;
+  }
+  function colorNote(v, info) {
+    const el = $('cpColorNote'); if (!el) return;
+    if (!info.hasRGB) { el.textContent = 'В исходнике нет RGB: используется цвет парсера. Доступна окраска по высоте.'; return; }
+    const src = String(info.sourceName || ''), gray = cloudIsGray(v, info);
+    if (!gray) { if (el.textContent) el.textContent = ''; return; }
+    if (el.dataset.gray === src && el.firstChild) return;
+    el.textContent = ''; el.dataset.gray = src;
+    el.appendChild(document.createTextNode('Цвета в файле нет: RGB — серая яркость отражения лидара (так выглядит облако, собранное из лидара .xbin без цвета). Настоящий цвет дают кадры камер сканера.'));
+    if (/\.las$/i.test(src) && typeof window.__bimPhotoColor === 'function') {
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'btn sm'; btn.id = 'cpPhotoColor'; btn.style.display = 'flex'; btn.style.marginTop = '6px'; btn.textContent = 'Раскрасить по фото камер';
+      btn.addEventListener('click', () => { window.__bimPhotoColor(/[\\/]/.test(src) ? src : undefined); });
+      el.appendChild(btn);
+    }
   }
 
   // Ревизия 9: в потоковом режиме показываем, что индекс содержит все точки файла, и сколько из них рисуется в этом кадре
@@ -232,7 +270,7 @@
     const v = V(), info = v && v.getCloudInfo && v.getCloudInfo(), el = $('cpLoaded');
     if (info && info.streaming && el) el.textContent = streamLoadedText(info, lastStats);
   });
-  window.__lxCloudUI = { sync, closeMenu, select, streamLoadedText };
+  window.__lxCloudUI = { sync, closeMenu, select, streamLoadedText, isGrayColors };
   ['bim-cloud-change', 'bim-app-ready', 'lx-scene-built'].forEach(e => window.addEventListener(e, sync));
   if (document.readyState !== 'loading') sync(); else window.addEventListener('DOMContentLoaded', () => setTimeout(sync, 200));
 })();

@@ -31,6 +31,10 @@
 .bp-pill:hover { color: var(--txt); }
 .bp-pill input { width: 12px; height: 12px; margin: 0; accent-color: var(--accent); }
 .bp-pill svg.ic { width: 13px; height: 13px; }
+.bp-pill:disabled { opacity: .45; cursor: default; }
+.bp-tools button { display: inline-flex; align-items: center; gap: 4px; }
+.bp-tools svg.ic { width: 13px; height: 13px; }
+.bp-tr { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .bp-maphint { position: absolute; right: 8px; bottom: 8px; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--bg-1) 70%, transparent); color: var(--txt-3); font-size: 10.5px; pointer-events: none; }
 .bp-side { display: flex; flex-direction: column; min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: var(--bg-1); }
 .bp-kpis { display: grid; flex: none; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
@@ -169,6 +173,9 @@
 .pw-opt.on:disabled { opacity: 1; }
 .pw-warn { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 2px 0 2px 8px; border-left: 2px solid var(--warn); color: var(--txt-2); font-size: var(--fs-xs); line-height: 1.45; }
 .pw-warn .ic, .pw-warn svg { display: none; }
+.pw-note { display: flex; align-items: flex-start; gap: 6px; margin: 4px 0 0; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.45; }
+.pw-note > svg, .pw-note > .ic { flex: none; width: 13px; height: 13px; margin-top: 1px; }
+.pw-note.pw-warn { margin-top: 4px; color: var(--txt-2); }
 .pw-seg { display: flex; padding: 1px; border: 1px solid var(--line); border-radius: var(--r-1); background: var(--bg-0); }
 .pw-seg button { flex: 1 1 0; height: 24px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--txt-3); font: inherit; font-size: var(--fs-xs); cursor: pointer; }
 .pw-seg button:hover { color: var(--txt); }
@@ -196,3 +203,8 @@
 .ins-dev .ins-devimg + .ins-devscale { margin-top: -2px; }
 .ins-dxfname { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
 .ins-verdict { justify-content: flex-start; color: var(--txt-2); text-overflow: ellipsis; }
+/* ревизия 33: балки и трубы */
+.ins-mep tr[data-m] { cursor: pointer; }
+.ins-mep tr[data-m]:hover td { background: var(--bg-3); }
+.ins-mep td:nth-child(2) { text-align: left; }
+.ins-mk { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; vertical-align: 0; }

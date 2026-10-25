@@ -75,6 +75,7 @@
     var a = A(); if (!a || !a.cloudBackups) return null;
     try { return await a.cloudBackups(Object.assign({ action: action || 'usage' }, policy ? { policy: policy } : {})); } catch (_) { return null; }
   }
+  async function storage() { var a = A(); if (!a || !a.projectStorage) return null; try { var r = await a.projectStorage({ action: 'info' }); return r && r.ok ? r : null; } catch (_) { return null; } }
   var bk = null;
   async function render() {
     if (!back) return;
@@ -86,8 +87,9 @@
     h += '<section class="pw-sec"><div class="pw-h">Папка проекта</div>';
     h += '<div class="pw-row">' + ic('folder', 16) + (f && f.path ? '<span class="pw-path" title="' + esc(f.path + '\nОблака, планы DXF, PDF-отчёты и выгрузки сохраняются сюда по умолчанию. Папка не удаляется при закрытии программы.') + '">' + esc(f.path) + '</span>' : '<span class="pw-path pw-dim">Недоступна в этой версии</span>') +
       '<button type="button" class="btn xs ghost pw-ib" data-a="open" title="Открыть папку" aria-label="Открыть папку"' + (f && f.path ? '' : ' disabled') + '>' + ic('folder-open', 15) + '</button>' +
-      '<button type="button" class="btn xs ghost pw-ib" data-a="choose" title="Изменить расположение…" aria-label="Изменить расположение">' + ic('settings', 15) + '</button></div>';
+      '<button type="button" class="btn xs ghost pw-ib" data-a="choose" title="Изменить расположение проекта (любой диск)…" aria-label="Изменить расположение">' + ic('settings', 15) + '</button></div>';
     if (f && f.path) h += '<div class="pw-subs">' + ['clouds', 'drawings', 'reports', 'exports'].map(function (k) { return f[k] ? '<span>' + esc(base(f[k])) + '</span>' : ''; }).join('') + '</div>';
+    if (f && f.path) h += storageLines(f, stInfo);
     h += '</section>';
     // открытое облако: файл, куда идут правки, два способа сохранения
     h += '<section class="pw-sec"><div class="pw-h">Открытое облако</div>';
@@ -113,12 +115,26 @@
     body.innerHTML = h;
     var on = function (sel, fn) { Array.prototype.forEach.call(body.querySelectorAll(sel), function (b) { b.onclick = function () { fn(b); }; }); };
     on('[data-a="open"]', async function () { var a = A(); if (a && a.projectFolder) { var r = await a.projectFolder('open'); if (r && r.ok === false && r.message) toast(r.message, true); } });
-    on('[data-a="choose"]', async function () { var a = A(); if (!a || !a.projectFolder) return; var r = await a.projectFolder('choose'); if (r && r.path) { folderCache = r; toast('Папка проектов: ' + r.root); } render(); });
+    on('[data-a="choose"]', async function () { var a = A(); if (!a || !a.projectFolder) return; var r = await a.projectFolder('choose'); if (r && r.path) { folderCache = r; toast('Папка проекта: ' + r.path + ' — новые облака, LAS и кэш сохраняются сюда; прежние файлы остались на месте'); stInfo = await storage(); } render(); });
     on('[data-a="inplace"]', function () { workInPlace(); });
     on('[data-a="asnew"]', function () { saveAsNew(); });
     on('[data-a="save"]', async function () { var s2 = smart(); if (s2 && s2.save) { await s2.save(); render(); } });
     on('[data-pol]', async function (b) { var r = await backups('set', b.getAttribute('data-pol')); if (r && r.ok) { bk = r; toast(r.keep ? 'Резервных копий хранится: до ' + r.keep : 'Резервные копии не хранятся'); } render(); });
     on('[data-a="clear"]', async function () { var r = await backups('clear'); if (r && r.ok) { bk = r; toast('Резервные копии удалены'); } else if (r) bk = Object.assign({}, bk || {}, r); render(); });
+  }
+  // ревизия 38: свободное место на диске проекта и где лежит кэш (индексы octree, черновики, резервные копии)
+  var stInfo = null;
+  function drv(p) { var m = /^([a-z]:)/i.exec(String(p || '')); return m ? m[1].toUpperCase() : '/'; }
+  function storageLines(f, si) {
+    var h = '', LOW = 20 * 1073741824;
+    if (f.free != null) h += '<p class="pw-note' + (f.low ? ' pw-warn' : '') + '">' + ic('hard-drive', 14) + '<span>Диск ' + esc(String(f.drive || drv(f.path)).replace(/[\\/]+$/, '')) + ': свободно ' + esc(fmtBytes(f.free)) + (f.low ? ' — мало для облаков точек, выберите другой диск' : '') + '</span></p>';
+    if (f.cacheSource === 'project') h += '<p class="pw-note">' + ic('server', 14) + '<span>Кэш (индексы для быстрого открытия, черновики, резервные копии) — в папке проекта, «Кэш BIM Twin»</span></p>';
+    else if (f.cache) {
+      var cs = si && si.cacheSpace, low = cs && cs.free < LOW;
+      h += '<p class="pw-note' + (low ? ' pw-warn' : '') + '">' + ic('server', 14) + '<span>Кэш (индексы, черновики, резервные копии) — на диске ' + esc(drv(f.cache)) + ' в папке программы' + (cs ? ', свободно ' + esc(fmtBytes(cs.free)) : '') +
+        '. Выберите для проекта папку на другом диске (кнопка с шестерёнкой) — новые облака, LAS и кэш будут сохраняться туда.</span></p>';
+    }
+    return h;
   }
   function plural(n) { n = Math.abs(n) % 100; var k = n % 10; if (n > 10 && n < 20) return 'копий'; if (k > 1 && k < 5) return 'копии'; if (k === 1) return 'копия'; return 'копий'; }
   function close() {
@@ -137,7 +153,7 @@
       D.body.appendChild(back); if (kit() && kit().hydrate) kit().hydrate(back); back.classList.add('open');
       D.addEventListener('keydown', onKey, true);
     }
-    var r = await Promise.all([folder(true), backups('usage')]);
+    var r = await Promise.all([folder(true), backups('usage'), storage().then(function (x) { stInfo = x; })]);
     bk = r[1] && r[1].ok ? r[1] : null;
     await render();
     if (section === 'backups' && back) { var el = back.querySelector('.pw-seg'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' }); }

@@ -30,8 +30,59 @@ contextBridge.exposeInMainWorld('bimAPI', {
   cancelCloudOverview: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelCloudOverview', { jobId }); },
   cloudPlan: (payload) => inv('bim:cloudPlan', payload || {}),
   cloudInspect: (payload) => inv('bim:cloudInspect', payload || {}),
+  // ревизия 39: BIM-модель по облаку (IFC4, OBJ, DXF, отчёт) — прогресс через onCloudPlanProgress
+  cloudScan2Bim: (payload) => inv('bim:scan2bim', payload || {}),
+  cloudScan2BimReveal: (dir) => inv('bim:scan2bimReveal', String(dir || '')),
   pickDxfText: () => inv('bim:pickDxfText', {}),
   findCleanCloud: (p) => inv('bim:findCleanCloud', { path: p }),
+  // r34 — локальный ИИ-ассистент
+  aiStatus: () => ipcRenderer.invoke('bim:aiStatus'),
+  aiSetup: (model) => ipcRenderer.invoke('bim:aiSetup', { model: typeof model === 'string' ? model : undefined }),
+  aiChat: (payload) => ipcRenderer.invoke('bim:aiChat', payload || {}),
+  aiCancel: (jobId) => { try { ipcRenderer.send('bim:aiCancel', { jobId: String(jobId || '') }); } catch (_) {} },
+  onAiDelta: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback({ content: payload.content || '', thinking: payload.thinking || '' }); } catch (_) {} };
+    ipcRenderer.on('bim:aiDelta', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:aiDelta', listener); } catch (_) {} };
+  },
+  onAiSetupProgress: (callback) => {
+    if (typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { try { callback(payload || {}); } catch (_) {} };
+    ipcRenderer.on('bim:aiSetupProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:aiSetupProgress', listener); } catch (_) {} };
+  },
+  // r35 — база норм и снимок вида для модели со зрением
+  aiCaptureView: (rect) => ipcRenderer.invoke('bim:aiCaptureView', { rect: rect && typeof rect === 'object' ? { x: +rect.x || 0, y: +rect.y || 0, width: +rect.width || 0, height: +rect.height || 0 } : undefined }),
+  aiMemLoad: () => ipcRenderer.invoke('bim:aiMemLoad'),
+  aiMemSave: (memory) => ipcRenderer.invoke('bim:aiMemSave', { memory: memory && typeof memory === 'object' ? memory : {} }),
+  aiMemExport: (o) => ipcRenderer.invoke('bim:aiMemExport', { kind: o && typeof o.kind === 'string' ? o.kind : 'pack', name: o && o.name ? String(o.name).slice(0, 120) : undefined, author: o && o.author ? String(o.author).slice(0, 120) : undefined, description: o && o.description ? String(o.description).slice(0, 600) : undefined, params: !(o && o.params === false) }),
+  aiMemImport: () => ipcRenderer.invoke('bim:aiMemImport', {}),
+  aiTrain: (o) => ipcRenderer.invoke('bim:aiTrain', { reset: !!(o && o.reset) }),
+  // r43: обновления баз ассистента из интернета
+  aiUpdState: () => ipcRenderer.invoke('bim:aiUpdState'),
+  aiUpdCheck: () => ipcRenderer.invoke('bim:aiUpdCheck'),
+  aiUpdInstall: (ids) => ipcRenderer.invoke('bim:aiUpdInstall', { ids: Array.isArray(ids) ? ids.map(String).slice(0, 50) : null }),
+  aiUpdSettings: (o) => ipcRenderer.invoke('bim:aiUpdSettings', { auto: o && typeof o.auto === 'boolean' ? o.auto : undefined, intervalH: o && +o.intervalH || undefined, feeds: o && Array.isArray(o.feeds) ? o.feeds.map(String).slice(0, 8) : undefined }),
+  aiKbLoad: () => ipcRenderer.invoke('bim:aiKbLoad'),
+  onAiUpdate: (cb) => { const h = (_e, p) => { try { cb(p); } catch (_) {} }; ipcRenderer.on('bim:aiUpdate', h); return () => ipcRenderer.removeListener('bim:aiUpdate', h); },
+  onAiKbExtra: (cb) => { const h = (_e, p) => { try { cb(p); } catch (_) {} }; ipcRenderer.on('bim:aiKbExtra', h); return () => ipcRenderer.removeListener('bim:aiKbExtra', h); },
+  normsStatus: () => ipcRenderer.invoke('bim:normsStatus'),
+  normsAddFiles: () => ipcRenderer.invoke('bim:normsAddFiles', {}),
+  normsAddFolder: () => ipcRenderer.invoke('bim:normsAddFolder', {}),
+  normsRemove: (id) => ipcRenderer.invoke('bim:normsRemove', { id: String(id || '') }),
+  normsReindex: (id) => ipcRenderer.invoke('bim:normsReindex', { id: id ? String(id) : undefined }),
+  normsSearch: (query, opts) => ipcRenderer.invoke('bim:normsSearch', { query: String(query || ''), n: opts && +opts.n || undefined, doc: opts && opts.doc ? String(opts.doc) : undefined }),
+  normsOpen: (id) => ipcRenderer.invoke('bim:normsOpen', { id: String(id || '') }),
+  onNormsProgress: (callback) => {
+    if (typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { try { callback(payload || {}); } catch (_) {} };
+    ipcRenderer.on('bim:normsProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:normsProgress', listener); } catch (_) {} };
+  },
   onCloudPlanProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
@@ -41,6 +92,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   },
   saveReportPdf: (payload) => inv('bim:saveReportPdf', payload || {}),
   projectFolder: (action) => inv('bim:projectFolder', { action: action || 'get' }),
+  // ревизия 38: где хранить проект — сведения о дисках, выбор папки (диалог), открыть папку
+  projectStorage: (payload) => inv('bim:projectStorage', payload || {}),
   grantWorkInPlace: (p) => inv('bim:grantWorkInPlace', { path: p }),
   cloudBackups: (payload) => inv('bim:cloudBackups', payload || {}),
   cloudPartsRead: (a) => inv('bim:cloudPartsRead', a),
@@ -214,7 +267,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   openXbin: (p) => inv('bim:openXbin', { path: p }),   // ревизия 23: файл .xbin → облако и траектория проекта Lixel
   // ревизия 24: облако из сырого лидара .xbin (density: normal ≈ 40 млн, high ≈ 120 млн, all — все точки) с прогрессом и отменой
   // ревизия 25: opts.refine — уточнение траектории по самому облаку (точнее, дольше)
-  xbinBuildCloud: (p, jobId, density, opts) => inv('bim:xbinBuildCloud', { path: p, jobId, density, refine: !!(opts && opts.refine) }),
+  // ревизия 36: opts.color — 'photo' (настоящий цвет по фото камер сканера) или 'gray' (яркость отражения лидара)
+  xbinBuildCloud: (p, jobId, density, opts) => inv('bim:xbinBuildCloud', { path: p, jobId, density, refine: !!(opts && opts.refine), color: opts && opts.color === 'gray' ? 'gray' : 'photo', edge: !(opts && opts.edge === false) }),
   onXbinCloudProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
@@ -223,6 +277,16 @@ contextBridge.exposeInMainWorld('bimAPI', {
     return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:xbinCloudProgress', listener); } catch (_) {} };
   },
   cancelXbinCloud: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelXbinCloud', { jobId }); },
+  // ревизия 36: «Раскрасить по фото камер» уже открытое облако LAS (серое облако из лидара) → «<имя>-color.las» рядом
+  photoColorCloud: (p, jobId, opts) => inv('bim:photoColorCloud', { path: p, jobId, xbinPath: opts && opts.xbinPath ? String(opts.xbinPath) : undefined, posesPath: opts && opts.posesPath ? String(opts.posesPath) : undefined }),
+  onPhotoColorProgress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
+    ipcRenderer.on('bim:photoColorProgress', listener);
+    let active = true;
+    return () => { if (!active) return; active = false; try { ipcRenderer.removeListener('bim:photoColorProgress', listener); } catch (_) {} };
+  },
+  cancelPhotoColor: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelPhotoColor', { jobId }); },
   pickScanFolder: () => inv('bim:pickScanFolder'),   // ревизия 19: папка проекта сканера → облако + траектория
   dynamicClean: (payload) => inv('bim:dynamicClean', payload),
   onDynamicCleanProgress: (jobId, callback) => {

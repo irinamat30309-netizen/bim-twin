@@ -66,7 +66,7 @@ test('реестр: селекторы кнопок существуют в ра
 test('реестр: вызываемые функции определены в модулях', () => {
   const OWNER = { __lxToolsExt: 'lixel-tools-ext.js', __lxSprintsExt: 'lixel-sprints-ext.js', __lxDrawExt: 'lixel-draw-ext.js', __lxSmartSave: 'lixel-smart-save.js',
     __lxScene: 'lixel-scene.js', __lxDrawUI: 'lixel-draw.js', __lxCloudUI: 'lixel-cloud-ui.js', __lxVerify: 'ui/verify.js',
-    CloudPreview: 'cloud-preview.js', HistoryPanel: 'history-panel.js', ProjectWorkspace: 'project-workspace.js' };
+    CloudPreview: 'cloud-preview.js', HistoryPanel: 'history-panel.js', ProjectWorkspace: 'project-workspace.js', BimAssistantUI: 'ai-assistant-ui.js' };
   const bad = [];
   for (const { item } of C.all()) {
     if (!item.call) continue;

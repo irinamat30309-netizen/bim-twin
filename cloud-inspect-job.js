@@ -130,7 +130,7 @@ function run(d, post) {
       const pb = OV.eachPoint(desc, { h0: racc.h0, h1: racc.h1, rect, signal: d.signal, e57Points: 30000000,
         onProgress: (f) => { if (f - last >= 0.01) { last = f; say(0.75 + f * (classOut ? 0.1 : 0.24), 'Уточняю сечения балок и труб'); } } }, (u, v, h) => racc.add(u, v, h));
       if (pb && pb.cancelled) return pb;
-      if (pb && pb.ok) list = MEP.refine(list, racc, { floorAt: bf, clear });
+      if (pb && pb.ok) { list = MEP.refine(list, racc, { floorAt: bf, clear }); const gr = MEP.dropGrille(list, { cell: found.stats.cell }); list = gr.list; found.stats.grille += gr.n; }
     }
     const mep = { ok: true, list, summary: MEP.summary(list, { clear }), stats: found.stats, clear, ceiling: { median: found.ceiling.median }, top: mz1, seconds: 0 };
     mep.seconds = (Date.now() - tm) / 1000;

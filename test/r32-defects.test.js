@@ -146,7 +146,7 @@ test('проёмы по профилю заполнения: дверь, окн�
   assert.equal(DF.openingReport(null).ok, false);
 });
 
-test('очистка для контроля: уровень «inspect» не трогает редкий пол дальней комнаты, «strong» его убирает; мусор в воздухе уходит в обоих', () => {
+test('очистка для контроля: редкий пол дальней комнаты остаётся и при «inspect», и при «strong» (ревизия 44); мусор в воздухе уходит в обоих', () => {
   const RC = require(path.join(ROOT, 'scan-refine-core.js'));
   assert.ok(RC.NOISE_LEVELS.inspect && RC.NOISE_LEVELS.inspect.globalFrac === 0);
   let sd = 11; const r = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
@@ -160,7 +160,8 @@ test('очистка для контроля: уровень «inspect» не т
     for (let i = 0; i < n; i++) { if (X[i * 3 + 2] > 0.3) { if (al[i]) air++; continue; } if (X[i * 3] > 4.1) { all++; if (al[i]) room++; } }
     kept[lv] = { room: room / all, air };
   }
-  assert.ok(kept.strong.room < 0.05, 'strong убирает редкую комнату: ' + kept.strong.room);
+  // ревизия 44: «strong» тоже бережёт редкие поверхности (лист — не туман); прежде он убирал эту комнату целиком
+  assert.ok(kept.strong.room > 0.98, 'strong сохраняет редкую комнату: ' + kept.strong.room);
   assert.ok(kept.inspect.room > 0.98, 'inspect сохраняет: ' + kept.inspect.room);
   assert.equal(kept.inspect.air, 0); assert.equal(kept.strong.air, 0);
 });
@@ -216,7 +217,7 @@ test('проводка: очистка рядом без диалога, пои�
   assert.match(read('cloud-inspect-job.js'), /require\('\.\/renderer\/cloud-defects\.js'\)/);
   assert.match(ui, /A\.findCleanCloud\(path\)/); assert.match(ui, /autoOut: true, dynamic: true, noise: true, noiseLevel: 'inspect', thin: false, align: true, color: false, colorBalance: false/); assert.match(ui, /frameFrom: src !== path \? path : null/);
   const html = read('renderer/index.html'), at = (s) => html.indexOf(s);
-  for (const s of ['cloud-inspect.js?v=1332', 'cloud-defects.js?v=1332', 'cloud-inspect-ui.js?v=1332', 'cloud-report.js?v=1332']) assert.ok(at(s) > 0, s);
+  for (const s of ['cloud-inspect.js?v=1332', 'cloud-defects.js?v=1332', 'cloud-inspect-ui.js?v=1333', 'cloud-report.js?v=1333']) assert.ok(at(s) > 0, s);
   assert.ok(at('cloud-inspect.js?v=') < at('cloud-defects.js?v=') && at('cloud-defects.js?v=') < at('cloud-inspect-ui.js?v='), 'порядок скриптов');
   const emoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
   for (const f of ['renderer/cloud-defects.js', 'renderer/cloud-inspect-ui.js', 'cloud-inspect-job.js', 'renderer/cloud-report.js']) assert.ok(!emoji.test(read(f)), 'эмодзи в ' + f);

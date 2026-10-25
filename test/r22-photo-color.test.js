@@ -165,7 +165,7 @@ test('r22: связка — main (поиск .xbin, скрытое окно бе
   const pre = read('recolor-host-preload.js'); assert.match(pre, /new VideoDecoder/); assert.match(pre, /EncodedVideoChunk\(\{ type: 'key'/); assert.match(pre, /recolor:done/);
   assert.match(read('preload.js'), /findXbin: \(payload\) => inv\('bim:findXbin'/);
   const ui = read('renderer/lixel-tools-ext.js');
-  assert.match(ui, /key: 'photo', label: 'Цвет по фото сканера/); assert.match(ui, /photo: photo, xbinPath: xbinPath/); assert.match(ui, /api\.pickXbin\(\)/);
+  assert.match(ui, /key: 'photo', main: !!xb, label: 'Цвет по фото'/); assert.match(ui, /photo: photo, xbinPath: xbinPath/); assert.match(ui, /api\.pickXbin\(\)/);
   const pkg = JSON.parse(read('package.json'));
   for (const f of ['xbin-core.js', 'recolor-core.js', 'recolor-host.html', 'recolor-host-preload.js']) assert.ok(pkg.build.files.includes(f), f + ' в сборке');
 });

@@ -115,7 +115,7 @@ test('E57: выбор окна «Перед загрузкой» применя�
 test('E57: связка окна, главного процесса и загрузки', () => {
   const main = read('main.js'), pre = read('preload.js'), app = read('renderer/app.js'), cp = read('renderer/cloud-preview.js'), wk = read('cloud-parse-worker.js'), ln = read('las-node.js');
   assert.match(main, /function openOverviewSource\(abs\)/);
-  assert.equal((main.match(/openOverviewSource\(abs\)/g) || []).length, 4, 'карта, план и контроль геометрии (ревизия 31) — через общий вход');
+  assert.equal((main.match(/openOverviewSource\(abs\)/g) || []).length, 5, 'карта, план, контроль геометрии (ревизия 31) и BIM-модель (ревизия 39) — через общий вход');
   assert.match(main, /payload\.pre === true/);
   assert.match(main, /e57Filter\.origin = \{ cx: d\.cx, cy: d\.cy, cz: d\.cz \}/);
   assert.match(main, /filter: e57Filter/);
