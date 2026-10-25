@@ -95,6 +95,8 @@
       { sep: true },
       { label: 'Переименовать…', sub: 'F2', ico: 'pencil', onClick: function () { renameProject(p); } },
       { label: 'Свойства…', sub: 'Название, адрес, статус', ico: 'square-pen', onClick: function () { editProject(p); } },
+      { label: 'Папка проекта…', sub: 'Диск для облаков, LAS и кэша', ico: 'folder', disabled: !api || !api.projectStorage || !W.ProjectStorageUI, onClick: function () { moveProjectFolder(p); },
+        tip: 'Выбрать диск и папку для этого проекта. Новые облака, LAS, индексы и черновики будут сохраняться туда; уже сохранённые файлы остаются на месте.' },
       { label: 'Дублировать', sub: 'Копия этажей и помещений', ico: 'copy', disabled: !api || !api.duplicateProject, onClick: function () { duplicateProject(p); },
         tip: 'Новый проект с той же структурой: этажи, помещения, элементы. Облака, документы и история не копируются.' },
       { label: arch ? 'Вернуть из архива' : 'В архив', ico: arch ? 'rotate-ccw' : 'inbox', onClick: function () { setStatus(p, arch ? 'active' : 'archived'); } },
@@ -260,8 +262,29 @@
       say('Не удалось открыть проект: ' + why(e), 'err');
     }
   }
+  // ревизия 38: папка существующего проекта на другом диске
+  async function moveProjectFolder(p) {
+    var r = await W.ProjectStorageUI.chooseFor(p.id, p.name);
+    if (!r || r.canceled) return;
+    if (r.ok && r.path) say('Папка проекта «' + (p.name || '') + '»: ' + r.path + (r.cacheSpace ? ' · свободно ' + W.ProjectStorageUI.gb(r.cacheSpace.free) : ''), 'ok');
+    else say('Не удалось выбрать папку: ' + ((r && r.message) || 'ошибка'), 'err');
+  }
   async function createProject() {
     if (!kit || !kit.ask || !api || !api.createProject) return;
+    // ревизия 38: название + где хранить проект (диск/папка, свободное место)
+    if (W.ProjectStorageUI && kit.form && api.projectStorage) {
+      var v = await W.ProjectStorageUI.newProjectForm({});
+      if (!v) return;
+      var nb = $('newProject'); nb.classList.add('busy');
+      try {
+        var np = await api.createProject({ name: v.name, address: '', folderParent: v.folderParent });
+        await load();
+        if (np && np.id) choose(np.id);
+        say('Проект «' + v.name + '» создан' + (np && np.folder ? ' · папка: ' + np.folder : '') + (np && np.folderError ? ' · папку создать не удалось: ' + np.folderError : ''), np && np.folderError ? 'err' : 'ok');
+      } catch (e) { say('Не удалось создать проект: ' + why(e), 'err'); }
+      finally { nb.classList.remove('busy'); }
+      return;
+    }
     var name = await kit.ask({
       title: 'Новый проект', message: 'Название появится в списке проектов и в заголовке рабочей области.', input: true,
       placeholder: 'Например: ЖК «Северный», корпус А', okLabel: 'Создать',

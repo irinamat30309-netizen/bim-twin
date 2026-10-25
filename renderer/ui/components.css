@@ -169,6 +169,12 @@ input[type="checkbox"].lx-switch:disabled, input[type="checkbox"].set-ctl-chk:di
 .lx-form-ctl input[type="number"], .lx-form-ctl select { flex: 1 1 auto; min-width: 0; width: 100%; }
 .lx-form-unit { flex: none; color: var(--txt-3); font-size: var(--fs-sm); }
 .lx-form-hint { grid-column: 1 / -1; margin: 0; }
+/* ревизия 38: строка «подпись над полем» и поле-папка с кнопкой «Изменить…» */
+.lx-form-row.stack { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.lx-form-row.stack .lx-form-ctl input[type="text"] { flex: 1 1 auto; min-width: 0; width: 100%; }
+.lx-folder-path { font-size: var(--fs-sm); text-overflow: ellipsis; cursor: default; }
+.lx-folder-pick { flex: none; }
+.lx-form-hint.lx-hint-warn { color: var(--warn); }
 .lx-form-body input.invalid, .lx-form-body input.invalid:focus { border-color: var(--err); box-shadow: 0 0 0 3px var(--err-soft); }
 .modal.closing { opacity: 0; transition: opacity var(--t-fast) var(--ease); pointer-events: none; }
 .modal.closing .modal-card { transform: scale(.98); transition: transform var(--t-fast) var(--ease); }
@@ -286,3 +292,12 @@ html.lx-insp-closed .lx-toasts { right: 66px; width: min(380px, calc(100vw - 78p
 .lx-palette-item .p-g { color: var(--txt-3); font-size: var(--fs-xs); }
 .lx-palette-empty { padding: 26px; text-align: center; color: var(--txt-3); }
 .lx-palette-foot { display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--line); color: var(--txt-3); font-size: var(--fs-xs); }
+
+/* ревизия 44: простой вид окон параметров — «Настроить» раскрывает остальные настройки */
+.lx-more-btn { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 2px; border: 0; background: none; color: var(--txt-3); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+.lx-more-btn::after { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg) translateY(-2px); transition: transform .15s; }
+.lx-more-btn.on::after { transform: rotate(-135deg) translateY(-1px); }
+.lx-more-btn:hover, .lx-more-btn.on { color: var(--txt); }
+.lx-form-more { display: flex; flex-direction: column; gap: inherit; padding-left: 8px; border-left: 2px solid var(--line); }
+.lx-form-more[hidden] { display: none; }
+.lx-form-lbl[title] { cursor: help; }

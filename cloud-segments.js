@@ -332,7 +332,7 @@ function thinSegment(res, keepPer) {
 function noiseTables(bits) { const size = 1 << bits; return { size, a: new Uint16Array(size), b: new Uint16Array(size) }; }
 // ревизия 28: отбор точек (координаты окна: u = x, h = y + hShift, v = −z) → { keep: Uint8Array, kept } — общий для частей LAS/PLY и E57
 function filterKeep(P, n, filter) {
-  const rect = filter.rect, hr = filter.h, mask = filter.mask, hs = Number(filter.hShift) || 0;
+  const rect = filter.rect, hr = filter.h, mask = filter.mask, area = filter.area, hs = Number(filter.hShift) || 0;
   const keep = new Uint8Array(n);
   let kept = 0;
   for (let i = 0; i < n; i++) {
@@ -342,6 +342,10 @@ function filterKeep(P, n, filter) {
     if (mask) {
       const cx = Math.floor((u - mask.u0) / mask.cell), cy = Math.floor((v - mask.v0) / mask.cell);
       if (cx < 0 || cy < 0 || cx >= mask.nx || cy >= mask.ny || !mask.bits[cy * mask.nx + cx]) continue;
+    }
+    if (area) {   // ревизия 37: обведённые мышью контуры (за сеткой — как outsideOn)
+      const cx = Math.floor((u - area.u0) / area.cell), cy = Math.floor((v - area.v0) / area.cell);
+      if (!(cx < 0 || cy < 0 || cx >= area.nx || cy >= area.ny ? area.outsideOn : area.bits[cy * area.nx + cx])) continue;
     }
     keep[i] = 1; kept++;
   }
@@ -367,6 +371,7 @@ function filterSegment(res, filter) {
   const ratio = filter.ratio > 0 && filter.ratio < 1 ? filter.ratio : 1;
   const K = filterKeep(P, n, filter), keep = K.keep;
   let kept = K.kept;
+  const passed = K.kept;   // ревизия 36: сколько точек части прошло фильтр (до доли ratio) — по нему подстраивается доля следующих частей
   // доля ratio в каждом кирпиче
   if (ratio < 1) {
     for (let a = 0; a < n; a += CH) {
@@ -399,7 +404,22 @@ function filterSegment(res, filter) {
     if (a0 < mn3[0]) mn3[0] = a0; if (a1 < mn3[1]) mn3[1] = a1; if (a2 < mn3[2]) mn3[2] = a2; if (b0 > mx3[0]) mx3[0] = b0; if (b1 > mx3[1]) mx3[1] = b1; if (b2 > mx3[2]) mx3[2] = b2;
   }
   return Object.assign({}, res, { pos, col, intensity, classification, count: kept, chunkPoints: CH2, chunkBoxes: nc ? boxes : new Float32Array(0),
-    bbox: kept ? { mn: mn3, mx: mx3 } : res.bbox, sourceCount: n, filtered: true });
+    bbox: kept ? { mn: mn3, mx: mx3 } : res.bbox, sourceCount: n, filtered: true, passed });
+}
+
+// Ревизия 36: доля точек для следующей части при фильтре — так, чтобы всего вышло ровно budget точек.
+// Оценка карты «Перед загрузкой» не знает, сколько уберёт фильтр шума (и сама — по выборке), поэтому доля пересчитывается
+// после каждой части: осталось набрать (budget − уже взято) из (доля прошедших фильтр × оставшиеся точки файла).
+function adaptiveRatio(budget, total, est, stat) {
+  budget = Math.floor(budget); total = Math.max(1, Math.floor(total));
+  if (!(budget > 0)) return 1;
+  const st = stat || {}, src = Math.max(0, st.src || 0), passed = Math.max(0, st.passed || 0), kept = Math.max(0, st.kept || 0);
+  const rate = src > 0 ? passed / src : Math.min(1, Math.max(1e-6, (Number(est) || total) / total));
+  const left = Math.max(0, total - src), want = budget - kept;
+  if (!(want > 0)) return 1e-9;
+  const avail = rate * left;
+  if (!(avail > 0)) return 1;
+  return Math.min(1, want / avail);
 }
 
 function readSegment(desc, from, count, opts) {
@@ -462,4 +482,4 @@ function readSegmentAsync(desc, from, count, opts) {
   });
 }
 
-module.exports = { filterKeep, openSegmentSource, readSegment, readSegmentAsync, shuffleChunks, thinSegment, filterSegment, thinnedCount, keepPerForBudget, SEG_POINTS, CHUNK_POINTS };
+module.exports = { adaptiveRatio, filterKeep, openSegmentSource, readSegment, readSegmentAsync, shuffleChunks, thinSegment, filterSegment, thinnedCount, keepPerForBudget, SEG_POINTS, CHUNK_POINTS };

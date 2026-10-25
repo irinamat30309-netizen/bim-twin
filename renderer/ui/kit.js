@@ -357,6 +357,13 @@
    *        fields:[{ key, label, type:'number'|'select'|'checkbox'|'text', value, placeholder, maxLength, min, max, step, unit, hint, options:[{value,label}],
    *                  showIf(values)→bool }] }) → Promise: объект значений или null при отмене.
    *   number → Number, select → строка, checkbox → boolean. Esc и клик по фону — отмена, Enter — применить. */
+  // первое предложение длинного пояснения (полный текст — во всплывающей подсказке)
+  function shortText(t, max) {
+    t = String(t == null ? '' : t).trim(); if (t.length <= max) return t;
+    var m = /^[\s\S]*?[.!?…](?=\s|$)/.exec(t), s = m ? m[0] : t;
+    if (s.length > max) { s = s.slice(0, max); var sp = s.lastIndexOf(' '); s = (sp > max * 0.6 ? s.slice(0, sp) : s).replace(/[,;:—–\s]+$/, '') + '…'; }
+    return s;
+  }
   function form(o) {
     o = o || {};
     var fields = o.fields || [];
@@ -368,10 +375,14 @@
       var head = D.createElement('div'); head.className = 'modal-head';
       head.innerHTML = '<span id="' + tid + '">' + esc(o.title || 'Параметры') + '</span><button type="button" class="x" data-ico="x" aria-label="Закрыть"></button>';
       var body = D.createElement('div'); body.className = 'form-body lx-ask-body lx-form-body';
-      if (o.message) { var m = D.createElement('p'); m.className = 'lx-ask-msg'; m.textContent = o.message; body.appendChild(m); }
-      var ctls = {}, rows = {}, order = [];
+      // ревизия 44: простой вид — видно 1–3 главных выбора, остальное (галочки, тонкие настройки) свёрнуто в «Настроить» и работает
+      // по умолчанию («авто»); пояснения — во всплывающих подсказках, предупреждения показываются только когда важны. o.simple: false — всё как раньше.
+      var simple = o.simple !== false, fold = simple && fields.length > 1, hasMain = fields.some(function (f) { return f.main; }), nMain = 0, more = null, moreBtn = null;
+      var isMain = function (f) { if (!fold || f.main) return true; if (f.more || hasMain || f.type === 'checkbox') return false; return ++nMain <= 2; };
+      if (o.message) { var m = D.createElement('p'); m.className = 'lx-ask-msg'; var mt = simple ? shortText(o.short || o.message, 120) : o.message; m.textContent = mt; if (mt !== o.message) m.title = o.message; body.appendChild(m); }
+      var ctls = {}, rows = {}, order = [], hints = [];
       fields.forEach(function (f, idx) {
-        var row = D.createElement('div'); row.className = 'lx-form-row' + (f.type === 'checkbox' ? ' chk' : '');
+        var row = D.createElement('div'); row.className = 'lx-form-row' + (f.type === 'checkbox' ? ' chk' : '') + (f.stack || f.type === 'folder' ? ' stack' : '');
         var id = tid + 'f' + idx, ctl;
         if (f.type === 'select') {
           ctl = D.createElement('select');
@@ -379,6 +390,9 @@
           ctl.value = String(f.value);
         } else if (f.type === 'checkbox') {
           ctl = D.createElement('input'); ctl.type = 'checkbox'; ctl.checked = !!f.value;
+        } else if (f.type === 'folder') {
+          // ревизия 38: путь к папке (только чтение) + кнопка «Изменить…» — f.pick(текущий путь) → { path }
+          ctl = D.createElement('input'); ctl.type = 'text'; ctl.readOnly = true; ctl.className = 'lx-folder-path'; ctl.value = f.value == null ? '' : String(f.value); ctl.title = ctl.value; ctl.spellcheck = false;
         } else if (f.type === 'text') {
           ctl = D.createElement('input'); ctl.type = 'text'; ctl.value = f.value == null ? '' : String(f.value); ctl.autocomplete = 'off'; ctl.spellcheck = false;
           if (f.placeholder) ctl.placeholder = f.placeholder; if (f.maxLength) ctl.maxLength = f.maxLength;
@@ -390,12 +404,33 @@
         var lab = D.createElement('label'); lab.className = 'lx-form-lbl'; lab.setAttribute('for', id); lab.textContent = f.label;
         var wrap = D.createElement('span'); wrap.className = 'lx-form-ctl'; wrap.appendChild(ctl);
         if (f.unit) { var u = D.createElement('span'); u.className = 'lx-form-unit'; u.textContent = f.unit; wrap.appendChild(u); }
+        if (f.type === 'folder') {
+          var pb = D.createElement('button'); pb.type = 'button'; pb.className = 'btn sm lx-folder-pick'; pb.textContent = f.pickLabel || 'Изменить…';
+          pb.onclick = async function () {
+            if (typeof f.pick !== 'function') return;
+            pb.disabled = true;
+            try { var r = await f.pick(ctl.value); if (r && r.path) { ctl.value = r.path; ctl.title = r.path; refresh(); } } catch (e) {}
+            pb.disabled = false;
+          };
+          wrap.appendChild(pb);
+        }
         if (f.type === 'checkbox') { row.appendChild(wrap); row.appendChild(lab); } else { row.appendChild(lab); row.appendChild(wrap); }
-        if (f.hint) { var hn = D.createElement('p'); hn.className = 'lx-ask-hint lx-form-hint'; hn.textContent = f.hint; row.appendChild(hn); }
-        body.appendChild(row); ctls[f.key] = ctl; rows[f.key] = row; order.push(f);
+        if (f.hint && simple && typeof f.hint !== 'function') { lab.title = f.hint; row.title = f.hint; }
+        else if (f.hint) { var hn = D.createElement('p'); hn.className = 'lx-ask-hint lx-form-hint'; if (typeof f.hint === 'function') hints.push({ f: f, el: hn }); else hn.textContent = f.hint; row.appendChild(hn); }
+        if (isMain(f)) body.appendChild(row);
+        else {
+          if (!more) {
+            moreBtn = D.createElement('button'); moreBtn.type = 'button'; moreBtn.className = 'lx-more-btn'; moreBtn.textContent = 'Настроить'; moreBtn.setAttribute('aria-expanded', 'false');
+            more = D.createElement('div'); more.className = 'lx-form-more'; more.hidden = true;
+            moreBtn.onclick = function () { more.hidden = !more.hidden; moreBtn.setAttribute('aria-expanded', String(!more.hidden)); moreBtn.classList.toggle('on', !more.hidden); };
+          }
+          more.appendChild(row);
+        }
+        ctls[f.key] = ctl; rows[f.key] = row; order.push(f);
         ctl.addEventListener('input', refresh); ctl.addEventListener('change', refresh);
       });
-      if (o.hint) { var oh = D.createElement('p'); oh.className = 'lx-ask-hint'; oh.textContent = o.hint; body.appendChild(oh); }
+      if (more) { body.appendChild(moreBtn); body.appendChild(more); }
+      if (o.hint) { var oh = D.createElement('p'); oh.className = 'lx-ask-hint'; var ht = simple ? shortText(o.hint, 140) : o.hint; oh.textContent = ht; if (ht !== o.hint) oh.title = o.hint; body.appendChild(oh); }
       var errEl = D.createElement('p'); errEl.className = 'lx-ask-err'; errEl.setAttribute('role', 'alert'); errEl.hidden = true; body.appendChild(errEl);
       var act = D.createElement('div'); act.className = 'form-actions';
       var cancel = D.createElement('button'); cancel.type = 'button'; cancel.className = 'btn sm'; cancel.textContent = o.cancelLabel || 'Отмена';
@@ -408,7 +443,7 @@
           var c = ctls[f.key];
           if (f.type === 'checkbox') v[f.key] = !!c.checked;
           else if (f.type === 'select') v[f.key] = c.value;
-          else if (f.type === 'text') v[f.key] = String(c.value).trim();
+          else if (f.type === 'text' || f.type === 'folder') v[f.key] = String(c.value).trim();
           else v[f.key] = c.value === '' ? NaN : Number(String(c.value).replace(',', '.'));
         });
         return v;
@@ -416,10 +451,14 @@
       function refresh() {
         var v = read();
         order.forEach(function (f) { if (typeof f.showIf === 'function') rows[f.key].hidden = !f.showIf(v); });
+        // подсказка-функция: { text, warn } или строка, пересчитывается при каждом изменении (ревизия 38)
+        hints.forEach(function (h) { var t = null; try { t = h.f.hint(v); } catch (e) {} if (t && typeof t === 'object') { h.el.textContent = t.text || ''; h.el.classList.toggle('lx-hint-warn', !!t.warn); } else h.el.textContent = t == null ? '' : String(t);
+          if (simple) { var w = !!(t && typeof t === 'object' && t.warn); h.el.hidden = !w; if (!w) h.el.parentNode && (h.el.parentNode.title = h.el.textContent); } });
         if (!errEl.hidden) { errEl.hidden = true; D.querySelectorAll('.lx-form-body input.invalid').forEach(function (e) { e.classList.remove('invalid'); e.removeAttribute('aria-invalid'); }); }
       }
       function fail(text, ctl) {
         errEl.textContent = String(text); errEl.hidden = false;
+        if (ctl && more && more.contains(ctl) && more.hidden) moreBtn.click();
         if (ctl) { ctl.classList.add('invalid'); ctl.setAttribute('aria-invalid', 'true'); try { ctl.focus(); } catch (e) {} }
       }
       function finish(v) {

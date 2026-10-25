@@ -245,7 +245,7 @@ function lasHeader(o) {
 }
 
 const DEF = { minRange: 0.5, maxRange: 120, maxPoints: 40e6, step: 0, t0: null, t1: null, maxMotorGap: 0.05, imu: true, imuShift: 0, position: 'hermite', poseStep: 0.005,
-  refine: false, selfRadius: 0.6 };
+  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003 };
 
 // подготовка: оглавление, калибровки, траектория, отбор пакетов по времени
 function prepare(xbinPath, posesText, o, prog) {
@@ -275,6 +275,36 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
   const s2 = o.selfRadius > 0 ? o.selfRadius * o.selfRadius : 0;   // «самомаска»: отражения от корпуса сканера (≤ 0,5 м от IMU, в мёртвой зоне лидара 0,5–1,2 м точек нет)
   let cnt = 0, skipped = 0, empty = 0, packets = 0, self = 0;
   let buf = Buffer.allocUnsafe(1 << 20);
+  // ревизия 37: фильтр «смешанных отражений» и одиночных скачков дальности по кольцу лидара (как у Lixel Studio и драйверов Hesai).
+  // Соседи точки — предыдущие и следующие отражения ТОГО ЖЕ кольца (через ~50 мкс, 0,36° по азимуту); пустое отражение — «бесконечность».
+  // Удаляется точка, у которой дальность отличается от обоих соседей больше чем на max(edgeMin, edgeRel·r) и при этом это
+  // одиночный выброс (оба соседа ближе или оба дальше: пыль, капли, блики) или точка «между» двумя ровными участками на краю предмета
+  // (смешанное отражение края — «бахрома» и хвосты за предметами). Наклонная к лучу плоскость (пол, фасад вдоль пути) не страдает:
+  // у неё дальность меняется плавно и с обеих сторон. Если соседей нет (разрыв по времени > edgeGap, начало/конец окна) — точка остаётся.
+  // Решение по точке откладывается на 2 отражения её кольца; вызовы cb идут в том же порядке внутри кольца.
+  const EDGE = o.edge !== false && o.edge !== 0, eMin = o.edgeMin > 0 ? o.edgeMin : 0.15, eRel = o.edgeRel >= 0 ? o.edgeRel : 0.02, eGap = o.edgeGap > 0 ? o.edgeGap : 0.0003;
+  const NR = 256, Hr = new Float64Array(NR * 5), Ht = new Float64Array(NR * 5).fill(-1e18), Hp = new Uint8Array(NR * 5), Hv = new Float64Array(NR * 5 * 12), Hh = new Uint8Array(NR);
+  let edge = 0;
+  const isEdge = (b0, h) => {
+    const i0 = b0 + h, i1 = b0 + (h + 1) % 5, i2 = b0 + (h + 2) % 5, i3 = b0 + (h + 3) % 5, i4 = b0 + (h + 4) % 5, t2 = Ht[i2];
+    if (!(Math.abs(Ht[i1] - t2) <= eGap && Math.abs(Ht[i3] - t2) <= eGap)) return false;
+    const r2 = Hr[i2], T = Math.max(eMin, eRel * r2), A = r2 - Hr[i1], B = r2 - Hr[i3];
+    if (!(Math.abs(A) > T && Math.abs(B) > T)) return false;
+    if ((A > 0) === (B > 0)) return true;
+    return (Math.abs(Ht[i1] - Ht[i0]) <= eGap && Math.abs(Hr[i1] - Hr[i0]) < T * 0.5) || (Math.abs(Ht[i4] - Ht[i3]) <= eGap && Math.abs(Hr[i4] - Hr[i3]) < T * 0.5);
+  };
+  // новое отражение кольца ring: сдвиг окна из 5, решение по средней (третьей) точке
+  const slot = (ring, t, r, keep, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) => {
+    const b0 = (ring & 255) * 5, h = (Hh[ring & 255] + 1) % 5; Hh[ring & 255] = h;
+    const i4 = b0 + (h + 4) % 5;
+    Hr[i4] = r; Ht[i4] = t; Hp[i4] = keep ? 1 : 0;
+    if (keep) { const q = i4 * 12; Hv[q] = a0; Hv[q + 1] = a1; Hv[q + 2] = a2; Hv[q + 3] = a3; Hv[q + 4] = a4; Hv[q + 5] = a5; Hv[q + 6] = a6; Hv[q + 7] = a7; Hv[q + 8] = a8; Hv[q + 9] = a9; Hv[q + 10] = a10; Hv[q + 11] = a11; }
+    const i2 = b0 + (h + 2) % 5;
+    if (!Hp[i2]) return;
+    Hp[i2] = 0;
+    if (isEdge(b0, h)) { edge++; return; }
+    const q = i2 * 12; cb(Hv[q], Hv[q + 1], Hv[q + 2], Hv[q + 3], Hv[q + 4], Hv[q + 5], Hv[q + 6], Hv[q + 7], Hv[q + 8], Hv[q + 9], Hv[q + 10], Hv[q + 11]);
+  };
   for (const r of C.recs) {
     if (r.t < T0 - 1.5 || r.t > T1 + 0.1) continue;
     packets++;
@@ -315,18 +345,16 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
           switch (f) { case 1: X = v; break; case 2: Y = v; break; case 3: Z = v; break; case 4: I = v; break; case 5: R = v; break; case 6: D = v; break; default: break; }
         }
         pp = pe;
-        if (!(X | Y | Z)) { empty++; continue; }
+        if (!(X | Y | Z)) { empty++; if (EDGE) slot(R, th + zz(D) / 1e6, Infinity, false); continue; }
         const x = zz(X) / 1000, y = zz(Y) / 1000, z = zz(Z) / 1000, d2 = x * x + y * y + z * z;
-        if (d2 < r2min || d2 > r2max) continue;
-        if ((cnt++ % step) !== 0) continue;
         const dt = zz(D) / 1e6, t = th + dt;
-        if (t < T0 || t > T1) continue;
+        if (d2 < r2min || d2 > r2max || (cnt++ % step) !== 0 || t < T0 || t > T1) { if (EDGE) slot(R, t, Math.sqrt(d2), false); continue; }
         // лидар → мотор → поворот мотора → IMU
         const qx = A[0] * x + A[1] * y + A[2] * z + A[3], qy = A[4] * x + A[5] * y + A[6] * z + A[7], qz = A[8] * x + A[9] * y + A[10] * z + A[11];
         const ph = phi0 + w * dt, c = Math.cos(ph), s = Math.sin(ph);
         const rx = c * qx + s * qz, rz = -s * qx + c * qz;
         const mxx = B[0] * rx + B[1] * qy + B[2] * rz + B[3], myy = B[4] * rx + B[5] * qy + B[6] * rz + B[7], mzz = B[8] * rx + B[9] * qy + B[10] * rz + B[11];
-        if (mxx * mxx + myy * myy + mzz * mzz < s2) { self++; continue; }
+        if (mxx * mxx + myy * myy + mzz * mzz < s2) { self++; if (EDGE) slot(R, t, Math.sqrt(d2), false); continue; }
         // поза в момент точки: линейно между позами сетки 5 мс (поворот за 5 мс < 1°, ошибка смешения ≪ 0,1 мм)
         let u = (t - tm) / H; if (u < 0) u = 0; let kq = Math.floor(u); if (kq > KN - 2) { kq = KN - 2; u = KN - 1; }
         const a1 = u - kq, a0 = 1 - a1, i0 = kq * 16, i1 = i0 + 16;
@@ -334,12 +362,15 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
         const wx = (PM[i0] * a0 + PM[i1] * a1) * mxx + (PM[i0 + 1] * a0 + PM[i1 + 1] * a1) * myy + (PM[i0 + 2] * a0 + PM[i1 + 2] * a1) * mzz + cx;
         const wy = (PM[i0 + 4] * a0 + PM[i1 + 4] * a1) * mxx + (PM[i0 + 5] * a0 + PM[i1 + 5] * a1) * myy + (PM[i0 + 6] * a0 + PM[i1 + 6] * a1) * mzz + cy;
         const wz = (PM[i0 + 8] * a0 + PM[i1 + 8] * a1) * mxx + (PM[i0 + 9] * a0 + PM[i1 + 9] * a1) * myy + (PM[i0 + 10] * a0 + PM[i1 + 10] * a1) * mzz + cz;
-        cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
+        if (EDGE) slot(R, t, Math.sqrt(d2), true, wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
+        else cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
       }
     }
     if (onBytes) onBytes(r.len);
   }
-  return { skipped, empty, packets, self };
+  // конец окна: отложенные точки — без правых соседей, остаются
+  if (EDGE) for (let ring = 0; ring < NR; ring++) { slot(ring, -1e18, Infinity, false); slot(ring, -1e18, Infinity, false); }
+  return { skipped, empty, packets, self, edge };
 }
 
 /**
@@ -392,7 +423,7 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
     fs.renameSync(tmp, outLas);
     prog(1, 'Облако из .xbin: готово');
     const TR = C.TR;
-    return { points: n, step, estimated: Math.round(est), t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, min: mn, max: mx,
+    return { points: n, step, estimated: Math.round(est), t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, min: mn, max: mx,
       lidarCh: C.S.lidarCh, motorCh: C.S.motorCh, imuCh: C.S.imuCh,
       trajectory: { imu: TR.imu, imuIntervals: TR.imuIntervals, intervals: TR.intervals, gaps: TR.gaps, position: TR.position, corrMedianDeg: TR.corrMedianDeg, refined: !!refineInfo },
       refine: refineInfo ? refineInfo.summary : null };

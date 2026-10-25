@@ -6,6 +6,9 @@
  * Файл не загружается целиком: для карты читается равномерная выборка (по умолчанию 4 млн точек — блоками подряд идущих записей,
  * разложенными по всему файлу), для среза плана — проход по всем точкам, но разбирается только высота (остальное — у точек среза).
  *
+ * eachPoint(desc, opts, fn): fn(u, v, h, o) — у LAS и PLY четвёртый аргумент — разобранная запись (цвет o.r/g/b 0–255, интенсивность o.i);
+ *   у E57 — только (u, v, h) (ревизия 39: цвет и интенсивность нужны модели BIM для материалов).
+ *
  * Плановые координаты (u, v, h) — метры от центра облака (u — восток/X, v — север/Y, h — вверх от низа облака). Они же — координаты окна
  * (u = x, v = −z, h = y), поэтому фильтры загрузки (cloud-segments.filterSegment) задаются в них.
  *
@@ -13,6 +16,7 @@
  *   planSlice(desc, { h0, h1, high: { h0, h1, bands }, rect, maxPoints, onProgress, signal }) → { ok, uv: Float32Array, count, read, uvHigh?, countHigh? }
  *   trajectoryInfo(posesText, desc) → { n, duration, length, speed, loopGap, route: Float32Array (u,v,h,t), inside }
  *   routeMask(route, bbox, { radius, cell, from, to }) → { u0, v0, cell, nx, ny, bits: Uint8Array }
+ *   areaMask([{ op: 'add'|'sub', pts }], { cell }) → { u0, v0, cell, nx, ny, bits, outsideOn } — контуры, обведённые мышью (ревизия 37)
  */
 const fs = require('fs');
 const path = require('path');
@@ -389,6 +393,43 @@ function routeMask(route, bbox, o) {
   return { u0, v0, cell, nx, ny, bits, cells: on };
 }
 
+// ревизия 37: контуры, обведённые мышью в окне «Перед загрузкой» (лассо): [{ op: 'add' | 'sub', pts: [u, v, u, v, ...] }] по порядку.
+// Сетка — по рамке всех контуров; клетка выбрана, если её центр внутри контура (чёт-нечет). Если первая операция — «вырезать»,
+// исходно выбрано всё (outsideOn = 1, и за сеткой тоже). Тот же расчёт — areaMaskJS в renderer/cloud-preview.js (оценка в окне).
+function areaMask(areas, o) {
+  o = o || {};
+  const list = (Array.isArray(areas) ? areas : []).filter((a) => a && Array.isArray(a.pts) && a.pts.length >= 6);
+  if (!list.length) return null;
+  let U0 = Infinity, U1 = -Infinity, V0 = Infinity, V1 = -Infinity;
+  for (const a of list) for (let i = 0; i + 1 < a.pts.length; i += 2) { const u = a.pts[i], v = a.pts[i + 1]; if (u < U0) U0 = u; if (u > U1) U1 = u; if (v < V0) V0 = v; if (v > V1) V1 = v; }
+  if (!(U1 >= U0 && V1 >= V0)) return null;
+  const cell = Math.max(Number(o.cell) || 0.05, Math.sqrt(Math.max(1e-6, (U1 - U0) * (V1 - V0)) / 4e6));
+  const u0 = U0 - cell, v0 = V0 - cell, nx = Math.ceil((U1 - U0) / cell) + 3, ny = Math.ceil((V1 - V0) / cell) + 3;
+  const outsideOn = list[0].op === 'sub' ? 1 : 0, bits = new Uint8Array(nx * ny);
+  if (outsideOn) bits.fill(1);
+  const xs = [];
+  for (const a of list) {
+    const P = a.pts, m = Math.floor(P.length / 2), val = a.op === 'sub' ? 0 : 1;
+    let pv0 = Infinity, pv1 = -Infinity;
+    for (let i = 0; i < m; i++) { const v = P[i * 2 + 1]; if (v < pv0) pv0 = v; if (v > pv1) pv1 = v; }
+    const y0 = Math.max(0, Math.ceil((pv0 - v0) / cell - 0.5)), y1 = Math.min(ny - 1, Math.floor((pv1 - v0) / cell - 0.5));
+    for (let y = y0; y <= y1; y++) {
+      const vc = v0 + (y + 0.5) * cell; xs.length = 0;
+      for (let i = 0, j = m - 1; i < m; j = i++) {
+        const va = P[j * 2 + 1], vb = P[i * 2 + 1];
+        if ((va <= vc) !== (vb <= vc)) { const ua = P[j * 2], ub = P[i * 2]; xs.push(ua + (vc - va) * (ub - ua) / (vb - va)); }
+      }
+      xs.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const x0 = Math.max(0, Math.ceil((xs[k] - u0) / cell - 0.5)), x1 = Math.min(nx - 1, Math.floor((xs[k + 1] - u0) / cell - 0.5));
+        if (x1 >= x0) bits.fill(val, y * nx + x0, y * nx + x1 + 1);
+      }
+    }
+  }
+  let on = 0; for (let c = 0; c < nx * ny; c++) on += bits[c];
+  return { u0, v0, cell, nx, ny, bits, outsideOn, cells: on };
+}
+
 // ------------------------------------------------------------ горизонтальный срез для плана
 function planSlice(desc, opts) {
   opts = opts || {};
@@ -534,7 +575,7 @@ function eachPoint(desc, opts, fn) {
       for (let j = 0; j < got; j++) {
         const base = j * rl, h = D.hOf(buf, base); if (!(h >= h0 && h <= h1)) continue;
         D.dec(buf, base, o); if (inRect && !inRect(o.u, o.v)) continue;
-        used++; fn(o.u, o.v, h);
+        used++; fn(o.u, o.v, h, o);
       }
       if (opts.onProgress) opts.onProgress(Math.min(1, (first + cnt) / total));
     }
@@ -542,4 +583,4 @@ function eachPoint(desc, opts, fn) {
   return { ok: true, read: total, used, sampled: false };
 }
 
-module.exports = { eachPoint, openE57, overview, planSlice, trajectoryInfo, routeMask, parsePoses, makeDecoder, chooseCell, findLevels, surfaceArea, hShift };
+module.exports = { eachPoint, openE57, overview, planSlice, trajectoryInfo, routeMask, areaMask, parsePoses, makeDecoder, chooseCell, findLevels, surfaceArea, hShift };

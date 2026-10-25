@@ -292,6 +292,25 @@
       h += rowsTable(op.slice(0, 80).map(function (x, i) { return [String(i + 1), (KN[x.kind] || x.kind) + (x.open ? ', без перемычки' : ''), fx(x.width, 2), x.kind === 'window' ? fx(x.sill, 2) : x.kind === 'door' ? '0' : '—', x.head != null ? fx(x.head, 2) : '—', x.height != null ? fx(x.height, 2) : '—']; }),
         ['№', 'Тип', 'Ширина, м', 'Низ, м', 'Верх, м', 'Высота, м'], null);
     }
+    // ревизия 33: балки, трубы, короба и лотки под потолком
+    var me = res.mep && res.mep.ok ? res.mep : null;
+    if (me) {
+      var ml = me.list || [], sm = me.summary || {}, by = sm.by || {}, MK = { beam: 'балка', pipe: 'труба', duct: 'короб / воздуховод', tray: 'лоток', rack: 'трасса (пучок)' };
+      var cnt = Object.keys(MK).filter(function (k) { return by[k]; }).map(function (k) { return MK[k] + ' — ' + by[k].n + ' (' + fx(by[k].length, 1) + ' м)'; }).join(', ');
+      var dia = Object.keys(sm.diam || {}).map(Number).sort(function (a, b) { return a - b; }).map(function (k) { return 'Ø' + k + ' — ' + fx(sm.diam[k], 1) + ' м'; }).join(', ');
+      h += '<h2 class="pb">Балки и трубы под потолком</h2>' + table([['Найдено', ml.length ? cnt : 'нет'], ['Трубы по диаметрам', dia || '—'],
+        ['Наименьшая высота в свету', ml.length ? fx(sm.minClear, 2) + ' м; ниже ' + fx(sm.clearLim, 2) + ' м — ' + sm.warn : '—'],
+        ['Перекрытие', me.ceiling && me.ceiling.median === me.ceiling.median ? 'медиана +' + fx(me.ceiling.median - res.floorH, 2) + ' м от пола' : '—']]);
+      if (ml.length) {
+        var ord = ml.map(function (x, i) { return i; }).sort(function (a, b) { return ml[a].clear - ml[b].clear; }).slice(0, 80);
+        h += rowsTable(ord.map(function (i) { var x = ml[i]; return [String(x.id), MK[x.kind] || x.kind, (x.kind === 'pipe' || x.shape === 'round' ? 'Ø' + Math.round((x.d || x.width) * 1000) : Math.round(x.width * 1000) + '×' + Math.round(x.depth * 1000)) + ' мм', fx(x.length, 2), fx(x.clear, 2), x.touch ? 'да' : '', x.group ? 'пучок ' + x.group : '']; }),
+          ['№', 'Тип', 'Сечение', 'Длина, м', 'Низ над полом, м', 'У перекрытия', 'Группа'], ord.map(function (i) { return !!ml[i].warn; }));
+      }
+    }
+    if (res.classify && res.classify.ok) {
+      var cc = res.classify.counts || {}, nm = res.classify.names || {};
+      h += '<h3>Классы точек</h3>' + table([['Файл', esc(res.classify.name || '')], ['Точек', n(res.classify.written, 0)]].concat(Object.keys(cc).map(Number).sort(function (a, b) { return a - b; }).map(function (k) { return [k + ' — ' + (nm[k] || ''), n(cc[k], 0) + ' (' + fx(cc[k] / Math.max(1, res.classify.written) * 100, 1) + ' %)']; })));
+    }
     var cs = res.corners || [];
     if (cs.length) {
       var dvs = cs.map(function (k) { return k.dev; });
@@ -315,7 +334,8 @@
     }
     h += '<p class="note" style="margin-top:14px">Оценка по облаку точек, не заменяет инструментальный контроль. Точность ограничена шумом сканера и накопленным дрейфом траектории (у мобильных сканеров — несколько миллиметров на стенах). ' +
       'Наклон облака находится по завалу всех стен и при заметной величине вычитается. Дефекты — местные отклонения на сетке 10 см: трещины и сколы мельче клетки не видны. ' +
-      'FF/FL рассчитаны по методике ASTM E1155 на сетке облака; допуски по СП 71.13330 заданы при запуске. Мебель, откосы и проёмы исключаются по плану, но могут попадать в отдельные грани — проверяйте развёртки. Сравнение с проектом — двумерное, по срезу на высоте проверки.</p>';
+      'FF/FL рассчитаны по методике ASTM E1155 на сетке облака; допуски по СП 71.13330 заданы при запуске. Мебель, откосы и проёмы исключаются по плану, но могут попадать в отдельные грани — проверяйте развёртки. Сравнение с проектом — двумерное, по срезу на высоте проверки. ' +
+      'Балки и трубы — линейные элементы под потолком вдоль осей плана длиной от 1 м; диаметр трубы — по окружности в сечении облака (сканер видит низ и бока), высота в свету — от местной отметки пола до низа элемента.</p>';
     return h + '</body></html>';
   }
 
