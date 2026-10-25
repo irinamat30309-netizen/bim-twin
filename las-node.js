@@ -1575,7 +1575,7 @@ function parseE57File(fd, fileSize, maxPoints, onProgress, filter) {
   if (filter && filter.origin && Number.isFinite(filter.origin.cx)) {
     const f = filterWorldE57(r0, filter);
     if (!f.count) throw new Error('выбранной области, высотам и участку маршрута не соответствует ни одна точка E57');
-    filtered = { read: f.read, kept: f.count, rect: !!filter.rect, h: !!filter.h, route: !!filter.mask, noise: !!filter.noise };
+    filtered = { read: f.read, kept: f.count, rect: !!filter.rect, area: !!filter.area, h: !!filter.h, route: !!filter.mask, noise: !!filter.noise };
     // станции сканов остаются только сведениями (диапазоны индексов после отбора не сохраняются)
     r = { pos: f.pos, col: r0.col ? f.col : null, intensity: f.intensity, count: f.count, total: r0.total, scans: r0.scans.map((s) => Object.assign({}, s, { start: 0, count: 0 })), crs: r0.crs };
   }
