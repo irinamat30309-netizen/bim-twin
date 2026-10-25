@@ -585,29 +585,86 @@
     if (!info.poses || !info.poses.n) { toast('Рядом с .xbin не найдена траектория project_data/poses.csv — без неё облако не собрать'); return false; }
     const kit = window.__lxKit, mins = Math.max(1, Math.round((info.poses.duration || 0) / 60));
     const allMln = Math.max(1, Math.round((info.poses.duration || 0) * 0.36));   // L2 Pro: ~360 тыс. точек/с после фильтра дальности
-    let density = 'normal', refine = true;
+    let density = 'normal', refine = true, color = x.photoReady ? 'photo' : 'gray', edge = true, finish = true;
     if (kit && kit.form) {
       const v = await kit.form({ title: 'Облако из сырого лидара (.xbin)', okLabel: 'Собрать облако', wide: true,
-        message: (lead ? lead + ' ' : '') + 'Точки лидара переводятся в координаты проекта по траектории сканера (' + info.poses.name + ', ' + mins + ' мин) и калибровкам из .xbin. Результат — LAS рядом с .xbin со временем точек: после сборки работают «Движущиеся объекты» и «Цвет по фото сканера».',
+        message: (lead ? lead + ' ' : '') + 'Точки лидара переводятся в координаты проекта по траектории сканера (' + info.poses.name + ', ' + mins + ' мин) и калибровкам из .xbin. Результат — LAS рядом с .xbin со временем точек: после сборки работают «Движущиеся объекты» и «Автоочистка».' + (x.photoReady ? ' Лидар сам по себе цвета не видит (только яркость отражения — серое облако), поэтому настоящий цвет точкам даётся по кадрам камер сканера из того же .xbin (около 1 минуты на 10–15 млн точек; серое облако можно раскрасить и потом).' : ' Камер в .xbin нет — облако будет серым (яркость отражения лидара).'),
         hint: 'Поза сканера между точками траектории (5 раз в секунду) дополняется гироскопом IMU из .xbin, а уточнение по облаку подгоняет траекторию так, чтобы стены и пол из разных проходов совпали: поверхности тоньше, чем в map.las со сканера. Отражения от корпуса сканера убираются. Сборка идёт в фоне: без уточнения — около 1 минуты на 5–10 минут съёмки, с уточнением — немного дольше, чем длилась съёмка (15 минут съёмки — около 20 минут).',
         fields: [{ key: 'density', label: 'Плотность', type: 'select', value: 'normal', options: [
           { value: 'normal', label: 'Обычная — до 40 млн точек (до 1,4 ГБ)' },
           { value: 'high', label: 'Высокая — до 120 млн точек (до 4 ГБ)' },
           { value: 'all', label: 'Все точки — около ' + allMln + ' млн (' + (allMln * 34 / 1024).toFixed(1).replace('.', ',') + ' ГБ)' + (allMln * 1e6 > gpuPointBudget() ? ', на экране — до ' + fmtMln(gpuPointBudget()) + ' млн' : '') }] },
-          { key: 'refine', label: 'Уточнить траекторию по облаку (точнее, дольше)', type: 'checkbox', value: true }] });
-      if (!v) return false; density = v.density || 'normal'; refine = v.refine !== false;
+          { key: 'refine', label: 'Уточнить траекторию по облаку (точнее, дольше)', type: 'checkbox', value: true },
+          // ревизия 37: чистое облако, как в Lixel Studio — фильтр краёв при сборке и Чистовая обработка сразу после неё
+          { key: 'edge', label: 'Убрать «бахрому» у краёв и пыль в воздухе', type: 'checkbox', value: true, hint: 'Смешанные отражения на краях предметов (хвосты точек за рамами, столбами, людьми) и одиночные скачки дальности (пыль, капли, блики) отбрасываются по соседним точкам того же луча лидара. Ровные поверхности, в том числе пол и фасад под острым углом, не страдают.' },
+          { key: 'finish', label: 'Сразу Чистовая обработка (шум, движущиеся объекты, тонкие стены)', type: 'checkbox', value: true, hint: 'После сборки откроется Чистовая обработка с настройками, как у экспорта Lixel Studio: шум «Сильно», прохожие и машины, тонкие стены и пол, ровный цвет. Её можно запустить и позже: вкладка «Облако» → «Чистовая обработка».' }]
+          .concat(x.photoReady ? [{ key: 'color', label: 'Цвет точек', type: 'select', value: 'photo', options: [
+            { value: 'photo', label: 'Настоящий, по фото камер (дольше)' },
+            { value: 'gray', label: 'Серый, яркость лидара (быстро)' }] }] : []) });
+      if (!v) return false; density = v.density || 'normal'; refine = v.refine !== false; edge = v.edge !== false; finish = v.finish !== false; if (x.photoReady) color = v.color === 'gray' ? 'gray' : 'photo';
     }
     const jobId = 'xl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     const PR = window.__lxProgress;
     const stop = PR && PR.begin ? PR.begin('Облако из .xbin', { onCancel: () => { if (API.cancelXbinCloud) API.cancelXbinCloud(jobId); } }) : null;
     const unsub = typeof API.onXbinCloudProgress === 'function' ? API.onXbinCloudProgress(jobId, (f, lab) => { try { if (stop && stop.set) stop.set(Number(f) || 0, lab || 'Облако из .xbin…'); } catch (_) {} }) : null;
     let r = null;
-    try { r = await API.xbinBuildCloud(p, jobId, density, { refine }); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
+    try { r = await API.xbinBuildCloud(p, jobId, density, { refine, color, edge }); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
     finally { try { if (typeof unsub === 'function') unsub(); } catch (_) {} try { if (stop) stop(); } catch (_) {} }
     if (!r || !r.ok) { toast(r && r.cancelled ? 'Сборка облака отменена' : ((r && r.message) || 'Не удалось собрать облако из .xbin')); return false; }
     const rf = r.refine && r.refine.residualAfterMm > 0 ? ', расхождение поверхностей ' + String(r.refine.residualBeforeMm).replace('.', ',') + ' → ' + String(r.refine.residualAfterMm).replace('.', ',') + ' мм' : '';
-    toast('Облако из лидара: ' + fmtMln(r.points || 0) + ' млн точек' + rf + ', файл ' + r.name);
-    return window.__bimOpenCloudPath(r.path, { fresh: true });
+    const pc = r.photo && r.photo.points ? ', цвет по фото: ' + Math.round(100 * (r.photo.colored || 0) / r.photo.points) + ' % точек' : '';
+    const eg = r.edge > 0 ? ', убрано «бахромы» и пыли ' + fmtMln(r.edge) + ' млн' : '';
+    toast('Облако из лидара: ' + fmtMln(r.points || 0) + ' млн точек' + rf + pc + eg + ', файл ' + r.name);
+    if (r.photoWarning) setTimeout(() => toast('Цвет по фото не получен: ' + r.photoWarning + '. Раскрасить: «Цвет по фото камер» на ленте или кнопка в свойствах облака'), 2500);
+    const opened = await window.__bimOpenCloudPath(r.path, { fresh: true });
+    // ревизия 37: сразу Чистовая обработка открытого облака (форма с настройками; цвет по фото уже есть — не повторяется)
+    const ext = window.__lxToolsExt && window.__lxToolsExt.ops;
+    if (finish && opened === true && ext && typeof ext.opRefineScan === 'function') {
+      try { await ext.opRefineScan({ title: 'Чистовая обработка нового облака', photoOff: !!r.photo, lead: 'Облако собрано (' + fmtMln(r.points || 0) + ' млн точек). Чистовая обработка доведёт его до вида экспорта Lixel Studio.' }); } catch (e) { toast('Чистовая обработка: ' + String((e && e.message) || e)); }
+    }
+    return opened;
+  };
+  // Ревизия 36: «Раскрасить по фото камер» — открытое облако LAS (например, серое облако из лидара .xbin) получает настоящий цвет
+  // по кадрам камер сканера из .xbin. Результат — «<имя>-color.las» рядом, исходный файл не меняется.
+  window.__bimPhotoColor = async function (p) {
+    p = p || lastCloudPath;
+    if (!API || typeof API.photoColorCloud !== 'function') { toast('Цвет по фото камер — в десктоп-версии'); return false; }
+    if (!p || !/\.las$/i.test(String(p))) { toast('Откройте облако LAS со временем точек (из .xbin или со сканера Lixel)'); return false; }
+    const kit = window.__lxKit, nm = String(p).split(/[\\/]/).pop();
+    if (kit && kit.ask) {
+      const go = await kit.ask({ title: 'Раскрасить по фото камер', okLabel: 'Раскрасить', cancelLabel: 'Отмена', wide: true,
+        message: 'Каждая точка облака ' + nm + ' получит цвет с кадра камеры сканера, снятого в момент её съёмки (кадры — из файла .xbin, положение — по траектории poses.csv). Результат — новый файл ' + nm.replace(/\.las$/i, '') + '-color.las рядом, исходное облако не меняется.',
+        hint: 'Идёт в фоне: около 1 минуты на 10–15 млн точек (400 млн — 30–40 минут, 670 млн — около часа). Нужно свободное место: размер облака плюс около 21 байта на точку. Точки, которые не видела ни одна камера (потолок над сканером, тёмные углы), остаются серыми.' });
+      if (!go) return false;
+    }
+    const jobId = 'pc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    let opts = {};
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const PR = window.__lxProgress;
+      const stop = PR && PR.begin ? PR.begin('Цвет по фото камер', { onCancel: () => { if (API.cancelPhotoColor) API.cancelPhotoColor(jobId); } }) : null;
+      const unsub = typeof API.onPhotoColorProgress === 'function' ? API.onPhotoColorProgress(jobId, (f, lab) => { try { if (stop && stop.set) stop.set(Number(f) || 0, lab || 'Цвет по фото камер…'); } catch (_) {} }) : null;
+      let r = null;
+      try { r = await API.photoColorCloud(p, jobId, opts); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
+      finally { try { if (typeof unsub === 'function') unsub(); } catch (_) {} try { if (stop) stop(); } catch (_) {} }
+      if (r && r.ok) {
+        const ph = r.photo || {};
+        toast('Цвет по фото: ' + (ph.points ? Math.round(100 * (ph.colored || 0) / ph.points) + ' % точек' : 'готово') + (ph.frames ? ', кадров ' + ph.frames : '') + ', файл ' + r.name);
+        return window.__bimOpenCloudPath(r.path, { fresh: true });
+      }
+      if (r && r.needXbin && typeof API.pickXbin === 'function') {
+        toast(r.message || 'Выберите файл сканера .xbin');
+        const px = await API.pickXbin(); if (!px || !px.ok || !px.path) { if (!(px && px.cancelled)) toast('Файл сканера не выбран'); return false; }
+        opts = Object.assign({}, opts, { xbinPath: px.path }); continue;
+      }
+      if (r && r.needPoses && typeof API.pickTrajectory === 'function') {
+        toast(r.message || 'Выберите траекторию сканера poses.csv');
+        const pk = await API.pickTrajectory(); if (!pk || !pk.ok || !pk.path) { toast('Траектория не выбрана'); return false; }
+        opts = Object.assign({}, opts, { posesPath: pk.path }); continue;
+      }
+      toast(r && r.cancelled ? 'Цвет по фото отменён' : ((r && r.message) || 'Не удалось раскрасить облако по фото'));
+      return false;
+    }
+    return false;
   };
   // Ревизия 19: скан проекта при открытии проекта — тем же путём, что и «Открыть облако» (крупные LAS/PLY читаются по частям).
   // Возвращает { ok, count, meta } без лишних сообщений; ошибку показывает вызывающий (multicloud.js).
@@ -2031,7 +2088,7 @@
     window.addEventListener('bim-gl-lost', async (e) => {
       const d = (e && e.detail) || {}, shown = Number(d.loaded) || 0, cur = gpuPointBudget();
       const next = Math.max(20000000, Math.floor(Math.min(cur, shown > 0 ? shown : cur) / 2 / 10000000) * 10000000);
-      try { localStorage.setItem('bim.gpuPointBudget', String(next)); } catch (_) {}
+      try { localStorage.setItem('bim.gpuPointBudget', String(next)); if (shown > 0) localStorage.setItem('bim.gpuResetAt', String(shown)); const sv = Number(localStorage.getItem('bim.preloadPoints')) || 0; if (sv > next) localStorage.setItem('bim.preloadPoints', String(next)); } catch (_) {}
       const p = d.path || lastCloudPath || '', kit = window.__lxKit;
       const msg = 'Видеокарта не справилась с облаком' + (shown ? ' (' + fmtMln(shown) + ' млн точек на экране)' : '') + ' и сбросила изображение, поэтому окно просмотра стало пустым. Окно будет перезагружено' + (p ? ', и облако откроется снова' : '') + ': на экране будет до ' + fmtMln(next) + ' млн точек, выбранных равномерно по всему облаку. Файл не меняется — все точки остаются в нём.';
       let go = true;
@@ -5575,7 +5632,10 @@
   }
   async function newProjectUI() {
     if (!API || !API.createProject) { toast('Создание проектов — в десктоп-версии'); return; }
-    const v = await openForm('Новый проект', [{ k: 'name', label: 'Название', value: '' }, { k: 'address', label: 'Адрес', value: '' }]);
+    // ревизия 38: с выбором диска/папки проекта (облака, LAS, кэш — не на диске C)
+    const v = window.ProjectStorageUI && window.__lxKit && window.__lxKit.form && API.projectStorage
+      ? await window.ProjectStorageUI.newProjectForm({ address: true })
+      : await openForm('Новый проект', [{ k: 'name', label: 'Название', value: '' }, { k: 'address', label: 'Адрес', value: '' }]);
     if (!v || !v.name) return;
     try {
       const ps = window.BimProjectState;
@@ -5591,12 +5651,12 @@
         const saved = await ps.flush();
         if (saved && saved.ok === false) throw new Error('Сначала устраните ошибку сохранения состояния проекта');
       }
-      const p = await API.createProject({ name: v.name, address: v.address || '' });
+      const p = await API.createProject(v.folderParent ? { name: v.name, address: v.address || '', folderParent: v.folderParent } : { name: v.name, address: v.address || '' });
       resetProjectCloudContext();
       try { if (viewer && viewer.clearCloud) viewer.clearCloud(); } catch (_) {}
       if (ps && ps.reload) await ps.reload();
       await loadData(); await loadTeam(); current = null; selEl = null; renderTree(); renderTab();
-      toast('Проект создан: ' + (p && p.name || v.name));
+      toast('Проект создан: ' + (p && p.name || v.name) + (p && p.folder ? ' · папка: ' + p.folder : ''));
     } catch (error) {
       toast('Не удалось создать проект: ' + String(error && error.message || error));
     }
