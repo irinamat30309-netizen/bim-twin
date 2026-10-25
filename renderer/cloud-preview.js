@@ -15,7 +15,7 @@
  *   CloudPreview.afterLoad(pre, result) — окраска после загрузки; CloudPreview.lastFor(path) — параметры прошлой загрузки
  *   CloudPreview.openNext() — следующий выбор облака откроется с картой (команда «Карта перед загрузкой»)
  *   CloudPreview.report() / CloudPreview.planDxf() — для открытого облака
- *   чистые функции (тесты): sliderToPoints, pointsToSlider, estimate, storeys, routeMaskJS, niceScale, turbo
+ *   чистые функции (тесты): sliderToPoints, pointsToSlider, estimate, storeys, routeMaskJS, areaMaskJS, simplifyPath, niceScale, turbo
  */
 (function (root, factory) {
   'use strict';
@@ -67,14 +67,61 @@
     var bits = new Uint8Array(nx * ny); for (var i = 0; i < nx * ny; i++) if (dist[i] <= rc) bits[i] = 1;
     return { u0: u0, v0: v0, cell: cell, nx: nx, ny: ny, bits: bits };
   }
+  // ревизия 37: контуры, обведённые мышью (лассо): [{ op: 'add' | 'sub', pts: [u, v, ...] }] по порядку → маска клеток
+  // (тот же расчёт — cloud-overview.areaMask в главном процессе). Первая операция «вырезать» — исходно выбрано всё (outsideOn).
+  function areaMaskJS(areas, o) {
+    o = o || {};
+    var list = (areas || []).filter(function (a) { return a && a.pts && a.pts.length >= 6; });
+    if (!list.length) return null;
+    var U0 = Infinity, U1 = -Infinity, V0 = Infinity, V1 = -Infinity, i, a;
+    for (var t = 0; t < list.length; t++) { a = list[t].pts; for (i = 0; i + 1 < a.length; i += 2) { if (a[i] < U0) U0 = a[i]; if (a[i] > U1) U1 = a[i]; if (a[i + 1] < V0) V0 = a[i + 1]; if (a[i + 1] > V1) V1 = a[i + 1]; } }
+    if (!(U1 >= U0 && V1 >= V0)) return null;
+    var cell = Math.max(+o.cell || 0.05, Math.sqrt(Math.max(1e-6, (U1 - U0) * (V1 - V0)) / 4e6));
+    var u0 = U0 - cell, v0 = V0 - cell, nx = Math.ceil((U1 - U0) / cell) + 3, ny = Math.ceil((V1 - V0) / cell) + 3;
+    var outsideOn = list[0].op === 'sub' ? 1 : 0, bits = new Uint8Array(nx * ny), xs = [];
+    if (outsideOn) bits.fill(1);
+    for (t = 0; t < list.length; t++) {
+      var P = list[t].pts, m = Math.floor(P.length / 2), val = list[t].op === 'sub' ? 0 : 1, pv0 = Infinity, pv1 = -Infinity;
+      for (i = 0; i < m; i++) { if (P[i * 2 + 1] < pv0) pv0 = P[i * 2 + 1]; if (P[i * 2 + 1] > pv1) pv1 = P[i * 2 + 1]; }
+      var y0 = Math.max(0, Math.ceil((pv0 - v0) / cell - 0.5)), y1 = Math.min(ny - 1, Math.floor((pv1 - v0) / cell - 0.5));
+      for (var y = y0; y <= y1; y++) {
+        var vc = v0 + (y + 0.5) * cell; xs.length = 0;
+        for (var ii = 0, j = m - 1; ii < m; j = ii++) {
+          var va = P[j * 2 + 1], vb = P[ii * 2 + 1];
+          if ((va <= vc) !== (vb <= vc)) xs.push(P[j * 2] + (vc - va) * (P[ii * 2] - P[j * 2]) / (vb - va));
+        }
+        xs.sort(function (p, q) { return p - q; });
+        for (var k = 0; k + 1 < xs.length; k += 2) {
+          var x0 = Math.max(0, Math.ceil((xs[k] - u0) / cell - 0.5)), x1 = Math.min(nx - 1, Math.floor((xs[k + 1] - u0) / cell - 0.5));
+          if (x1 >= x0) bits.fill(val, y * nx + x0, y * nx + x1 + 1);
+        }
+      }
+    }
+    var on = 0; for (i = 0; i < nx * ny; i++) on += bits[i];
+    return { u0: u0, v0: v0, cell: cell, nx: nx, ny: ny, bits: bits, outsideOn: outsideOn, cells: on };
+  }
+  function inArea(am, u, v) {
+    var cx = Math.floor((u - am.u0) / am.cell), cy = Math.floor((v - am.v0) / am.cell);
+    return !!(cx < 0 || cy < 0 || cx >= am.nx || cy >= am.ny ? am.outsideOn : am.bits[cy * am.nx + cx]);
+  }
+  // упростить контур от руки: вершины не ближе tol метров, не больше max вершин
+  function simplifyPath(pts, tol, max) {
+    var out = [], n = Math.floor((pts || []).length / 2), lu = NaN, lv = NaN, i;
+    tol = tol > 0 ? tol : 0; max = max || 4000;
+    for (i = 0; i < n; i++) { var u = pts[i * 2], v = pts[i * 2 + 1]; if (!isFinite(u) || !isFinite(v)) continue; if (out.length && Math.hypot(u - lu, v - lv) < tol) continue; out.push(u, v); lu = u; lv = v; }
+    if (out.length / 2 > max) { var step = out.length / 2 / max, r = []; for (i = 0; i < max; i++) { var k = Math.floor(i * step); r.push(out[k * 2], out[k * 2 + 1]); } out = r; }
+    return out;
+  }
+  function polyArea(pts) { var s = 0, n = Math.floor(pts.length / 2); for (var i = 0, j = n - 1; i < n; j = i++) s += (pts[j * 2] - pts[i * 2]) * (pts[j * 2 + 1] + pts[i * 2 + 1]); return Math.abs(s) / 2; }
   // доля точек выборки (u, v, h), проходящих фильтр; оценка числа точек после фильтра
   function estimate(pts, total, f, mask) {
     if (!pts || !pts.length) return { frac: 1, points: total };
-    var n = pts.length / 3, pass = 0, r = f && f.rect, h = f && f.h;
+    var n = pts.length / 3, pass = 0, r = f && f.rect, h = f && f.h, am = f && f.area;
     for (var i = 0; i < n; i++) {
       var u = pts[i * 3], v = pts[i * 3 + 1], z = pts[i * 3 + 2];
       if (r && (u < r.u0 || u > r.u1 || v < r.v0 || v > r.v1)) continue;
       if (h && (z < h.min || z > h.max)) continue;
+      if (am && !inArea(am, u, v)) continue;
       if (mask) { var cx = Math.floor((u - mask.u0) / mask.cell), cy = Math.floor((v - mask.v0) / mask.cell); if (cx < 0 || cy < 0 || cx >= mask.nx || cy >= mask.ny || !mask.bits[cy * mask.nx + cx]) continue; }
       pass++;
     }
@@ -179,7 +226,7 @@
     return rows;
   }
 
-  var pure = { sliderToPoints: sliderToPoints, pointsToSlider: pointsToSlider, routeMaskJS: routeMaskJS, estimate: estimate, storeys: storeys, walkLevels: walkLevels,
+  var pure = { sliderToPoints: sliderToPoints, pointsToSlider: pointsToSlider, routeMaskJS: routeMaskJS, areaMaskJS: areaMaskJS, inArea: inArea, simplifyPath: simplifyPath, polyArea: polyArea, estimate: estimate, storeys: storeys, walkLevels: walkLevels,
     niceScale: niceScale, turbo: turbo, facts: facts, fmtMln: fmtMln, fmtNum: fmtNum, fmtDur: fmtDur, fmtBytes: fmtBytes };
   if (!W || typeof document === 'undefined') return pure;
 
@@ -268,6 +315,28 @@
       cx.fillText(fmtNum(st.rect.u1 - st.rect.u0, 2) + ' × ' + fmtNum(st.rect.v1 - st.rect.v0, 2) + ' м', a[0] + 4, a[1] - 6);
       cx.restore();
     }
+    // ревизия 37: обведённые контуры — вне выбора притушено, добавленные — жёлтый контур, вырезанные — красный пунктир
+    var areas = st.areas || [];
+    if (areas.length) {
+      var oc = D.createElement('canvas'); oc.width = cv.width; oc.height = cv.height;
+      var ox = oc.getContext('2d'); ox.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var path = function (c2, pts) { c2.beginPath(); for (var pi = 0; pi + 1 < pts.length; pi += 2) { var pp = vw.to(pts[pi], pts[pi + 1]); if (pi) c2.lineTo(pp[0], pp[1]); else c2.moveTo(pp[0], pp[1]); } c2.closePath(); };
+      if (areas[0].op !== 'sub') { ox.fillStyle = 'rgba(8,10,14,.6)'; ox.fillRect(0, 0, w, h); }
+      areas.forEach(function (ar) {
+        path(ox, ar.pts);
+        if (ar.op === 'sub') { ox.globalCompositeOperation = 'source-over'; ox.fillStyle = 'rgba(8,10,14,.6)'; ox.fill('evenodd'); }
+        else { ox.globalCompositeOperation = 'destination-out'; ox.fillStyle = '#000'; ox.fill('evenodd'); ox.globalCompositeOperation = 'source-over'; }
+      });
+      cx.save(); cx.setTransform(1, 0, 0, 1, 0, 0); cx.drawImage(oc, 0, 0); cx.restore();
+      cx.save(); cx.lineWidth = 1.5; cx.lineJoin = 'round';
+      areas.forEach(function (ar) { path(cx, ar.pts); if (ar.op === 'sub') { cx.setLineDash([5, 4]); cx.strokeStyle = '#f87171'; } else { cx.setLineDash([]); cx.strokeStyle = '#ffd166'; } cx.stroke(); });
+      cx.restore();
+    }
+    if (opt.lasso && opt.lasso.pts.length >= 4) {
+      var L0 = opt.lasso.pts; cx.save(); cx.lineWidth = 1.8; cx.strokeStyle = opt.lasso.op === 'sub' ? '#f87171' : '#ffd166'; cx.setLineDash(opt.lasso.op === 'sub' ? [5, 4] : []);
+      cx.beginPath(); for (var li = 0; li + 1 < L0.length; li += 2) { var lp0 = vw.to(L0[li], L0[li + 1]); if (li) cx.lineTo(lp0[0], lp0[1]); else cx.moveTo(lp0[0], lp0[1]); }
+      cx.stroke(); cx.globalAlpha = 0.35; cx.setLineDash([2, 3]); var lf = vw.to(L0[0], L0[1]); cx.lineTo(lf[0], lf[1]); cx.stroke(); cx.restore();
+    }
     // маршрут сканера: цвет по времени (зелёный — начало, красный — конец), выбранный участок ярче
     var tr = ov.trajectory;
     if (tr && tr.route && tr.aligned !== false && st.showRoute !== false) {
@@ -331,6 +400,10 @@
   }
   W.__cloudPreviewMap = mapImage;
 
+  // ревизия 37: сохранённое в прошлый раз число точек — не больше надёжного максимума (иначе после сброса видеокарты снова белый экран)
+  function clampSaved(saved, safe) { saved = Number(saved) || 0; safe = Number(safe) || 0; if (!(saved >= 1e6)) return 0; return safe >= 1e6 ? Math.min(saved, safe) : saved; }
+  W.__cpClampSaved = clampSaved;
+
   // ------------------------------------------------------------------ окно «Перед загрузкой»
   function openDialog(path, ov, cap, label) {
     return new Promise(function (resolve) {
@@ -338,7 +411,12 @@
       var budget = W.__bimGpuPointBudget ? W.__bimGpuPointBudget() : 300000000;
       var saved = 0; try { saved = Number(localStorage.getItem(LS_POINTS)) || 0; } catch (_) {}
       var recPts = rec ? rec.points : budget, safePts = rec ? rec.safeMax : budget;
-      var st = { view: ov.grid.rgb && ov.file.colored ? 'rgb' : 'density', rect: null, hf: null, route: null, radius: 15, noise: 'none',
+      // ревизия 37: после сброса изображения видеокартой (bim.gpuResetAt — сколько точек было на экране) рекомендация и максимум
+      // не выше уменьшенного предела, а сохранённое прошлое число точек не может снова превысить надёжный максимум
+      var resetAt = 0; try { resetAt = Number(localStorage.getItem('bim.gpuResetAt')) || 0; } catch (_) {}
+      if (resetAt >= 1e6) { safePts = Math.min(safePts, budget); recPts = Math.min(recPts, budget); }
+      saved = clampSaved(saved, safePts);
+      var st = { view: ov.grid.rgb && ov.file.colored ? 'rgb' : 'density', rect: null, areas: [], tool: 'add', hf: null, route: null, radius: 15, noise: 'none',
         color: ov.file.colored ? 'rgb' : 'elev', points: Math.min(total, saved >= 1e6 ? saved : Math.min(recPts, budget)), showRoute: true, plan: null };
       var tr = ov.trajectory, hasRoute = !!(tr && tr.route && tr.aligned !== false), floors = storeys(ov.levels, ov.bbox, ovRoute(ov));
       var back = D.createElement('div'); back.className = 'modal bp-modal';
@@ -361,9 +439,15 @@
               '</div></div>' +
               '<div class="bp-over bp-tr">' +
                 (hasRoute ? '<label class="bp-pill" title="Показать маршрут сканера"><input type="checkbox" data-k="showRoute" checked><span>Маршрут</span></label>' : '') +
-                '<button type="button" class="bp-pill" data-act="clearRect" title="Сбросить рамку — вся площадь">' + ic('map', 14) + '<span>Вся площадь</span></button>' +
+                '<div class="bp-seg bp-tools" role="group" aria-label="Выбор области на карте">' +
+                  '<button type="button" data-tool="rect" title="Рамка мышью — прямоугольная область загрузки">' + ic('box-select', 14) + '<span>Рамка</span></button>' +
+                  '<button type="button" data-tool="add" title="Обвести мышью произвольный контур — загрузить то, что внутри (Alt — вырезать)">' + ic('lasso-select', 14) + '<span>Обвести</span></button>' +
+                  '<button type="button" data-tool="sub" title="Обвести мышью то, что загружать не нужно">' + ic('scissors', 14) + '<span>Вырезать</span></button>' +
+                '</div>' +
+                '<button type="button" class="bp-pill" data-act="undoArea" title="Отменить последний контур (Ctrl+Z)" aria-label="Отменить последний контур" disabled>' + ic('undo-2', 14) + '</button>' +
+                '<button type="button" class="bp-pill" data-act="clearRect" title="Сбросить рамку и контуры — вся площадь">' + ic('map', 14) + '<span>Вся площадь</span></button>' +
               '</div>' +
-              '<div class="bp-maphint">Рамка мышью — область загрузки</div>' +
+              '<div class="bp-maphint"></div>' +
             '</div>' +
           '</div>' +
           '<div class="bp-side">' +
@@ -398,6 +482,7 @@
         '</div>' +
         '<div class="form-actions bp-actions">' +
           '<button type="button" class="btn sm ghost" data-act="plan" title="План этажа из облака: стены, проёмы, размеры">' + ic('pencil-ruler', 15) + ' DXF</button>' +
+          '<button type="button" class="btn sm ghost" data-act="bim" title="BIM-модель по всему облаку: этажи, стены, проёмы, материалы, колонны, перекрытия, объекты → IFC, OBJ, DXF">' + ic('building-2', 15) + ' BIM</button>' +
           '<button type="button" class="btn sm ghost" data-act="inspect" title="Контроль геометрии: пол FF/FL и рейка, стены по вертикали, сравнение с DXF">' + ic('ruler-dimension-line', 15) + ' Контроль</button>' +
           '<button type="button" class="btn sm ghost" data-act="report" title="PDF-отчёт по облаку">' + ic('file-text', 15) + ' PDF</button>' +
           '<div class="bp-est" aria-live="polite"></div>' +
@@ -412,8 +497,9 @@
         var gpu = cap.gpu || {}, ram = cap.ram || {};
         q('.bp-pc').innerHTML = '<div>' + esc(gpu.name || 'Видеокарта не определена') + (gpu.vramTotal ? ' · ' + fmtBytes(gpu.vramTotal) + (gpu.vramFree ? ' (свободно ' + fmtBytes(gpu.vramFree) + ')' : '') : '') + '</div>' +
           '<div>Память ' + fmtBytes(ram.total) + ' (свободно ' + fmtBytes(ram.free) + ')</div>' +
-          (rec ? '<div class="bp-rec">Рекомендовано <b>' + fmtMln(rec.points) + ' млн</b> · максимум <b>' + fmtMln(rec.safeMax) + ' млн</b></div>' +
-            (rec.notes && rec.notes.length ? '<div class="bp-note">' + esc(rec.notes.join('; ')) + '</div>' : '') : '');
+          (rec ? '<div class="bp-rec">Рекомендовано <b>' + fmtMln(recPts) + ' млн</b> · максимум <b>' + fmtMln(safePts) + ' млн</b></div>' +
+            (rec.notes && rec.notes.length ? '<div class="bp-note">' + esc(rec.notes.join('; ')) + '</div>' : '') : '') +
+          (resetAt >= 1e6 ? '<div class="bp-note">Видеокарта сбрасывала изображение при ' + fmtMln(resetAt) + ' млн точек — пределы снижены' + (rec ? ' (для компьютера: ' + fmtMln(rec.points) + ' / ' + fmtMln(rec.safeMax) + ' млн)' : '') + '</div>' : '');
       } else q('.bp-pc').textContent = 'Сведения о компьютере недоступны — предел ' + fmtMln(budget) + ' млн точек.';
       // вкладки
       back.querySelectorAll('[data-tab]').forEach(function (t) { t.onclick = function () { var k = t.getAttribute('data-tab'); back.querySelectorAll('[data-tab]').forEach(function (x) { x.classList.toggle('on', x === t); x.setAttribute('aria-selected', x === t ? 'true' : 'false'); }); back.querySelectorAll('[data-pane]').forEach(function (p) { p.hidden = p.getAttribute('data-pane') !== k; }); if (k === 'load') paintHist(); }; });
@@ -422,10 +508,11 @@
       fl.innerHTML = floors.map(function (f, i) { return '<button type="button" class="btn xs" data-floor="' + i + '" title="' + esc(f.name) + ': пол ' + fmtNum(f.floor, 2) + ' м, высоты ' + fmtNum(f.min, 2) + '…' + fmtNum(f.max, 2) + ' м">' + esc(f.name.replace(/^Этаж /, 'Эт. ')) + ' <small>' + fmtNum(f.floor, 1) + '</small></button>'; }).join('') +
         (floors.length ? '<button type="button" class="btn xs" data-act="noCeil" title="Срезать потолок выбранного этажа (15 см ниже перекрытия)">Без потолка</button>' : '<span class="bp-note">Этажи не найдены — высоты вручную</span>');
       function setView(v) { st.view = v; back.querySelectorAll('[data-view]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-view') === v); }); paint(); }
-      var mask = null, maskKey = '';
+      var mask = null, maskKey = '', areaM = null, areaKey = '';
       function curFilter() {
         var f = {};
         if (st.rect) f.rect = st.rect;
+        if (st.areas.length) f.areas = st.areas.map(function (a) { return { op: a.op, pts: a.pts.slice() }; });
         if (st.hf) f.h = st.hf;
         if (st.route) f.route = { radius: st.radius, from: st.route.from, to: st.route.to };
         if (st.noise !== 'none') f.noise = { low: { voxel: 0.15, min: 2 }, mid: { voxel: 0.1, min: 3 }, high: { voxel: 0.08, min: 5 } }[st.noise];
@@ -434,7 +521,9 @@
       function est() {
         var key = st.route ? st.radius + ':' + st.route.from + ':' + st.route.to : '';
         if (key !== maskKey) { maskKey = key; mask = st.route ? routeMaskJS(tr.route, ov.bbox, st.radius, st.route.from, st.route.to) : null; }
-        return estimate(ov.pts, total, { rect: st.rect, h: st.hf }, mask);
+        var ak = String(st._av || 0);
+        if (ak !== areaKey) { areaKey = ak; areaM = areaMaskJS(st.areas); }
+        return estimate(ov.pts, total, { rect: st.rect, h: st.hf, area: areaM }, mask);
       }
       function update() {
         var e = est(), after = e.points, load = Math.min(after, st.points);
@@ -469,11 +558,11 @@
         cx.fillStyle = '#38bdf8'; (ov.levels || []).forEach(function (l) { var x = X(l.h); cx.beginPath(); cx.moveTo(x - 4, 0); cx.lineTo(x + 4, 0); cx.lineTo(x, 6); cx.closePath(); cx.fill(); });
         cx.fillStyle = '#9aa6b8'; cx.font = '10px Inter, Arial, sans-serif'; cx.fillText(fmtNum(h0, 1) + ' м', 0, h - 1); var t1 = fmtNum(h1, 1) + ' м'; cx.fillText(t1, w - cx.measureText(t1).width, h - 1);
       }
-      var vw = null, drag = null;
+      var vw = null, drag = null, lasso = null;
       function paint() {
         var dpr = W.devicePixelRatio || 1, box = cv.parentNode.getBoundingClientRect();
         cv.width = Math.max(200, box.width) * dpr; cv.height = Math.max(200, box.height) * dpr; cv.style.width = box.width + 'px'; cv.style.height = box.height + 'px';
-        vw = drawMap(cv, ov, st, { dpr: dpr, drag: drag });
+        vw = drawMap(cv, ov, st, { dpr: dpr, drag: drag, lasso: lasso });
       }
       function setPoints(p) { st.points = Math.max(Math.min(total, MIN_POINTS), Math.min(total, Math.round(p))); range.value = String(pointsToSlider(st.points, total)); paintRange(); update(); }
       function paintRange() {
@@ -510,11 +599,39 @@
       noiseSel.addEventListener('change', function (e) { setNoise(e.target.value); });
       back.querySelectorAll('[data-noise]').forEach(function (b) { b.onclick = function () { setNoise(b.getAttribute('data-noise')); }; });
       var colorSel = q('[data-k="color"]'); colorSel.value = st.color; colorSel.addEventListener('change', function () { st.color = colorSel.value; });
-      q('[data-act="clearRect"]').onclick = function () { st.rect = null; update(); paint(); };
+      q('[data-act="clearRect"]').onclick = function () { st.rect = null; st.areas = []; st._av = (st._av || 0) + 1; syncTools(); update(); paint(); };
+      // ревизия 37: инструменты выбора области — рамка, обвести (добавить), вырезать; отмена последнего контура
+      function syncTools() {
+        back.querySelectorAll('[data-tool]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tool') === st.tool); });
+        var ub = q('[data-act="undoArea"]'); ub.disabled = !st.areas.length && !st.rect;
+        var nAdd = st.areas.filter(function (a) { return a.op === 'add'; }).length, nSub = st.areas.length - nAdd;
+        q('.bp-maphint').textContent = st.tool === 'rect' ? 'Рамка мышью — область загрузки' : st.tool === 'sub' ? 'Обведите мышью то, что не нужно загружать' : 'Обведите мышью нужное · Alt — вырезать' +
+          (st.areas.length ? ' · контуров: ' + nAdd + (nSub ? ', вырезано: ' + nSub : '') : '');
+        cv.style.cursor = 'crosshair';
+      }
+      function undoArea() { st._av = (st._av || 0) + 1; if (st.areas.length) st.areas.pop(); else if (st.rect) st.rect = null; else return; syncTools(); update(); paint(); }
+      back.querySelectorAll('[data-tool]').forEach(function (b) { b.onclick = function () { st.tool = b.getAttribute('data-tool'); syncTools(); }; });
+      q('[data-act="undoArea"]').onclick = undoArea;
       q('[data-act="clearH"]').onclick = function () { curFloor = null; fl.querySelectorAll('[data-floor]').forEach(function (x) { x.classList.remove('on'); }); setH(null); };
+      // контур мышью (обвести / вырезать): точки пути через 3 px, отпускание — замкнуть контур
+      cv.addEventListener('mousedown', function (e) {
+        if (!vw || e.button !== 0 || st.tool === 'rect') return;
+        e.preventDefault();
+        var r = cv.getBoundingClientRect(), op = st.tool === 'sub' || e.altKey ? 'sub' : 'add', lx = e.clientX, ly = e.clientY;
+        var p0 = vw.from(e.clientX - r.left, e.clientY - r.top); lasso = { op: op, pts: [p0[0], p0[1]] };
+        var mv = function (ev) { if (Math.hypot(ev.clientX - lx, ev.clientY - ly) < 3) return; lx = ev.clientX; ly = ev.clientY; var p2 = vw.from(ev.clientX - r.left, ev.clientY - r.top); lasso.pts.push(p2[0], p2[1]); paint(); };
+        var up = function () {
+          D.removeEventListener('mousemove', mv); D.removeEventListener('mouseup', up);
+          var pts = simplifyPath(lasso.pts, 0.5 / Math.max(1e-6, vw.s), 4000);
+          if (pts.length >= 6 && polyArea(pts) * vw.s * vw.s >= 60 && st.areas.length < 64) { st.areas.push({ op: lasso.op, pts: pts }); st._av = (st._av || 0) + 1; }
+          else if (st.areas.length >= 64) toast('Не больше 64 контуров — отмените лишние');
+          lasso = null; syncTools(); update(); paint();
+        };
+        D.addEventListener('mousemove', mv); D.addEventListener('mouseup', up);
+      });
       // рамка области мышью
       cv.addEventListener('mousedown', function (e) {
-        if (!vw || e.button !== 0) return;
+        if (!vw || e.button !== 0 || st.tool !== 'rect') return;
         var r = cv.getBoundingClientRect(), p = vw.from(e.clientX - r.left, e.clientY - r.top); drag = { a: p, u0: p[0], u1: p[0], v0: p[1], v1: p[1] };
         var mv = function (ev) { var p2 = vw.from(ev.clientX - r.left, ev.clientY - r.top); drag.u0 = Math.min(drag.a[0], p2[0]); drag.u1 = Math.max(drag.a[0], p2[0]); drag.v0 = Math.min(drag.a[1], p2[1]); drag.v1 = Math.max(drag.a[1], p2[1]); paint(); };
         var up = function () { D.removeEventListener('mousemove', mv); D.removeEventListener('mouseup', up); if (drag && drag.u1 - drag.u0 > 0.5 && drag.v1 - drag.v0 > 0.5) st.rect = { u0: drag.u0, u1: drag.u1, v0: drag.v0, v1: drag.v1 }; drag = null; update(); paint(); };
@@ -527,21 +644,25 @@
         back.classList.add('closing'); setTimeout(function () { if (back.parentNode) back.parentNode.removeChild(back); }, 140);
         resolve(v);
       }
-      function onKey(e) { if (e.key === 'Escape' && back.parentNode && !D.querySelector('.modal.lx-ask')) { e.preventDefault(); e.stopPropagation(); finish({ cancelled: true }); } }
+      function onKey(e) {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z' || e.key === 'я' || e.key === 'Я') && back.parentNode && !D.querySelector('.modal.lx-ask') && !/^(INPUT|SELECT|TEXTAREA)$/.test((D.activeElement || {}).tagName || '')) { e.preventDefault(); e.stopPropagation(); undoArea(); return; }
+        if (e.key === 'Escape' && lasso) { e.preventDefault(); e.stopPropagation(); lasso = null; paint(); return; }
+        if (e.key === 'Escape' && back.parentNode && !D.querySelector('.modal.lx-ask')) { e.preventDefault(); e.stopPropagation(); finish({ cancelled: true }); } }
       q('.modal-head .x').onclick = function () { finish({ cancelled: true }); };
       q('[data-act="cancel"]').onclick = function () { finish({ cancelled: true }); };
       q('[data-act="load"]').onclick = function () {
         var e = est(), f = curFilter();
         try { localStorage.setItem(LS_POINTS, String(st.points)); if (q('[data-k="dontAsk"]').checked) localStorage.setItem(LS_MODE, 'large'); } catch (_) {}
-        finish({ maxPoints: st.points >= total ? 0 : st.points, filter: f, estimate: f ? Math.max(1, e.points) : total, colorMode: st.color, view: { rect: st.rect, hf: st.hf, route: st.route, radius: st.radius, noise: st.noise } });
+        finish({ maxPoints: st.points >= total ? 0 : st.points, filter: f, estimate: f ? Math.max(1, e.points) : total, colorMode: st.color, view: { rect: st.rect, areas: st.areas, hf: st.hf, route: st.route, radius: st.radius, noise: st.noise } });
       };
       q('[data-act="plan"]').onclick = function () { planDxf(path, ov, st, paint, q('[data-act="plan"]')); };
       q('[data-act="report"]').onclick = function () { report(path, ov, cap, st, q('[data-act="report"]')); };
+      q('[data-act="bim"]').onclick = function () { if (W.CloudBimUI) W.CloudBimUI.open(path, ov, st); else toast('BIM-модель по облаку недоступна', true); };
       q('[data-act="inspect"]').onclick = function () { if (W.CloudInspectUI) W.CloudInspectUI.open(path, ov, st); else toast('Контроль геометрии недоступен', true); };
       D.addEventListener('keydown', onKey, true); W.addEventListener('resize', paint);
       D.body.appendChild(back); if (kit() && kit().hydrate) kit().hydrate(back); back.classList.add('open');
       if (ov.file.points < LARGE) { var da = q('[data-k="dontAsk"]'); if (da) da.closest('label').hidden = true; }
-      setView(st.view); setPoints(st.points); setNoise(st.noise);
+      setView(st.view); setPoints(st.points); setNoise(st.noise); syncTools();
       requestAnimationFrame(function () { paint(); paintHist(); });
       void card;
     });
@@ -553,11 +674,11 @@
     var floors = storeys(ov.levels, ov.bbox, ovRoute(ov)), floor = st && st.hf ? (floors.find(function (f) { return f.min <= st.hf.min + 0.2 && f.max >= st.hf.min; }) || floors[0]) : floors[0];
     var floorH = floor ? floor.floor : (ov.levels && ov.levels[0] ? ov.levels[0].h : (ov.bbox.core || ov.bbox).h0);
     var hasRoute = !!ovRoute(ov), fields = [];
-    if (floors.length > 1) fields.push({ key: 'which', label: 'Этажи', type: 'select', value: 'cur', options: [{ value: 'cur', label: (floor ? floor.name : 'Текущий') + ' (пол +' + fmtNum(floorH, 2) + ' м)' }, { value: 'all', label: 'Все этажи (' + floors.length + ') — в одном DXF' }] });
+    if (floors.length > 1) fields.push({ key: 'which', main: true, label: 'Этажи', type: 'select', value: 'cur', options: [{ value: 'cur', label: (floor ? floor.name : 'Текущий') + ' (пол +' + fmtNum(floorH, 2) + ' м)' }, { value: 'all', label: 'Все этажи (' + floors.length + ') — в одном DXF' }] });
     fields.push(
       { key: 'hc', label: 'Срез над полом', type: 'number', value: 1.2, step: 0.05, min: 0.2, max: 4, unit: 'м', hint: 'Выше мебели, ниже верха окон: 1,1–1,3 м' },
       { key: 'th', label: 'Толщина среза', type: 'number', value: 0.1, step: 0.01, min: 0.02, max: 0.5, unit: 'м' },
-      { key: 'units', label: 'Единицы', type: 'select', value: 'mm', options: [{ value: 'mm', label: 'миллиметры' }, { value: 'm', label: 'метры' }] },
+      { key: 'units', main: true, label: 'Единицы', type: 'select', value: 'mm', options: [{ value: 'mm', label: 'миллиметры' }, { value: 'm', label: 'метры' }] },
       { key: 'origin', label: 'Координаты', type: 'select', value: ov.file.crs || (ov.origin && ov.origin.zup && Math.abs(ov.origin.cx) > 1000) ? 'world' : 'local', options: [{ value: 'local', label: 'местные (от угла плана)' }, { value: 'world', label: 'как в облаке' }] },
       { key: 'ortho', label: 'Стены под прямым углом', type: 'checkbox', value: false },
       { key: 'furn', label: 'Убирать мебель (второй срез)', type: 'checkbox', value: true, hint: 'Колонка над срезом до 2,45 м: грани с разрывом над собой — стеллажи, шкафы, мебель под антресолью и трубами — уходят в слой A-FURN' });
@@ -671,7 +792,7 @@
     var v = viewer();
     if (pre.colorMode && v && typeof v.setColorMode === 'function') { try { v.setColorMode(pre.colorMode); } catch (_) {} }
     var parts = [];
-    if (pre.filter) { if (pre.filter.rect) parts.push('область'); if (pre.filter.h) parts.push('высоты ' + fmtNum(pre.filter.h.min, 2) + '…' + fmtNum(pre.filter.h.max, 2) + ' м'); if (pre.filter.route) parts.push('около маршрута ' + pre.filter.route.radius + ' м'); if (pre.filter.noise) parts.push('без шума'); }
+    if (pre.filter) { if (pre.filter.rect) parts.push('область'); if (pre.filter.areas && pre.filter.areas.length) parts.push(pre.filter.areas.some(function (a) { return a.op === 'sub'; }) ? 'обведённая область с вырезами' : 'обведённая область'); if (pre.filter.h) parts.push('высоты ' + fmtNum(pre.filter.h.min, 2) + '…' + fmtNum(pre.filter.h.max, 2) + ' м'); if (pre.filter.route) parts.push('около маршрута ' + pre.filter.route.radius + ' м'); if (pre.filter.noise) parts.push('без шума'); }
     W.__bimLoadInfo = { path: result.path || null, sampled: !!result.thinned || !!pre.filter || (result.total > 0 && result.count < result.total), filtered: !!pre.filter, filterText: parts.join(', '), count: result.count, total: result.total };
     try { W.dispatchEvent(new CustomEvent('bim-cloud-loaded', { detail: W.__bimLoadInfo })); } catch (_) {}
   }

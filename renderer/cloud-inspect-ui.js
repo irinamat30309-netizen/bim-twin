@@ -90,6 +90,14 @@
     if (res.floor && res.floor.defects || res.walls && res.walls.defects != null) out.push('Местные дефекты: на полу ' + nf + ', на стенах ' + nw);
     var op = res.openings && res.openings.ok ? res.openings : null;
     if (op && op.list.length) out.push('Проёмы: дверей ' + op.doors + ', окон ' + op.windows);
+    var me = res.mep && res.mep.ok ? res.mep : null;
+    if (me) {
+      var by = (me.summary && me.summary.by) || {}, nk = function (k) { return by[k] ? by[k].n : 0; };
+      out.push(me.list.length ? 'Под потолком: балок ' + nk('beam') + ', труб ' + nk('pipe') + ', коробов ' + nk('duct') + ', лотков ' + nk('tray') + (nk('rack') ? ', трасс ' + nk('rack') : '') +
+        '; низ ниже ' + fmt(me.clear, 2) + ' м — ' + me.summary.warn : 'Под потолком балок и труб не найдено');
+    }
+    if (res.classify && res.classify.ok) out.push('Классы точек записаны: ' + (res.classify.name || '') + ' (' + res.classify.written + ' точек)');
+    else if (res.classify && res.classify.message) out.push('Классы точек не записаны: ' + res.classify.message);
     return out;
   }
   // CSV (Excel): «;», десятичная запятая, BOM
@@ -130,6 +138,9 @@
       res.openings.list.forEach(function (o, i) { L.push([i + 1, KN[o.kind] || o.kind, c(o.a[0], 3), c(o.a[1], 3), c(o.b[0], 3), c(o.b[1], 3), c(o.width, 2), o.kind === 'window' ? c(o.sill, 2) : o.kind === 'door' ? '0' : '', o.head != null ? c(o.head, 2) : '', o.height != null ? c(o.height, 2) : '', o.open ? 'нет' : o.kind === 'closed' ? '' : 'есть'].join(';')); });
       L.push('');
     }
+    // ревизия 33: балки, трубы, короба, лотки
+    var MEPm = (W && W.CloudMEP) || (typeof module === 'object' && typeof require === 'function' ? (function () { try { return require('./cloud-mep.js'); } catch (_) { return null; } })() : null);
+    if (MEPm && res.mep && res.mep.ok && res.mep.list.length) { MEPm.csvRows(res.mep.list, { clear: res.mep.clear }).forEach(function (r) { L.push(r); }); L.push(''); }
     if (cmp && cmp.ok) {
       L.push('Линия проекта;Слой;Длина, м;Смещение, мм;Наибольшее, мм;Покрытие, %;Итог');
       cmp.lines.forEach(function (x, i) { L.push([i + 1, q(x.layer), c(x.length, 2), c(x.offset, 1), c(x.max, 1), c(x.cover * 100, 0), lineStatus(x, cmp.tol)].join(';')); });
@@ -152,6 +163,7 @@
   function ovRoute(ov) { var tr = ov && ov.trajectory; return tr && tr.route && tr.aligned !== false ? tr.route : null; }
   function joinPath(dir, name) { return dir ? String(dir).replace(/[\\/]+$/, '') + (String(dir).indexOf('\\') >= 0 ? '\\' : '/') + name : name; }
   var last = new Map();
+  var current = null;   // r34 — последний показанный результат (для ИИ-ассистента)
 
   async function open(path, ov, st) {
     var A = bim(), k = kit(), CI = W.CloudInspect;
@@ -167,24 +179,29 @@
       var npt = ov && ov.file && ov.file.points || 0, mins = Math.max(1, Math.round(npt * REFINE_US / 6e7));
       var srcOpts = [{ value: 'clean', label: 'Сначала очистить: сведение проходов, люди, мусор' }, { value: 'raw', label: 'Исходное облако, как есть' }];
       if (cleanInfo) srcOpts.unshift({ value: 'found', label: 'Очищенное ранее: ' + cleanInfo.name });
-      fields.push({ key: 'src', label: 'Облако для контроля', type: 'select', value: cleanInfo ? 'found' : 'clean', options: srcOpts,
+      fields.push({ key: 'src', main: true, label: 'Облако', type: 'select', value: cleanInfo ? 'found' : 'clean', options: srcOpts,
         hint: 'Очистка пишет рядом новый файл «' + stem(path) + '-inspect.las», исходник не меняется' + (npt ? '; около ' + mins + ' мин для ' + fmt(npt / 1e6, 0) + ' млн точек' : '') + '. Мусор, люди и двоение стен от дрейфа сканера иначе завышают неровность; поверхности не сглаживаются, план стен берётся по исходному облаку.' });
     }
-    if (floors.length > 1) fields.push({ key: 'floor', label: 'Этаж', type: 'select', value: String(Math.max(0, floors.indexOf(cur))), options: floors.map(function (f, i) { return { value: String(i), label: f.name + ' (пол +' + fmt(f.floor, 2) + ' м)' }; }) });
+    if (floors.length > 1) fields.push({ key: 'floor', main: true, label: 'Этаж', type: 'select', value: String(Math.max(0, floors.indexOf(cur))), options: floors.map(function (f, i) { return { value: String(i), label: f.name + ' (пол +' + fmt(f.floor, 2) + ' м)' }; }) });
     fields.push(
       { key: 'doFloor', label: 'Пол: FF/FL, уклон, рейка 2 м', type: 'checkbox', value: true },
       { key: 'floorRail', label: 'Просвет под рейкой пола', type: 'number', value: 4, step: 0.5, min: 0.5, max: 50, unit: 'мм', hint: 'СП 71.13330: стяжка, плитка — 4 мм; линолеум, паркет — 2 мм', showIf: function (v) { return v.doFloor; } },
       { key: 'doWalls', label: 'Стены: вертикаль и неровность', type: 'checkbox', value: true },
-      { key: 'cls', label: 'Класс отделки стен', type: 'select', value: 'improved', options: Object.keys(PRESETS).map(function (x) { var p = PRESETS[x]; return { value: x, label: p.label + ' — ' + p.plumbPerM + ' мм/м, до ' + p.plumbMax + ' мм, рейка ' + p.wallRail + ' мм' }; }), showIf: function (v) { return v.doWalls; } },
+      { key: 'cls', main: true, label: 'Отделка стен', type: 'select', value: 'improved', options: Object.keys(PRESETS).map(function (x) { var p = PRESETS[x]; return { value: x, label: p.label + ' — ' + p.plumbPerM + ' мм/м, до ' + p.plumbMax + ' мм, рейка ' + p.wallRail + ' мм' }; }), showIf: function (v) { return v.doWalls; } },
       { key: 'top', label: 'Проверять стены до', type: 'number', value: topDef, step: 0.05, min: 0.6, max: 12, unit: 'м над полом', showIf: function (v) { return v.doWalls; } },
       { key: 'hc', label: 'Срез для поиска стен', type: 'number', value: 1.2, step: 0.05, min: 0.3, max: 3, unit: 'м над полом' },
       { key: 'furn', label: 'Не считать мебель стенами (второй срез)', type: 'checkbox', value: true },
       { key: 'level', label: 'Выровнять облако по стенам (убрать наклон сканера)', type: 'checkbox', value: true, hint: 'Наклон находится по завалу всех стен; если он заметен, поправка вносится в вертикаль стен, уклон и FL пола' },
-      { key: 'defects', label: 'Дефекты пола и стен, проёмы с высотами', type: 'checkbox', value: true });
+      { key: 'defects', label: 'Дефекты пола и стен, проёмы с высотами', type: 'checkbox', value: true },
+      // ревизия 33: балки, трубы, короба, лотки под потолком; высота в свету; классы точек
+      { key: 'mep', label: 'Балки, трубы, короба и лотки под потолком', type: 'checkbox', value: true, hint: 'Сечение, длина и низ над полом каждого элемента; выгрузка в DXF и IFC' },
+      { key: 'clear', label: 'Наименьшая высота в свету', type: 'number', value: 2.0, step: 0.05, min: 1.5, max: 6, unit: 'м', hint: 'СП 1.13130: высота путей эвакуации в свету — не менее 2 м', showIf: function (v) { return v.mep; } });
+    if (isLas) fields.push({ key: 'classify', label: 'Записать классы точек', type: 'checkbox', value: false, showIf: function (v) { return v.mep; },
+      hint: 'Новый файл «' + stem(path) + '-classified.las» рядом с облаком: пол, стены, потолок, балки, трубы, короба, лотки, мебель, шум. Исходник не меняется' });
     if (st && st.rect) fields.push({ key: 'onlyRect', label: 'Только область с карты', type: 'checkbox', value: true });
     var v = await k.form({ title: 'Контроль геометрии', wide: true, className: 'lx-compact', okLabel: 'Проверить',
       message: (cur ? cur.name + ': пол +' + fmt(floorH, 2) + ' м' + (cur.ceiling != null ? ', перекрытие +' + fmt(cur.ceiling, 2) + ' м' : '') : 'Этажи не найдены — пол по низу облака') +
-        '. Два прохода по файлу; облако на экран не загружается.', fields: fields });
+        '.', fields: fields });
     if (!v) return null;
     if (!v.doFloor && !v.doWalls) { toast('Выберите пол или стены', true); return null; }
     var f = floors.length > 1 ? floors[+v.floor] || cur : cur || { name: 'Этаж 1', floor: floorH };
@@ -203,7 +220,8 @@
     var r;
     try {
       r = await A.cloudInspect({ path: src, frameFrom: src !== path ? path : null, level: v.level !== false, defects: v.defects !== false, openings: v.defects !== false, jobId: id, h0: h0, h1: h1, hi0: hi ? hi[0] : null, hi1: hi ? hi[1] : null, hiBands: hi ? hi[2] : null, floor: f.floor, top: top, tol: tol,
-        floorCheck: !!v.doFloor, wallCheck: !!v.doWalls, rect: v.onlyRect && st && st.rect ? st.rect : null, plan: { lowFilter: v.furn ? undefined : false } });
+        floorCheck: !!v.doFloor, wallCheck: !!v.doWalls, rect: v.onlyRect && st && st.rect ? st.rect : null, plan: { lowFilter: v.furn ? undefined : false },
+        mep: !!(v.mep || v.classify), mepTop: mepTopOf(f), clear: v.clear > 0 ? v.clear : 2, classify: !!(v.classify && v.mep && isLas) });
     } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
     finally { off(); if (act) act.done(); }
     if (!r || !r.ok) { if (!(r && r.cancelled)) toast('Контроль не выполнен: ' + ((r && r.message) || 'нет данных'), true); return null; }
@@ -212,6 +230,8 @@
     show(path, ov, r);
     return r;
   }
+  // верх поиска балок и труб: перекрытие этажа + 0,35 м (толщина плиты не нужна — нужен низ), без этажей — 4,5 м над полом
+  function mepTopOf(f) { return f && f.ceiling != null && f.ceiling > f.floor + 2 ? f.ceiling + 0.35 : (f ? f.floor : 0) + 4.5; }
   // очистка перед контролем: «Чистовая обработка» в новый файл рядом (без диалога), окно прогресса с отменой
   var REFINE_US = 2.5;   // мкс на точку: замер — 175,6 млн точек за 6,5 мин на 2 ядрах (люди, мусор, сведение проходов; без цвета и утончения)
   async function cleanFirst(A, path) {
@@ -277,7 +297,7 @@
       faces.forEach(function (f, fi) {
         var wi = byFace[fi], w = wi != null ? res.walls.walls[wi] : null, sel = wi != null && wi === S.selWall;
         ctx.strokeStyle = w ? wallColor(w, light) : (light ? 'rgba(71,85,105,0.7)' : 'rgba(148,156,168,0.6)');
-        if (mode === 'open') ctx.strokeStyle = light ? 'rgba(71,85,105,0.8)' : 'rgba(148,156,168,0.7)';
+        if (mode === 'open' || mode === 'mep') ctx.strokeStyle = light ? 'rgba(71,85,105,0.8)' : 'rgba(148,156,168,0.7)';
         ctx.lineWidth = sel ? 5 : w && mode === 'walls' ? 2.5 : 1.2;
         ctx.beginPath(); ctx.moveTo(X(f.a[0]), Y(f.a[1])); ctx.lineTo(X(f.b[0]), Y(f.b[1])); ctx.stroke();
       });
@@ -293,6 +313,7 @@
     // помещения: название и FF / уклон
     if (mode === 'open' && res.openings && res.openings.list) drawOpenings(ctx, res.openings.list, X, Y, sc, light, S.selOpen);
     if (mode === 'def') drawDefects(ctx, res, X, Y, light, S.selDef);
+    if (mode === 'mep' && res.mep && res.mep.ok) drawMep(ctx, res.mep.list, X, Y, sc, light, S.selMep);
     if (showFloor && mode !== 'def' && res.floor.rooms && sc > 6) {
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       var boxes = [];
@@ -321,6 +342,24 @@
   }
   // проёмы: дверь — зелёный, окно — голубой, без перемычки — пунктир; подпись — высота (окно: подоконник–верх)
   var KIND = { door: 'дверь', window: 'окно', closed: 'закрыт', bump: 'бугор', dip: 'впадина', bulge: 'выступ', uneven: 'неровность' };
+  // балки и трубы: повёрнутые прямоугольники по цвету типа, красная обводка — низ ниже допуска
+  var MEPC = { beam: '#d97706', pipe: '#2563eb', duct: '#16a34a', tray: '#ea580c', rack: '#7c3aed' };
+  var MEPK = { beam: 'балка', pipe: 'труба', duct: 'короб', tray: 'лоток', rack: 'трасса' };
+  function drawMep(ctx, list, X, Y, sc, light, sel) {
+    var order = list.map(function (x, i) { return i; }).sort(function (a, b) { return list[b].width - list[a].width; });
+    order.forEach(function (i) {
+      var e = list[i], hw = Math.max(e.width / 2, 1.2 / sc), nx = -Math.sin(e.th) * hw, ny = Math.cos(e.th) * hw, col = MEPC[e.kind] || '#64748b';
+      ctx.beginPath(); ctx.moveTo(X(e.a[0] + nx), Y(e.a[1] + ny)); ctx.lineTo(X(e.b[0] + nx), Y(e.b[1] + ny)); ctx.lineTo(X(e.b[0] - nx), Y(e.b[1] - ny)); ctx.lineTo(X(e.a[0] - nx), Y(e.a[1] - ny)); ctx.closePath();
+      ctx.globalAlpha = i === sel ? 0.75 : 0.4; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = e.warn ? (light ? '#b91c1c' : '#f87171') : col; ctx.lineWidth = i === sel ? 3 : e.warn ? 2.2 : 1; ctx.stroke();
+    });
+    if (sel >= 0 && list[sel]) {
+      var e = list[sel], mx = X((e.a[0] + e.b[0]) / 2), my = Y((e.a[1] + e.b[1]) / 2), M = W && W.CloudMEP, t = (MEPK[e.kind] || e.kind) + ' ' + (M ? M.sizeText(e) : '') + ', низ ' + fmt(e.clear, 2) + ' м';
+      ctx.font = '600 12px system-ui, sans-serif'; var tw = ctx.measureText(t).width;
+      ctx.fillStyle = light ? 'rgba(255,255,255,0.92)' : 'rgba(12,14,18,0.85)'; ctx.fillRect(mx + 8, my - 22, tw + 12, 18);
+      ctx.fillStyle = light ? '#0f172a' : '#e5e7eb'; ctx.textAlign = 'left'; ctx.fillText(t, mx + 14, my - 9);
+    }
+  }
   function openLabel(o) { return o.kind === 'door' ? (o.head != null ? fmt(o.head, 2) : 'без перемычки') : o.kind === 'window' ? fmt(o.sill, 2) + '–' + (o.head != null ? fmt(o.head, 2) : '…') : 'закрыт'; }
   function drawOpenings(ctx, list, X, Y, sc, light, sel) {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '600 10.5px system-ui, sans-serif';
@@ -402,17 +441,19 @@
   // ------------------------------------------------------------------ окно результатов
   function show(path, ov, res) {
     var k = kit(), back = D.createElement('div'); back.className = 'modal bp-modal ins-modal';
-    var S = { res: res, lim: {}, heat: {}, selWall: -1, selLine: -1, selDef: -1, selOpen: -1, cmp: null, dxfName: '', dxfText: '' };
+    var S = { res: res, lim: {}, heat: {}, selWall: -1, selLine: -1, selDef: -1, selOpen: -1, selMep: -1, cmp: null, dxfName: '', dxfText: '' };
     var f = res.floor, wr = res.walls, hasF = !!(f && f.ok), hasW = !!(wr && wr.ok && wr.walls.length);
     if (hasF) { S.lim.plane = limitOf(f.maps.plane); S.lim.level = limitOf(f.maps.level); }
     var secs = res.elapsed || (res.times && res.times.total / 1000) || 0;
     var sub = (res.storey ? res.storey.name + ' · ' : '') + 'пол +' + fmt(res.floorH, 2) + ' м' + (hasW ? ' · стены до +' + fmt(res.top, 2) + ' м' : '') + (res.prep ? ' · очищенное облако' : '') + ' · ' + fmt(secs, 0) + ' с';
     var defs = res._defs || (res._defs = defectList(res)), ops = res.openings && res.openings.ok ? res.openings.list : [], hasD = !!((f && f.defects) || (wr && wr.defects != null)), hasO = ops.length > 0;
+    var hasM = !!(res.mep && res.mep.ok) || !!res.classify, mepL = res.mep && res.mep.ok ? res.mep.list : [];
     var modes = [];
     if (hasF) modes.push(['plane', 'Ровность пола'], ['level', 'Уровень пола']);
     modes.push(['walls', 'Стены']);
     if (hasD) modes.push(['def', 'Дефекты']);
     if (hasO) modes.push(['open', 'Проёмы']);
+    if (hasM) modes.push(['mep', 'Балки и трубы']);
     modes.push(['dxf', 'Проект']);
     back.innerHTML =
       '<div class="modal-card bp-card ins-card" role="dialog" aria-modal="true" aria-labelledby="insTitle">' +
@@ -421,9 +462,9 @@
         '<div class="bp-over bp-tl"><div class="bp-seg" role="group" aria-label="Карта">' + modes.map(function (m) { return '<button type="button" data-mode="' + m[0] + '">' + m[1] + '</button>'; }).join('') + '</div></div>' +
         '<div class="bp-maphint">колесо — масштаб, перетаскивание — сдвиг, щелчок по стене — развёртка</div></div></div>' +
       '<div class="bp-side ins-side"><div class="bp-tabs" role="tablist">' + (hasF ? '<button type="button" data-tab="floor">Пол</button>' : '') +
-        '<button type="button" data-tab="walls">Стены</button>' + (hasD ? '<button type="button" data-tab="def">Дефекты</button>' : '') + (hasO ? '<button type="button" data-tab="open">Проёмы</button>' : '') +
+        '<button type="button" data-tab="walls">Стены</button>' + (hasD ? '<button type="button" data-tab="def">Дефекты</button>' : '') + (hasO ? '<button type="button" data-tab="open">Проёмы</button>' : '') + (hasM ? '<button type="button" data-tab="mep">Балки и трубы</button>' : '') +
         '<button type="button" data-tab="dxf">Проект</button></div>' +
-        '<div class="bp-pane" data-pane="floor"></div><div class="bp-pane" data-pane="walls" hidden></div><div class="bp-pane" data-pane="def" hidden></div><div class="bp-pane" data-pane="open" hidden></div><div class="bp-pane" data-pane="dxf" hidden></div></div></div>' +
+        '<div class="bp-pane" data-pane="floor"></div><div class="bp-pane" data-pane="walls" hidden></div><div class="bp-pane" data-pane="def" hidden></div><div class="bp-pane" data-pane="open" hidden></div><div class="bp-pane" data-pane="mep" hidden></div><div class="bp-pane" data-pane="dxf" hidden></div></div></div>' +
       '<div class="form-actions bp-actions"><button type="button" class="btn sm ghost" data-act="csv" title="Таблицы пола, стен, углов и проекта для Excel">' + ic('file-text') + ' CSV</button>' +
         '<button type="button" class="btn sm ghost" data-act="pdf" title="PDF-отчёт контроля геометрии">' + ic('clipboard-check') + ' PDF-отчёт</button>' +
         '<div class="bp-est ins-verdict"></div><button type="button" class="btn sm primary" data-act="close">Закрыть</button></div></div>';
@@ -458,6 +499,7 @@
       if (!drag) return; var d = drag; drag = null; if (d.moved) return;
       var r = cv.getBoundingClientRect(), u = view.cx + (e.clientX - r.left - r.width / 2) / view.s, v = view.cy - (e.clientY - r.top - r.height / 2) / view.s, best = -1, bd = 10 / view.s;
       if (mode === 'dxf') { if (S.cmp) { S.cmp.segs.forEach(function (s, si) { var dd = segDist(u, v, s.a, s.b); if (dd < bd) { bd = dd; best = si; } }); if (best >= 0) { S.selLine = best; fillDxf(); paint(); } } return; }
+      if (mode === 'mep') { mepL.forEach(function (x, i) { var dd = segDist(u, v, x.a, x.b) - x.width / 2; if (dd < bd) { bd = dd; best = i; } }); if (best >= 0) { S.selMep = best; mepPane(); paint(); } return; }
       if (hasW) wr.walls.forEach(function (w, wi) { var dd = segDist(u, v, w.a, w.b); if (dd < bd) { bd = dd; best = wi; } });
       if (best >= 0) { mode = 'walls'; setTab('walls'); selectWall(best); }
     }
@@ -561,6 +603,58 @@
         mode = 'open'; openPane(); paint();
       }; });
     }
+    // ---- «Балки и трубы» (ревизия 33)
+    function mepPane() {
+      var el = q('[data-pane="mep"]'); if (!el || !hasM) return;
+      var me = res.mep && res.mep.ok ? res.mep : null, M = W.CloudMEP, sm = me ? me.summary || {} : {}, by = sm.by || {}, rows = '', cl = res.classify;
+      var ord = mepL.map(function (x, i) { return i; }).sort(function (a, b) { return (mepL[b].warn ? 1 : 0) - (mepL[a].warn ? 1 : 0) || mepL[a].clear - mepL[b].clear; });
+      ord.slice(0, 300).forEach(function (i) {
+        var x = mepL[i];
+        rows += '<tr data-m="' + i + '" class="' + (x.warn ? 'bad' : '') + (i === S.selMep ? ' sel' : '') + '"><td>' + x.id + '</td><td><i class="ins-mk" style="background:' + MEPC[x.kind] + '"></i>' + esc(MEPK[x.kind] || x.kind) +
+          (x.group ? ' <i title="трубы одного пучка">п' + x.group + '</i>' : '') + '</td><td>' + esc(M ? M.sizeText(x) : '') + '</td><td>' + fmt(x.length, 1) + '</td><td' + (x.warn ? ' class="hl"' : '') + '>' + fmt(x.clear, 2) + '</td></tr>';
+      });
+      var html = '';
+      if (me) {
+        var kinds = Object.keys(MEPK).filter(function (k2) { return by[k2]; }).map(function (k2) { return MEPK[k2] + ' ' + by[k2].n + ' (' + fmt(by[k2].length, 0) + ' м)'; }).join(', ');
+        var dia = Object.keys(sm.diam || {}).map(Number).sort(function (a, b) { return a - b; }).map(function (d) { return 'Ø' + d + ' — ' + fmt(sm.diam[d], 1) + ' м'; }).join(', ');
+        var ceil = me.ceiling && me.ceiling.median === me.ceiling.median ? fmt(me.ceiling.median - res.floorH, 2) + ' м' : '—';
+        html += kpis([[String(mepL.length), 'элементов'], [mepL.length ? fmt(sm.minClear, 2) + ' м' : '—', 'наименьший низ над полом', sm.warn ? 'bad' : ''], [String(sm.warn || 0), 'ниже ' + fmt(sm.clearLim, 2) + ' м', sm.warn ? 'bad' : ''], [ceil, 'перекрытие над полом']]) +
+          '<section>' + facts([['Найдено', kinds || 'нет'], ['Трубы по диаметрам', dia || '—'], ['Время', fmt(me.seconds, 0) + ' с']]) +
+          '<div class="bp-row"><button type="button" class="btn sm" data-act="mepDxf" title="Контуры, оси и подписи по слоям S-BEAM, P-PIPE, M-DUCT, E-TRAY, P-RACK; отметки — низ элемента">' + ic('layers') + ' DXF</button>' +
+          '<button type="button" class="btn sm" data-act="mepIfc" title="IFC4: IfcBeam, IfcPipeSegment, IfcDuctSegment, IfcCableCarrierSegment — сечение, выдавленное по оси">' + ic('box') + ' IFC</button></div></section>' +
+          (rows ? '<section><h4>Элементы (ниже допуска и самые низкие сверху)</h4><table class="ins-tab ins-mep"><tr><th>№</th><th>Тип</th><th>Сечение, мм</th><th>Длина</th><th>Низ, м</th></tr>' + rows + '</table></section>' :
+            '<section><p class="bp-note">Под перекрытием ничего не найдено.</p></section>');
+      }
+      if (cl) {
+        if (cl.ok) {
+          var cc = cl.counts || {}, nm = cl.names || {}, tot = cl.written || 0;
+          html += '<section><h4>Классы точек</h4>' + facts([['Файл', cl.name || baseName(cl.path)]].concat(Object.keys(cc).map(Number).sort(function (a, b) { return a - b; }).filter(function (k2) { return cc[k2]; })
+            .map(function (k2) { return [k2 + ' — ' + (nm[k2] || ''), fmt(cc[k2] / 1e6, 2) + ' млн (' + fmt(tot ? cc[k2] / tot * 100 : 0, 1) + ' %)']; }))) + '</section>';
+        } else html += '<section><h4>Классы точек</h4><p class="bp-note">Не записаны: ' + esc(cl.message || 'ошибка') + '</p></section>';
+      }
+      html += '<section><p class="bp-note">Элементы — то, что висит под перекрытием выше ' + fmt(me && me.stats ? me.stats.minBottom : 1.9, 1) + ' м над полом и тянется вдоль осей плана не короче 1 м. ' +
+        'Сечение уточняется по точкам кусками по 1 м: трубы — по окружности нижней видимой части, короба и лотки — по нижнему профилю. «Трасса» — плотный пучок труб или кабелей, где отдельные трубы в облаке не разделяются. Низ над полом — по полу под элементом.</p></section>';
+      el.innerHTML = html;
+      el.querySelectorAll('.ins-mep tr[data-m]').forEach(function (tr) { tr.onclick = function () {
+        var i = +tr.getAttribute('data-m'), x = mepL[i]; S.selMep = i; if (view && x) { view.cx = (x.a[0] + x.b[0]) / 2; view.cy = (x.a[1] + x.b[1]) / 2; view.s = Math.max(view.s, 25); }
+        mode = 'mep'; mepPane(); paint();
+      }; });
+      var bd = el.querySelector('[data-act="mepDxf"]'), bi = el.querySelector('[data-act="mepIfc"]');
+      if (bd) bd.onclick = function () { mepExport('dxf'); };
+      if (bi) bi.onclick = function () { mepExport('ifc'); };
+    }
+    async function mepExport(ext) {
+      var A = bim(), M = W.CloudMEP; if (!A || !A.exportFile || !M) { toast('Выгрузка доступна в настольной версии', true); return; }
+      if (!mepL.length) { toast('Нет элементов для выгрузки', true); return; }
+      var org = ov && ov.origin ? ov.origin : null, text;
+      try {
+        if (ext === 'dxf') { if (!W.DXF) { toast('Модуль DXF не загружен', true); return; } text = W.DXF.toDxf(M.toDxfEntities(mepL, { origin: org })); }
+        else text = M.toIfc(mepL, { origin: org, name: stem(path), storey: res.floorH, storeyName: res.storey && res.storey.name });
+      } catch (e) { toast('Ошибка выгрузки: ' + ((e && e.message) || e), true); return; }
+      var dirs = A.projectFolder ? await A.projectFolder('get') : null, name = stem(path) + '-балки-трубы.' + ext;
+      var sv = await A.exportFile({ text: text, ext: ext, name: dirs && dirs.ok ? joinPath(dirs.exports || dirs.reports, name) : name, title: ext === 'dxf' ? 'Сохранить балки и трубы в DXF' : 'Сохранить балки и трубы в IFC', filterName: ext === 'dxf' ? 'DXF' : 'IFC4' });
+      if (sv && sv.ok) toast('Готово: ' + baseName(sv.path)); else if (!(sv && sv.canceled)) toast('Не удалось сохранить ' + ext.toUpperCase(), true);
+    }
     // ---- «Проект»
     var dxfOpt = { units: 'auto', align: 'auto', tol: 20 };
     function fillDxf() {
@@ -636,13 +730,25 @@
     q('.modal-head .x').onclick = close; q('[data-act="close"]').onclick = close;
     D.addEventListener('keydown', onKey, true); W.addEventListener('resize', paint);
     D.body.appendChild(back); if (k && k.hydrate) k.hydrate(back); back.classList.add('open');
-    wallsPane(); defPane(); openPane(); fillDxf(); setTab(hasF ? 'floor' : 'walls');
+    wallsPane(); defPane(); openPane(); mepPane(); fillDxf(); setTab(hasF ? 'floor' : 'walls');
     if (hasW && !hasF) selectWall(order[0]);
     requestAnimationFrame(paint);
     S.paint = paint; S.setMode = setMode; S.close = close;
     S.selectWall = function (i) { mode = 'walls'; setTab('walls'); selectWall(i, true); };
     S.compareText = function (text, name, opt) { S.dxfText = text; S.dxfName = name || 'проект.dxf'; if (opt) Object.assign(dxfOpt, opt); compare(true); };
     S.reportData = function () { return reportData(S, path); };
+    // r34 — для ИИ-ассистента: выгрузка теми же кнопками, показ вкладки, стены и строки списка
+    S.isOpen = function () { return !done; };
+    S.exportCsv = function () { return q('[data-act="csv"]').onclick(); };
+    S.exportPdf = function () { return q('[data-act="pdf"]').onclick(); };
+    S.exportMep = function (ext) { return hasM ? mepExport(ext === 'ifc' ? 'ifc' : 'dxf') : null; };
+    S.showTab = function (t) { if (!back.querySelector('[data-tab="' + t + '"]')) return false; if (t === 'floor') setMode('plane'); else setMode(t); return true; };
+    S.selectItem = function (t, n) {
+      var key = { def: 'd', open: 'o', mep: 'm' }[t]; if (!key || !S.showTab(t)) return false;
+      var tr = back.querySelector('[data-pane="' + t + '"] [data-' + key + '="' + (Math.round(n) - 1) + '"]');
+      if (!tr) return false; tr.click(); if (tr.scrollIntoView) tr.scrollIntoView({ block: 'nearest' }); return true;
+    };
+    current = { path: path, ov: ov, res: res, S: S };
     return S;
   }
   // данные для PDF (CloudReport.inspect): карты в светлой теме, развёртки худших стен, таблицы
@@ -655,6 +761,7 @@
     if (res.walls && res.walls.ok && res.walls.walls.length) maps.push({ title: 'Стены: зелёный — в допуске, жёлтый — неровность, красный — вертикаль', src: mapImage(S, 'walls', 1400) });
     if (res._defs && res._defs.length && res.floor && res.floor.ok) maps.push({ title: 'Местные дефекты: красный — бугор или выступ, синий — впадина; круг — пол, квадрат — стена', src: mapImage(S, 'def', 1400) });
     if (res.openings && res.openings.ok && res.openings.list.length) maps.push({ title: 'Проёмы: зелёный — дверь (подпись — высота, м), голубой — окно (низ–верх, м), пунктир — без перемычки или закрыт', src: mapImage(S, 'open', 1400) });
+    if (res.mep && res.mep.ok && res.mep.list.length) maps.push({ title: 'Балки и трубы под потолком: янтарный — балка, синий — труба, зелёный — короб, оранжевый — лоток, фиолетовый — трасса; красная обводка — низ ниже ' + fmt(res.mep.clear || 2, 2) + ' м', src: mapImage(S, 'mep', 1400) });
     if (S.cmp) maps.push({ title: 'Облако против проекта: цвет точек — расстояние до линии проекта; синий — совпадает, жёлтый — смещена, красный пунктир — нет в облаке', src: mapImage(S, 'dxf', 1400) });
     if (res.walls && res.walls.ok) res.walls.walls.map(function (w, i) { return i; }).filter(function (i) { return !res.walls.walls[i].ok; })
       .sort(function (a, b) { return res.walls.walls[b].lean - res.walls.walls[a].lean; }).slice(0, 6).forEach(function (i) {
@@ -665,5 +772,8 @@
       verdict: verdict(res), cls: PRESETS[res.cls] ? PRESETS[res.cls].label : '' };
   }
 
-  return Object.assign({}, pure, { open: open, show: show, last: function (p) { return last.get(p) || null; }, _draw: { drawMap: drawMap, fitView: fitView, mapImage: mapImage } });
+  // r34 — текущий результат и повторное открытие окна (если закрыто)
+  function cur() { return current; }
+  function reopen() { if (!current) return null; if (current.S && current.S.isOpen && current.S.isOpen()) return current.S; return show(current.path, current.ov, current.res); }
+  return Object.assign({}, pure, { open: open, show: show, current: cur, reopen: reopen, last: function (p) { return last.get(p) || null; }, _draw: { drawMap: drawMap, fitView: fitView, mapImage: mapImage } });
 });

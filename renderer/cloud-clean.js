@@ -15,6 +15,26 @@
   var KAPPA = 1.3;                  // средняя площадь поверхности в ячейке = KAPPA·h² (плоскость под произвольным углом)
   var CMIN = 10;                    // минимум точек в ячейке для надёжной оценки плотности
 
+  // наименьшее собственное значение симметричной 3×3 (тригонометрическая формула)
+  function minEig3(a, b, c, d, e, f) {   // [[a,b,c],[b,d,e],[c,e,f]]
+    var p1 = b * b + c * c + e * e, q = (a + d + f) / 3;
+    if (p1 < 1e-30) return Math.min(a, d, f);
+    var p2 = (a - q) * (a - q) + (d - q) * (d - q) + (f - q) * (f - q) + 2 * p1, p = Math.sqrt(p2 / 6);
+    var B0 = (a - q) / p, B1 = b / p, B2 = c / p, B3 = (d - q) / p, B4 = e / p, B5 = (f - q) / p;
+    var r = (B0 * (B3 * B5 - B4 * B4) - B1 * (B1 * B5 - B4 * B2) + B2 * (B1 * B4 - B3 * B2)) / 2;
+    var phi = r <= -1 ? Math.PI / 3 : (r >= 1 ? 0 : Math.acos(r) / 3);
+    return q + 2 * p * Math.cos(phi + 2 * Math.PI / 3);
+  }
+  // единичный вектор ядра вырожденной симметричной 3×3 (M − λI): наибольшее из векторных произведений строк
+  function nullVec3(a, b, c, d, e, f) {
+    var r0 = [a, b, c], r1 = [b, d, e], r2 = [c, e, f], best = null, bn = -1;
+    [[r0, r1], [r0, r2], [r1, r2]].forEach(function (pr) {
+      var u = pr[0], v = pr[1], x = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]], nn = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+      if (nn > bn) { bn = nn; best = x; }
+    });
+    if (!(bn > 1e-40)) return [0, 0, 1];
+    var L = Math.sqrt(bn); return [best[0] / L, best[1] / L, best[2] / L];
+  }
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
   function prog(ctl, f, l) { if (ctl && typeof ctl.progress === 'function') ctl.progress(f, l); }
   function run(gen) { var r; do { r = gen.next(); } while (!r.done); return r.value; }
@@ -955,9 +975,216 @@
   }
   function autoClean(pos, n, opt, ctl) { return run(autoCleanGen(pos, n, opt, ctl)); }
 
+  // ---------------------------------------------------------------- чистка «до мелочей» (ревизия 42)
+  /**
+   * Всё, что делает автоочистка (шум, люди, выравнивание плоскостей, «волоски»), и то, что она оставляет:
+   *   • точки с неверными координатами (NaN, бесконечность) и точные дубли — совмещённые или повторно выгруженные сканы (сетка dupTol, 1 мм);
+   *   • «летающие» обрывки среднего размера — отдельные сгустки до fragMax (0,6 м) и fragPts (2000) точек, отделённые от остального
+   *     облака пустотой не меньше двух клеток связности; плотный предмет больше 400 точек (светильник, датчик) остаётся, если он не
+   *     реже 35 % обычной плотности облака, — уходят «туман», отражения в стёклах, пыль в воздухе;
+   *   • далёкие выбросы — небольшие группы точек за устойчивой рамкой облака (лучи в небо, блики), вместе меньше 1 % точек.
+   *   • (opt.micro, ревизия 43) одиночные точки и пары в пустоте — в кубе 3×3×3 клетки по 2,5 шага не больше microMax (2) точек.
+   * opt: как у autoClean (level по умолчанию 'strong') + dupes, fragments, far (bool, по умолчанию да), micro (нет), dupTol, fragMax, fragPts, cell, microCell, microMax.
+   * Возврат: как у autoClean — { remove, removed, count, pos, stats: { … , invalid, dupes, fragments, fragmentGroups, far } }.
+   */
+  function* deepCleanGen(pos, n, opt, ctl) {
+    opt = opt || {}; n = n | 0;
+    var i, k, gone = new Uint8Array(n), st = { invalid: 0, dupes: 0, fragments: 0, fragmentGroups: 0, far: 0 };
+    var w = [0.1, 0.7, 0.2], base = 0;
+    function sub(a, b) { return { progress: function (f, l) { prog(ctl, a + (b - a) * f, l); } }; }
+    // 1) неверные координаты и дубли
+    prog(ctl, 0, 'Дубли и неверные точки…'); yield 0;
+    var mnx = Infinity, mny = Infinity, mnz = Infinity;
+    for (i = 0; i < n; i++) {
+      var x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+      if ((x - x) + (y - y) + (z - z) !== 0) { gone[i] = 1; st.invalid++; continue; }
+      if (x < mnx) mnx = x; if (y < mny) mny = y; if (z < mnz) mnz = z;
+    }
+    if (opt.dupes !== false && n > 1 && n <= 40e6) {
+      var q = opt.dupTol > 0 ? +opt.dupTol : 0.001, cap = 1 << 12; while (cap < n * 2) cap <<= 1;
+      var tab = new Uint32Array(cap), mask = cap - 1;
+      for (i = 0; i < n; i++) {
+        if (gone[i]) continue;
+        var ix = Math.floor((pos[i * 3] - mnx) / q), iy = Math.floor((pos[i * 3 + 1] - mny) / q), iz = Math.floor((pos[i * 3 + 2] - mnz) / q);
+        var s = hash3(ix, iy, iz) & mask;
+        for (;;) {
+          var t = tab[s];
+          if (t === 0) { tab[s] = i + 1; break; }
+          var j = t - 1;
+          if (Math.floor((pos[j * 3] - mnx) / q) === ix && Math.floor((pos[j * 3 + 1] - mny) / q) === iy && Math.floor((pos[j * 3 + 2] - mnz) / q) === iz) { gone[i] = 1; st.dupes++; break; }
+          s = (s + 1) & mask;
+        }
+        if ((i & 1048575) === 0 && i) { prog(ctl, w[0] * i / n, 'Дубли…'); yield 0; }
+      }
+      tab = null;
+    }
+    base = w[0];
+    // 2) автоочистка по оставшимся точкам
+    var kept = 0; for (i = 0; i < n; i++) if (!gone[i]) kept++;
+    var map = new Uint32Array(kept), cp = new Float32Array(kept * 3);
+    for (i = 0, k = 0; i < n; i++) if (!gone[i]) { cp[k * 3] = pos[i * 3]; cp[k * 3 + 1] = pos[i * 3 + 1]; cp[k * 3 + 2] = pos[i * 3 + 2]; map[k++] = i; }
+    var aopt = Object.assign({}, opt, { level: opt.level || 'strong' });
+    var A = kept ? yield* autoCleanGen(cp, kept, aopt, sub(base, base + w[1])) : { remove: new Uint32Array(0), pos: cp, stats: {} };
+    base += w[1];
+    var out = new Float32Array(pos);
+    var gone2 = new Uint8Array(kept);
+    for (k = 0; k < A.remove.length; k++) gone2[A.remove[k]] = 1;
+    for (k = 0; k < kept; k++) { var o = map[k] * 3; out[o] = A.pos[k * 3]; out[o + 1] = A.pos[k * 3 + 1]; out[o + 2] = A.pos[k * 3 + 2]; }
+    // 3) обрывки и далёкие выбросы — связность по клеткам оставшихся точек
+    if ((opt.fragments !== false || opt.far !== false) && kept > 100) {
+      prog(ctl, base, 'Летающие обрывки…'); yield 0;
+      var P = A.pos, m = 0, bx0 = Infinity, by0 = Infinity, bz0 = Infinity, bx1 = -Infinity, by1 = -Infinity, bz1 = -Infinity;
+      for (k = 0; k < kept; k++) if (!gone2[k]) { m++; var X = P[k * 3], Y = P[k * 3 + 1], Z = P[k * 3 + 2]; if (X < bx0) bx0 = X; if (X > bx1) bx1 = X; if (Y < by0) by0 = Y; if (Y > by1) by1 = Y; if (Z < bz0) bz0 = Z; if (Z > bz1) bz1 = Z; }
+      var sp = CP && CP.estimate ? CP.estimate(P, kept).spacing : 0.01;
+      var v = opt.cell > 0 ? +opt.cell : Math.max(0.04, 3 * (sp || 0.01));
+      var dims = Math.max(bx1 - bx0, by1 - by0, bz1 - bz0);
+      while (dims / v > 2e6) v *= 2;
+      var NY = Math.floor((by1 - by0) / v) + 4, NZ = Math.floor((bz1 - bz0) / v) + 4;
+      var CM = new CellMap(NY, NZ, Math.min(m, 1 << 22)), cell = new Int32Array(kept).fill(-1);
+      for (k = 0; k < kept; k++) if (!gone2[k]) cell[k] = CM.add(Math.floor((P[k * 3] - bx0) / v) + 1, Math.floor((P[k * 3 + 1] - by0) / v) + 1, Math.floor((P[k * 3 + 2] - bz0) / v) + 1, 1);
+      var nc = CM.n, par = new Int32Array(nc);
+      for (i = 0; i < nc; i++) par[i] = i;
+      var root = function (a) { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; };
+      var R2 = 2, dx, dy, dz;
+      for (i = 0; i < nc; i++) {
+        var cx = CM.cx[i], cy = CM.cy[i], cz = CM.cz[i];
+        for (dx = 0; dx <= R2; dx++) for (dy = -R2; dy <= R2; dy++) for (dz = -R2; dz <= R2; dz++) {
+          if (dx === 0 && (dy < 0 || (dy === 0 && dz <= 0))) continue;
+          var nb = CM.find(cx + dx, cy + dy, cz + dz);
+          if (nb >= 0) { var ra = root(i), rb = root(nb); if (ra !== rb) { if (ra < rb) par[rb] = ra; else par[ra] = rb; } }
+        }
+        if ((i & 262143) === 0 && i) { prog(ctl, base + w[2] * 0.6 * i / nc, 'Летающие обрывки…'); yield 0; }
+      }
+      // размеры групп: точки, клетки, рамка в клетках
+      var gid = new Int32Array(nc), ng = 0;
+      for (i = 0; i < nc; i++) { var rr = root(i); gid[i] = rr === i ? ng++ : -1; }
+      for (i = 0; i < nc; i++) if (gid[i] < 0) gid[i] = gid[root(i)];
+      var gp = new Float64Array(ng), gc = new Int32Array(ng), g0 = new Int32Array(ng * 3).fill(1 << 30), g1 = new Int32Array(ng * 3).fill(-1);
+      for (i = 0; i < nc; i++) {
+        var g = gid[i]; gp[g] += CM.cnt[i]; gc[g]++;
+        var a3 = [CM.cx[i], CM.cy[i], CM.cz[i]];
+        for (var t3 = 0; t3 < 3; t3++) { if (a3[t3] < g0[g * 3 + t3]) g0[g * 3 + t3] = a3[t3]; if (a3[t3] > g1[g * 3 + t3]) g1[g * 3 + t3] = a3[t3]; }
+      }
+      var big = 0; for (i = 1; i < ng; i++) if (gp[i] > gp[big]) big = i;
+      var ppc = gc[big] ? gp[big] / gc[big] : 1;   // обычная плотность — точек на клетку в главной группе
+      var fragMax = opt.fragMax > 0 ? +opt.fragMax : 0.6, fragPts = opt.fragPts > 0 ? +opt.fragPts : 2000;
+      // устойчивая рамка облака (0,2–99,8 %) с запасом: дальше — выбросы
+      var qs = function (ax) { var mm = Math.min(m, 20000), stp = kept / mm, arr = []; for (var u = 0; u < mm; u++) { var kk = Math.min(kept - 1, Math.floor(u * stp)); if (!gone2[kk]) arr.push(P[kk * 3 + ax]); } arr.sort(function (p1, p2) { return p1 - p2; }); return [arr[Math.floor(arr.length * 0.002)], arr[Math.floor(arr.length * 0.998)]]; };
+      var QB = [qs(0), qs(1), qs(2)], lo = [], hi = [];
+      for (var ax = 0; ax < 3; ax++) { var ext = Math.max(2, 0.25 * (QB[ax][1] - QB[ax][0])); lo.push(QB[ax][0] - ext); hi.push(QB[ax][1] + ext); }
+      var org = [bx0, by0, bz0], drop = new Uint8Array(ng), farCount = 0;
+      for (g = 0; g < ng; g++) {
+        if (g === big) continue;
+        var ext2 = Math.max(g1[g * 3] - g0[g * 3], g1[g * 3 + 1] - g0[g * 3 + 1], g1[g * 3 + 2] - g0[g * 3 + 2]) + 1;
+        var out3 = false;
+        for (ax = 0; ax < 3; ax++) { var c0 = org[ax] + (g0[g * 3 + ax] - 1) * v, c1 = org[ax] + g1[g * 3 + ax] * v; if (c0 > hi[ax] || c1 < lo[ax]) out3 = true; }
+        if (opt.far !== false && out3 && gp[g] < 0.01 * m) { drop[g] = 2; farCount += gp[g]; continue; }
+        if (opt.fragments !== false && ext2 * v <= fragMax && gp[g] <= fragPts && (gp[g] <= 400 || gp[g] / gc[g] < 0.35 * ppc)) drop[g] = 1;
+      }
+      // ревизия 44: редкая поверхность (дальняя стена, панель забора, стрела крана) на мелких клетках рассыпается на десятки
+      // «обрывков». Проверка втрое крупнее: обрывок остаётся, если вместе с соседними группами он образует большую группу или
+      // примыкает к основному облаку; удаляется только то, что отделено пустотой и на этом масштабе (отражения, «пыль» в воздухе).
+      var nDrop = 0; for (g = 0; g < ng; g++) if (drop[g] === 1) nDrop++;
+      if (nDrop) {
+        var V3 = 3 * v, CM3 = new CellMap(Math.floor((by1 - by0) / V3) + 4, Math.floor((bz1 - bz0) / V3) + 4, Math.min(m, 1 << 21)), cel3 = new Int32Array(nc);
+        for (i = 0; i < nc; i++) cel3[i] = CM3.add(Math.floor((CM.cx[i] - 1) / 3) + 1, Math.floor((CM.cy[i] - 1) / 3) + 1, Math.floor((CM.cz[i] - 1) / 3) + 1, CM.cnt[i]);
+        var n3 = CM3.n, par3 = new Int32Array(n3); for (i = 0; i < n3; i++) par3[i] = i;
+        var root3 = function (a) { while (par3[a] !== a) { par3[a] = par3[par3[a]]; a = par3[a]; } return a; };
+        for (i = 0; i < n3; i++) for (dx = 0; dx <= 1; dx++) for (dy = -1; dy <= 1; dy++) for (dz = -1; dz <= 1; dz++) {
+          if (dx === 0 && (dy < 0 || (dy === 0 && dz <= 0))) continue;
+          var nb3 = CM3.find(CM3.cx[i] + dx, CM3.cy[i] + dy, CM3.cz[i] + dz);
+          if (nb3 >= 0) { var r1 = root3(i), r2 = root3(nb3); if (r1 !== r2) { if (r1 < r2) par3[r2] = r1; else par3[r1] = r2; } }
+        }
+        var p3 = new Float64Array(n3), a0 = new Int32Array(n3 * 3).fill(1 << 30), a1 = new Int32Array(n3 * 3).fill(-1), hasBig = new Uint8Array(n3);
+        for (i = 0; i < n3; i++) { var q3 = root3(i), b3 = [CM3.cx[i], CM3.cy[i], CM3.cz[i]]; p3[q3] += CM3.cnt[i]; for (var t4 = 0; t4 < 3; t4++) { if (b3[t4] < a0[q3 * 3 + t4]) a0[q3 * 3 + t4] = b3[t4]; if (b3[t4] > a1[q3 * 3 + t4]) a1[q3 * 3 + t4] = b3[t4]; } }
+        for (i = 0; i < nc; i++) if (gid[i] === big) hasBig[root3(cel3[i])] = 1;
+        for (i = 0; i < nc; i++) {
+          if (drop[gid[i]] !== 1) continue; var q4 = root3(cel3[i]);
+          var e3 = Math.max(a1[q4 * 3] - a0[q4 * 3], a1[q4 * 3 + 1] - a0[q4 * 3 + 1], a1[q4 * 3 + 2] - a0[q4 * 3 + 2]) + 1;
+          if (hasBig[q4] || e3 * V3 > 1.5 * fragMax || p3[q4] > fragPts) drop[gid[i]] = 0;
+        }
+      }
+      for (k = 0; k < kept; k++) {
+        if (gone2[k] || cell[k] < 0) continue;
+        var dg = drop[gid[cell[k]]];
+        if (dg) { gone2[k] = 1; if (dg === 2) st.far++; else st.fragments++; }
+      }
+      for (g = 0; g < ng; g++) if (drop[g] === 1) st.fragmentGroups++;
+    }
+    // 4) r43: «самые мелкие» — одиночные точки и пары в пустоте (в кубе 3×3×3 клетки по 2,5 шага вокруг точки не больше microMax точек)
+    if (opt.micro && kept > 100) {
+      prog(ctl, 0.97, 'Одиночные точки…'); yield 0;
+      var PM = A.pos, mm2 = 0, ax0 = Infinity, ay0 = Infinity, az0 = Infinity, ay1 = -Infinity, az1 = -Infinity;
+      for (k = 0; k < kept; k++) if (!gone2[k]) { mm2++; if (PM[k * 3] < ax0) ax0 = PM[k * 3]; if (PM[k * 3 + 1] < ay0) ay0 = PM[k * 3 + 1]; if (PM[k * 3 + 1] > ay1) ay1 = PM[k * 3 + 1]; if (PM[k * 3 + 2] < az0) az0 = PM[k * 3 + 2]; if (PM[k * 3 + 2] > az1) az1 = PM[k * 3 + 2]; }
+      var spm = CP && CP.estimate ? CP.estimate(PM, kept).spacing : 0.01;
+      var vm = opt.microCell > 0 ? +opt.microCell : Math.max(0.006, 2.5 * (spm || 0.01));
+      if (mm2 > 15e6) vm *= 1.5;
+      while (Math.max(ay1 - ay0, az1 - az0) / vm > 4e6) vm *= 2;
+      var MY = Math.floor((ay1 - ay0) / vm) + 4, MZ = Math.floor((az1 - az0) / vm) + 4;
+      var CMm = new CellMap(MY, MZ, Math.min(mm2, 1 << 22)), cellm = new Int32Array(kept).fill(-1);
+      for (k = 0; k < kept; k++) if (!gone2[k]) cellm[k] = CMm.add(Math.floor((PM[k * 3] - ax0) / vm) + 1, Math.floor((PM[k * 3 + 1] - ay0) / vm) + 1, Math.floor((PM[k * 3 + 2] - az0) / vm) + 1, 1);
+      var microMax = opt.microMax > 0 ? +opt.microMax : 2, nbm = new Float64Array(CMm.n).fill(-1);
+      var cand2 = new Uint8Array(kept);
+      st.micro = 0;
+      for (k = 0; k < kept; k++) {
+        var cm = cellm[k]; if (cm < 0) continue;
+        if (nbm[cm] < 0) {
+          var sum = 0, qx = CMm.cx[cm], qy = CMm.cy[cm], qz = CMm.cz[cm];
+          for (var ex = -1; ex <= 1 && sum <= microMax; ex++) for (var ey = -1; ey <= 1 && sum <= microMax; ey++) for (var ez = -1; ez <= 1; ez++) { var f3 = CMm.find(qx + ex, qy + ey, qz + ez); if (f3 >= 0) sum += CMm.cnt[f3]; }
+          nbm[cm] = sum;
+        }
+        if (nbm[cm] <= microMax) cand2[k] = 1;
+        if ((k & 1048575) === 0 && k) { prog(ctl, 0.97 + 0.02 * k / kept, 'Одиночные точки…'); yield 0; }
+      }
+      // ревизия 44: «одиночка» на поверхности — не мусор. На редкой дальней поверхности (стрела экскаватора, кабина, дальняя
+      // стена: шаг в 3–5 раз больше среднего) точки одиноки на мелком масштабе, но лежат на поверхности, которую задают все точки
+      // куба в 5 раз крупнее. Удаляется кандидат вдали от такой поверхности (пыль в 5–10 см перед стеной) или в полной пустоте.
+      var vc = 5 * vm, tolMin = Math.max(0.25 * vm, 0.008), CMc = new CellMap(Math.floor((ay1 - ay0) / vc) + 4, Math.floor((az1 - az0) / vc) + 4, Math.min(mm2, 1 << 21)), cellc = new Int32Array(kept).fill(-1);
+      for (k = 0; k < kept; k++) if (!gone2[k]) cellc[k] = CMc.add(Math.floor((PM[k * 3] - ax0) / vc) + 1, Math.floor((PM[k * 3 + 1] - ay0) / vc) + 1, Math.floor((PM[k * 3 + 2] - az0) / vc) + 1, 1);
+      var MOM = new Float64Array(CMc.n * 9), PL = new Float64Array(CMc.n * 7).fill(NaN);   // PL: центр (3), нормаль (3), допуск
+      var rel = function (k2, c2, o3) { return [PM[k2 * 3] - ax0 - (CMc.cx[c2] - 1) * vc, PM[k2 * 3 + 1] - ay0 - (CMc.cy[c2] - 1) * vc, PM[k2 * 3 + 2] - az0 - (CMc.cz[c2] - 1) * vc]; };
+      for (k = 0; k < kept; k++) {
+        var c9 = cellc[k]; if (c9 < 0) continue; var R3 = rel(k, c9), o9 = c9 * 9, X0 = R3[0], Y0 = R3[1], Z0 = R3[2];
+        MOM[o9] += X0; MOM[o9 + 1] += Y0; MOM[o9 + 2] += Z0; MOM[o9 + 3] += X0 * X0; MOM[o9 + 4] += X0 * Y0; MOM[o9 + 5] += X0 * Z0; MOM[o9 + 6] += Y0 * Y0; MOM[o9 + 7] += Y0 * Z0; MOM[o9 + 8] += Z0 * Z0;
+      }
+      for (k = 0; k < kept; k++) {
+        if (!cand2[k]) continue; var cc = cellc[k], g7 = cc * 7;
+        if (PL[g7] !== PL[g7]) {   // NaN — ещё не считали
+          var N = 0, S9 = [0, 0, 0, 0, 0, 0, 0, 0, 0], px = CMc.cx[cc], py = CMc.cy[cc], pz = CMc.cz[cc];
+          for (var fx = -1; fx <= 1; fx++) for (var fy = -1; fy <= 1; fy++) for (var fz = -1; fz <= 1; fz++) {
+            var f4 = CMc.find(px + fx, py + fy, pz + fz); if (f4 < 0) continue; var m4 = CMc.cnt[f4], q9 = f4 * 9, ox = fx * vc, oy = fy * vc, oz = fz * vc;
+            S9[0] += MOM[q9] + m4 * ox; S9[1] += MOM[q9 + 1] + m4 * oy; S9[2] += MOM[q9 + 2] + m4 * oz;   // перенос в систему текущей ячейки
+            S9[3] += MOM[q9 + 3] + 2 * ox * MOM[q9] + m4 * ox * ox; S9[4] += MOM[q9 + 4] + ox * MOM[q9 + 1] + oy * MOM[q9] + m4 * ox * oy;
+            S9[5] += MOM[q9 + 5] + ox * MOM[q9 + 2] + oz * MOM[q9] + m4 * ox * oz; S9[6] += MOM[q9 + 6] + 2 * oy * MOM[q9 + 1] + m4 * oy * oy;
+            S9[7] += MOM[q9 + 7] + oy * MOM[q9 + 2] + oz * MOM[q9 + 1] + m4 * oy * oz; S9[8] += MOM[q9 + 8] + 2 * oz * MOM[q9 + 2] + m4 * oz * oz;
+            N += m4;
+          }
+          PL[g7 + 6] = -1;   // пустота: опоры нет
+          if (N >= 6) {
+            var mx9 = S9[0] / N, my9 = S9[1] / N, mz9 = S9[2] / N, a1 = S9[3] / N - mx9 * mx9, b1 = S9[4] / N - mx9 * my9, c1 = S9[5] / N - mx9 * mz9, d1 = S9[6] / N - my9 * my9, e1 = S9[7] / N - my9 * mz9, f1 = S9[8] / N - mz9 * mz9;
+            var l3 = minEig3(a1, b1, c1, d1, e1, f1), nv = nullVec3(a1 - l3, b1, c1, d1 - l3, e1, f1 - l3);
+            PL[g7] = mx9; PL[g7 + 1] = my9; PL[g7 + 2] = mz9; PL[g7 + 3] = nv[0]; PL[g7 + 4] = nv[1]; PL[g7 + 5] = nv[2];
+            PL[g7 + 6] = Math.max(tolMin, 2.5 * Math.sqrt(Math.max(0, l3)));
+          }
+        }
+        var R4 = rel(k, cc), dpl = PL[g7 + 6] > 0 ? Math.abs((R4[0] - PL[g7]) * PL[g7 + 3] + (R4[1] - PL[g7 + 1]) * PL[g7 + 4] + (R4[2] - PL[g7 + 2]) * PL[g7 + 5]) : Infinity;
+        if (!(dpl < PL[g7 + 6])) { gone2[k] = 1; st.micro++; }
+      }
+      MOM = null; PL = null;
+    }
+    prog(ctl, 1, 'Готово');
+    for (k = 0; k < kept; k++) if (gone2[k]) gone[map[k]] = 1;
+    var cnt = 0; for (i = 0; i < n; i++) if (gone[i]) cnt++;
+    var rem = new Uint32Array(cnt), r0 = 0; for (i = 0; i < n; i++) if (gone[i]) rem[r0++] = i;
+    var stats = Object.assign({}, A.stats || {}, st);
+    stats.removed = cnt;
+    return { remove: rem, removed: cnt, count: n, pos: out, stats: stats };
+  }
+  function deepClean(pos, n, opt, ctl) { return run(deepCleanGen(pos, n, opt, ctl)); }
+
   /** Декодирует код 0..255 в шаг, м. */
   function decodeSpacing(code, sMin, sMax) { return sMin * Math.pow(sMax / sMin, code / 255); }
 
-  return { spacingGen: spacingGen, spacingModelGen: spacingModelGen, spacingCodes: spacingCodes, spacingField: spacingField, decodeSpacing: decodeSpacing, denoiseGen: denoiseGen, denoise: denoise, DENOISE_PRESETS: DENOISE_PRESETS, peopleGen: peopleGen, people: people, peopleV2Gen: peopleV2Gen, autoCleanGen: autoCleanGen, autoClean: autoClean, PEOPLE_LEVELS: PEOPLE_LEVELS, run: run,
+  return { spacingGen: spacingGen, spacingModelGen: spacingModelGen, spacingCodes: spacingCodes, spacingField: spacingField, decodeSpacing: decodeSpacing, denoiseGen: denoiseGen, denoise: denoise, DENOISE_PRESETS: DENOISE_PRESETS, peopleGen: peopleGen, people: people, peopleV2Gen: peopleV2Gen, autoCleanGen: autoCleanGen, autoClean: autoClean, deepCleanGen: deepCleanGen, deepClean: deepClean, PEOPLE_LEVELS: PEOPLE_LEVELS, run: run,
     _internal: { CellMap: CellMap, hash3: hash3, robustBox: robustBox } };
 });
