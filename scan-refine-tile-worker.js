@@ -17,9 +17,10 @@ function makeCtx(d) {
     }
     corr = require('./pass-align-core').makeCorrector(d.alignSol, poseAt);
   }
-  if (d.cbSol) cfix = require('./color-balance-core').makeColorFix(d.cbSol);
+  let tfix = null;
+  if (d.cbSol) { const CB = require('./color-balance-core'), late = !d.opt || d.opt.toneLate !== false; cfix = CB.makeColorFix(d.cbSol, { noTone: late }); if (late) tfix = CB.makeToneFix(d.cbSol); }
   if (d.dynSets && d.dynSets.length) DV = require('./renderer/dynamic-voxels').buildMany(d.dynSets);
-  return { H: d.H, RS: d.RS, CS: d.CS, x0: d.x0, y0: d.y0, c16: d.c16, opt: d.opt, corr, cfix, DV };
+  return { H: d.H, RS: d.RS, CS: d.CS, x0: d.x0, y0: d.y0, c16: d.c16, opt: d.opt, corr, cfix, DV, tfix };
 }
 
 /** Обработать плитку t из временного файла: результат — в <t>.out, итоги без самих точек. */
@@ -28,7 +29,7 @@ function runTile(ctx, tmp, t, T) {
   const B = fs.readFileSync(f); fs.unlinkSync(f);
   const r = R.processTile(B, T, ctx);
   fs.writeFileSync(path.join(tmp, t + '.out'), r.O.subarray(0, r.w));
-  return { t, w: r.w, k: r.k, n0: r.n0, nDyn: r.nDyn, nNoise: r.nNoise, nMoved: r.nMoved, nColor: r.nColor, bb: r.bb };
+  return { t, w: r.w, k: r.k, n0: r.n0, nDyn: r.nDyn, nNoise: r.nNoise, nMoved: r.nMoved, nColor: r.nColor, bb: r.bb, noColor: r.noColor || 0, noColorLeft: r.noColorLeft || 0 };
 }
 
 module.exports = { makeCtx, runTile };

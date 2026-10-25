@@ -84,7 +84,10 @@ test('r21: ровный цвет — без перепадов ничего не
   // синий оттенок и тёмное облако → баланс снимает оттенок с серых поверхностей, гамма осветляет
   const D = room({ shift: [0, 0, 0], gainB: 1, cast: [0.62, 0.62, 0.72] });
   const s2 = CB.solve(sampler(D, true), {});
-  assert.ok(s2.wb[2] < 0.95 && s2.wb[0] > 1, 'баланс ' + s2.wb); assert.ok(s2.gamma < 0.95 && s2.gamma >= 0.6, 'гамма ' + s2.gamma);
+  assert.ok(s2.wb[2] < 0.95 && s2.wb[0] > 1, 'баланс ' + s2.wb);
+  // ревизия 46: осветление — тоновой кривой (тени как есть, середина ярче); прежняя гамма — по opt.tone = 'gamma'
+  assert.ok(s2.gamma === 1 && s2.tone && s2.tone.gain > 1.03 && s2.tone.gain <= 1.4, 'осветление ' + JSON.stringify(s2.stats));
+  const s3 = CB.solve(sampler(D, true), { tone: 'gamma' }); assert.ok(s3.gamma < 0.95 && s3.gamma >= 0.6, 'гамма ' + s3.gamma);
   const fix = CB.makeColorFix(s2), c = [0, 0, 0]; let r = 0, b = 0;
   for (let i = 0; i < D.n; i += 11) { const g = D.C[i * 3 + 1] / 0.62; if (Math.abs(g - 140) > 8) continue; c[0] = D.C[i * 3]; c[1] = D.C[i * 3 + 1]; c[2] = D.C[i * 3 + 2]; fix(0, c, 0); r += c[0] / c[1]; b += c[2] / c[1]; }
   assert.ok(b > 0, 'серые точки есть');

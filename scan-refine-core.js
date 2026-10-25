@@ -478,6 +478,155 @@ function cleanColors(X, RGB, n, alive, level, o) {
   return k;
 }
 
+/**
+ * Ревизия 46: точки без цвета (в исходном файле 0,0,0 — камера их не видела: близко к сканеру, у горизонта, дальше 30 м).
+ * В realtime-карте таких 1,2–1,3 % — «чёрное зерно» на стенах и тёмные пятна на полу; у Lixel Studio их нет.
+ * Цвет — средний по соседям с цветом в кубе 9 см, затем 30 см (94 % находят соседей уже в 5 см, 98 % — в 10 см). nc[i] = 1 — без цвета;
+ * получившие цвет помечаются 0. Возвращает число закрашенных.
+ */
+function fillNoColor(X, RGB, n, alive, nc, o) {
+  // Realtime-карта пишет (0,0,0) там, где пиксель кадра слишком тёмный или его нет. Сверка с Lixel Studio (фасад, 117 тыс.
+  // таких точек): это почти всегда тёмные места (медиана яркости у Lixel 15), одиночные «дыры» на светлом — около 4 %.
+  // Поэтому оценка — среднее соседей, где соседи без цвета считаются тёмными (их доля затемняет), но не темнее floor:
+  // ошибка (лог яркости) к Lixel 0,525 → 0,374 против простого среднего цветных соседей.
+  o = o || {}; const cells = o.cells || [0.03, 0.1], dark = o.zeroAsDark !== false, floor = o.floor != null ? o.floor : 10; let filled = 0;
+  for (const cell of cells) {
+    let left = 0; for (let i = 0; i < n; i++) if (nc[i] && alive[i]) left++;
+    if (!left) break;
+    const G = cellsOf(X, n, cell, alive), A = new Float64Array(G.m * 5);
+    for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j < 0) continue; if (nc[i]) { A[j * 5 + 4] += 1; continue; } A[j * 5] += 1; A[j * 5 + 1] += RGB[i * 3]; A[j * 5 + 2] += RGB[i * 3 + 1]; A[j * 5 + 3] += RGB[i * 3 + 2]; }
+    const S = nbSum(G, A, 5);
+    for (let i = 0; i < n; i++) {
+      if (!nc[i] || !alive[i]) continue; const j = G.cid[i], c = S[j * 5]; if (!(c > 0)) continue;
+      const w = dark ? c + S[j * 5 + 4] : c;
+      let r = S[j * 5 + 1] / w, g = S[j * 5 + 2] / w, b = S[j * 5 + 3] / w; const L = 0.3 * r + 0.59 * g + 0.11 * b;
+      if (L < floor) { const d = floor - L; r += d; g += d; b += d; }
+      RGB[i * 3] = r; RGB[i * 3 + 1] = g; RGB[i * 3 + 2] = b; nc[i] = 0; filled++;
+    }
+  }
+  return filled;
+}
+
+// ревизия 46: хеш целых ключей (блок × отрезок времени) → номер
+class KMap {
+  constructor(cap0) { let c = 1024; while (c < cap0 * 2) c <<= 1; this.cap = c; this.mask = c - 1; this.K = new Float64Array(c).fill(-1); this.id = new Int32Array(c); this.n = 0; }
+  _h(k) { return (Math.imul((k % 4294967296) >>> 0, 2654435761) ^ Math.imul(Math.floor(k / 4294967296), 40503)) & this.mask; }
+  get(k, add) {
+    let h = this._h(k); const K = this.K;
+    while (K[h] !== -1) { if (K[h] === k) return this.id[h]; h = (h + 1) & this.mask; }
+    if (!add) return -1;
+    if (this.n * 2 >= this.cap) { this._grow(); return this.get(k, true); }
+    K[h] = k; this.id[h] = this.n; return this.n++;
+  }
+  _grow() { const oK = this.K, oI = this.id; this.cap <<= 1; this.mask = this.cap - 1; this.K = new Float64Array(this.cap).fill(-1); this.id = new Int32Array(this.cap);
+    for (let i = 0; i < oK.length; i++) { if (oK[i] === -1) continue; let h = this._h(oK[i]); while (this.K[h] !== -1) h = (h + 1) & this.mask; this.K[h] = oK[i]; this.id[h] = oI[i]; } }
+}
+
+/**
+ * Ревизия 46: локальное выравнивание проходов («рябь» и «разводы»). Realtime-карта красит точку кадром того момента, когда
+ * её снял лидар; у Lixel Studio цвет зависит от места, а не от времени, поэтому одна и та же стена из разных проходов
+ * одного цвета. Общее выравнивание экспозиции (color-balance-core, отрезки 10 с на всё облако) снимает только общий
+ * перепад; здесь — местный: опора — медиана (лог, по каналам) ячейки cell, для каждого «блок block × отрезок tb» —
+ * среднее отклонений его точек от опоры (по ячейкам, снятым в разное время; отклонения ограничены ±clip, сжатие к 0
+ * при малом числе точек n0) → усиление блока, несколько итераций, суммарно не больше ±maxG (в логарифмах).
+ * Текстура внутри прохода (швы, кладка) не трогается: сдвигается только уровень прохода в блоке. skip[i] — точка не
+ * участвует и не правится (без цвета). off — начало координат плитки: сетка блоков общая для всех плиток.
+ */
+function passEqualize(X, RGB, T, n, alive, o) {
+  o = Object.assign({ cell: 0.02, block: 0.12, tb: 3, iters: 2, n0: 3, minN: 0, clip: 0.4, iqrMax: 0.6, zeroMean: false, maxG: 0.7, minSpan: null, smooth: 0, off: [0, 0, 0], skip: null }, o || {});
+  const minSpan = o.minSpan != null ? o.minSpan : o.tb;
+  let tmin = Infinity; for (let i = 0; i < n; i++) if (alive[i] && T[i] < tmin) tmin = T[i];
+  if (!Number.isFinite(tmin)) return { changed: 0 };
+  const B = o.block, bx0 = Math.floor(o.off[0] / B), by0 = Math.floor(o.off[1] / B), bz0 = Math.floor(o.off[2] / B);
+  const bkey = new Float64Array(n);   // ключ (блок × отрезок)
+  let mxb = 0;
+  for (let i = 0; i < n; i++) {
+    if (!alive[i]) { bkey[i] = -1; continue; }
+    const bx = Math.floor((X[i * 3] + o.off[0]) / B) - bx0 + 1024, by = Math.floor((X[i * 3 + 1] + o.off[1]) / B) - by0 + 1024, bz = Math.floor((X[i * 3 + 2] + o.off[2]) / B) - bz0 + 1024;
+    const tb = Math.floor((T[i] - tmin) / o.tb); if (tb > mxb) mxb = tb;
+    bkey[i] = ((bz * 2048 + by) * 2048 + bx) * 65536 + Math.min(65535, tb);
+  }
+  const KM = new KMap(n / 50 + 16), bid = new Int32Array(n).fill(-1);
+  for (let i = 0; i < n; i++) if (bkey[i] >= 0) bid[i] = KM.get(bkey[i], true);
+  const nb = KM.n, Lg = new Float32Array(n * 3);
+  // zeroMean: поправка только перераспределяет яркость между проходами блока, средний уровень не меняет (по умолчанию
+  // выключено — без этого ближе к Lixel: 0,2370 → 0,2356; уровень и так держится медианой ячеек)
+  const cntQ = new Float64Array(nb); for (let i = 0; i < n; i++) if (bid[i] >= 0 && !(o.skip && o.skip[i])) cntQ[bid[i]]++;
+  let sbOf = null, nsb = 0;
+  if (o.zeroMean) {
+    const SB = new KMap(nb / 4 + 16); sbOf = new Int32Array(nb);
+    for (let h = 0; h < KM.cap; h++) { const k = KM.K[h]; if (k === -1) continue; sbOf[KM.id[h]] = SB.get(Math.floor(k / 65536), true); }
+    nsb = SB.n;
+  }
+  let changed = 0; const stats = { blocks: nb, iters: [] };
+  const G = cellsOf(X, n, o.cell, alive), m = G.m;
+  const start = new Int32Array(m + 1), ord = new Int32Array(n);
+  for (let i = 0; i < n; i++) if (G.cid[i] >= 0) start[G.cid[i] + 1]++;
+  let mxc = 0; for (let j = 0; j < m; j++) { if (start[j + 1] > mxc) mxc = start[j + 1]; start[j + 1] += start[j]; }
+  { const pos = start.slice(0, m); for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0) ord[pos[j]++] = i; } }
+  const v = new Float32Array(mxc + 1), gTot = new Float32Array(nb * 3);
+  for (let i = 0; i < n; i++) if (alive[i]) for (let a = 0; a < 3; a++) Lg[i * 3 + a] = Math.log(RGB[i * 3 + a] + 4);
+  for (let it = 0; it < o.iters; it++) {
+    const S = new Float64Array(nb * 3), W = new Float64Array(nb * 3), N = new Float64Array(nb);
+    let used = 0, sumAbs = 0;
+    for (let j = 0; j < m; j++) {
+      const a0 = start[j], c = start[j + 1] - a0; if (c < 4) continue;
+      let t0 = Infinity, t1 = -Infinity; for (let t = a0; t < a0 + c; t++) { const tt = T[ord[t]]; if (tt < t0) t0 = tt; if (tt > t1) t1 = tt; }
+      if (t1 - t0 < minSpan) continue;
+      for (let a = 0; a < 3; a++) {
+        let k = 0; for (let t = a0; t < a0 + c; t++) { const i = ord[t]; if (o.skip && o.skip[i]) continue; v[k++] = Lg[i * 3 + a]; }
+        if (k < 4) break;
+        const vv = v.subarray(0, k); vv.sort(); const med = 0.5 * (vv[(k - 1) >> 1] + vv[k >> 1]);
+        // ячейка на границе материалов (шов, кромка, надпись: межквартильный размах больше iqrMax, в 1,8 раза по яркости)
+        // не голосует — медиана там неустойчива: без этого у двух проходов одной яркости уровень блоков «гуляет» до 11 %
+        // (пятна у швов), с ним — 1 %
+        const iqr = vv[Math.min(k - 1, (3 * k) >> 2)] - vv[k >> 2]; if (o.iqrMax > 0 && iqr > o.iqrMax) continue;
+        for (let t = a0; t < a0 + c; t++) {
+          const i = ord[t]; if (o.skip && o.skip[i]) continue; let d = Lg[i * 3 + a] - med;
+          if (d > o.clip) d = o.clip; else if (d < -o.clip) d = -o.clip;
+          S[bid[i] * 3 + a] += d; W[bid[i] * 3 + a] += 1; if (a === 0) { N[bid[i]] += 1; used++; sumAbs += Math.abs(d); }
+        }
+      }
+    }
+    // усиление блока: сжатое среднее; сглаживание по соседним блокам того же отрезка
+    const g = new Float32Array(nb * 3);
+    for (let q = 0; q < nb; q++) { if (N[q] < o.minN) continue; for (let a = 0; a < 3; a++) g[q * 3 + a] = S[q * 3 + a] / (W[q * 3 + a] + o.n0); }
+    if (o.smooth > 0) {
+      const g2 = new Float32Array(nb * 3);
+      for (let h = 0; h < KM.cap; h++) {
+        const k = KM.K[h]; if (k === -1) continue; const q = KM.id[h];
+        let sw = N[q] + o.n0, s0 = g[q * 3] * sw, s1 = g[q * 3 + 1] * sw, s2 = g[q * 3 + 2] * sw;
+        for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!(dx | dy | dz)) continue; const r = KM.get(k + ((dz * 2048 + dy) * 2048 + dx) * 65536, false); if (r < 0) continue;
+          const w = o.smooth * (N[r] + o.n0) / (Math.abs(dx) + Math.abs(dy) + Math.abs(dz)); sw += w; s0 += w * g[r * 3]; s1 += w * g[r * 3 + 1]; s2 += w * g[r * 3 + 2];
+        }
+        g2[q * 3] = s0 / sw; g2[q * 3 + 1] = s1 / sw; g2[q * 3 + 2] = s2 / sw;
+      }
+      g.set(g2);
+    }
+    if (sbOf) {
+      const sw = new Float64Array(nsb), sg = new Float64Array(nsb * 3);
+      for (let q = 0; q < nb; q++) { const b = sbOf[q], w = cntQ[q]; sw[b] += w; for (let a = 0; a < 3; a++) sg[b * 3 + a] += w * g[q * 3 + a]; }
+      for (let q = 0; q < nb; q++) { const b = sbOf[q]; if (sw[b] > 0) for (let a = 0; a < 3; a++) g[q * 3 + a] -= sg[b * 3 + a] / sw[b]; }
+    }
+    const E = new Float32Array(nb * 3);
+    for (let q = 0; q < nb * 3; q++) { let x = g[q]; const lim = o.maxG - Math.abs(gTot[q]); if (x > lim) x = lim; else if (x < -lim) x = -lim; g[q] = x; gTot[q] += x; E[q] = Math.exp(-x); }
+    // (c + 4)·e^−g − 4: в логарифмах это сдвиг на −g, лог пересчитывается только у обрезанных до 0…255
+    for (let i = 0; i < n; i++) {
+      const q = bid[i]; if (q < 0) continue; let ch = false;
+      if (o.skip && o.skip[i]) continue;
+      for (let a = 0; a < 3; a++) {
+        const gg = g[q * 3 + a]; if (!(gg > 0.002 || gg < -0.002)) continue;
+        const x = (RGB[i * 3 + a] + 4) * E[q * 3 + a] - 4; ch = true;
+        if (x < 0) { RGB[i * 3 + a] = 0; Lg[i * 3 + a] = Math.log(4); } else if (x > 255) { RGB[i * 3 + a] = 255; Lg[i * 3 + a] = Math.log(259); } else { RGB[i * 3 + a] = x; Lg[i * 3 + a] -= gg; }
+      }
+      if (ch && it === 0) changed++;
+    }
+    stats.iters.push({ used, meanAbs: used ? +(sumAbs / used).toFixed(4) : 0 });
+  }
+  stats.changed = changed; return stats;
+}
+
 // заголовок результата: число точек, по возвратам, габариты; EVLR не переносятся (ревизия 45: общий для refine и пула потоков)
 function finishLas(ofd, H, out, bb, wpos) {
   const [bx0, by0, bz0, bx1, by1, bz1] = bb;
@@ -495,23 +644,38 @@ function finishLas(ofd, H, out, bb, wpos) {
  * чтобы плитки можно было обрабатывать и в фоновых потоках.
  */
 function processTile(B, T, ctx) {
-  const { H, RS, CS, x0, y0, c16, opt, corr, cfix, DV } = ctx, rl = H.rl;
+  const { H, RS, CS, x0, y0, c16, opt, corr, cfix, DV, tfix } = ctx, rl = H.rl;
   const n = Math.floor(B.length / RS), X = new Float64Array(n * 3), alive = new Uint8Array(n).fill(1), own = new Uint8Array(n);
   const RGB = H.rgb !== undefined ? new Float32Array(n * 3) : null;
   const cxm = x0 + (T.a + T.c) / 2 * CS, cym = y0 + (T.b + T.d) / 2 * CS;
   let zs = 0, nDyn = 0, nNoise = 0, nMoved = 0, nColor = 0; const cv = [0, 0, 0], tOk = H.tOff !== undefined;
+  // ревизия 46: время точки (для местного выравнивания проходов) и признак «без цвета»
+  const peqOn = !!(RGB && opt.color && opt.colorBalance !== false && opt.passEq !== false && tOk), TT = peqOn ? new Float64Array(n) : null, nc = RGB ? new Uint8Array(n) : null;
+  let nNoColor = 0, nNoColorOwn = 0;
   for (let i = 0, o = 0; i < n; i++, o += RS) {
     let x = B.readInt32LE(o) * H.sx + H.ox, y = B.readInt32LE(o + 4) * H.sy + H.oy, z = B.readInt32LE(o + 8) * H.sz + H.oz;
     if (DV && DV.has(x, y, z)) { alive[i] = 0; if (B[o + rl] === 0) nDyn++; }   // движущиеся — по исходным координатам (так их искали)
     const tt = tOk ? B.readDoubleLE(o + H.tOff) : 0;
     if (corr) { corr(x, y, z, tt, cv); x = cv[0]; y = cv[1]; z = cv[2]; }
     X[i * 3] = x - cxm; X[i * 3 + 1] = y - cym; X[i * 3 + 2] = z; zs += z; own[i] = B[o + rl] === 0 ? 1 : 0;
-    if (RGB) { const s = c16 ? 1 / 256 : 1; RGB[i * 3] = B.readUInt16LE(o + H.rgb) * s; RGB[i * 3 + 1] = B.readUInt16LE(o + H.rgb + 2) * s; RGB[i * 3 + 2] = B.readUInt16LE(o + H.rgb + 4) * s; if (cfix) cfix(tt, RGB, i * 3); }
+    if (TT) TT[i] = tt;
+    if (RGB) {
+      const s = c16 ? 1 / 256 : 1; RGB[i * 3] = B.readUInt16LE(o + H.rgb) * s; RGB[i * 3 + 1] = B.readUInt16LE(o + H.rgb + 2) * s; RGB[i * 3 + 2] = B.readUInt16LE(o + H.rgb + 4) * s;
+      if (RGB[i * 3] === 0 && RGB[i * 3 + 1] === 0 && RGB[i * 3 + 2] === 0) { nc[i] = 1; nNoColor++; if (B[o + rl] === 0) nNoColorOwn++; } else if (cfix) cfix(tt, RGB, i * 3);
+    }
   }
   const zm = n ? zs / n : 0; for (let i = 0; i < n; i++) X[i * 3 + 2] -= zm;
   if (opt.noise) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); denoise(X, n, alive, opt.noiseLevel || 'strong'); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
   if (opt.thin) { for (let it = 0; it < (opt.thinIters || 1); it++) nMoved += thinSurfaces(X, n, alive, { cell: opt.thinCell, planar: opt.planar }); }
+  // ревизия 46: цвет для точек без цвета — от соседей (до очистки цвета: чёрные не тянут медианы); после очистки — местное
+  // выравнивание проходов (по уже очищенному цвету разброс в ячейке — это перепад проходов, а не шум камеры)
+  let peq = null, nNoColorLeft = 0;
+  const nc0 = peqOn && nNoColor ? Uint8Array.from(nc) : null;   // залитые точки не голосуют в выравнивании проходов
+  if (opt.color && RGB && nNoColor && opt.fillNoColor !== false) fillNoColor(X, RGB, n, alive, nc, opt.fillNoColorOpt);
+  if (RGB && nNoColor) for (let i = 0; i < n; i++) if (nc[i] && alive[i] && own[i]) nNoColorLeft++;
   if (opt.color && RGB) nColor += cleanColors(X, RGB, n, alive, opt.noiseLevel || 'strong', { clamp: opt.colorClamp !== false });
+  if (peqOn) peq = passEqualize(X, RGB, TT, n, alive, Object.assign({}, opt.passEqOpt || {}, { off: [cxm, cym, zm], skip: nc0 }));
+  if (tfix && RGB) for (let i = 0; i < n; i++) if (alive[i] && own[i]) tfix(RGB, i * 3);   // тоновая кривая — последней
   // запись своих живых точек: исходная запись с новыми координатами и цветом
   let k = 0; for (let i = 0; i < n; i++) if (alive[i] && own[i]) k++;
   const O = Buffer.allocUnsafe(k * rl), bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; let w = 0;
@@ -524,7 +688,7 @@ function processTile(B, T, ctx) {
     if (x < bb[0]) bb[0] = x; if (x > bb[3]) bb[3] = x; if (y < bb[1]) bb[1] = y; if (y > bb[4]) bb[4] = y; if (z < bb[2]) bb[2] = z; if (z > bb[5]) bb[5] = z;
     w += rl;
   }
-  return { O, w, k, n0: T.n, nDyn, nNoise, nMoved, nColor, bb };
+  return { O, w, k, n0: T.n, nDyn, nNoise, nMoved, nColor, bb, noColor: nNoColorOwn, noColorLeft: nNoColorLeft, peqBlocks: peq ? peq.blocks : 0 };
 }
 
 /**
@@ -582,8 +746,8 @@ function refine(src, dst, opt, onProgress) {
     if (balOn) {
       prog(0.15, 'Выравнивание цвета проходов…');
       try {
-        const cs = CB.solve(smp, Object.assign({ scale: c16 ? 1 / 256 : 1, exposure: H.tOff !== undefined }, opt.colorBalanceOpt || {}));
-        if (cs.ok) { cbSol = cs; cfix = CB.makeColorFix(cs); colorBalance = cs.stats; } else colorBalance = Object.assign({ skipped: cs.reason }, cs.stats);
+        const cs = CB.solve(smp, Object.assign({ scale: c16 ? 1 / 256 : 1, exposure: H.tOff !== undefined, saturation: 0.8 }, opt.colorBalanceOpt || {}));   // ревизия 46: цветность как у Lixel
+        if (cs.ok) { cbSol = cs; cfix = CB.makeColorFix(cs, { noTone: opt.toneLate !== false }); colorBalance = cs.stats; } else colorBalance = Object.assign({ skipped: cs.reason }, cs.stats);
       } catch (e) { colorBalance = { skipped: String((e && e.message) || e) }; }
     }
     smp && (smp.X = smp.T = smp.C = null);
@@ -623,25 +787,25 @@ function refine(src, dst, opt, onProgress) {
     // ---- 3: обработка плиток и запись
     const hdr = Buffer.alloc(H.off); { const f2 = fs.openSync(src, 'r'); fs.readSync(f2, hdr, 0, H.off, 0); fs.closeSync(f2); }
     ofd = fs.openSync(dst, 'w+'); fs.writeSync(ofd, hdr, 0, H.off, 0);
-    let wpos = H.off, out = 0, nDyn = 0, nNoise = 0, nMoved = 0, nColor = 0, done = 0;
+    let wpos = H.off, out = 0, nDyn = 0, nNoise = 0, nMoved = 0, nColor = 0, done = 0, nNoC = 0, nNoCL = 0;
     let bx0 = Infinity, by0 = Infinity, bz0 = Infinity, bx1 = -Infinity, by1 = -Infinity, bz1 = -Infinity;
     const dynSets = opt.dynamic ? (opt.dynamic.sets || (opt.dynamic.keys ? [{ keys: opt.dynamic.keys, grid: opt.dynamic.grid }] : [])).filter(q => q && q.keys && q.keys.length) : [];
     const DV = dynSets.length ? require('./renderer/dynamic-voxels').buildMany(dynSets) : null;
     // ревизия 45: пул потоков (scan-refine-parallel.js) забирает подготовленные плитки и обрабатывает их сам
     if (opt._prepareOnly) { const keep = tmp; tmpKeep = true; const o2 = ofd; ofd = null; return { H, RS, CS, x0, y0, c16, tiles, tmp: keep, ofd: o2, wpos, N, t0, align, colorBalance, alignSol, alignTraj, cbSol, dynSets }; }
-    const ctx = { H, RS, CS, x0, y0, c16, opt, corr, cfix, DV };
+    const ctx = { H, RS, CS, x0, y0, c16, opt, corr, cfix, DV, tfix: opt.toneLate !== false ? CB.makeToneFix(cbSol) : null };
     for (let t = 0; t < tiles.length; t++) {
       const f = path.join(tmp, t + '.bin'); if (!fs.existsSync(f)) continue;
       const B = fs.readFileSync(f); fs.unlinkSync(f);
       const r = processTile(B, tiles[t], ctx);
       fs.writeSync(ofd, r.O, 0, r.w, wpos); wpos += r.w; out += r.k; done += r.n0;
-      nDyn += r.nDyn; nNoise += r.nNoise; nMoved += r.nMoved; nColor += r.nColor;
+      nDyn += r.nDyn; nNoise += r.nNoise; nMoved += r.nMoved; nColor += r.nColor; nNoC += r.noColor || 0; nNoCL += r.noColorLeft || 0;
       if (r.bb[0] < bx0) bx0 = r.bb[0]; if (r.bb[1] < by0) by0 = r.bb[1]; if (r.bb[2] < bz0) bz0 = r.bb[2];
       if (r.bb[3] > bx1) bx1 = r.bb[3]; if (r.bb[4] > by1) by1 = r.bb[4]; if (r.bb[5] > bz1) bz1 = r.bb[5];
       prog(0.45 + 0.55 * done / N, 'Обработка плиток…');
     }
     finishLas(ofd, H, out, [bx0, by0, bz0, bx1, by1, bz1], wpos); fs.closeSync(ofd); ofd = null;
-    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: c16, align, colorBalance };
+    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: c16, align, colorBalance, noColor: { found: nNoC, left: nNoCL } };
   } finally {
     if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} }
     if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
@@ -649,4 +813,4 @@ function refine(src, dst, opt, onProgress) {
   }
 }
 
-module.exports = { processTile, finishLas, structureCells, nbSum, refine, cleanColors, clampColors, offSurface, fixSpeckles, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3 };
+module.exports = { processTile, finishLas, structureCells, nbSum, refine, cleanColors, clampColors, offSurface, fixSpeckles, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3, passEqualize, fillNoColor };

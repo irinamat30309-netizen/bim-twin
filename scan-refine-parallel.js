@@ -23,7 +23,7 @@ function pickThreads(opt, nTiles, maxTile) {
   return Math.max(1, Math.min(Math.max(2, cpu - 1), cpu, byMem, 16, nTiles));   // одно ядро — интерфейсу, если ядер больше двух
 }
 function liteOpt(opt) {
-  const o = {}; for (const k of ['noise', 'noiseLevel', 'thin', 'thinIters', 'thinCell', 'planar', 'color', 'colorClamp']) if (opt[k] !== undefined) o[k] = opt[k];
+  const o = {}; for (const k of ['noise', 'noiseLevel', 'thin', 'thinIters', 'thinCell', 'planar', 'color', 'colorClamp', 'colorBalance', 'passEq', 'passEqOpt', 'fillNoColor', 'fillNoColorOpt', 'toneLate']) if (opt[k] !== undefined) o[k] = opt[k];
   return o;
 }
 async function refineParallel(src, dst, opt, onProgress) {
@@ -38,13 +38,13 @@ async function refineParallel(src, dst, opt, onProgress) {
       alignSol: P.alignSol, alignTraj: P.alignTraj, cbSol: P.cbSol, dynSets: P.dynSets,
       poses: P.alignTraj ? (opt.poses || null) : null, posesText: P.alignTraj && !opt.poses ? (opt.posesText || null) : null };
     const threads = pickThreads(opt, jobs.length, maxTile);
-    let wpos = P.wpos, out = 0, done = 0, nDyn = 0, nNoise = 0, nMoved = 0, nColor = 0;
+    let wpos = P.wpos, out = 0, done = 0, nDyn = 0, nNoise = 0, nMoved = 0, nColor = 0, nNoC = 0, nNoCL = 0;
     const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
     const take = (r) => {
       const f = path.join(tmp, r.t + '.out');
       if (r.w) { const B = fs.readFileSync(f); if (B.length !== r.w) throw new Error('плитка ' + r.t + ': неполный результат'); fs.writeSync(ofd, B, 0, r.w, wpos); }
       try { fs.unlinkSync(f); } catch (_) {}
-      wpos += r.w; out += r.k; done += r.n0; nDyn += r.nDyn; nNoise += r.nNoise; nMoved += r.nMoved; nColor += r.nColor;
+      wpos += r.w; out += r.k; done += r.n0; nDyn += r.nDyn; nNoise += r.nNoise; nMoved += r.nMoved; nColor += r.nColor; nNoC += r.noColor || 0; nNoCL += r.noColorLeft || 0;
       for (let a = 0; a < 3; a++) { if (r.bb[a] < bb[a]) bb[a] = r.bb[a]; if (r.bb[a + 3] > bb[a + 3]) bb[a + 3] = r.bb[a + 3]; }
       prog(0.45 + 0.55 * done / N, 'Обработка плиток…');
     };
@@ -73,7 +73,7 @@ async function refineParallel(src, dst, opt, onProgress) {
       });
     }
     R.finishLas(ofd, H, out, bb, wpos); fs.closeSync(ofd); ofd = null;
-    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: P.c16, align: P.align, colorBalance: P.colorBalance, threads };
+    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: P.c16, align: P.align, colorBalance: P.colorBalance, noColor: { found: nNoC, left: nNoCL }, threads };
   } finally {
     for (const w of workers) { try { await w.terminate(); } catch (_) {} }
     if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
