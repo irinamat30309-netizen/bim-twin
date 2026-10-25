@@ -3096,6 +3096,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     _click(cx, cy) {
       const hit = this._pick(cx, cy);
       if (typeof window !== 'undefined' && window.__lxDraw && window.__lxDraw.active) { if (hit) window.__lxDraw.onPick(hit.point); return; }
+      // r42: «Что это?» ассистента — щелчок по облаку измеряет элемент
+      if (typeof window !== 'undefined' && window.__bimPick && window.__bimPick.active) { window.__bimPick.onPick(hit ? hit.point : null); return; }
       if (this.measuring) { if (hit) this._measureClick(hit.point); return; }
       if (this.tour && this._stationEdit && hit) {
         if (this._stationEdit === 'add') { this.addStationAt(hit.point); return; }

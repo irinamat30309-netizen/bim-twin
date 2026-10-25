@@ -126,6 +126,7 @@
             if (op === 'denoise2' && CC) resolve(CC.denoise(pos, n3, params, ctl));
             else if (op === 'people' && CC && CC.people) resolve(CC.people(pos, n3, params, ctl));
             else if (op === 'autoclean' && CC && CC.autoClean) resolve(CC.autoClean(pos, n3, params, ctl));
+            else if (op === 'deepclean' && CC && CC.deepClean) resolve(CC.deepClean(pos, n3, params, ctl));
             else resolve(CP.run(op, op === 'smooth' || op === 'flatten' ? pos.slice() : pos, params, ctl));
           } catch (e) { reject(e); }
         }, 0);
@@ -176,9 +177,9 @@
     if (!CP) { toast('Модуль обработки облака не загружен'); return; }
     if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
     var defs = CP.defaults(CP.estimate(c0.pos, c0.count));
-    var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({ title: spec.title, message: spec.message, okLabel: 'Применить', fields: spec.fields(defs, c0), validate: spec.validate }) : Promise.resolve(null));
-    if (!values) return;
-    var job = null, res = null, c = null;
+    var values = spec.preset ? Object.assign({}, spec.preset) : await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({ title: spec.title, message: spec.message, okLabel: 'Применить', fields: spec.fields(defs, c0), validate: spec.validate }) : Promise.resolve(null));
+    if (!values) return { ok: false, cancelled: true, message: 'Отменено' };
+    var job = null, res = null, c = null, outcome = { ok: false, message: 'Облако не изменено' };
     await run(spec.label, async function (setPct) {
       c = needCloud(); if (!c) return;
       job = startJob(spec.opFor ? spec.opFor(values) : spec.op, c.pos.subarray(0, c.count * 3), spec.params(values, defs), function (f, lab) { setPct(0.04 + 0.86 * f, lab || spec.label); });
@@ -187,13 +188,14 @@
       if (spec.review) return;   // применение — после предпросмотра и подтверждения, уже без окна прогресса
       await apply(setPct);
     }, { onCancel: function () { if (job) job.cancel(); } });
-    if (!res || !spec.review) return;
+    if (!res || !spec.review) return outcome;
     var okGo = false;
     try { okGo = await spec.review(res, c, values); } catch (e) { console.warn('tools-ext review', e); toast('Ошибка: ' + (e && e.message || e)); }
-    if (!okGo) { toast('Отменено, облако не изменено'); return; }
+    if (!okGo) { toast('Отменено, облако не изменено'); return { ok: false, cancelled: true, message: 'Пользователь не применил результат — облако не изменено' }; }
     var cur = getCloud();
     if (!cur || cur.pos !== c.pos || cur.count !== c.count) { toast('Облако изменилось, пока шёл просмотр, — операция отменена. Запустите её заново.'); return; }
     await run(spec.label, async function (setPct) { setPct(0.5, 'Применение…'); await yieldFrame(); await apply(setPct); });
+    return outcome;
     async function apply(setPct) {
       if (!needCloud()) return;
       setPct(0.92, 'Загрузка результата…'); await yieldFrame();
@@ -201,6 +203,7 @@
       if (!out) return;
       T().loadCloud(out.cloud, out.name, out.details); setPct(1, 'Готово');
       toast(out.text + ' · Ctrl+Z — отмена');
+      outcome = { ok: true, message: out.text, stats: res && res.stats || null, op: spec.op };
     }
   }
 
@@ -324,7 +327,7 @@
       message: 'Находит прохожих по форме: рост, ширина, голова уже плеч, опора на землю. Колонны, столбы, тумбы, ящики, деревья, машины и стены остаются. Это эвристика, а не нейросеть: перед удалением вы увидите найденное красным. Далёкие, разреженные и слитые с кучами или кустами фигуры могут остаться — их удаляют вручную («Правка облака», рамка или лассо).',
       fields: function () {
         return [
-          { key: 'level', label: 'Строгость поиска', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко' }],
+          { key: 'level', main: true, label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко' }],
             hint: 'Строго — только уверенные случаи; обычно (рекомендуется); мягко находит больше, но может задеть колонны и столбы ростом с человека.' },
           { key: 'minH', label: 'Рост от', type: 'number', value: 1.3, min: 0.5, max: 2.5, step: 'any', unit: 'м' },
           { key: 'maxH', label: 'Рост до', type: 'number', value: 2.2, min: 1, max: 3, step: 'any', unit: 'м' },
@@ -379,10 +382,10 @@
       title: 'Движущиеся объекты', okLabel: 'Найти',
       message: 'Находит прохожих, машины и их «следы» и «копии» (цепочки силуэтов идущего человека): по времени точек — объект был в этом месте недолго, а место вокруг сканер видел дольше, — и, если есть траектория сканера, по лучам (сквозь эти точки сканер в другое время видел дальше). Стены, колонны, деревья и стоящие машины остаются. Люди, простоявшие на месте дольше нескольких секунд, находятся только с траекторией. Перед удалением найденное показывается красным.',
       fields: [
-        { key: 'traj', label: 'Траектория сканера', type: 'select', value: found ? 'auto' : 'none',
+        { key: 'traj', label: 'Траектория сканера', type: 'select', value: found ? 'auto' : 'none', more: true,
           options: (found ? [{ value: 'auto', label: 'Найдена рядом: ' + trajLabel(found) }] : []).concat([{ value: 'none', label: 'Без траектории — по времени точек' }, { value: 'pick', label: 'Выбрать файл poses.csv…' }]),
           hint: 'Траектория не обязательна: идущие люди и машины находятся и без неё. С ней (<проект Lixel>/project_data/poses.csv) находятся ещё и стоявшие на месте. Нужно время точек (GPS time) в LAS.' },
-        { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }] }
+        { key: 'level', main: true, label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }] }
       ] }) : Promise.resolve(null));
     if (!values) return;
     var posesPath = values.traj === 'auto' ? found : (values.traj === 'none' ? 'none' : null);
@@ -465,6 +468,12 @@
     return window.__bimXbinCloud(px.path);
   }
 
+  // Ревизия 36: «Цвет по фото камер» — открытое облако LAS (серое облако из лидара .xbin) раскрашивается по кадрам камер сканера
+  function opPhotoColor() {
+    if (typeof window.__bimPhotoColor !== 'function') { toast('Цвет по фото камер — в десктоп-версии'); return; }
+    return window.__bimPhotoColor();
+  }
+
   /**
    * Чистовая обработка скана (как экспорт после обработки в Lixel Studio): движущиеся объекты (по времени точек и по траектории),
    * шум (уровни мягко/обычно/сильно), тонкие стены и пол (проекция на локальную плоскость), пёстрые точки. Ревизия 19: по умолчанию
@@ -490,14 +499,13 @@
       .concat(api.pickXbin ? [{ value: 'pick', label: 'Да, выбрать файл сканера .xbin…' }] : []).concat([{ value: 'off', label: 'Нет — оставить цвет облака' }]);
     var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
       title: o.title || 'Чистовая обработка', okLabel: 'Начать',
-      message: 'Сводит проходы (убирает двойные рамы и «ореолы» от дрейфа), убирает прохожих и машины, шум и «туман» вокруг поверхностей, делает стены и пол тонкими и чёткими, выравнивает цвет. Файл любого размера обрабатывается по частям в фоне; нужно свободное место примерно в два размера файла.',
-      hint: [edited ? 'Внимание: обрабатывается файл на диске (' + fname + '). Правки, сделанные в окне и не сохранённые в файл, в результат не попадут.' : '',
-        found ? '' : 'Траектория сканера рядом с файлом не найдена. Без неё не находятся люди, которые стояли на месте, а проходы сводятся грубее. Если есть проект Lixel, выберите <проект>/project_data/poses.csv в пункте «Убрать движущиеся объекты».'].filter(Boolean).join(' '),
+      message: (o.lead ? o.lead + ' ' : '') + 'Всё автоматически: проходы, прохожие, шум, тонкие стены, ровный цвет.',
+      hint: edited ? 'Несохранённые правки в окне в результат не попадут.' : undefined,
       fields: [
-        { key: 'target', label: 'Результат', type: 'select', value: 'replace', options: [{ value: 'replace', label: 'Заменить открытый файл ' + fname }, { value: 'new', label: 'Сохранить в новый файл…' }] },
+        { key: 'target', main: true, label: 'Результат', type: 'select', value: 'replace', options: [{ value: 'replace', label: 'Заменить открытый файл ' + fname }, { value: 'new', label: 'Сохранить в новый файл…' }] },
         { key: 'backup', label: 'Оставить копию исходного файла (<имя>-original.las)', type: 'checkbox', value: true, showIf: function (v) { return v.target === 'replace'; },
           hint: 'Без копии исходный скан будет удалён без возможности вернуть.' },
-        { key: 'photo', label: 'Цвет по фото сканера (чёткий, как в Lixel Studio)', type: 'select', value: xb ? 'auto' : 'off', options: photoOpts,
+        { key: 'photo', main: !!xb, label: 'Цвет по фото', type: 'select', value: xb && !o.photoOff ? 'auto' : 'off', options: photoOpts,
           hint: 'Каждая точка заново получает цвет из 12-Мп кадров двух камер сканера (файл .xbin в папке проекта Lixel): по ближайшим и самым резким кадрам, с учётом заслонений; оператор и прохожие в кадре отбрасываются. Нужны время точек и траектория poses.csv, на диске — ещё около 1,7 размера файла. Занимает примерно минуту на минуту съёмки.' },
         { key: 'align', label: 'Свести проходы (исправить дрейф)', type: 'checkbox', value: true,
           hint: 'Повторные проходы realtime-карты сдвинуты на 2–4 см: рамы двоятся, у окон и арматуры «ореол». Поправка ищется по времени точек (как при пересчёте в Lixel Studio); с траекторией точнее.' },
@@ -541,26 +549,25 @@
     }, { onCancel: function () { try { api.cancelRefineScan(jobId); } catch (e) {} } });
     if (!res) return;
     if (!res.ok) { toast(res.cancelled ? 'Обработка отменена, файл не изменён' : ('Не удалось: ' + (res.message || res.error || 'ошибка'))); return; }
-    var st = res.stats || {}, parts = [], al = st.align || null, cb = st.colorBalance || null;
-    if (photo) parts.push(res.photo ? 'цвет по фото: ' + nfmt(res.photo.colored || 0) + ' точек по ' + nfmt(res.photo.frames || 0) + ' кадрам' : 'цвет по фото не применён (' + (res.photoWarning || 'ошибка') + '), цвет облака сохранён');
-    if (values.align !== false && al) parts.push(al.skipped ? 'проходы не сведены (' + al.skipped + ')' : 'проходы сведены: сдвиг до ' + (al.maxShift * 100).toFixed(1) + ' см, расхождение ' + (al.before * 1000).toFixed(1) + ' → ' + (al.after * 1000).toFixed(1) + ' мм' + (al.trajectory ? '' : ' (без траектории)'));
-    if (dyn) parts.push(res.dynWarning ? 'движущиеся объекты не найдены (' + res.dynWarning + ')' : 'движущиеся объекты: ' + nfmt(st.dynamic || 0) + (res.trajectory ? '' : ' (без траектории — стоявшие на месте люди могли остаться; укажите poses.csv)'));
-    if (values.noise) parts.push('шум: ' + nfmt(st.noise || 0));
-    if (values.thin) parts.push('выровнено: ' + nfmt(st.moved || 0));
-    if (values.color) parts.push('цвет: ' + nfmt(st.recolored || 0));
-    if (values.color && values.colorBalance !== false && cb && !cb.skipped) parts.push('яркость проходов' + (cb.segments ? ' выровнена (×' + cb.gainMin.toFixed(2) + '…×' + cb.gainMax.toFixed(2) + ')' : ' ровная') + (cb.gamma < 0.999 ? ', осветлено' : ''));
-    var msg = 'Сохранено ' + nfmt(st.written || 0) + ' из ' + nfmt(st.points || 0) + ' точек за ' + Math.max(1, Math.round((st.ms || 0) / 1000)) + ' с. ' + parts.join(' · ') + '.';
+    // ревизия 44: итог — одной короткой строкой, без технических подробностей
+    var st = res.stats || {}, parts = [], al = st.align || null;
+    if (values.noise) parts.push('шум −' + nfmt(st.noise || 0));
+    if (dyn) parts.push(res.dynWarning ? 'прохожие не найдены' : 'прохожие −' + nfmt(st.dynamic || 0));
+    if (values.align !== false && al && !al.skipped) parts.push('проходы сведены');
+    if (photo) parts.push(res.photo ? 'цвет по фото' : 'цвет по фото не применён');
+    if (values.thin || values.color) parts.push('стены и цвет выровнены');
+    var msg = 'Готово за ' + Math.max(1, Math.round((st.ms || 0) / 1000)) + ' с: ' + parts.join(', ') + '.';
     var k = window.__lxKit;
     if (inPlace && res.inPlace) {
       // файл заменён — сразу показываем обработанное облако (кеш старого облака сбрасывается)
       if (typeof window.__bimOpenCloudPath === 'function') await window.__bimOpenCloudPath(res.path, { fresh: true });
-      toast('Чистовая обработка: файл ' + (res.name || fname) + ' обновлён. ' + msg + (res.backupName ? ' Исходник: ' + res.backupName + '.' : ''));
+      toast('Файл обновлён. ' + msg + (res.backupName ? ' Исходник: ' + res.backupName + '.' : ''));
       return;
     }
     if (inPlace && !res.inPlace) msg = 'Открытый файл заменить не удалось (' + (res.replaceError || 'файл занят') + '), результат сохранён рядом: ' + (res.name || '') + '.\n\n' + msg;
     else msg += '\n\n' + (res.name || '');
     var open = false;
-    if (k && k.ask) { try { open = await k.ask({ title: 'Чистовая обработка готова', message: msg + '\n\nОткрыть обработанное облако?', okLabel: 'Открыть', cancelLabel: 'Позже' }); } catch (e) { open = false; } }
+    if (k && k.ask) { try { open = await k.ask({ title: 'Готово', message: msg + '\n\nОткрыть результат?', okLabel: 'Открыть', cancelLabel: 'Позже' }); } catch (e) { open = false; } }
     else toast(msg);
     if (open && typeof window.__bimOpenCloudPath === 'function') await window.__bimOpenCloudPath(res.path, { fresh: true });
   }
@@ -569,28 +576,30 @@
    * Автоматическая чистка одним действием (как «авто-очистка» в Lixel): шум и «облачка» в пустоте → люди → стены, пол и потолок ложатся
    * на ровные плоскости, «волосы» около них убираются. Перед применением — предпросмотр удаляемого красным; Ctrl+Z возвращает облако.
    */
-  async function opAutoClean() {
+  async function opAutoClean(o) {
+    o = o && typeof o === 'object' && !o.target ? o : {};
     var bigV = window.__viewer;
     if (bigV && typeof bigV.isBigCloud === 'function' && bigV.isBigCloud()) {
       // ревизия 20: большой скан из LAS — полная автоочистка по файлу (люди и их «копии», шум, «пыль», тонкие стены, цвет),
       // в окне — только быстрая чистка загруженной части
       var t = T(), api = t && t.api ? t.api() : null, file = cloudFilePath();
-      if (api && api.refineScan && file && /\.las$/i.test(file) && window.__lxKit && window.__lxKit.form) {
-        var how = await window.__lxKit.form({ title: 'Автоочистка', okLabel: 'Далее',
-          message: 'Большой скан очищается по файлу целиком: прохожие и их «копии», шум и «туман», «пыль» у стен, тонкие чёткие стены и пол, пёстрые точки. Результат записывается в LAS (по умолчанию — вместо открытого, с копией исходника).',
-          fields: [{ key: 'mode', label: 'Способ', type: 'select', value: 'full', options: [{ value: 'full', label: 'Полная по файлу (рекомендуется)' }, { value: 'quick', label: 'Быстрая в окне — только шум и мусор' }] }] });
-        if (!how) return;
-        if (how.mode !== 'quick') return opRefineScan({ title: 'Автоочистка' });
-      }
+      if (o.preset && api && api.refineScan && file && /\.las$/i.test(file)) { await opRefineScan({ title: o.deep ? 'Чистка до мелочей' : 'Автоочистка' }); return { ok: true, big: true, message: 'Большой скан: открыта полная очистка по файлу — параметры и запуск в её окне.' }; }
+      // ревизия 44: сразу полная очистка по файлу — без лишнего вопроса о способе
+      if (api && api.refineScan && file && /\.las$/i.test(file)) return opRefineScan({ title: 'Автоочистка' });
       var cb = document.getElementById('vtClean'); if (cb) { cb.click(); return; }
     }
     var LV = { soft: 'мягко', medium: 'средне', strong: 'сильно' }, PL = { strict: 'строго', normal: 'обычно', loose: 'мягко' };
+    // r42: запуск ассистентом — без формы параметров, но предпросмотр удаляемого красным и кнопка «Применить» обязательны
+    var deep = !!o.deep, pre = null;
+    // keepShape по умолчанию: стены, пол и потолок не «утюжатся» — иначе контроль геометрии покажет неправду; выровнять — только по явной просьбе (o.preset.keepShape: false)
+    if (o.preset) { pre = Object.assign({ level: deep ? 'strong' : 'medium', people: 'normal', flatten: true, kind: 'wall', tol: 0, hair: true, keepShape: true, micro: deep }, o.preset); pre.preview = true; }
     return processOp({
-      op: 'autoclean', label: 'Автоматическая чистка…', title: 'Автоматическая чистка',
-      message: 'Убирает «летающие» точки и облачка шума, прохожих и «волоски» вокруг стен, а стены, пол и потолок делает ровными плоскостями. Трубы, кабели, колонны и мелкие детали остаются. Людей ищет по форме (это эвристика, а не нейросеть): перед применением красным видно, что будет удалено.',
+      preset: pre,
+      op: deep ? 'deepclean' : 'autoclean', label: deep ? 'Чистка до мелочей…' : 'Автоматическая чистка…', title: deep ? 'Чистка до мелочей' : 'Автоматическая чистка',
+      message: 'Шум, прохожие, «волоски» у стен' + (deep ? ', дубли, обрывки, одиночные точки' : '') + '. Трубы и детали остаются. Перед удалением — показ красным.',
       fields: function (d) {
         return [
-          { key: 'level', label: 'Сила очистки от шума', type: 'select', value: 'medium', options: [{ value: 'soft', label: 'Мягко' }, { value: 'medium', label: 'Средне' }, { value: 'strong', label: 'Сильно' }],
+          { key: 'level', main: true, label: 'Сила', type: 'select', value: 'medium', options: [{ value: 'soft', label: 'Мягко' }, { value: 'medium', label: 'Средне' }, { value: 'strong', label: 'Сильно' }],
             hint: 'Мягко — только заведомый мусор; средне (рекомендуется); сильно — ещё и сгустки до 150 точек, но тонкие провода на редком скане могут пострадать.' },
           { key: 'people', label: 'Людей', type: 'select', value: 'normal', options: [{ value: 'off', label: 'Не удалять' }, { value: 'strict', label: 'Только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Больше (риск задеть колонны)' }] },
           { key: 'flatten', label: 'Выровнять стены, пол и потолок', type: 'checkbox', value: true },
@@ -598,30 +607,36 @@
             hint: 'Для сканов фасада сквозь стекло слой «размазан» на 5–10 см — выберите «Фасад, стекло».' },
           { key: 'tol', label: 'Допуск (толщина слоя)', type: 'number', value: d.flattenTol, min: 0.002, max: 0.5, step: 'any', unit: 'м', showIf: function (v) { return !!v.flatten && v.kind === 'wall'; }, hint: 'Точки ближе допуска к плоскости ложатся на неё. Для SLAM-сканеров 0,03–0,06 м, для точных сканеров меньше.' },
           { key: 'hair', label: 'Убрать «волоски» шума вокруг плоскостей', type: 'checkbox', value: true, showIf: function (v) { return !!v.flatten; } },
+          { key: 'keepShape', label: 'Не сдвигать точки стен и пола (только убрать лишнее)', type: 'checkbox', value: deep, showIf: function (v) { return !!v.flatten; },
+            hint: 'Включите, если по облаку будет контроль геометрии: завалы и неровности останутся настоящими, «волоски» шума всё равно уйдут.' },
+          { key: 'micro', label: 'Убрать самые мелкие: одиночные точки и пары в пустоте', type: 'checkbox', value: deep, showIf: function () { return deep; } },
           { key: 'preview', label: 'Показать удаляемое красным и спросить', type: 'checkbox', value: true }
         ];
       },
       params: function (v, d) {
         var fac = v.kind === 'facade';
-        return { level: v.level, people: v.people !== 'off', peopleLevel: v.people === 'off' ? 'normal' : v.people, flatten: !!v.flatten, facade: fac, tol: fac ? 0.12 : v.tol, hair: !!v.hair, strength: 1 };
+        return { level: v.level, people: v.people !== 'off', peopleLevel: v.people === 'off' ? 'normal' : v.people, flatten: !!v.flatten, facade: fac, tol: fac ? 0.12 : (v.tol > 0 ? v.tol : d.flattenTol), hair: !!v.hair, strength: v.keepShape ? 0 : 1, dupes: deep, fragments: deep, far: deep, micro: deep && !!v.micro };
       },
       review: function (res, c, v) {
         if (!v.preview || !res.removed) return true;
         return previewRemoval(c, res.remove, { noun: 'точек', color: '#ff3b4a', okLabel: 'Применить чистку', who: res.stats && res.stats.peopleFound ? res.stats.peopleFound : undefined });
       },
       finish: function (res, c, v) {
-        var st = res.stats || {}, moved = st.moved || 0;
+        var st = res.stats || {}, moved = v.keepShape ? 0 : (st.moved || 0);   // keepShape: «волоски» убраны, но точки стен не сдвигаются (замеры не искажаются)
         if (!res.removed && !moved) { toast('Автоматическая чистка: ничего лишнего не найдено (шум: ' + (LV[v.level] || v.level) + ')'); return null; }
         var keep = keptIndices(res.remove, c.count);
         if (!keep.length) { toast('Удалились бы все точки — операция отменена'); return null; }
         var cl = subsetCloud(c, keep);
         if (res.pos && moved) cl.pos = engine().gather(res.pos, keep, 3);   // выровненные координаты оставшихся точек
         return { cloud: cl, name: 'auto-clean',
-          details: { operation: 'cloud.autoClean', parameters: { algorithm: 'density-noise+people-shape+plane-flatten', level: v.level, people: v.people, flatten: !!v.flatten, surface: v.kind === 'facade' ? 'facade' : 'wall', tolerance: v.kind === 'facade' ? 0.12 : v.tol, hair: !!v.hair, noise: st.noise, peopleRemoved: st.people, peopleObjects: st.peopleFound, hairRemoved: st.hair, planes: st.planes, moved: moved, rmsShift: st.rmsShift, removed: res.removed, kept: keep.length } },
-          text: 'Автоочистка: удалено ' + nfmt(res.removed) + ' точек (' + num(res.removed / c.count * 100, res.removed / c.count < 0.01 ? 3 : 1) + ' %: шум ' + nfmt(st.noise || 0) + ', люди ' + nfmt(st.people || 0) + ', «волоски» ' + nfmt(st.hair || 0) + ')' + (moved ? '; выровнено плоскостей ' + nfmt(st.planes || 0) + ', сдвинуто ' + nfmt(moved) + ' точек, средний сдвиг ' + mm(st.rmsShift || 0) : '') };
+          details: { operation: deep ? 'cloud.deepClean' : 'cloud.autoClean', parameters: { algorithm: deep ? 'dupes+density-noise+people-shape+plane-flatten+fragments+far' : 'density-noise+people-shape+plane-flatten', dupes: deep ? st.dupes : undefined, fragments: deep ? st.fragments : undefined, far: deep ? st.far : undefined, micro: deep ? st.micro : undefined, level: v.level, people: v.people, flatten: !!v.flatten && !v.keepShape, keepShape: !!v.keepShape || undefined, surface: v.kind === 'facade' ? 'facade' : 'wall', tolerance: v.kind === 'facade' ? 0.12 : v.tol, hair: !!v.hair, noise: st.noise, peopleRemoved: st.people, peopleObjects: st.peopleFound, hairRemoved: st.hair, planes: st.planes, moved: moved, rmsShift: st.rmsShift, removed: res.removed, kept: keep.length } },
+          text: (deep ? 'Чистка до мелочей' : 'Автоочистка') + ': удалено ' + nfmt(res.removed) + ' точек (' + num(res.removed / c.count * 100, res.removed / c.count < 0.01 ? 3 : 1) + ' %: шум ' + nfmt(st.noise || 0) + ', люди ' + nfmt(st.people || 0) + ', «волоски» ' + nfmt(st.hair || 0) + (deep ? ', дубли ' + nfmt(st.dupes || 0) + ', неверные ' + nfmt(st.invalid || 0) + ', летающие обрывки ' + nfmt(st.fragments || 0) + ' (' + nfmt(st.fragmentGroups || 0) + ' гр.), далёкие выбросы ' + nfmt(st.far || 0) + (st.micro ? ', одиночные ' + nfmt(st.micro) : '') : '') + ')' + (moved ? '; выровнено плоскостей ' + nfmt(st.planes || 0) + ', сдвинуто ' + nfmt(moved) + ' точек, средний сдвиг ' + mm(st.rmsShift || 0) : '') };
       }
     });
   }
+
+  /** r42: «Чистка до мелочей» с ленты — та же форма автоочистки, плюс дубли, летающие обрывки и далёкие выбросы. */
+  function opDeepClean() { return opAutoClean({ deep: true }); }
 
   function opSmooth() {
     return processOp({
@@ -838,7 +853,7 @@
     var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
   }
   if (typeof window !== 'undefined') {
-    window.__lxToolsExt = { build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDynClean: opDynClean, opRefineScan: opRefineScan, opScanFolder: opScanFolder, opXbinCloud: opXbinCloud, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.__lxToolsExt = { isBusy: function () { return busy; }, build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDeepClean: opDeepClean, opDynClean: opDynClean, opRefineScan: opRefineScan, opScanFolder: opScanFolder, opXbinCloud: opXbinCloud, opPhotoColor: opPhotoColor, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
     window.addEventListener('lx-pctools-ready', boot);
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });
