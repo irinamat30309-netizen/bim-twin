@@ -4,6 +4,7 @@ const { parentPort, workerData } = require('node:worker_threads');
 const R = require('./scan-refine-core');
 const RP = require('./scan-refine-parallel');   // ревизия 45: плитки — на всех ядрах
 const D = require('./dynamic-clean-core');
+const CB = require('./color-balance-core');
 (async () => { try {
   const { src, out, tmpDir, posesText, dynOpt, opt } = workerData || {};
   let last = -1;
@@ -11,6 +12,8 @@ const D = require('./dynamic-clean-core');
   const o = Object.assign({}, opt || {}, { tmpDir });
   let dynWarning = null, dynStats = null, base = 0;
   o.dynamic = null;
+  // ревизия 48: насыщенность как у Lixel Studio на фасаде с двором (0,73; в scan-refine-core по умолчанию 0,8); colorBalanceOpt переопределяет
+  o.colorBalanceOpt = Object.assign({ saturation: CB.LIXEL_SATURATION }, o.colorBalanceOpt || {});
   o.posesText = posesText || null;   // ревизия 21: траектория и для сведения проходов (поворот вокруг положения сканера)
   // ревизия 19: движущиеся объекты и без траектории — по «следам» во времени точек LAS
   if (opt && opt.dynamic) {

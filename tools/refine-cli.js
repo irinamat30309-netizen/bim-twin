@@ -12,4 +12,5 @@ if (poses && poses !== '-') {
   opt.dynamic = { keys: v.keys, grid: v.grid };
 }
 delete opt.dyn;
+opt.colorBalanceOpt = Object.assign({ saturation: require('../color-balance-core').LIXEL_SATURATION }, opt.colorBalanceOpt || {});   // ревизия 48 — как в приложении
 console.log(JSON.stringify(R.refine(src, dst, opt, log)));

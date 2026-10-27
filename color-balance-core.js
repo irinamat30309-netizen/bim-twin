@@ -139,15 +139,22 @@ function solve(smp, opt) {
     const hmed = (h) => hq(h, 0.5);
     if (opt.neutral && nn >= 1000 && nn >= 0.02 * tot) {
       const md = hist.map(hmed), avg = (md[0] + md[1] + md[2]) / 3;
-      res.wb = md.map(v => Math.max(0.85, Math.min(1.18, avg / Math.max(1, v))));
+      // ревизия 48: серые у Lixel чуть тёплые (log R/G ≈ +0,02…0,03, B/G ≈ 0) — цель баланса wbTarget, по умолчанию [1,035, 1, 0,995]
+      const tg = Array.isArray(opt.wbTarget) && opt.wbTarget.length === 3 ? opt.wbTarget : [1.035, 1, 0.995];
+      res.wb = md.map((v, a) => Math.max(0.85, Math.min(1.18, avg / Math.max(1, v) * tg[a])));
     }
     if (opt.brighten) {
       const wm = (res.wb[0] + res.wb[1] + res.wb[2]) / 3, mL = hmed(hl) * wm;
       if (opt.tone === 'gamma') { if (mL > 5 && mL < 110) res.gamma = Math.max(0.6, Math.min(1, Math.log(0.5) / Math.log(mL / 255))); }
       else if (mL > 5 && mL < 120) {
         // ревизия 46: тоновая кривая — тени как есть, середина ×gain (медиана → ≈140, не больше ×1,4: у Lixel кривая почти постоянная, ×1,36–1,38 и на фасаде, и во дворе), плечо до 255
-        const gain = Math.max(1, Math.min(opt.toneGainMax || 1.4, (opt.toneTarget || 140) / mL)), dark = Math.max(6, Math.min(50, hq(hl, 0.1) * wm));
-        if (gain > 1.03) res.tone = { gain: Math.round(gain * 1000) / 1000, dark: Math.round(dark * 10) / 10, knee: opt.toneKnee || 170 };
+        // ревизия 48 (сверка всего облака «фасад + двор», 174 тыс. ячеек 5 см): у Lixel усиление ≈×1,36 почти постоянное и в тенях
+        // (квантили 10,5 → 16,7, 18,7 → 26,5; при «тенях как есть» наши тени были в 1,4–1,6 раза темнее), плечо — с ≈185;
+        // toneShadows: 'keep' — прежняя кривая r46 (тени до 10-го процентиля без изменений, плечо 170)
+        const keep = opt.toneShadows === 'keep';
+        const gain = Math.max(1, Math.min(opt.toneGainMax || (keep ? 1.4 : 1.36), (opt.toneTarget || 140) / mL)), dark = Math.max(6, Math.min(50, hq(hl, 0.1) * wm));
+        if (gain > 1.03) res.tone = keep ? { gain: Math.round(gain * 1000) / 1000, dark: Math.round(dark * 10) / 10, knee: opt.toneKnee || 170 }
+          : { gain: Math.round(gain * 1000) / 1000, dark: 0, lift: opt.toneLift !== undefined ? opt.toneLift : 2.5, knee: opt.toneKnee || 185 };
         if (res.tone) res.tone.mode = opt.toneMode === 'channel' ? 'channel' : 'lum';
       }
     }
@@ -167,11 +174,14 @@ function solve(smp, opt) {
  * уровня knee, дальше прямая до (255, 255); изломы сглажены (скользящее среднее ±6 единиц), кривая монотонная.
  */
 function toneLUT(tn) {
-  const N = 4097, raw = new Float64Array(N), d = tn.dark, g = tn.gain, K = Math.max(d + 10, Math.min(240, tn.knee || 170));
-  const vk = d + (K - d) / g;   // вход, на котором кривая достигает knee
+  const N = 4097, raw = new Float64Array(N), g = tn.gain, lift = tn.lift > 0 ? tn.lift : 0, d = tn.lift !== undefined ? 0 : tn.dark;
+  const K = Math.max(d + lift + 10, Math.min(240, tn.knee || 170));
+  // ревизия 48: lift задан — усиление от нуля и мягкий подъём чёрного (+lift к 8 единицам); иначе прежняя кривая r46 (тени до dark как есть)
+  const vk = tn.lift !== undefined ? (K - lift) / g : d + (K - d) / g;   // вход, на котором кривая достигает knee
   for (let k = 0; k < N; k++) {
     const v = k / 16;
-    raw[k] = v <= d ? v : (v <= vk ? d + g * (v - d) : K + (255 - K) * (v - vk) / Math.max(1e-6, 256 - vk));
+    if (tn.lift !== undefined) raw[k] = v <= vk ? g * v + lift * Math.min(1, v / 8) : K + (255 - K) * (v - vk) / Math.max(1e-6, 256 - vk);
+    else raw[k] = v <= d ? v : (v <= vk ? d + g * (v - d) : K + (255 - K) * (v - vk) / Math.max(1e-6, 256 - vk));
   }
   const L = new Float32Array(N), w = 96; let s = 0;   // ±6 единиц
   const at = (k) => k < 0 ? raw[0] + (raw[1] - raw[0]) * k : (k >= N ? raw[N - 1] + (raw[N - 1] - raw[N - 2]) * (k - N + 1) : raw[k]);
@@ -222,4 +232,6 @@ function makeToneFix(sol) {
   };
 }
 
-module.exports = { solve, makeColorFix, makeToneFix, cholSolveMulti, toneLUT };
+// ревизия 48: насыщенность чистовой обработки в приложении (scan-refine-worker.js) — медиана цветности как у Lixel (0,188 при 0,8 → 0,172)
+const LIXEL_SATURATION = 0.73;
+module.exports = { solve, makeColorFix, makeToneFix, cholSolveMulti, toneLUT, LIXEL_SATURATION };
