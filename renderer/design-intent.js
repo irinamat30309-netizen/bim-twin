@@ -1,0 +1,7 @@
+/* Design-intent map for demo verification (mirrors ai/design_intent.json). */
+window.DESIGN_INTENT = {
+  el_1011: { section: '500x300', model_section: '600x300', note: 'воздуховод ВШ-1' },
+  el_1012: { model: 'ПВ-1', passport: 'ПВ-1' },
+  el_2011: { load_kg: 480, floor_limit_kg: 500 },
+  el_2022: { area_design: 10.0, area_model: 10.8 }
+};

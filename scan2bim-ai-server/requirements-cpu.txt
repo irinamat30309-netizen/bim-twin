@@ -1,0 +1,14 @@
+# Scan2BIM AI server - CORE CPU dependencies (must install reliably).
+# The server needs only fastapi + uvicorn + python-multipart + numpy to BOOT.
+# scipy / scikit-image / shapely only IMPROVE wall/opening/pipe quality and
+# degrade gracefully if missing.
+# Heavy optional packages (open3d, ifcopenshell, pyransac3d) are NOT imported by
+# the server and are installed best-effort by the setup scripts - never here,
+# so a failing optional wheel can never block the server from starting.
+numpy>=1.24
+scipy>=1.10
+scikit-image>=0.21
+shapely>=2.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9

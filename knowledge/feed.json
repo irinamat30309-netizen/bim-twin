@@ -1,0 +1,41 @@
+{
+ "format": "bim-twin-feed",
+ "version": 1,
+ "name": "Базы BIM Twin",
+ "updated": "2026-10-24",
+ "items": [
+  {
+   "id": "model-recommended",
+   "kind": "model",
+   "version": "2026.11.1",
+   "title": "Рекомендуемая модель",
+   "url": "model-recommended.json",
+   "sha256": "7c70c5225e34bebc4e784da34e44232d61ab5894caafe20583f608a31610588e",
+   "size": 370,
+   "published": "2026-10-24",
+   "notes": ""
+  },
+  {
+   "id": "norms-status",
+   "kind": "status",
+   "version": "2026.11.1",
+   "title": "Актуальность норм",
+   "url": "norms-status.json",
+   "sha256": "8acbd5d3c59712cb02eaa770e56bba21f5c228936439aa38c9ebecd7036d0714",
+   "size": 2413,
+   "published": "2026-10-24",
+   "notes": ""
+  },
+  {
+   "id": "skills-engineer",
+   "kind": "knowledge",
+   "version": "2026.11.1",
+   "title": "Навыки и правила инженера",
+   "url": "skills-engineer.json",
+   "sha256": "8fd2810f81f20524dfcc213bec87f52344840a11f2ee5d62a8e75ef1e77ba032",
+   "size": 3583,
+   "published": "2026-10-24",
+   "notes": ""
+  }
+ ]
+}
