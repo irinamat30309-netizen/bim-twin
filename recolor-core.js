@@ -28,7 +28,8 @@ const RGB_OFF = { 2: 20, 3: 28, 5: 28, 7: 30, 8: 30, 10: 30 };
 const T_OFF = { 1: 20, 3: 20, 4: 20, 5: 20, 6: 22, 7: 22, 8: 22, 9: 22, 10: 22 };
 
 const DEF = { window: 2.5, bucket: 2, K: 4, cell: 8, thetaMax: 1.35, thetaSharp: 0.95, dMin: 0.45, dMax: 35, depthRel: 0.04, depthRel3: 0.25, depthAbs: 0.05,
-  pilotFrames: 160, minCorr: 0.3, agree: 75, maskGrid: [40, 30], prefetch: 3, minPoints: 1000 };
+  pilotFrames: 160, minCorr: 0.3, agree: 75, maskGrid: [40, 30], prefetch: 3, minPoints: 1000,
+  align: true, alignPts: 8000, alignMax: 1.5, alignMin: 300 };
 
 // ---- траектория с ориентацией: t,x,y,z,qx,qy,qz,qw (poses.csv Lixel) ----
 function parsePoses(text) {
@@ -188,6 +189,78 @@ function resolveColor(qK, cK, base, K, agree, out) {
  * recolor(src, dst, { index, posesText, decode, onProgress, tmpDir, opt }) → Promise<stats>
  *   index — результат xbin-core.open(); decode(bytes, frame) — декодер кадра; результат dst — копия src с новым RGB.
  */
+// ---- ревизия 47: уточнение ориентации кадра ----
+// малый поворот (градусы, в осях камеры) поверх позы: A' = R(δ)·A; R = Rz·Ry·Rx
+function rotDeg(ax, ay, az) {
+  const D = Math.PI / 180, cx = Math.cos(ax * D), sx = Math.sin(ax * D), cy = Math.cos(ay * D), sy = Math.sin(ay * D), cz = Math.cos(az * D), sz = Math.sin(az * D);
+  return [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx, sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx, -sy, cy * sx, cy * cx];
+}
+function applyRot(R, A) {
+  const O = Float64Array.from(A);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) O[r * 4 + c] = R[r * 3] * A[c] + R[r * 3 + 1] * A[4 + c] + R[r * 3 + 2] * A[8 + c];
+  return O;
+}
+function lumaAt(img, u, v) {   // яркость Y кадра, билинейно
+  const w = img.w, h = img.h; if (u < 0 || v < 0 || u > w - 1.001 || v > h - 1.001) return -1;
+  const x0 = u | 0, y0 = v | 0, fx = u - x0, fy = v - y0, Y = img.Y, sY = img.sY, p = y0 * sY + x0;
+  return (Y[p] * (1 - fx) + Y[p + 1] * fx) * (1 - fy) + (Y[p + sY] * (1 - fx) + Y[p + sY + 1] * fx) * fy;
+}
+// Поворот кадра (до alignMax°), при котором яркость кадра лучше всего совпадает с цветом облака в окне кадра:
+// корреляция по выборке до alignPts точек, поиск по координатам 0,4° → 0,05°, старт — поправка прошлого кадра той же камеры.
+// → { A, ang, gain } или null (мало точек или поправка не улучшает совпадение заметно).
+// направления поиска: 6 осевых (по умолчанию) или все 26 соседей куба ('full', как в первой версии r47 — в 4–5 раз дольше)
+const D6 = [1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1], D26 = [];
+for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) if (dx || dy || dz) D26.push(dx, dy, dz);
+function alignFrame(project, pts, A, tl, o, img, start, R) {
+  let tot = 0; for (const B of pts) for (let i = 0; i < B.n; i++) if (Math.abs(B.T[i] - tl) <= o.window) tot++;
+  if (tot < o.alignMin) return null;
+  // выборка ~3·alignPts точек окна → видимые (z-буфер по выборке, исходная поза) → до alignPts точек в осях камеры
+  const step = Math.max(1, Math.ceil(tot / (3 * o.alignPts))), m = Math.ceil(tot / step) + 1;
+  const S = { n: 0, P: new Float32Array(m * 3), T: new Float32Array(m), L: new Float32Array(m) };
+  let k = 0;
+  for (const B of pts) for (let i = 0; i < B.n; i++) {
+    if (Math.abs(B.T[i] - tl) > o.window) continue; if ((k++ % step) !== 0 || S.n >= m) continue;
+    const j = S.n++; S.P[j * 3] = B.P[i * 3]; S.P[j * 3 + 1] = B.P[i * 3 + 1]; S.P[j * 3 + 2] = B.P[i * 3 + 2]; S.T[j] = B.T[i]; S.L[j] = B.L[i];
+  }
+  const vis = []; project([S], A, tl, o.window, (B, i) => { vis.push(i); });
+  if (vis.length < o.alignMin) return null;
+  const vs = Math.max(1, Math.ceil(vis.length / o.alignPts)), n = Math.ceil(vis.length / vs);
+  const C = new Float64Array(n * 3), Lv = new Float64Array(n);
+  for (let q = 0, t = 0; q < vis.length && t < n; q += vs, t++) {
+    const i = vis[q], px = S.P[i * 3], py = S.P[i * 3 + 1], pz = S.P[i * 3 + 2];
+    C[t * 3] = A[0] * px + A[1] * py + A[2] * pz + A[3]; C[t * 3 + 1] = A[4] * px + A[5] * py + A[6] * pz + A[7]; C[t * 3 + 2] = A[8] * px + A[9] * py + A[10] * pz + A[11]; Lv[t] = S.L[i];
+  }
+  const uv = new Float64Array(3), cosM = Math.cos(o.thetaMax);
+  const corrOf = (ax, ay, az) => {
+    const Rr = rotDeg(ax, ay, az); let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, c = 0;
+    for (let t = 0; t < n; t++) {
+      const x0 = C[t * 3], y0 = C[t * 3 + 1], z0 = C[t * 3 + 2];
+      const x = Rr[0] * x0 + Rr[1] * y0 + Rr[2] * z0, y = Rr[3] * x0 + Rr[4] * y0 + Rr[5] * z0, z = Rr[6] * x0 + Rr[7] * y0 + Rr[8] * z0;
+      if (z < Math.sqrt(x * x + y * y + z * z) * cosM) continue;
+      projectKB4(R, x, y, z, uv); const lx = lumaAt(img, uv[0], uv[1]); if (lx < 0) continue;
+      const ly = Lv[t]; sx += lx; sy += ly; sxx += lx * lx; syy += ly * ly; sxy += lx * ly; c++;
+    }
+    if (c < o.alignMin) return -2;
+    const vx = sxx - sx * sx / c, vy = syy - sy * sy / c; return vx > 0 && vy > 0 ? (sxy - sx * sy / c) / Math.sqrt(vx * vy) : -2;
+  };
+  const c0 = corrOf(0, 0, 0); if (c0 <= -1) return null;
+  let best = [0, 0, 0], bc = c0, st0 = 0.4;
+  if (start && (start[0] || start[1] || start[2])) { const cs = corrOf(start[0], start[1], start[2]); if (cs > bc) { bc = cs; best = start.slice(); st0 = 0.2; } }
+  const lim = o.alignMax, full = o.alignSearch === 'full';
+  for (let st = st0; st >= 0.05 - 1e-9; st /= 2) {
+    let moved = true, guard = 0;
+    const D = full ? D26 : D6;
+    while (moved && guard++ < (full ? 3 : 6)) {
+      moved = false; const [bx, by, bz] = best;
+      for (let q = 0; q < D.length; q += 3) {
+        const x = bx + D[q] * st, y = by + D[q + 1] * st, z = bz + D[q + 2] * st; if (Math.abs(x) > lim || Math.abs(y) > lim || Math.abs(z) > lim) continue;
+        const c = corrOf(x, y, z); if (c > bc + 1e-4) { bc = c; best = [x, y, z]; moved = true; }
+      }
+    }
+  }
+  if (!(bc > c0 + 0.005)) return null;
+  return { A: applyRot(rotDeg(best[0], best[1], best[2]), A), ang: best, gain: bc - c0 };
+}
 async function recolor(src, dst, a) {
   const o = Object.assign({}, DEF, (a && a.opt) || {});
   const prog = typeof a.onProgress === 'function' ? a.onProgress : () => {};
@@ -301,8 +374,11 @@ async function recolor(src, dst, a) {
     });
     // ---- 3: основной проход по кадрам; корзины держатся в памяти, пока их видят кадры окна
     const K = o.K, live = new Map(); let doneB = -1, colored = 0, views = 0;
+    // ревизия 47: уточнение ориентации каждого кадра по облаку (поза из poses.csv ошибается на 0,1–0,8° — 2–13 пикселей кадра,
+    // из-за этого соседние точки брали цвет из по-разному сдвинутых кадров: «зерно» и размытые края)
+    const doAlign = !!o.align && !fromXbinLidar, alignPrev = RG.map(() => [0, 0, 0]), alignStat = { frames: 0, used: 0, gain: 0, deg: 0 };
     const cfile = (b) => path.join(tmp, b + '.c');
-    const ensure = (b) => { let B = live.get(b); if (B !== undefined) return B; B = loadBucket(b); if (B) { B.q = new Float32Array(B.n * K); B.c = new Uint32Array(B.n * K); B.L = null; } live.set(b, B); return B; };
+    const ensure = (b) => { let B = live.get(b); if (B !== undefined) return B; B = loadBucket(b); if (B) { B.q = new Float32Array(B.n * K); B.c = new Uint32Array(B.n * K); if (!doAlign) B.L = null; } live.set(b, B); return B; };
     const out3 = new Float64Array(3);
     const finalize = (b) => {
       const B = live.get(b); live.delete(b);
@@ -324,7 +400,9 @@ async function recolor(src, dst, a) {
       const img = await p;
       if (!pts.length) { if (img.close) img.close(); continue; }
       const M = masks[RG.indexOf(f.R)].M, iw = img.w, ih = img.h;
-      projs.get(f.R)(pts, toLocal(camPose(f)), tl, o.window, (B, i, u, v, th, d) => {
+      let Acw = toLocal(camPose(f));
+      if (doAlign) { const ri = RG.indexOf(f.R), r = alignFrame(projs.get(f.R), pts, Acw, tl, o, img, alignPrev[ri], f.R); alignStat.frames++; if (r) { Acw = r.A; alignPrev[ri] = r.ang; alignStat.used++; alignStat.gain += r.gain; alignStat.deg += Math.hypot(r.ang[0], r.ang[1], r.ang[2]); } }
+      projs.get(f.R)(pts, Acw, tl, o.window, (B, i, u, v, th, d) => {
         const mk = M[Math.min(mgh - 1, (v / ih * mgh) | 0) * mgw + Math.min(mgw - 1, (u / iw * mgw) | 0)]; if (mk <= 0) return;
         const dt = (B.T[i] - tl) / o.window;
         const fth = th <= cosS ? 1 : Math.max(0, (thM - th) / (thM - cosS));
@@ -367,7 +445,8 @@ async function recolor(src, dst, a) {
     if (size > end) { const tail = Buffer.alloc(Math.min(size - end, 64 << 20)); fs.readSync(fd, tail, 0, tail.length, end); fs.writeSync(ofd, tail, 0, tail.length, wpos); }
     for (const R of rd) if (R && R.fd) fs.closeSync(R.fd);
     fs.closeSync(ofd); ofd = null;
-    return { points: H.n, inWindow: inWin, colored: changed, frames: frames.length, views, corr: +corr.toFixed(3), masked: masks.map(m => m.off), cameras: RG.length, lidarCloud: fromXbinLidar, ms: Date.now() - t0ms, color16: c16 };
+    return { points: H.n, inWindow: inWin, colored: changed, frames: frames.length, views, corr: +corr.toFixed(3), masked: masks.map(m => m.off), cameras: RG.length, lidarCloud: fromXbinLidar, ms: Date.now() - t0ms, color16: c16,
+      align: doAlign ? { frames: alignStat.frames, used: alignStat.used, corrGain: alignStat.used ? +(alignStat.gain / alignStat.used).toFixed(3) : 0, meanDeg: alignStat.used ? +(alignStat.deg / alignStat.used).toFixed(3) : 0 } : null };
   } finally {
     try { fs.closeSync(fd); } catch (_) {}
     if (xfd !== null) { try { fs.closeSync(xfd); } catch (_) {} }
@@ -376,4 +455,4 @@ async function recolor(src, dst, a) {
   }
 }
 
-module.exports = { recolor, parsePoses, poseAt, rigs, projectKB4, sampleRGB, resolveColor, makeProjector, mul4, invRigid, readHeader, DEF };
+module.exports = { recolor, alignFrame, rotDeg, applyRot, lumaAt, parsePoses, poseAt, rigs, projectKB4, sampleRGB, resolveColor, makeProjector, mul4, invRigid, readHeader, DEF };
