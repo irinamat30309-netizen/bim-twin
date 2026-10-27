@@ -56,7 +56,10 @@ test('r46: тоновая кривая — тени не трогаются, с�
   const s1 = CB.solve(sampler(D), {});
   assert.ok(s1.tone && s1.tone.gain > 1.2 && s1.tone.gain <= 1.4 && s1.gamma === 1, JSON.stringify(s1.stats));
   const fix = CB.makeColorFix(s1), lo = [10, 10, 10], mid = [80, 80, 80], hi = [255, 255, 255]; fix(0, lo, 0); fix(0, mid, 0); fix(0, hi, 0);
-  assert.ok(lo[1] < 13 && mid[1] > 88 && hi[1] > 235, lo + ' ' + mid + ' ' + hi);
+  // ревизия 48: усиление и в тенях (как у Lixel на фасаде с двором), прежние «тени как есть» — toneShadows: 'keep'
+  assert.ok(lo[1] > 13 && lo[1] < 18 && mid[1] > 88 && hi[1] > 235, lo + ' ' + mid + ' ' + hi);
+  const k1 = CB.solve(sampler(D), { toneShadows: 'keep' }), kf = CB.makeColorFix(k1), lo2 = [10, 10, 10]; kf(0, lo2, 0);
+  assert.ok(k1.tone && k1.tone.dark > 0 && lo2[1] < 13, JSON.stringify(k1.stats) + ' ' + lo2);
   const s2 = CB.solve(sampler(D), { tone: 'gamma' }); assert.ok(s2.gamma < 0.95 && !s2.tone, JSON.stringify(s2.stats));
   const Br = room({ gainB: 1 }); for (let i = 0; i < Br.n * 3; i++) Br.C[i] = Math.min(255, Br.C[i] * 1.15);
   const s3 = CB.solve(sampler(Br), {}); assert.ok(!s3.tone && s3.gamma === 1, JSON.stringify(s3.stats));

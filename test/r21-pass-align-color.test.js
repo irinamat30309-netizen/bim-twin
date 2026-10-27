@@ -80,7 +80,8 @@ test('r21: ровный цвет — без перепадов ничего не
   for (let i = 0; i < S.n * 3; i++) S.C[i] = Math.min(255, S.C[i] * 1.15);
   const sol = CB.solve(sampler(S, true), {});
   assert.ok(sol.S === 1 || sol.stats.gainMax / sol.stats.gainMin < 1.08, 'ложные перепады: ' + JSON.stringify(sol.stats));
-  assert.ok(sol.wb.every(v => Math.abs(v - 1) < 0.03), 'баланс ' + sol.wb); assert.strictEqual(sol.gamma, 1);
+  // ревизия 48: цель баланса — чуть тёплые серые, как у Lixel (wbTarget [1,035, 1, 0,995]); у нейтрального облака баланс ≈ цели
+  assert.ok(sol.wb.every((v, a) => Math.abs(v / [1.035, 1, 0.995][a] - 1) < 0.03), 'баланс ' + sol.wb); assert.strictEqual(sol.gamma, 1);
   // синий оттенок и тёмное облако → баланс снимает оттенок с серых поверхностей, гамма осветляет
   const D = room({ shift: [0, 0, 0], gainB: 1, cast: [0.62, 0.62, 0.72] });
   const s2 = CB.solve(sampler(D, true), {});
