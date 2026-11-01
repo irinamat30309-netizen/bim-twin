@@ -40,7 +40,8 @@ test('r48: кривая с подъёмом теней — монотонная,
 });
 
 test('r48: решение по умолчанию — усиление не больше 1,36, тени ярче, серые чуть тёплые; toneShadows: keep — как в r46', () => {
-  const S = scene(120000, 0.55), s = CB.solve(sampler(S), {});
+  // ревизия 49: по умолчанию кривая r49 (×1,32 / +6 / плечо 165, test/r49-lixel-full.test.js); кривая r48 — явными настройками
+  const S = scene(120000, 0.55), s = CB.solve(sampler(S), { toneGainMax: 1.36, toneLift: 2.5, toneKnee: 185 });
   assert.ok(s.tone && s.tone.lift === 2.5 && s.tone.dark === 0 && s.tone.knee === 185 && s.tone.gain > 1.2 && s.tone.gain <= 1.36, JSON.stringify(s.stats));
   const fix = CB.makeColorFix(s), g = [70, 70, 70], d = [12, 12, 12]; fix(0, g, 0); fix(0, d, 0);
   assert.ok(g[0] / g[1] > 1.015 && g[0] / g[1] < 1.06 && Math.abs(g[2] / g[1] - 1) < 0.03, 'серый: ' + g.map(v => v.toFixed(1)));
@@ -63,8 +64,9 @@ test('r48: чистовая обработка в приложении (scan-ref
     for (let i = 0; i < S.n; i++) { pts[i * 4] = S.P[i * 3]; pts[i * 4 + 1] = S.P[i * 3 + 1]; pts[i * 4 + 2] = S.P[i * 3 + 2]; pts[i * 4 + 3] = S.T[i]; for (let a = 0; a < 3; a++) rgb[i * 3 + a] = Math.round(S.C[i * 3 + a]); }
     SC.writeLas(path.join(dir, 's.las'), pts, rgb);
     const a = await run(path.join(dir, 'a.las'), { noiseLevel: 'strong', threads: 1 });
-    assert.ok(a.ok && a.stats.colorBalance && a.stats.colorBalance.sat === CB.LIXEL_SATURATION && CB.LIXEL_SATURATION === 0.73, JSON.stringify(a));
-    assert.ok(a.stats.colorBalance.tone && a.stats.colorBalance.tone.lift === 2.5, JSON.stringify(a.stats.colorBalance));
+    // ревизия 49: насыщенность карты сканера 0,75 (было 0,73), подъём чёрного +6 (было +2,5)
+    assert.ok(a.ok && a.stats.colorBalance && a.stats.colorBalance.sat === CB.LIXEL_SATURATION && CB.LIXEL_SATURATION === 0.75, JSON.stringify(a));
+    assert.ok(a.stats.colorBalance.tone && a.stats.colorBalance.tone.lift === 6, JSON.stringify(a.stats.colorBalance));
     const b = await run(path.join(dir, 'b.las'), { noiseLevel: 'strong', threads: 1, colorBalanceOpt: { saturation: 0.8, toneShadows: 'keep' } });
     assert.ok(b.ok && b.stats.colorBalance.sat === 0.8 && b.stats.colorBalance.tone && b.stats.colorBalance.tone.lift === undefined, JSON.stringify(b.stats.colorBalance));
     // ядро без приложения — прежняя насыщенность 0,8
