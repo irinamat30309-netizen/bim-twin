@@ -34,7 +34,8 @@ test('r45: несколько потоков — тот же LAS байт в б�
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r45-'));
   try {
     const src = path.join(dir, 'room.las'); roomLas(src, 200000);
-    const cases = [{ noiseLevel: 'strong', tileMax: 30000, posesText: poses(), dynamic: dyn() }, { noiseLevel: 'normal', tileMax: 45000, color: false, align: false }];
+    const cases = [{ noiseLevel: 'strong', tileMax: 30000, posesText: poses(), dynamic: dyn(), degrain: false },   // r50: сглаживание зерна — только в плитках пула
+      { noiseLevel: 'normal', tileMax: 45000, color: false, align: false }];
     for (const o of cases) {
       const a = path.join(dir, 'a.las'), b = path.join(dir, 'b.las');
       const sa = R.refine(src, a, Object.assign({ tmpDir: dir }, o));

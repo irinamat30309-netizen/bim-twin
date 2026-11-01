@@ -143,7 +143,7 @@ test('r46: чистовая обработка — без чёрных точе�
   try {
     const src = path.join(dir, 'room.las'); roomLas(src, 160000, { black: 0.01, blackB: 0.03 });
     const a = path.join(dir, 'a.las'), b = path.join(dir, 'b.las'), c = path.join(dir, 'c.las');
-    const o = { tmpDir: dir, noiseLevel: 'strong', tileMax: 30000 };
+    const o = { tmpDir: dir, noiseLevel: 'strong', tileMax: 30000, degrain: false };   // r50: сглаживание зерна — только в плитках пула (сверка с R.refine без него)
     const sa = R.refine(src, a, o), sb = await RP.refineParallel(src, b, Object.assign({ threads: 2 }, o));
     assert.ok(Buffer.compare(fs.readFileSync(a), fs.readFileSync(b)) === 0, 'LAS одного потока и пула различаются');
     assert.ok(sa.noColor.found > 2000 && sa.noColor.left === 0, JSON.stringify(sa.noColor)); assert.deepStrictEqual(sb.noColor, sa.noColor);
