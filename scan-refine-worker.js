@@ -29,7 +29,9 @@ const CB = require('./color-balance-core');
   try { st = await RP.refineParallel(src, out, o, prog); }
   catch (e) {   // пул потоков не поднялся (мало памяти, ограничения системы) — обработка в одном потоке, как раньше
     parallelWarning = String((e && e.message) || e); last = -1;
-    st = R.refine(src, out, o, prog);
+    // ревизия 50: сначала те же плитки в этом потоке (со сглаживанием зерна цвета), затем — прежняя обработка целиком
+    try { st = await RP.refineParallel(src, out, Object.assign({}, o, { threads: 1 }), prog); }
+    catch (_) { last = -1; st = R.refine(src, out, o, prog); }
   }
   parentPort.postMessage({ type: 'result', result: { ok: true, stats: st, dynStats, dynWarning, parallelWarning } });
 } catch (e) {

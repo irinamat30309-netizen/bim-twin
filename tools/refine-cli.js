@@ -14,4 +14,6 @@ if (poses && poses !== '-') {
 delete opt.dyn;
 { const CB = require('../color-balance-core');   // ревизия 48 — как в приложении; r49: photoColor: true — облако после «Цвета по фото»
   opt.colorBalanceOpt = Object.assign({ saturation: opt.photoColor ? CB.LIXEL_SATURATION_PHOTO : CB.LIXEL_SATURATION }, opt.colorBalanceOpt || {}); }
-console.log(JSON.stringify(R.refine(src, dst, opt, log)));
+// ревизия 50: плитки как в приложении (scan-refine-parallel; со сглаживанием зерна цвета — color-grain-core); opt.single: true — прежний R.refine
+if (opt.single) console.log(JSON.stringify(R.refine(src, dst, opt, log)));
+else require('../scan-refine-parallel').refineParallel(src, dst, opt, log).then((st) => { console.log(JSON.stringify(st)); process.exit(0); }, (e) => { console.error(e && e.stack || e); process.exit(1); });
