@@ -151,10 +151,13 @@ function solve(smp, opt) {
         // ревизия 48 (сверка всего облака «фасад + двор», 174 тыс. ячеек 5 см): у Lixel усиление ≈×1,36 почти постоянное и в тенях
         // (квантили 10,5 → 16,7, 18,7 → 26,5; при «тенях как есть» наши тени были в 1,4–1,6 раза темнее), плечо — с ≈185;
         // toneShadows: 'keep' — прежняя кривая r46 (тени до 10-го процентиля без изменений, плечо 170)
+        // ревизия 49 (сверка с полным эталоном Lixel: рамка 68×33 м, 120 млн точек, 363 тыс. пар ячеек 5 см): кривая r48 ×1,36 / +2,5 / плечо 185
+        // давала светлые тона ярче Lixel (+2…4 %); ×1,32, подъём чёрного +6 и плечо с 165 — медианная ошибка тона 0,144 → 0,140 (цвет карты)
+        // и 0,143 → 0,130 («Цвет по фото»). Прежняя кривая r48 — toneGainMax: 1.36, toneLift: 2.5, toneKnee: 185
         const keep = opt.toneShadows === 'keep';
-        const gain = Math.max(1, Math.min(opt.toneGainMax || (keep ? 1.4 : 1.36), (opt.toneTarget || 140) / mL)), dark = Math.max(6, Math.min(50, hq(hl, 0.1) * wm));
+        const gain = Math.max(1, Math.min(opt.toneGainMax || (keep ? 1.4 : 1.32), (opt.toneTarget || 140) / mL)), dark = Math.max(6, Math.min(50, hq(hl, 0.1) * wm));
         if (gain > 1.03) res.tone = keep ? { gain: Math.round(gain * 1000) / 1000, dark: Math.round(dark * 10) / 10, knee: opt.toneKnee || 170 }
-          : { gain: Math.round(gain * 1000) / 1000, dark: 0, lift: opt.toneLift !== undefined ? opt.toneLift : 2.5, knee: opt.toneKnee || 185 };
+          : { gain: Math.round(gain * 1000) / 1000, dark: 0, lift: opt.toneLift !== undefined ? opt.toneLift : 6, knee: opt.toneKnee || 165 };
         if (res.tone) res.tone.mode = opt.toneMode === 'channel' ? 'channel' : 'lum';
       }
     }
@@ -233,5 +236,7 @@ function makeToneFix(sol) {
 }
 
 // ревизия 48: насыщенность чистовой обработки в приложении (scan-refine-worker.js) — медиана цветности как у Lixel (0,188 при 0,8 → 0,172)
-const LIXEL_SATURATION = 0.73;
-module.exports = { solve, makeColorFix, makeToneFix, cholSolveMulti, toneLUT, LIXEL_SATURATION };
+// ревизия 49 (полный эталон): цвет карты сканера после обработки — 0,141 при 0,73 (у Lixel 0,147) → 0,75;
+// после «Цвета по фото» снимки пестрее — 0,152 при 0,73 → 0,71 (LIXEL_SATURATION_PHOTO)
+const LIXEL_SATURATION = 0.75, LIXEL_SATURATION_PHOTO = 0.71;
+module.exports = { solve, makeColorFix, makeToneFix, cholSolveMulti, toneLUT, LIXEL_SATURATION, LIXEL_SATURATION_PHOTO };

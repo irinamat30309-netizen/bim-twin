@@ -12,5 +12,6 @@ if (poses && poses !== '-') {
   opt.dynamic = { keys: v.keys, grid: v.grid };
 }
 delete opt.dyn;
-opt.colorBalanceOpt = Object.assign({ saturation: require('../color-balance-core').LIXEL_SATURATION }, opt.colorBalanceOpt || {});   // ревизия 48 — как в приложении
+{ const CB = require('../color-balance-core');   // ревизия 48 — как в приложении; r49: photoColor: true — облако после «Цвета по фото»
+  opt.colorBalanceOpt = Object.assign({ saturation: opt.photoColor ? CB.LIXEL_SATURATION_PHOTO : CB.LIXEL_SATURATION }, opt.colorBalanceOpt || {}); }
 console.log(JSON.stringify(R.refine(src, dst, opt, log)));

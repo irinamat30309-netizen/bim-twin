@@ -13,7 +13,8 @@ const CB = require('./color-balance-core');
   let dynWarning = null, dynStats = null, base = 0;
   o.dynamic = null;
   // ревизия 48: насыщенность как у Lixel Studio на фасаде с двором (0,73; в scan-refine-core по умолчанию 0,8); colorBalanceOpt переопределяет
-  o.colorBalanceOpt = Object.assign({ saturation: CB.LIXEL_SATURATION }, o.colorBalanceOpt || {});
+  // ревизия 49: облако после «Цвета по фото» (opt.photoColor из main.js) — своя насыщенность, снимки камер пестрее карты сканера
+  o.colorBalanceOpt = Object.assign({ saturation: o.photoColor ? CB.LIXEL_SATURATION_PHOTO : CB.LIXEL_SATURATION }, o.colorBalanceOpt || {});
   o.posesText = posesText || null;   // ревизия 21: траектория и для сведения проходов (поворот вокруг положения сканера)
   // ревизия 19: движущиеся объекты и без траектории — по «следам» во времени точек LAS
   if (opt && opt.dynamic) {
