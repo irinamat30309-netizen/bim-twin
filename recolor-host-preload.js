@@ -76,6 +76,8 @@
         decode: (bytes, f) => dec.decode(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length), f.src || f),
         onProgress: (f, label) => ipc.send('recolor:progress', { f: 0.02 + 0.98 * f, label }) });
       stats.model = index.calib && index.calib.model;
+      // ревизия 51: путь к .xbin — для уплотнения по сырому лидару в той же чистовой обработке (scan-refine-worker.js)
+      try { if (cfg.tmpDir) require('fs').writeFileSync(path.join(cfg.tmpDir, 'xbin-source.txt'), String(cfg.xbin)); } catch (_) {}
       ipc.send('recolor:done', { ok: true, stats });
     } catch (e) {
       ipc.send('recolor:done', { ok: false, error: String((e && e.message) || e) });
