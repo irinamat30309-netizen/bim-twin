@@ -1504,7 +1504,9 @@ function registerIpc() {
       const NOISE_LEVELS = ['soft', 'normal', 'strong', 'max', 'inspect'];
       const opt = { noise: a.noise !== false, thin: a.thin !== false, color: a.color !== false, dynamic: !!a.dynamic,
         noiseLevel: NOISE_LEVELS.includes(a.noiseLevel) ? a.noiseLevel : 'strong',
-        align: a.align !== false, colorBalance: a.colorBalance !== false };   // ревизия 21: сведение проходов и ровный цвет
+        align: a.align !== false, colorBalance: a.colorBalance !== false,   // ревизия 21: сведение проходов и ровный цвет
+        // ревизия 54: уплотнение по сырому лидару — включено по умолчанию, окно «Чистовая обработка» даёт выключатель
+        densify: a.densify !== false, densifyOpt: a.densifyOpt && typeof a.densifyOpt === 'object' ? a.densifyOpt : undefined };
       const job = { worker: null, cancelled: false, finished: false, recolorStop: null };
       const sendProg = (f, label) => { try { if (!(sender.isDestroyed && sender.isDestroyed())) sender.send('bim:refineScanProgress', { jobId, progress: f, label }); } catch (_) {} };
       let photoStats = null, photoWarning = null, srcForRefine = abs;
@@ -1565,7 +1567,7 @@ function registerIpc() {
       try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) {}
       if (backup) { try { fileGrants.grantExistingFile(sender.id, backup, { read: true }); } catch (_) {} }
       return { ok: true, path: target, name: path.basename(target), inPlace: inPlace && replaced, replaceError, backup, backupName: backup ? path.basename(backup) : null,
-        stats: r.stats, dynStats: r.dynStats, dynWarning: r.dynWarning, trajectory: posesName, photo: photoStats, photoWarning };
+        stats: r.stats, dynStats: r.dynStats, dynWarning: r.dynWarning, densifyWarning: r.densifyWarning, trajectory: posesName, photo: photoStats, photoWarning };
     } catch (e) { cleanup(); return { ok: false, error: String((e && e.message) || e) }; }
   });
   ipcMain.on('bim:cancelRefineScan', (event, payload) => {

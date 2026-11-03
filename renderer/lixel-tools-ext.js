@@ -495,6 +495,12 @@
     // ревизия 22: файл сканера .xbin (кадры камер) — цвет по фото, как в Lixel Studio
     var xb = null; if (api.findXbin) { try { var xr = await api.findXbin({ path: file }); xb = xr && xr.ok && xr.path ? xr : null; } catch (e) { xb = null; } }
     var xbName = xb ? String(xb.path).split(/[\\/]/).pop() : '';
+    // ревизия 54: окно обработки показывает, что уплотнение включено, и даёт его выключить (раньше — только параметром densify: false)
+    var densifyReady = !!(xb && xb.path);
+    var densifyNote = 'Просветы между точками карты на ровных местах (стены, пол, панели фасада) заполняются точками сырого лидара' +
+      (xbName ? ' из ' + xbName : '') + ', прижатыми к поверхности: светлые панели перестают быть «крапчатыми». Точки карты не меняются, ' +
+      'кромки, углы и провода не трогаются, новые точки получают цвет опоры. Нужна траектория с временем точек; шаг идёт последним, ' +
+      'точек обычно становится больше на 30–100 %, на диске нужно ещё около размера облака.';
     var photoOpts = (xb ? [{ value: 'auto', label: 'Да, по кадрам камер ' + xbName + (xb.size ? ' (' + (xb.size / 1073741824).toFixed(1) + ' ГБ)' : '') }] : [])
       .concat(api.pickXbin ? [{ value: 'pick', label: 'Да, выбрать файл сканера .xbin…' }] : []).concat([{ value: 'off', label: 'Нет — оставить цвет облака' }]);
     var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
@@ -507,6 +513,8 @@
           hint: 'Без копии исходный скан будет удалён без возможности вернуть.' },
         { key: 'photo', main: !!xb, label: 'Цвет по фото', type: 'select', value: xb && !o.photoOff ? 'auto' : 'off', options: photoOpts,
           hint: 'Каждая точка заново получает цвет из 12-Мп кадров двух камер сканера (файл .xbin в папке проекта Lixel): по ближайшим и самым резким кадрам, с учётом заслонений; оператор и прохожие в кадре отбрасываются. Нужны время точек и траектория poses.csv, на диске — ещё около 1,7 размера файла. Занимает примерно минуту на минуту съёмки.' },
+        { key: 'densify', main: densifyReady, label: 'Заполнить просветы точками сырого лидара' + (xbName ? ' (' + xbName + ')' : ''), type: 'checkbox', value: densifyReady,
+          showIf: function (v) { return densifyReady && v.traj !== 'off' && v.traj !== 'none'; }, hint: densifyNote },
         { key: 'align', label: 'Свести проходы (исправить дрейф)', type: 'checkbox', value: true,
           hint: 'Повторные проходы realtime-карты сдвинуты на 2–4 см: рамы двоятся, у окон и арматуры «ореол». Поправка ищется по времени точек (как при пересчёте в Lixel Studio); с траекторией точнее.' },
         { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'none', options: trajOpts,
@@ -540,11 +548,15 @@
       if (!posesPath) { var pk2 = await api.pickTrajectory(); if (!pk2 || !pk2.ok || !pk2.path) { toast('Для цвета по фото нужна траектория poses.csv'); return; } posesPath = pk2.path; }
     }
     var jobId = 'ref' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), res = null, stopSub = null;
+    // ревизия 54: уплотнение включается галочкой в окне; без траектории и .xbin его не бывает
+    var densifyWanted = densifyReady && values.densify !== false;
+    var densifyOn = densifyWanted && values.traj !== 'off' && values.traj !== 'none';
     await run('Чистовая обработка…', async function (setPct) {
       if (api.onRefineScanProgress) stopSub = api.onRefineScanProgress(jobId, function (f, lab) { setPct(0.02 + 0.97 * f, lab || 'Обработка…'); });
       try {
         res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, noiseLevel: values.noiseLevel || 'strong',
-          thin: !!values.thin, color: !!values.color, align: values.align !== false, colorBalance: !!values.color && values.colorBalance !== false, photo: photo, xbinPath: xbinPath, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId });
+          thin: !!values.thin, color: !!values.color, align: values.align !== false, colorBalance: !!values.color && values.colorBalance !== false, photo: photo, xbinPath: xbinPath, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId,
+          densify: densifyOn, densifyOpt: o.densifyOpt });
       } finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
     }, { onCancel: function () { try { api.cancelRefineScan(jobId); } catch (e) {} } });
     if (!res) return;
@@ -556,7 +568,12 @@
     if (values.align !== false && al && !al.skipped) parts.push('проходы сведены');
     if (photo) parts.push(res.photo ? 'цвет по фото' : 'цвет по фото не применён');
     if (values.thin || values.color) parts.push('стены и цвет выровнены');
+    if (st.densify) parts.push('просветы заполнены (+' + nfmt(st.densify.added) + ' точек)');
+    else if (densifyOn) parts.push('уплотнение не выполнено');
+    else if (densifyWanted) parts.push('уплотнение пропущено: нет траектории');
+    else if (densifyReady) parts.push('уплотнение выключено');
     var msg = 'Готово за ' + Math.max(1, Math.round((st.ms || 0) / 1000)) + ' с: ' + parts.join(', ') + '.';
+    if (res.densifyWarning) msg += '\n\nУплотнение не выполнено: ' + res.densifyWarning + ' Остальная обработка сохранена.';
     var k = window.__lxKit;
     if (inPlace && res.inPlace) {
       // файл заменён — сразу показываем обработанное облако (кеш старого облака сбрасывается)
