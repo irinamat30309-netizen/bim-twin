@@ -1,0 +1,861 @@
+/* lixel-tools-ext.js — v1160
+ * UI-обвязка риббонов «Инструмент» и «Приложение» (паритет с LixelStudio).
+ * Подключает кнопки к чистым функциям PCEdit + MultiCloud/TinVolume/ExportHub
+ * через мост window.__pcTools. Показывает счётчик выполнения в процентах.
+ * Честные сообщения там, где нужен внешний движок (LAS→RCP, Удалённая передача).
+ */
+(function () {
+  'use strict';
+  var UP = 1; // вьюер Y-up: высота = ось Y (index 1)
+  var busy = false;
+
+  function T() { return window.__pcTools || null; }
+  function toast(m) { var k = window.__lxKit, t = T(); if (k && k.toast) k.toast(m); else if (t && t.toast) t.toast(m); else try { console.log('[tools-ext]', m); } catch (e) {} }
+  function pcedit() { return window.PCEdit || null; }
+  /* Вопрос оператору во встроенном диалоге (window.prompt в Electron не поддерживается, window.confirm не вписывается в интерфейс) */
+  function askKit(o) { var k = window.__lxKit; return k && k.ask ? k.ask(o) : Promise.resolve(o.input ? null : false); }
+
+  function getCloud() {
+    var t = T(); if (!t) return null;
+    var c = t.getCloud ? t.getCloud() : null;
+    if (!c || !c.pos || !c.pos.length) return null;
+    return { pos: c.pos, col: c.col || null, intensity: c.intensity || null, classification: c.classification || null, count: c.count || c.pos.length / 3 };
+  }
+  function needCloud() {
+    var t = T();
+    if (t && t.isOctreeStreamActive && t.isOctreeStreamActive()) {
+      toast('Операция требует полный массив точек и недоступна в «Поток LOD». Выключите «Поток LOD» и повторите.');
+      return null;
+    }
+    var bv = window.__viewer;
+    if (bv && typeof bv.isBigCloud === 'function' && bv.isBigCloud()) {
+      // Ревизия 17: облако больше 48 млн точек — у него нет плоского массива; эта операция пока работает только с массивом целиком
+      toast('Эта операция работает с массивом точек целиком и недоступна для облака больше 48 млн точек. Для такого облака доступны выделение, правка, чистка, классификация, сохранение и экспорт.');
+      return null;
+    }
+    var c = getCloud(); if (!c) { toast('Сначала откройте облако точек'); return null; } return c;
+  }
+
+  function nfmt(n) { try { return Number(n).toLocaleString('ru-RU'); } catch (e) { return '' + n; } }
+  function m3(v) { return (Math.round(v * 1000) / 1000).toLocaleString('ru-RU') + ' м³'; }
+
+  // Скачивание сформированного файла (blob) — самодостаточно.
+  function download(name, data, mime) {
+    try {
+      var blob = (data instanceof Blob) ? data : new Blob([data], { type: (mime || 'application/octet-stream') + ';charset=utf-8' });
+      var url = URL.createObjectURL(blob); var a = document.createElement('a');
+      a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+      return true;
+    } catch (e) { toast('Не удалось сформировать файл: ' + (e && e.message || e)); return false; }
+  }
+
+  // Обёртка с полосой прогресса %. work(setPct) — setPct(frac 0..1, label?).
+  async function run(label, work, popts) {
+    if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
+    var t = T(); busy = true;
+    var stop = (t && t.beginProgress) ? t.beginProgress(label, popts) : { set: function () {}, text: function () {} };
+    function setPct(frac, lab) { try { if (stop && stop.set) stop.set(frac, lab); } catch (e) {} }
+    try { setPct(0.02, label); await work(setPct); }
+    catch (e) { console.warn('tools-ext', e); toast('Ошибка: ' + (e && e.message || e)); }
+    finally { busy = false; if (stop) { try { stop(); } catch (e) {} } }
+  }
+
+  function yieldFrame() { return new Promise(function (r) { setTimeout(r, 0); }); }
+
+  // Загрузить второе облако из файла (для Объединить/Наложение/Сравнение объёмов).
+  async function pickSecondCloud(setPct, label, opts) {
+    var t = T(); if (!t || !t.pickGeomFile || !t.api || !t.api()) { toast('Выбор файла доступен в десктоп-версии'); return null; }
+    toast(label || 'Выберите второе облако…');
+    var f = await t.pickGeomFile('.ply,.las,.laz,.e57,.ptx,.pcd,.xyz,.pts');
+    if (!f || !f.path) { toast('Файл не выбран'); return null; }
+    setPct && setPct(0.3, 'Чтение файла…');
+    var pr = await t.api().parseCloud(f.path);
+    if (!pr || !pr.ok || !pr.pos) { toast('Не удалось прочитать облако'); return null; }
+    return alignSecond(pr, f, opts);
+  }
+  // Привести разобранное облако к системе координат текущего (мировой сдвиг srcXform + проверка CRS)
+  async function alignSecond(pr, f, opts) {
+    var t = T();
+    var base = t.getSourceTransform && t.getSourceTransform(), other = pr.meta && pr.meta.srcXform, points = pr.pos;
+    var baseCrs=t.getSourceCrs?t.getSourceCrs():null,otherCrs=pr.meta&&pr.meta.crsWkt||null;
+    var crsStatus=window.Georef&&window.Georef.compareCrsWkt?window.Georef.compareCrsWkt(baseCrs,otherCrs):'unknown';
+    var hasTransforms=!!(base&&other&&base.axis&&other.axis&&base.t&&other.t),confirmedUnknown=false;
+    if(opts&&opts.requireComparable){
+      if(crsStatus==='different'){
+        toast('Операция отменена: CRS облаков различаются. Сначала преобразуйте оба облака в одну систему координат.');
+        return null;
+      }
+      if(crsStatus!=='same'||!hasTransforms){
+        var why=crsStatus==='unknown'?'CRS отсутствует или не удалось однозначно сопоставить WKT':'не удалось подтвердить общий source-transform';
+        var question='Сопоставимость координат не подтверждена ('+why+'). Продолжайте только если оба облака уже находятся в одной системе координат и совпадающем datum. Выполнить операцию?';
+        if(!(await askKit({title:'Координаты не подтверждены',message:question,okLabel:'Продолжить',danger:true}))){toast('Операция отменена: сначала подтвердите общую систему координат или выполните геопривязку');return null;}
+        confirmedUnknown=true;
+      }
+    }
+    if (base && other && base.axis && other.axis && base.t && other.t) {
+      var n=points.length/3, world=new Float64Array(n*3), aligned=new Float32Array(n*3), a=other.t,b=base.t;
+      for(var i=0;i<n;i++){
+        var x=points[i*3],y=points[i*3+1],z=points[i*3+2],sx,sy,sz;
+        if(other.axis==='zup'){sx=x+a[0];sy=-z+a[1];sz=y+a[2];}else{sx=x+a[0];sy=y+a[1];sz=z+a[2];}
+        world[i*3]=sx;world[i*3+1]=sy;world[i*3+2]=sz;
+        if(base.axis==='zup'){aligned[i*3]=sx-b[0];aligned[i*3+1]=sz-b[2];aligned[i*3+2]=-(sy-b[1]);}else{aligned[i*3]=sx-b[0];aligned[i*3+1]=sy-b[1];aligned[i*3+2]=sz-b[2];}
+      }
+      points=aligned;
+    }
+    return { pos: points, col: pr.col || null, count: pr.meta && pr.meta.points || pr.pos.length / 3, path: f.path, meta: pr.meta, frameCheck:{crsStatus:crsStatus,transformsApplied:hasTransforms,confirmedUnknown:confirmedUnknown} };
+  }
+
+  // ---------- Инструмент ----------
+  // ---------- Обработка облака: ресэмплирование, подавление шума, сглаживание, выравнивание поверхностей ----------
+  // Расчёт идёт в фоновом потоке (cloud-process-worker.js) над одноразовой копией координат: окно не зависает, есть отмена.
+  function engine() { return window.CloudProcess || null; }
+  var WORKER_URL = 'cloud-process-worker.js?v=1170';
+
+  /** Запуск расчёта: { promise, cancel }. Если воркер не создаётся, небольшие облака считаются в основном потоке. */
+  function startJob(op, pos, params, onProgress) {
+    var job = { worker: null, cancelled: false }, rejectFn = null;
+    job.promise = new Promise(function (resolve, reject) {
+      rejectFn = reject;
+      var CP = engine(), got = false, w = null;
+      function inline(why) {
+        if (!CP || pos.length / 3 > 3e6) { reject(new Error(why || 'Фоновый расчёт недоступен в этом окне')); return; }
+        setTimeout(function () {
+          try {
+            var CC = window.CloudClean, n3 = pos.length / 3 | 0, ctl = { progress: onProgress };
+            if (op === 'denoise2' && CC) resolve(CC.denoise(pos, n3, params, ctl));
+            else if (op === 'people' && CC && CC.people) resolve(CC.people(pos, n3, params, ctl));
+            else if (op === 'autoclean' && CC && CC.autoClean) resolve(CC.autoClean(pos, n3, params, ctl));
+            else if (op === 'deepclean' && CC && CC.deepClean) resolve(CC.deepClean(pos, n3, params, ctl));
+            else resolve(CP.run(op, op === 'smooth' || op === 'flatten' ? pos.slice() : pos, params, ctl));
+          } catch (e) { reject(e); }
+        }, 0);
+      }
+      try { w = new Worker(new URL(WORKER_URL, document.baseURI)); } catch (e) { inline(String(e && e.message || e)); return; }
+      job.worker = w;
+      w.onmessage = function (ev) {
+        var m = ev.data || {}; got = true;
+        if (m.type === 'progress') { if (onProgress) onProgress(m.frac, m.label); }
+        else if (m.type === 'done') { try { w.terminate(); } catch (e) {} resolve(m.result); }
+        else if (m.type === 'error') { try { w.terminate(); } catch (e) {} reject(new Error(m.message || 'Ошибка расчёта')); }
+      };
+      w.onerror = function (ev) {
+        try { w.terminate(); } catch (e) {}
+        if (job.cancelled) return;
+        if (!got) inline('Не удалось запустить фоновый расчёт');
+        else reject(new Error('Сбой фонового расчёта' + (ev && ev.message ? ': ' + ev.message : '')));
+      };
+      var buf = pos.slice();   // одноразовая копия: воркер забирает её без повторного копирования, облако на экране не затрагивается
+      w.postMessage({ op: op, pos: buf, params: params || {} }, [buf.buffer]);
+    });
+    job.cancel = function () {
+      job.cancelled = true;
+      if (job.worker) { try { job.worker.terminate(); } catch (e) {} }
+      if (rejectFn) rejectFn(Object.assign(new Error('Операция отменена'), { cancelled: true }));
+    };
+    return job;
+  }
+
+  /** Подмножество облака по индексам keep — координаты, цвет, интенсивность и классы остаются согласованными. */
+  function subsetCloud(c, keep) {
+    var CP = engine(), n = c.count, k = keep.length;
+    var out = { pos: CP.gather(c.pos, keep, 3), col: c.col && c.col.length >= n * 3 ? CP.gather(c.col, keep, 3) : null, count: k };
+    out.intensity = c.intensity && c.intensity.length === n ? CP.gather(c.intensity, keep, 1) : null;
+    out.classification = c.classification && c.classification.length === n ? CP.gather(c.classification, keep, 1) : null;
+    return out;
+  }
+  function mm(v) { return (v * 1000).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' мм'; }
+  function num(v, d) { return Number(v).toLocaleString('ru-RU', { maximumFractionDigits: d == null ? 3 : d }); }
+
+  /**
+   * Общий сценарий: диалог параметров (как в Lixel) -> фоновый расчёт с отменой -> загрузка результата (Ctrl+Z возвращает облако).
+   * spec: { op, label, title, message, fields(defs), params(values, defs), finish(res, cloud, values) -> { cloud, name, details, text },
+   *         review?(res, cloud, values) -> Promise<boolean> — предпросмотр на сцене и подтверждение до применения }
+   */
+  async function processOp(spec) {
+    var c0 = needCloud(); if (!c0) return; var CP = engine();
+    if (!CP) { toast('Модуль обработки облака не загружен'); return; }
+    if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
+    var defs = CP.defaults(CP.estimate(c0.pos, c0.count));
+    var values = spec.preset ? Object.assign({}, spec.preset) : await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({ title: spec.title, message: spec.message, okLabel: 'Применить', fields: spec.fields(defs, c0), validate: spec.validate }) : Promise.resolve(null));
+    if (!values) return { ok: false, cancelled: true, message: 'Отменено' };
+    var job = null, res = null, c = null, outcome = { ok: false, message: 'Облако не изменено' };
+    await run(spec.label, async function (setPct) {
+      c = needCloud(); if (!c) return;
+      job = startJob(spec.opFor ? spec.opFor(values) : spec.op, c.pos.subarray(0, c.count * 3), spec.params(values, defs), function (f, lab) { setPct(0.04 + 0.86 * f, lab || spec.label); });
+      try { res = await job.promise; } catch (e) { res = null; if (e && e.cancelled) { toast('Операция отменена, облако не изменено'); return; } throw e; }
+      if (job.cancelled) { toast('Операция отменена, облако не изменено'); res = null; return; }   // Esc нажат в тот же момент, когда расчёт закончился
+      if (spec.review) return;   // применение — после предпросмотра и подтверждения, уже без окна прогресса
+      await apply(setPct);
+    }, { onCancel: function () { if (job) job.cancel(); } });
+    if (!res || !spec.review) return outcome;
+    var okGo = false;
+    try { okGo = await spec.review(res, c, values); } catch (e) { console.warn('tools-ext review', e); toast('Ошибка: ' + (e && e.message || e)); }
+    if (!okGo) { toast('Отменено, облако не изменено'); return { ok: false, cancelled: true, message: 'Пользователь не применил результат — облако не изменено' }; }
+    var cur = getCloud();
+    if (!cur || cur.pos !== c.pos || cur.count !== c.count) { toast('Облако изменилось, пока шёл просмотр, — операция отменена. Запустите её заново.'); return; }
+    await run(spec.label, async function (setPct) { setPct(0.5, 'Применение…'); await yieldFrame(); await apply(setPct); });
+    return outcome;
+    async function apply(setPct) {
+      if (!needCloud()) return;
+      setPct(0.92, 'Загрузка результата…'); await yieldFrame();
+      var out = spec.finish(res, c, values);
+      if (!out) return;
+      T().loadCloud(out.cloud, out.name, out.details); setPct(1, 'Готово');
+      toast(out.text + ' · Ctrl+Z — отмена');
+      outcome = { ok: true, message: out.text, stats: res && res.stats || null, op: spec.op };
+    }
+  }
+
+  /** Плавающая панель подтверждения над сценой — в отличие от модального окна не закрывает облако (на нём красным видно, что будет удалено).
+   *  o: { title, text, okLabel, cancelLabel, tone: 'warn'|'' } → Promise<boolean>. Enter/«Удалить» — да; Esc/«Отмена» — нет. */
+  function reviewBar(o) {
+    return new Promise(function (resolve) {
+      var D = document, bar = D.createElement('div'), tx = D.createElement('div'), b1 = D.createElement('b'), sp = D.createElement('span'), act = D.createElement('div'), no = D.createElement('button'), ok = D.createElement('button'), done = false;
+      bar.className = 'lx-confirmbar'; bar.setAttribute('role', 'alertdialog'); bar.setAttribute('aria-label', o.title || 'Подтверждение'); if (o.tone) bar.setAttribute('data-tone', o.tone);
+      tx.className = 'lx-confirmbar-text'; b1.textContent = o.title || ''; sp.textContent = o.text || ''; tx.appendChild(b1); tx.appendChild(sp);
+      act.className = 'lx-confirmbar-actions';
+      no.type = 'button'; no.className = 'btn sm'; no.textContent = o.cancelLabel || 'Отмена';
+      ok.type = 'button'; ok.className = 'btn sm primary'; ok.textContent = o.okLabel || 'Применить';
+      act.appendChild(no); act.appendChild(ok); bar.appendChild(tx); bar.appendChild(act);
+      function finish(v) { if (done) return; done = true; D.removeEventListener('keydown', onKey, true); if (bar.parentNode) bar.parentNode.removeChild(bar); resolve(v); }
+      function onKey(e) {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        else if (e.key === 'Enter' && (e.target === ok || e.target === D.body || e.target === bar)) { e.preventDefault(); e.stopPropagation(); finish(true); }
+      }
+      no.onclick = function () { finish(false); }; ok.onclick = function () { finish(true); };
+      D.addEventListener('keydown', onKey, true);
+      D.body.appendChild(bar); try { ok.focus({ preventScroll: true }); } catch (e) {}
+    });
+  }
+
+  /** Предпросмотр удаления: красные точки поверх облака + панель «Удалить N точек?». idx — индексы удаляемых точек; → Promise<boolean>. */
+  async function previewRemoval(c, idx, o) {
+    var V = T() && T().viewer ? T().viewer() : null, total = c.count, k = idx.length, pct = total ? k / total * 100 : 0;
+    if (V && V.previewPoints) {
+      var stride = k > 400000 ? Math.ceil(k / 400000) : 1, m = Math.ceil(k / stride), arr = new Float32Array(m * 3), j = 0;
+      for (var q = 0; q < k; q += stride) { var i3 = idx[q] * 3; arr[j * 3] = c.pos[i3]; arr[j * 3 + 1] = c.pos[i3 + 1]; arr[j * 3 + 2] = c.pos[i3 + 2]; j++; }
+      V.previewPoints(arr.subarray(0, j * 3), { color: o.color });
+    }
+    var big = pct > 5;
+    try {
+      return await reviewBar({
+        title: (o.who != null ? 'Найдено людей (объектов): ' + o.who + '. ' : '') + 'Удалить ' + nfmt(k) + ' ' + (o.noun || 'точек') + ' (' + num(pct, pct < 1 ? 3 : 1) + ' % облака)?',
+        text: (big ? 'Это больше 5 % облака — убедитесь, что красным отмечено только лишнее. ' : 'Красным отмечено то, что будет удалено. ') + 'Крутите и приближайте облако, затем подтвердите. Ctrl+Z вернёт точки.',
+        okLabel: o.okLabel || 'Удалить', cancelLabel: 'Отмена', tone: big ? 'warn' : ''
+      });
+    } finally { if (V && V.clearPreview) V.clearPreview(); }
+  }
+  /** Индексы удаляемых точек: из результата умного фильтра (remove) или как дополнение к списку оставшихся (keep). */
+  function removedIndices(res, n) {
+    if (res.remove) return res.remove;
+    var mark = new Uint8Array(n), cnt = 0, i, out;
+    for (i = 0; i < res.keep.length; i++) mark[res.keep[i]] = 1;
+    for (i = 0; i < n; i++) if (!mark[i]) cnt++;
+    out = new Uint32Array(cnt); cnt = 0;
+    for (i = 0; i < n; i++) if (!mark[i]) out[cnt++] = i;
+    return out;
+  }
+  /** Оставшиеся индексы по списку удаляемых. */
+  function keptIndices(remove, n) {
+    var mark = new Uint8Array(n), i, cnt = 0, out;
+    for (i = 0; i < remove.length; i++) mark[remove[i]] = 1;
+    out = new Uint32Array(n - remove.length);
+    for (i = 0; i < n; i++) if (!mark[i]) out[cnt++] = i;
+    return out;
+  }
+
+  function opResample() {
+    return processOp({
+      op: 'resample', label: 'Ресэмплирование…', title: 'Ресэмплирование облака',
+      message: 'Понижает плотность облака. Остаются только настоящие точки исходного скана.',
+      fields: function (d) {
+        return [
+          { key: 'mode', label: 'Тип сэмплирования', type: 'select', value: 'random', options: [{ value: 'random', label: 'Случайный' }, { value: 'voxel', label: 'Пространственный (по сетке)' }] },
+          { key: 'percent', label: 'Частота дискретизации', type: 'number', value: 50, min: 0.01, max: 100, step: 'any', unit: '%', showIf: function (v) { return v.mode === 'random'; } },
+          { key: 'voxel', label: 'Шаг сетки', type: 'number', value: d.voxel, min: 0.001, max: 5, step: 'any', unit: 'м', hint: 'В каждом вокселе остаётся одна точка — ближайшая к его центру.', showIf: function (v) { return v.mode === 'voxel'; } }
+        ];
+      },
+      params: function (v) { return v.mode === 'voxel' ? { mode: 'voxel', voxel: v.voxel } : { mode: 'random', percent: v.percent }; },
+      finish: function (res, c, v) {
+        if (!res.keep || !res.keep.length) { toast('Ресэмплирование убрало бы все точки — изменено ничего не будет'); return null; }
+        if (res.keep.length === c.count) { toast('Ресэмплирование: все точки остались'); return null; }
+        return { cloud: subsetCloud(c, res.keep), name: 'resample',
+          details: { operation: 'cloud.resample', parameters: Object.assign({ algorithm: 'subset', kept: res.keep.length, removed: c.count - res.keep.length }, v.mode === 'voxel' ? { mode: 'voxel', voxel: v.voxel } : { mode: 'random', percent: v.percent }) },
+          text: 'Ресэмплирование: осталось ' + nfmt(res.keep.length) + ' из ' + nfmt(c.count) + ' точек (' + num(res.keep.length / c.count * 100, 1) + ' %)' };
+      }
+    });
+  }
+
+  function opDenoise() {
+    var LEVELS = { soft: 'мягко', medium: 'средне', strong: 'сильно' };
+    return processOp({
+      op: 'denoise', opFor: function (v) { return v.mode === 'smart' ? 'denoise2' : 'denoise'; }, label: 'Подавление шума…', title: 'Подавление шума',
+      message: 'Убирает «летающие» точки, пылинки и мелкие сгустки. «Умный» режим судит по плотности именно этого места и бережёт разреженные, но настоящие участки (дальние стены, провода, кроны); «Классический» — один радиус и число соседей на всю сцену.',
+      fields: function (d) {
+        return [
+          { key: 'mode', label: 'Режим', type: 'select', value: 'smart', options: [{ value: 'smart', label: 'Умный' }, { value: 'radius', label: 'Классический' }] },
+          { key: 'level', label: 'Сила', type: 'select', value: 'medium', options: [{ value: 'soft', label: 'Мягко' }, { value: 'medium', label: 'Средне' }, { value: 'strong', label: 'Сильно' }],
+            hint: 'Мягко — только заведомый мусор; средне (рекомендуется) — пылинки и сгустки до 40 точек; сильно — сгустки до 150 точек и 2 м. Перед удалением будет предпросмотр.', showIf: function (v) { return v.mode === 'smart'; } },
+          { key: 'radius', label: 'Радиус поиска', type: 'number', value: d.denoiseRadius, min: 0.005, max: 10, step: 'any', unit: 'м', showIf: function (v) { return v.mode === 'radius'; } },
+          { key: 'neighbors', label: 'Окрестность (соседей)', type: 'number', value: d.denoiseNeighbors, min: 1, max: 1000, step: '1', hint: 'Единые радиус и число соседей на всю сцену: у неоднородных сканов это удаляет и полезные точки в разреженных местах — для них лучше «Умный».', showIf: function (v) { return v.mode === 'radius'; } },
+          { key: 'preview', label: 'Показать удаляемое красным и спросить', type: 'checkbox', value: true }
+        ];
+      },
+      params: function (v) { return v.mode === 'smart' ? { level: v.level } : { radius: v.radius, neighbors: Math.round(v.neighbors) }; },
+      review: function (res, c, v) {
+        if (!v.preview || !res.removed || (res.keep && !res.keep.length)) return true;
+        return previewRemoval(c, removedIndices(res, c.count), { noun: 'точек', color: '#ff3b4a' });
+      },
+      finish: function (res, c, v) {
+        var smart = v.mode === 'smart', what = smart ? 'умный режим, ' + lvlName(v.level) : 'радиус ' + num(v.radius) + ' м, соседей ' + Math.round(v.neighbors);
+        if (!res.removed) { toast('Подавление шума: «летающих» точек не найдено (' + what + ')'); return null; }
+        var keep = smart ? keptIndices(res.remove, c.count) : res.keep, removed = res.removed;
+        if (!keep.length) { toast('При таких параметрах удалились бы все точки — смягчите параметры'); return null; }
+        return { cloud: subsetCloud(c, keep), name: 'denoise',
+          details: { operation: 'cloud.denoise', parameters: smart ? { algorithm: 'density-aware', level: v.level, removed: removed, kept: keep.length } : { algorithm: 'radius-outlier', radius: v.radius, neighbors: Math.round(v.neighbors), removed: removed, kept: keep.length } },
+          text: 'Подавление шума: удалено ' + nfmt(removed) + ' точек (' + num(removed / c.count * 100, removed / c.count < 0.01 ? 3 : 1) + ' %), осталось ' + nfmt(keep.length) };
+      }
+    });
+    function lvlName(l) { return LEVELS[l] || l; }
+  }
+
+  function opPeople() {
+    var LV = { strict: 'строго', normal: 'обычно', loose: 'мягко' };
+    return processOp({
+      op: 'people', label: 'Поиск людей…', title: 'Удалить людей',
+      message: 'Находит прохожих по форме: рост, ширина, голова уже плеч, опора на землю. Колонны, столбы, тумбы, ящики, деревья, машины и стены остаются. Это эвристика, а не нейросеть: перед удалением вы увидите найденное красным. Далёкие, разреженные и слитые с кучами или кустами фигуры могут остаться — их удаляют вручную («Правка облака», рамка или лассо).',
+      fields: function () {
+        return [
+          { key: 'level', main: true, label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко' }],
+            hint: 'Строго — только уверенные случаи; обычно (рекомендуется); мягко находит больше, но может задеть колонны и столбы ростом с человека.' },
+          { key: 'minH', label: 'Рост от', type: 'number', value: 1.3, min: 0.5, max: 2.5, step: 'any', unit: 'м' },
+          { key: 'maxH', label: 'Рост до', type: 'number', value: 2.2, min: 1, max: 3, step: 'any', unit: 'м' },
+          { key: 'sitting', label: 'Искать и сидящих (от 0,9 м)', type: 'checkbox', value: false },
+          { key: 'preview', label: 'Показать найденное красным и спросить', type: 'checkbox', value: true }
+        ];
+      },
+      validate: function (v) { return v.maxH > v.minH ? null : 'Верхний рост должен быть больше нижнего'; },
+      params: function (v) { return { level: v.level, minH: v.minH, maxH: v.maxH, sitting: !!v.sitting }; },
+      review: function (res, c, v) {
+        if (!v.preview || !res.removed) return true;
+        return previewRemoval(c, res.remove, { noun: 'точек', color: '#ff3b4a', okLabel: 'Удалить людей', who: res.found.length });
+      },
+      finish: function (res, c, v) {
+        var what = 'строгость: ' + (LV[v.level] || v.level);
+        if (!res.removed) { toast('Людей не найдено (' + what + '). Если они есть на скане, попробуйте «Мягко» или «Искать и сидящих».'); return null; }
+        var keep = keptIndices(res.remove, c.count);
+        if (!keep.length) { toast('Удалились бы все точки — операция отменена'); return null; }
+        return { cloud: subsetCloud(c, keep), name: 'remove-people',
+          details: { operation: 'cloud.removePeople', parameters: { algorithm: 'shape-heuristic', level: v.level, minHeight: v.minH, maxHeight: v.maxH, sitting: !!v.sitting, objects: res.found.length, removed: res.removed, kept: keep.length } },
+          text: 'Удалено объектов: ' + res.found.length + ' (' + nfmt(res.removed) + ' точек, ' + num(res.removed / c.count * 100, res.removed / c.count < 0.01 ? 3 : 1) + ' %)' };
+      }
+    });
+  }
+
+  // ---------- Движущиеся объекты по траектории сканера (как удаление динамики в Lixel Studio) ----------
+  // Облако LAS с временем точек + poses.csv проекта: если в другое время сканер «видел сквозь» место, где были точки, там стоял
+  // движущийся объект (прохожий, машина, их «след»). Расчёт — в фоне по файлу на диске; на экране — предпросмотр красным.
+  var lastCloudFile = null;
+  try { window.addEventListener('lx-cloud-loaded', function (e) { var d = e && e.detail; lastCloudFile = d && d.path ? String(d.path) : null; }); } catch (e) {}
+  function cloudFilePath() {
+    var V = window.__viewer, rec = V && V._cloudRecord, cand = [lastCloudFile, rec && rec.sourceName];
+    for (var i = 0; i < cand.length; i++) if (cand[i] && /\.las$/i.test(cand[i])) return cand[i];
+    return null;
+  }
+  // ревизия 19: trail — поиск «следов» по времени точек (работает и без траектории сканера)
+  // ревизия 20: snapSpan — сколько секунд мог простоять «снимок» человека (копия в ключевом кадре) без траектории
+  var DYN_LEVELS = { strict: { ratio: 1.0, fMin: 4, maxSeen: 35, trail: { spanMax: 1.0, minTravel: 1.5, snapSpan: 1 } }, normal: { ratio: 0.6, fMin: 3, maxSeen: 50, trail: { snapSpan: 2 } },
+    loose: { ratio: 0.4, fMin: 2, maxSeen: 80, trail: { spanMax: 2.5, minHits: 1, snapSpan: 4 } } };
+  function trajLabel(p) { return String(p).split(/[\\/]/).slice(-2).join('/'); }
+  async function opDynClean() {
+    var t = T(), api = t && t.api ? t.api() : null, V = window.__viewer, DV = window.DynVoxels;
+    if (!api || !api.dynamicClean) { toast('Удаление движущихся объектов доступно в десктоп-версии'); return; }
+    if (!DV) { toast('Модуль разметки вокселей не загружен'); return; }
+    if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
+    var big = !!(V && typeof V.isBigCloud === 'function' && V.isBigCloud());
+    if (!big && !getCloud()) { toast('Сначала откройте облако точек'); return; }
+    var file = cloudFilePath();
+    if (!file) { toast('Нужен исходный файл LAS с временем точек (GPS time): откройте облако из LAS, экспортированного Lixel Studio'); return; }
+    var found = null; try { var fr = await api.findTrajectory({ path: file }); found = fr && fr.ok ? fr.path : null; } catch (e) {}
+    var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
+      title: 'Движущиеся объекты', okLabel: 'Найти',
+      message: 'Находит прохожих, машины и их «следы» и «копии» (цепочки силуэтов идущего человека): по времени точек — объект был в этом месте недолго, а место вокруг сканер видел дольше, — и, если есть траектория сканера, по лучам (сквозь эти точки сканер в другое время видел дальше). Стены, колонны, деревья и стоящие машины остаются. Люди, простоявшие на месте дольше нескольких секунд, находятся только с траекторией. Перед удалением найденное показывается красным.',
+      fields: [
+        { key: 'traj', label: 'Траектория сканера', type: 'select', value: found ? 'auto' : 'none', more: true,
+          options: (found ? [{ value: 'auto', label: 'Найдена рядом: ' + trajLabel(found) }] : []).concat([{ value: 'none', label: 'Без траектории — по времени точек' }, { value: 'pick', label: 'Выбрать файл poses.csv…' }]),
+          hint: 'Траектория не обязательна: идущие люди и машины находятся и без неё. С ней (<проект Lixel>/project_data/poses.csv) находятся ещё и стоявшие на месте. Нужно время точек (GPS time) в LAS.' },
+        { key: 'level', main: true, label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }] }
+      ] }) : Promise.resolve(null));
+    if (!values) return;
+    var posesPath = values.traj === 'auto' ? found : (values.traj === 'none' ? 'none' : null);
+    if (!posesPath) { var pk = await api.pickTrajectory(); if (!pk || !pk.ok || !pk.path) { toast('Траектория не выбрана'); return; } posesPath = pk.path; }
+    var jobId = 'dyn' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), res = null, stopSub = null, M = null;
+    var idx = null, sel = null, nFound = 0;
+    await run('Движущиеся объекты…', async function (setPct) {
+      if (api.onDynamicCleanProgress) stopSub = api.onDynamicCleanProgress(jobId, function (f, lab) { setPct(0.02 + 0.78 * f, lab || 'Анализ…'); });
+      try { res = await api.dynamicClean({ path: file, posesPath: posesPath, jobId: jobId, opts: DYN_LEVELS[values.level] || DYN_LEVELS.normal }); }
+      finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
+      if (!res || !res.ok) {
+        if (res && res.cancelled) { toast('Операция отменена, облако не изменено'); res = null; return; }
+        throw new Error((res && (res.message || res.error)) || 'расчёт не выполнен');
+      }
+      setPct(0.82, 'Разметка точек…'); await yieldFrame();
+      var sets = (res.sets && res.sets.length ? res.sets : [{ keys: res.keys, grid: res.grid }]).map(function (q) { return { keys: q.keys instanceof Float64Array ? q.keys : Float64Array.from(q.keys || []), grid: q.grid, kind: q.kind }; });
+      M = DV.buildMany ? DV.buildMany(sets) : DV.build(sets[0].keys, sets[0].grid);
+      var xf = DV.xfOf(V && V._srcXform), STEP = 2000000;
+      if (big) {
+        var BC = window.BigCloud, segs = V.base[0]._segs, tot = 0, done = 0; sel = new BC.BigSel(segs);
+        for (var s0 = 0; s0 < segs.length; s0++) tot += segs[s0].n;
+        for (var s = 0; s < segs.length; s++) {
+          var sg = segs[s], m = null;
+          for (var i0 = 0; i0 < sg.n; i0 += STEP) {
+            var i1 = Math.min(sg.n, i0 + STEP);
+            DV.classify(M, sg.P, i0, i1, xf, function (i) { if (!m) m = new Uint8Array(sg.n); m[i] = 1; });
+            done += i1 - i0; setPct(0.82 + 0.16 * done / Math.max(1, tot), 'Разметка точек…'); await yieldFrame();
+          }
+          sel.m[s] = m;
+        }
+        sel.recount(); nFound = sel.size;
+      } else {
+        var c = getCloud(), list = [], n = c.count;
+        for (var j0 = 0; j0 < n; j0 += STEP) { DV.classify(M, c.pos, j0, Math.min(n, j0 + STEP), xf, function (i) { list.push(i); }); setPct(0.82 + 0.16 * Math.min(n, j0 + STEP) / n, 'Разметка точек…'); await yieldFrame(); }
+        idx = Uint32Array.from(list); nFound = idx.length;
+      }
+    }, { onCancel: function () { try { api.cancelDynamicClean(jobId); } catch (e) {} } });
+    if (!res) return;
+    var st = res.stats || {}, secs = st.ms ? Math.round((st.ms.occupancy + st.ms.rays + (st.ms.decide || 0)) / 1000) : 0;
+    var how = res.trajectory ? 'по траектории ' + res.trajectory + ' и по времени точек' : 'по времени точек';
+    if (!nFound) { toast('Движущихся объектов не найдено (' + how + '). Если они есть, попробуйте «Мягко»' + (res.trajectory ? '' : ' или укажите траекторию poses.csv') + '.'); return; }
+    if (big) {
+      var total = 0; for (var q = 0; q < V.base[0]._segs.length; q++) total += V.base[0]._segs[q].n;
+      V._bigSetSel(sel);
+      var pct = nFound / Math.max(1, total) * 100, ok = false;
+      try {
+        ok = await reviewBar({ title: 'Удалить ' + nfmt(nFound) + ' точек движущихся объектов (' + num(pct, pct < 1 ? 3 : 1) + ' % облака)?',
+          text: 'Красным выделено найденное ' + how + ' за ' + secs + ' с. Крутите и приближайте сцену, чтобы проверить. Ctrl+Z вернёт точки.',
+          okLabel: 'Удалить', cancelLabel: 'Отмена', tone: pct > 5 ? 'warn' : '' });
+      } catch (e) { ok = false; }
+      if (!ok) { try { V.clearSelection(); } catch (e) {} toast('Отменено, облако не изменено'); return; }
+      var removed = await (V.deleteSelectionForce ? V.deleteSelectionForce() : V._bigApplyEdit(false, true));
+      toast('Движущиеся объекты: удалено ' + nfmt(removed || nFound) + ' точек · Ctrl+Z — отмена');
+      return;
+    }
+    var c2 = getCloud();
+    var okGo = await previewRemoval(c2, idx, { noun: 'точек', color: '#ff3b4a', okLabel: 'Удалить' });
+    if (!okGo) { toast('Отменено, облако не изменено'); return; }
+    var cur = getCloud(); if (!cur || cur.pos !== c2.pos) { toast('Облако изменилось — запустите операцию заново'); return; }
+    await run('Движущиеся объекты…', async function (setPct) {
+      setPct(0.6, 'Применение…'); await yieldFrame();
+      var keep = keptIndices(idx, cur.count);
+      if (!keep.length) { toast('Удалились бы все точки — операция отменена'); return; }
+      T().loadCloud(subsetCloud(cur, keep), 'remove-dynamic', { operation: 'cloud.removeDynamic', parameters: { algorithm: res.trajectory ? 'trajectory-ray-free-space+time-trail' : 'time-trail', level: values.level, trajectory: res.trajectory || '', voxel: res.grid && res.grid.v, voxels: M ? M.count : 0, removed: idx.length, kept: keep.length } });
+      toast('Движущиеся объекты: удалено ' + nfmt(idx.length) + ' точек · Ctrl+Z — отмена');
+    });
+  }
+
+  // Ревизия 19: «Папка сканера» — облако и траектория из папки проекта (реализация — window.__bimOpenScanFolder в app.js)
+  function opScanFolder() {
+    if (typeof window.__bimOpenScanFolder !== 'function') { toast('Открытие папки сканера недоступно'); return; }
+    return window.__bimOpenScanFolder();
+  }
+
+  // Ревизия 24: «Облако из .xbin» — облако из сырого лидара сканера Lixel (реализация — window.__bimXbinCloud в app.js)
+  async function opXbinCloud() {
+    var t = T(), api = t && t.api ? t.api() : null;
+    if (!api || !api.pickXbin || typeof window.__bimXbinCloud !== 'function') { toast('Облако из .xbin собирается в десктоп-версии'); return; }
+    var px = await api.pickXbin(); if (!px || !px.ok || !px.path) { if (!(px && px.cancelled)) toast('Файл сканера не выбран'); return; }
+    return window.__bimXbinCloud(px.path);
+  }
+
+  // Ревизия 36: «Цвет по фото камер» — открытое облако LAS (серое облако из лидара .xbin) раскрашивается по кадрам камер сканера
+  function opPhotoColor() {
+    if (typeof window.__bimPhotoColor !== 'function') { toast('Цвет по фото камер — в десктоп-версии'); return; }
+    return window.__bimPhotoColor();
+  }
+
+  /**
+   * Чистовая обработка скана (как экспорт после обработки в Lixel Studio): движущиеся объекты (по времени точек и по траектории),
+   * шум (уровни мягко/обычно/сильно), тонкие стены и пол (проекция на локальную плоскость), пёстрые точки. Ревизия 19: по умолчанию
+   * результат заменяет открытый файл (исходник остаётся рядом как «<имя>-original.las»), облако на экране перезагружается.
+   * Работает с файлом любого размера по плиткам в фоновом потоке, окно не замирает.
+   */
+  async function opRefineScan(o) {
+    o = o || {};
+    var t = T(), api = t && t.api ? t.api() : null, V = window.__viewer;
+    if (!api || !api.refineScan) { toast('Чистовая обработка доступна в десктоп-версии'); return; }
+    if (busy) { toast('Идёт обработка — дождитесь завершения'); return; }
+    var file = cloudFilePath();
+    if (!file || !/\.las$/i.test(file)) { toast('Нужен исходный файл LAS: откройте облако из LAS'); return; }
+    var found = null; try { var fr = await api.findTrajectory({ path: file }); found = fr && fr.ok ? fr.path : null; } catch (e) {}
+    var trajOpts = (found ? [{ value: 'auto', label: 'Да, по времени точек и траектории ' + trajLabel(found) }] : [])
+      .concat([{ value: 'none', label: 'Да, по времени точек (без траектории)' }, { value: 'pick', label: 'Да, выбрать файл poses.csv…' }, { value: 'off', label: 'Нет' }]);
+    var edited = !!(V && typeof V.canUndo === 'function' && V.canUndo());
+    var fname = String(file).split(/[\\/]/).pop();
+    // ревизия 22: файл сканера .xbin (кадры камер) — цвет по фото, как в Lixel Studio
+    var xb = null; if (api.findXbin) { try { var xr = await api.findXbin({ path: file }); xb = xr && xr.ok && xr.path ? xr : null; } catch (e) { xb = null; } }
+    var xbName = xb ? String(xb.path).split(/[\\/]/).pop() : '';
+    var photoOpts = (xb ? [{ value: 'auto', label: 'Да, по кадрам камер ' + xbName + (xb.size ? ' (' + (xb.size / 1073741824).toFixed(1) + ' ГБ)' : '') }] : [])
+      .concat(api.pickXbin ? [{ value: 'pick', label: 'Да, выбрать файл сканера .xbin…' }] : []).concat([{ value: 'off', label: 'Нет — оставить цвет облака' }]);
+    var values = await ((window.__lxKit && window.__lxKit.form) ? window.__lxKit.form({
+      title: o.title || 'Чистовая обработка', okLabel: 'Начать',
+      message: (o.lead ? o.lead + ' ' : '') + 'Всё автоматически: проходы, прохожие, шум, тонкие стены, ровный цвет.',
+      hint: edited ? 'Несохранённые правки в окне в результат не попадут.' : undefined,
+      fields: [
+        { key: 'target', main: true, label: 'Результат', type: 'select', value: 'replace', options: [{ value: 'replace', label: 'Заменить открытый файл ' + fname }, { value: 'new', label: 'Сохранить в новый файл…' }] },
+        { key: 'backup', label: 'Оставить копию исходного файла (<имя>-original.las)', type: 'checkbox', value: true, showIf: function (v) { return v.target === 'replace'; },
+          hint: 'Без копии исходный скан будет удалён без возможности вернуть.' },
+        { key: 'photo', main: !!xb, label: 'Цвет по фото', type: 'select', value: xb && !o.photoOff ? 'auto' : 'off', options: photoOpts,
+          hint: 'Каждая точка заново получает цвет из 12-Мп кадров двух камер сканера (файл .xbin в папке проекта Lixel): по ближайшим и самым резким кадрам, с учётом заслонений; оператор и прохожие в кадре отбрасываются. Нужны время точек и траектория poses.csv, на диске — ещё около 1,7 размера файла. Занимает примерно минуту на минуту съёмки.' },
+        { key: 'align', label: 'Свести проходы (исправить дрейф)', type: 'checkbox', value: true,
+          hint: 'Повторные проходы realtime-карты сдвинуты на 2–4 см: рамы двоятся, у окон и арматуры «ореол». Поправка ищется по времени точек (как при пересчёте в Lixel Studio); с траекторией точнее.' },
+        { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'none', options: trajOpts,
+          hint: 'Нужно время точек (GPS time) в LAS. Траектория сканера (<проект Lixel>/project_data/poses.csv) не обязательна, с ней находится больше.' },
+        { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }], showIf: function (v) { return v.traj !== 'off'; } },
+        { key: 'noise', label: 'Убрать шум', type: 'checkbox', value: true },
+        { key: 'noiseLevel', label: 'Сила очистки шума', type: 'select', value: 'strong', options: [{ value: 'soft', label: 'Мягко — только заведомый мусор' }, { value: 'normal', label: 'Обычно' }, { value: 'strong', label: 'Сильно (рекомендуется) — чёткая картинка' }, { value: 'max', label: 'Максимум — самая чистая картинка' }],
+          showIf: function (v) { return !!v.noise; }, hint: 'Удаляются одиночные точки, «туман» и «лучи» за кромками и стеклом, мелкие облачка и «пыль» в 1–8 см перед стенами и полом; арматура, рамы и кабели защищены. «Максимум» может задеть провода тоньше 5 мм и самые редкие дальние участки.' },
+        { key: 'thin', label: 'Тонкие чёткие поверхности (стены, пол, потолок)', type: 'checkbox', value: true, hint: 'Точки плоских участков ложатся на локальную плоскость: слой 5–10 мм становится тоньше миллиметра. Углы, трубы и мелкие детали не трогаются.' },
+        { key: 'color', label: 'Исправить пёстрые точки', type: 'checkbox', value: true, hint: 'Белые и цветные одиночные точки (блики, пиксели неба) и «соль с перцем» приводятся к цвету поверхности; точки без цвета (чёрное зерно) получают цвет соседей, в тени остаются тёмными. Швы плитки и кладки не размываются.' },
+        { key: 'colorBalance', label: 'Ровный цвет: яркость проходов и баланс белого', type: 'checkbox', value: true, showIf: function (v) { return !!v.color; },
+          hint: 'Камера сканера меняет экспозицию: поздние проходы темнее, стена становится «рябой». Яркость проходов выравнивается — по всему облаку и в каждом месте, серые поверхности становятся серыми, тёмное облако осветляется тоновой кривой, как в Lixel Studio: середина ярче, тени не «молочные».' }
+      ] }) : Promise.resolve(null));
+    if (!values) return;
+    var inPlace = values.target !== 'new', keepBackup = !inPlace || values.backup !== false;
+    if (inPlace && !keepBackup && window.__lxKit && window.__lxKit.ask) {
+      var sure = false; try { sure = await window.__lxKit.ask({ title: 'Заменить файл без копии?', message: 'Исходный файл ' + fname + ' будет заменён обработанным, копия не сохранится. Продолжить?', okLabel: 'Заменить', cancelLabel: 'Отмена' }); } catch (e) { sure = false; }
+      if (!sure) return;
+    }
+    var posesPath = null, dyn = values.traj !== 'off';
+    if (dyn) {
+      posesPath = values.traj === 'auto' ? found : (values.traj === 'none' ? 'none' : null);
+      if (!posesPath) { var pk = await api.pickTrajectory(); if (!pk || !pk.ok || !pk.path) { toast('Траектория не выбрана'); return; } posesPath = pk.path; }
+    }
+    var photo = values.photo === 'auto' || values.photo === 'pick', xbinPath = null;
+    if (photo) {
+      if (values.photo === 'auto') xbinPath = xb.path;
+      else { var px = await api.pickXbin(); if (!px || !px.ok || !px.path) { toast('Файл сканера не выбран'); return; } xbinPath = px.path; }
+      // для цвета по фото нужна траектория с ориентацией: найденная рядом или выбранная
+      if (!posesPath || posesPath === 'none') posesPath = found || null;
+      if (!posesPath) { var pk2 = await api.pickTrajectory(); if (!pk2 || !pk2.ok || !pk2.path) { toast('Для цвета по фото нужна траектория poses.csv'); return; } posesPath = pk2.path; }
+    }
+    var jobId = 'ref' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), res = null, stopSub = null;
+    await run('Чистовая обработка…', async function (setPct) {
+      if (api.onRefineScanProgress) stopSub = api.onRefineScanProgress(jobId, function (f, lab) { setPct(0.02 + 0.97 * f, lab || 'Обработка…'); });
+      try {
+        res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, noiseLevel: values.noiseLevel || 'strong',
+          thin: !!values.thin, color: !!values.color, align: values.align !== false, colorBalance: !!values.color && values.colorBalance !== false, photo: photo, xbinPath: xbinPath, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId });
+      } finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
+    }, { onCancel: function () { try { api.cancelRefineScan(jobId); } catch (e) {} } });
+    if (!res) return;
+    if (!res.ok) { toast(res.cancelled ? 'Обработка отменена, файл не изменён' : ('Не удалось: ' + (res.message || res.error || 'ошибка'))); return; }
+    // ревизия 44: итог — одной короткой строкой, без технических подробностей
+    var st = res.stats || {}, parts = [], al = st.align || null;
+    if (values.noise) parts.push('шум −' + nfmt(st.noise || 0));
+    if (dyn) parts.push(res.dynWarning ? 'прохожие не найдены' : 'прохожие −' + nfmt(st.dynamic || 0));
+    if (values.align !== false && al && !al.skipped) parts.push('проходы сведены');
+    if (photo) parts.push(res.photo ? 'цвет по фото' : 'цвет по фото не применён');
+    if (values.thin || values.color) parts.push('стены и цвет выровнены');
+    var msg = 'Готово за ' + Math.max(1, Math.round((st.ms || 0) / 1000)) + ' с: ' + parts.join(', ') + '.';
+    var k = window.__lxKit;
+    if (inPlace && res.inPlace) {
+      // файл заменён — сразу показываем обработанное облако (кеш старого облака сбрасывается)
+      if (typeof window.__bimOpenCloudPath === 'function') await window.__bimOpenCloudPath(res.path, { fresh: true });
+      toast('Файл обновлён. ' + msg + (res.backupName ? ' Исходник: ' + res.backupName + '.' : ''));
+      return;
+    }
+    if (inPlace && !res.inPlace) msg = 'Открытый файл заменить не удалось (' + (res.replaceError || 'файл занят') + '), результат сохранён рядом: ' + (res.name || '') + '.\n\n' + msg;
+    else msg += '\n\n' + (res.name || '');
+    var open = false;
+    if (k && k.ask) { try { open = await k.ask({ title: 'Готово', message: msg + '\n\nОткрыть результат?', okLabel: 'Открыть', cancelLabel: 'Позже' }); } catch (e) { open = false; } }
+    else toast(msg);
+    if (open && typeof window.__bimOpenCloudPath === 'function') await window.__bimOpenCloudPath(res.path, { fresh: true });
+  }
+
+  /**
+   * Автоматическая чистка одним действием (как «авто-очистка» в Lixel): шум и «облачка» в пустоте → люди → стены, пол и потолок ложатся
+   * на ровные плоскости, «волосы» около них убираются. Перед применением — предпросмотр удаляемого красным; Ctrl+Z возвращает облако.
+   */
+  async function opAutoClean(o) {
+    o = o && typeof o === 'object' && !o.target ? o : {};
+    var bigV = window.__viewer;
+    if (bigV && typeof bigV.isBigCloud === 'function' && bigV.isBigCloud()) {
+      // ревизия 20: большой скан из LAS — полная автоочистка по файлу (люди и их «копии», шум, «пыль», тонкие стены, цвет),
+      // в окне — только быстрая чистка загруженной части
+      var t = T(), api = t && t.api ? t.api() : null, file = cloudFilePath();
+      if (o.preset && api && api.refineScan && file && /\.las$/i.test(file)) { await opRefineScan({ title: o.deep ? 'Чистка до мелочей' : 'Автоочистка' }); return { ok: true, big: true, message: 'Большой скан: открыта полная очистка по файлу — параметры и запуск в её окне.' }; }
+      // ревизия 44: сразу полная очистка по файлу — без лишнего вопроса о способе
+      if (api && api.refineScan && file && /\.las$/i.test(file)) return opRefineScan({ title: 'Автоочистка' });
+      var cb = document.getElementById('vtClean'); if (cb) { cb.click(); return; }
+    }
+    var LV = { soft: 'мягко', medium: 'средне', strong: 'сильно' }, PL = { strict: 'строго', normal: 'обычно', loose: 'мягко' };
+    // r42: запуск ассистентом — без формы параметров, но предпросмотр удаляемого красным и кнопка «Применить» обязательны
+    var deep = !!o.deep, pre = null;
+    // keepShape по умолчанию: стены, пол и потолок не «утюжатся» — иначе контроль геометрии покажет неправду; выровнять — только по явной просьбе (o.preset.keepShape: false)
+    if (o.preset) { pre = Object.assign({ level: deep ? 'strong' : 'medium', people: 'normal', flatten: true, kind: 'wall', tol: 0, hair: true, keepShape: true, micro: deep }, o.preset); pre.preview = true; }
+    return processOp({
+      preset: pre,
+      op: deep ? 'deepclean' : 'autoclean', label: deep ? 'Чистка до мелочей…' : 'Автоматическая чистка…', title: deep ? 'Чистка до мелочей' : 'Автоматическая чистка',
+      message: 'Шум, прохожие, «волоски» у стен' + (deep ? ', дубли, обрывки, одиночные точки' : '') + '. Трубы и детали остаются. Перед удалением — показ красным.',
+      fields: function (d) {
+        return [
+          { key: 'level', main: true, label: 'Сила', type: 'select', value: 'medium', options: [{ value: 'soft', label: 'Мягко' }, { value: 'medium', label: 'Средне' }, { value: 'strong', label: 'Сильно' }],
+            hint: 'Мягко — только заведомый мусор; средне (рекомендуется); сильно — ещё и сгустки до 150 точек, но тонкие провода на редком скане могут пострадать.' },
+          { key: 'people', label: 'Людей', type: 'select', value: 'normal', options: [{ value: 'off', label: 'Не удалять' }, { value: 'strict', label: 'Только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Больше (риск задеть колонны)' }] },
+          { key: 'flatten', label: 'Выровнять стены, пол и потолок', type: 'checkbox', value: true },
+          { key: 'kind', label: 'Тип поверхностей', type: 'select', value: 'wall', options: [{ value: 'wall', label: 'Стены, пол, потолок (тонкий слой)' }, { value: 'facade', label: 'Фасад, стекло (толстый слой)' }], showIf: function (v) { return !!v.flatten; },
+            hint: 'Для сканов фасада сквозь стекло слой «размазан» на 5–10 см — выберите «Фасад, стекло».' },
+          { key: 'tol', label: 'Допуск (толщина слоя)', type: 'number', value: d.flattenTol, min: 0.002, max: 0.5, step: 'any', unit: 'м', showIf: function (v) { return !!v.flatten && v.kind === 'wall'; }, hint: 'Точки ближе допуска к плоскости ложатся на неё. Для SLAM-сканеров 0,03–0,06 м, для точных сканеров меньше.' },
+          { key: 'hair', label: 'Убрать «волоски» шума вокруг плоскостей', type: 'checkbox', value: true, showIf: function (v) { return !!v.flatten; } },
+          { key: 'keepShape', label: 'Не сдвигать точки стен и пола (только убрать лишнее)', type: 'checkbox', value: deep, showIf: function (v) { return !!v.flatten; },
+            hint: 'Включите, если по облаку будет контроль геометрии: завалы и неровности останутся настоящими, «волоски» шума всё равно уйдут.' },
+          { key: 'micro', label: 'Убрать самые мелкие: одиночные точки и пары в пустоте', type: 'checkbox', value: deep, showIf: function () { return deep; } },
+          { key: 'preview', label: 'Показать удаляемое красным и спросить', type: 'checkbox', value: true }
+        ];
+      },
+      params: function (v, d) {
+        var fac = v.kind === 'facade';
+        return { level: v.level, people: v.people !== 'off', peopleLevel: v.people === 'off' ? 'normal' : v.people, flatten: !!v.flatten, facade: fac, tol: fac ? 0.12 : (v.tol > 0 ? v.tol : d.flattenTol), hair: !!v.hair, strength: v.keepShape ? 0 : 1, dupes: deep, fragments: deep, far: deep, micro: deep && !!v.micro };
+      },
+      review: function (res, c, v) {
+        if (!v.preview || !res.removed) return true;
+        return previewRemoval(c, res.remove, { noun: 'точек', color: '#ff3b4a', okLabel: 'Применить чистку', who: res.stats && res.stats.peopleFound ? res.stats.peopleFound : undefined });
+      },
+      finish: function (res, c, v) {
+        var st = res.stats || {}, moved = v.keepShape ? 0 : (st.moved || 0);   // keepShape: «волоски» убраны, но точки стен не сдвигаются (замеры не искажаются)
+        if (!res.removed && !moved) { toast('Автоматическая чистка: ничего лишнего не найдено (шум: ' + (LV[v.level] || v.level) + ')'); return null; }
+        var keep = keptIndices(res.remove, c.count);
+        if (!keep.length) { toast('Удалились бы все точки — операция отменена'); return null; }
+        var cl = subsetCloud(c, keep);
+        if (res.pos && moved) cl.pos = engine().gather(res.pos, keep, 3);   // выровненные координаты оставшихся точек
+        return { cloud: cl, name: 'auto-clean',
+          details: { operation: deep ? 'cloud.deepClean' : 'cloud.autoClean', parameters: { algorithm: deep ? 'dupes+density-noise+people-shape+plane-flatten+fragments+far' : 'density-noise+people-shape+plane-flatten', dupes: deep ? st.dupes : undefined, fragments: deep ? st.fragments : undefined, far: deep ? st.far : undefined, micro: deep ? st.micro : undefined, level: v.level, people: v.people, flatten: !!v.flatten && !v.keepShape, keepShape: !!v.keepShape || undefined, surface: v.kind === 'facade' ? 'facade' : 'wall', tolerance: v.kind === 'facade' ? 0.12 : v.tol, hair: !!v.hair, noise: st.noise, peopleRemoved: st.people, peopleObjects: st.peopleFound, hairRemoved: st.hair, planes: st.planes, moved: moved, rmsShift: st.rmsShift, removed: res.removed, kept: keep.length } },
+          text: (deep ? 'Чистка до мелочей' : 'Автоочистка') + ': удалено ' + nfmt(res.removed) + ' точек (' + num(res.removed / c.count * 100, res.removed / c.count < 0.01 ? 3 : 1) + ' %: шум ' + nfmt(st.noise || 0) + ', люди ' + nfmt(st.people || 0) + ', «волоски» ' + nfmt(st.hair || 0) + (deep ? ', дубли ' + nfmt(st.dupes || 0) + ', неверные ' + nfmt(st.invalid || 0) + ', летающие обрывки ' + nfmt(st.fragments || 0) + ' (' + nfmt(st.fragmentGroups || 0) + ' гр.), далёкие выбросы ' + nfmt(st.far || 0) + (st.micro ? ', одиночные ' + nfmt(st.micro) : '') : '') + ')' + (moved ? '; выровнено плоскостей ' + nfmt(st.planes || 0) + ', сдвинуто ' + nfmt(moved) + ' точек, средний сдвиг ' + mm(st.rmsShift || 0) : '') };
+      }
+    });
+  }
+
+  /** r42: «Чистка до мелочей» с ленты — та же форма автоочистки, плюс дубли, летающие обрывки и далёкие выбросы. */
+  function opDeepClean() { return opAutoClean({ deep: true }); }
+
+  function opSmooth() {
+    return processOp({
+      op: 'smooth', label: 'Сглаживание…', title: 'Сглаживание',
+      message: 'Подавляет шум на плоских поверхностях: каждая точка ложится на локальную плоскость. Рёбра, углы и трубы остаются как есть.',
+      fields: function (d) {
+        return [
+          { key: 'radius', label: 'Радиус поиска', type: 'number', value: d.smoothRadius, min: 0.005, max: 2, step: 'any', unit: 'м', hint: 'Лучше всего 3–10 шагов между точками. Для плотного скана 0,03–0,05 м, для прореженного больше.' },
+          { key: 'strength', label: 'Сила', type: 'number', value: 100, min: 5, max: 100, step: '1', unit: '%' },
+          { key: 'protect', label: 'Сохранять рёбра и изогнутые поверхности', type: 'checkbox', value: true }
+        ];
+      },
+      params: function (v) { return { radius: v.radius, strength: v.strength / 100, protect: v.protect }; },
+      finish: function (res, c, v) {
+        if (!res.moved) { toast('Сглаживание: плоских участков для радиуса ' + num(v.radius) + ' м не найдено. Попробуйте радиус побольше.'); return null; }
+        return { cloud: { pos: res.pos, col: c.col, intensity: c.intensity, classification: c.classification, count: c.count }, name: 'smooth',
+          details: { operation: 'cloud.smooth', parameters: { algorithm: 'local-plane-projection', radius: v.radius, strength: v.strength / 100, protectEdges: v.protect, moved: res.moved, points: c.count, rmsShift: res.rmsShift } },
+          text: 'Сглаживание: смещено ' + nfmt(res.moved) + ' из ' + nfmt(c.count) + ' точек, средний сдвиг ' + mm(res.rmsShift) + (res.moved < c.count * 0.2 ? '. Участков с кривизной много — они не тронуты' : '') };
+      }
+    });
+  }
+
+  function opFlatten() {
+    return processOp({
+      op: 'flatten', label: 'Выравнивание поверхностей…', title: 'Выровнять поверхности',
+      message: 'Находит большие плоскости (стены, пол, потолок), склеивает двойные слои и укладывает точки на одну плоскость. Измерения по таким поверхностям становятся точными. Трубы и мебель не меняются.',
+      fields: function (d) {
+        return [
+          { key: 'kind', label: 'Тип поверхности', type: 'select', value: 'wall', options: [{ value: 'wall', label: 'Стена, пол, потолок (тонкий слой)' }, { value: 'facade', label: 'Фасад, стекло (толстый слой)' }],
+            hint: 'На сканах через стекло (SLAM) слой фасада «размазан» на 5–10 см: выберите «Фасад, стекло» — допуск не меньше 12 см, участки по 0,6 м. На реальном скане фасада доля точек в пределах ±5 мм от плоскости выросла с 32 до 94 %.' },
+          { key: 'tol', label: 'Допуск (толщина слоя)', type: 'number', value: d.flattenTol, min: 0.002, max: 0.5, step: 'any', unit: 'м', hint: 'Точки ближе допуска к плоскости ложатся на неё. Для SLAM-сканеров 0,03–0,06 м, для точных сканеров 0,01 м.' },
+          { key: 'strength', label: 'Сила', type: 'number', value: 100, min: 5, max: 100, step: '1', unit: '%' }
+        ];
+      },
+      params: function (v, d) { var facade = v.kind === 'facade'; return { tol: facade ? Math.max(v.tol, 0.12) : v.tol, strength: v.strength / 100, spacing: d.spacing, cell: facade ? 0.6 : undefined }; },
+      finish: function (res, c, v) {
+        if (!res.planes) { toast('Выравнивание: больших плоскостей не найдено. Увеличьте допуск (сейчас ' + num(v.tol) + ' м).'); return null; }
+        return { cloud: { pos: res.pos, col: c.col, intensity: c.intensity, classification: c.classification, count: c.count }, name: 'flatten',
+          details: { operation: 'cloud.flatten', parameters: { algorithm: 'plane-merge', surface: v.kind === 'facade' ? 'facade' : 'wall', tolerance: v.kind === 'facade' ? Math.max(v.tol, 0.12) : v.tol, strength: v.strength / 100, planes: res.planes, moved: res.moved, points: c.count, rmsShift: res.rmsShift } },
+          text: 'Выровнено поверхностей: ' + nfmt(res.planes) + ', точек ' + nfmt(res.moved) + ' из ' + nfmt(c.count) + ', средний сдвиг ' + mm(res.rmsShift) };
+      }
+    });
+  }
+
+  function refineWall(plane,cloud){
+    var p=cloud.pos,n=cloud.count,N=plane.normal,d=plane.d,bounds=[ [Infinity,-Infinity],[Infinity,-Infinity],[Infinity,-Infinity] ];
+    for(var i=0;i<n;i++)for(var a=0;a<3;a++){var v=p[i*3+a];if(v<bounds[a][0])bounds[a][0]=v;if(v>bounds[a][1])bounds[a][1]=v;}
+    var tol=plane.tol||Math.max(0.001,Math.hypot(bounds[0][1]-bounds[0][0],bounds[1][1]-bounds[1][0],bounds[2][1]-bounds[2][0])*0.004),step=Math.max(1,Math.ceil(n/50000),Math.ceil(n/50000));
+    var sx=0,sy=0,sz=0,m=0;
+    for(var i=0;i<n;i+=step){var x=p[i*3],y=p[i*3+1],z=p[i*3+2];if(Math.abs(N[0]*x+N[1]*y+N[2]*z+d)<=tol){sx+=x;sy+=y;sz+=z;m++;}}
+    if(m<3)return plane;var c=[sx/m,sy/m,sz/m],A=[[0,0,0],[0,0,0],[0,0,0]];
+    for(var i=0;i<n;i+=step){var x=p[i*3],y=p[i*3+1],z=p[i*3+2];if(Math.abs(N[0]*x+N[1]*y+N[2]*z+d)>tol)continue;var v=[x-c[0],y-c[1],z-c[2]];for(var a=0;a<3;a++)for(var b=0;b<3;b++)A[a][b]+=v[a]*v[b];}
+    var V=[[1,0,0],[0,1,0],[0,0,1]];
+    for(var it=0;it<18;it++){var u=0,v=1,max=Math.abs(A[0][1]);if(Math.abs(A[0][2])>max){u=0;v=2;max=Math.abs(A[0][2]);}if(Math.abs(A[1][2])>max){u=1;v=2;max=Math.abs(A[1][2]);}if(max<1e-12)break;var phi=0.5*Math.atan2(2*A[u][v],A[v][v]-A[u][u]),co=Math.cos(phi),si=Math.sin(phi),au=A[u][u],av=A[v][v],auv=A[u][v];A[u][u]=co*co*au-2*si*co*auv+si*si*av;A[v][v]=si*si*au+2*si*co*auv+co*co*av;A[u][v]=A[v][u]=0;for(var k=0;k<3;k++)if(k!==u&&k!==v){var ku=A[k][u],kv=A[k][v];A[k][u]=A[u][k]=co*ku-si*kv;A[k][v]=A[v][k]=si*ku+co*kv;}for(var k=0;k<3;k++){var ku=V[k][u],kv=V[k][v];V[k][u]=co*ku-si*kv;V[k][v]=si*ku+co*kv;}}
+    var ix=0;if(A[1][1]<A[ix][ix])ix=1;if(A[2][2]<A[ix][ix])ix=2;var q=[V[0][ix],V[1][ix],V[2][ix]],l=Math.hypot(q[0],q[1],q[2])||1;q=q.map(function(x){return x/l;});if(q[0]*N[0]+q[1]*N[1]+q[2]*N[2]<0)q=q.map(function(x){return-x;});
+    return Object.assign({},plane,{normal:q,d:-(q[0]*c[0]+q[1]*c[1]+q[2]*c[2]),refinedCount:m});
+  }
+
+  function opVertical() { return run('Вертикальное выравнивание…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P || !P.dominantPlane) return;
+    setPct(0.35, 'Поиск вертикальной стены…'); await yieldFrame();
+    var plane = P.dominantPlane(c, { orientation: 'wall', upAxis: 1 }); if (!plane || !plane.normal) { toast('Вертикальная плоскость не найдена'); return; }
+    plane=refineWall(plane,c); var nx = plane.normal[0], nz = plane.normal[2], len = Math.hypot(nx, nz); if (len < 1e-8) { toast('Невозможно определить горизонтальное направление стены'); return; }
+    var angle = -Math.atan2(nz, nx), co = Math.cos(angle), si = Math.sin(angle), b = plane.bounds || null;
+    var mn=[Infinity,Infinity,Infinity],mx=[-Infinity,-Infinity,-Infinity];
+    for(var i=0;i<c.count;i++)for(var a=0;a<3;a++){var v=c.pos[i*3+a];if(v<mn[a])mn[a]=v;if(v>mx[a])mx[a]=v;}
+    var ox=(mn[0]+mx[0])/2,oz=(mn[2]+mx[2])/2,out=c.pos.slice();
+    for(var i=0;i<c.count;i++){var x=c.pos[i*3]-ox,z=c.pos[i*3+2]-oz;out[i*3]=co*x-si*z+ox;out[i*3+2]=si*x+co*z+oz;}
+    T().loadCloud({pos:out,col:c.col,count:c.count},'vertical-align',{operation:'cloud.vertical-align',parameters:{rotationRadians:angle,rotationDegrees:angle*180/Math.PI,pivot:[ox,oz],planeNormal:plane.normal}}); setPct(1,'Готово'); toast('Вертикаль: разворот по азимуту на '+(angle*180/Math.PI).toFixed(2)+'°; наклон по высоте сохранён.');
+  }); }
+
+  function opLevel(orientation, up, label) { return run(label + '…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+    setPct(0.4, 'Поиск доминантной плоскости…'); await yieldFrame();
+    var r = P.levelCloud(c, { orientation: orientation, up: up }); await yieldFrame();
+    if (!r.applied) { toast('Не удалось определить плоскость для выравнивания'); return; }
+    setPct(0.85, 'Поворот облака…'); await yieldFrame();
+    T().loadCloud({ pos: r.pos, col: r.col, count: r.count }, 'level', { operation: 'cloud.level', parameters: { orientation: orientation, up: up, angleDegrees: r.angleDeg, points: r.count } }); setPct(1, 'Готово');
+    toast(label + ': поворот на ' + r.angleDeg.toFixed(2) + '°');
+  }); }
+
+  function opMerge() { return run('Объединить…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+    var c2 = await pickSecondCloud(setPct, 'Выберите облако для объединения…', {requireComparable:true}); if (!c2) return;
+    setPct(0.7, 'Слияние облаков…'); await yieldFrame();
+    var r = P.mergeClouds([c, c2]); setPct(0.9, 'Загрузка результата…'); await yieldFrame();
+    T().loadCloud({ pos: r.pos, col: r.col, count: r.count }, 'merge', { operation: 'cloud.merge', parameters: { sourceCloud: c2.path || null, sourceCount: c2.count, outputCount: r.count, frameCheck: c2.frameCheck || null } }); setPct(1, 'Готово');
+    toast('Объединено ' + r.clouds + ' облака: ' + nfmt(r.count) + ' точек');
+  }); }
+
+  function opOverlay() { return run('Наложение…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+    var c2 = await pickSecondCloud(setPct, 'Выберите облако для наложения…', {requireComparable:true}); if (!c2) return;
+    setPct(0.7, 'Совмещение (наложение)…'); await yieldFrame();
+    // Наложение = совместный показ обоих облаков (суперпозиция без прореживания).
+    var r = P.mergeClouds([c, c2]); setPct(0.9, 'Загрузка…'); await yieldFrame();
+    T().loadCloud({ pos: r.pos, col: r.col, count: r.count }, 'overlay', { operation: 'cloud.overlay', parameters: { sourceCloud: c2.path || null, sourceCount: c2.count, outputCount: r.count, frameCheck: c2.frameCheck || null } }); setPct(1, 'Готово');
+    toast('Наложение: показаны оба облака (' + nfmt(r.count) + ' точек). Для точного совмещения используйте «Совмещение» (ICP).');
+  }); }
+
+  /** Открыть ещё одно облако в этом же проекте: старое остаётся на экране, новое добавляется в той же системе координат.
+   *  Возвращает true, если облако добавлено (иначе вызывающий код может заменить облако как раньше). */
+  async function addParsedCloud(pr, path) {
+    var ok = false;
+    await run('Добавление облака…', async function (setPct) {
+      var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+      var c2 = await alignSecond(pr, { path: path }, { requireComparable: true }); if (!c2) return;
+      setPct(0.7, 'Слияние облаков…'); await yieldFrame();
+      var r = P.mergeClouds([c, c2]); setPct(0.9, 'Показываю все облака…'); await yieldFrame();
+      T().loadCloud({ pos: r.pos, col: r.col, count: r.count }, 'add-cloud', { operation: 'cloud.add', parameters: { sourceCloud: path || null, sourceCount: c2.count, outputCount: r.count, frameCheck: c2.frameCheck || null } });
+      setPct(1, 'Готово'); ok = true;
+      try { var vw = window.__viewer; if (vw && vw.resetView) vw.resetView(); } catch (e) {}   // показать все облака целиком
+      toast('Облако добавлено к проекту: теперь на экране ' + nfmt(r.count) + ' точек');
+    });
+    return ok;
+  }
+  /** Сколько точек сейчас в обычном (не потоковом) облаке: 0 — добавлять не к чему. */
+  function addableCount() {
+    var t = T(); if (!t || (t.isOctreeStreamActive && t.isOctreeStreamActive())) return 0;
+    var c = getCloud(); return c ? c.count : 0;
+  }
+
+  function opExportE57() { return run('Экспорт в E57…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var EH = window.ExportHub; if (!EH || !EH.exportE57) { toast('Модуль экспорта недоступен'); return; }
+    setPct(0.5, 'Формирование бинарного E57 (ASTM)…'); await yieldFrame();
+    var src = (T().getSourceCloud && T().getSourceCloud()) || c;
+    var pre = EH.preflightExport ? EH.preflightExport('e57', src) : { ok:true, warnings:[] };
+    if (!pre.ok) { toast('Экспорт отменён: ' + (pre.errors || []).join('; ')); return; }
+    var e57 = EH.exportE57(src.pos, src.count || c.count, { step: 1, col: src.col || c.col, intensity:src.intensity||null,
+      crs: (src.meta && src.meta.crsWkt) || (T().getSourceCrs && T().getSourceCrs()) || '',
+      scans: src.meta && src.meta.scans || null }); setPct(0.9, 'Сохранение файла…');
+    download('cloud-' + Date.now() + '.e57', e57, 'application/octet-stream'); setPct(1, 'Готово');
+    toast('Экспортировано в E57: ' + nfmt(c.count) + ' точек' + (pre.warnings&&pre.warnings.length?' · Предупреждения: '+pre.warnings.join('; '):''));
+  }); }
+
+  function opExportRCP() {
+    // Честно: формат Autodesk RCP закрыт и требует Autodesk ReCap (внешний движок).
+    toast('LAS→RCP требует Autodesk ReCap (внешний движок) и недоступен офлайн. Экспортирую в открытый E57/PLY вместо RCP.');
+    return opExportE57();
+  }
+
+  function opWriteData() { return run('Запись данных…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+    setPct(0.3, 'Кодирование PLY (binary)…');
+    var buf, src=(T().getSourceCloud&&T().getSourceCloud())||c, EH=window.ExportHub;
+    if (EH && EH.exportPLYAsync) { buf=await EH.exportPLYAsync(src,function(f){setPct(0.3+0.5*f,'Кодирование PLY…');}); }
+    else if (P.toPLYBinaryAsync) { buf = await P.toPLYBinaryAsync(c, { onProgress: function (f) { setPct(0.3 + 0.5 * f, 'Кодирование PLY…'); } }); }
+    else { buf = P.toPLYBinary(c); }
+    setPct(0.9, 'Сохранение файла…');
+    download('cloud-' + Date.now() + '.ply', buf, 'application/octet-stream'); setPct(1, 'Готово');
+    toast('Записано облако: ' + nfmt(c.count) + ' точек (PLY)');
+  }); }
+
+  // ---------- Приложение ----------
+  function robustRange(pos,count,axis){var stride=Math.max(1,Math.ceil(count/50000)),a=[];for(var i=0;i<count;i+=stride){var v=pos[i*3+axis];if(isFinite(v))a.push(v);}a.sort(function(x,y){return x-y;});if(!a.length)return[0,0];return[a[Math.floor((a.length-1)*0.002)],a[Math.ceil((a.length-1)*0.998)]];}
+
+  function opVolume() { return run('Расчёт объёма…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+    // Объём над базовой плоскостью (минимальная высота): сетка верхней поверхности.
+    setPct(0.4, 'Построение сетки поверхности…'); await yieldFrame();
+    var pos = c.pos, n = c.count, a0 = (UP + 1) % 3, a1 = (UP + 2) % 3;
+    var r0=robustRange(pos,n,a0),r1=robustRange(pos,n,a1),rh=robustRange(pos,n,UP);
+    var d0 = r0[1] - r0[0], d1 = r1[1] - r1[0]; var cell = (Math.hypot(d0, d1) || 1) / 128; if (cell <= 0) cell = 1e-3; var inv = 1 / cell;
+    var g0 = Math.max(1, Math.floor(d0 * inv) + 1), g1 = Math.max(1, Math.floor(d1 * inv) + 1);
+    var top = new Float64Array(g0 * g1), has = new Uint8Array(g0 * g1); for (var q = 0; q < g0 * g1; q++) top[q] = -Infinity;
+    for (var i = 0; i < n; i++) { var x=pos[i*3+a0],z=pos[i*3+a1],h=pos[i*3+UP];if(x<r0[0]||x>r0[1]||z<r1[0]||z>r1[1]||h<rh[0]||h>rh[1])continue;var u=Math.floor((x-r0[0])*inv);if(u<0)u=0;if(u>=g0)u=g0-1;var w=Math.floor((z-r1[0])*inv);if(w<0)w=0;if(w>=g1)w=g1-1;var ci=w*g0+u;if(h>top[ci]){top[ci]=h;has[ci]=1;} }
+    setPct(0.8, 'Интегрирование объёма…'); await yieldFrame();
+    var base = rh[0], area = cell * cell, vol = 0, cells = 0;
+    for (var ci = 0; ci < g0 * g1; ci++) { if (!has[ci]) continue; cells++; vol += (top[ci] - base) * area; }
+    setPct(1, 'Готово');
+    toast('Объём над базой: ' + m3(vol) + ' (сетка ' + cell.toFixed(3) + ' м, ячеек ' + nfmt(cells) + ')');
+  }); }
+
+  function trimVolumeOutliers(c){var ranges=[0,1,2].map(function(a){return robustRange(c.pos,c.count,a);}),keep=0,mask=new Uint8Array(c.count);for(var i=0;i<c.count;i++){var ok=true;for(var a=0;a<3;a++){var v=c.pos[i*3+a];if(v<ranges[a][0]||v>ranges[a][1]){ok=false;break;}}if(ok){mask[i]=1;keep++;}}if(keep===c.count)return{cloud:c,removed:0};var p=new Float32Array(keep*3),col=c.col?new c.col.constructor(keep*3):null,j=0;for(var i=0;i<c.count;i++)if(mask[i]){p.set(c.pos.subarray(i*3,i*3+3),j*3);if(col)col.set(c.col.subarray(i*3,i*3+3),j*3);j++;}return{cloud:{pos:p,col:col,count:keep},removed:c.count-keep};}
+
+  function opClosedVolume() { return run('Закрытый объём…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+    setPct(0.5, 'Столбцовая заливка объёма…'); await yieldFrame();
+    var clipped=trimVolumeOutliers(c),r = P.closedVolume(clipped.cloud, { up: UP }); setPct(1, 'Готово');
+    toast('Закрытый объём: ' + m3(r.volume) + ' (воксель ' + r.voxel.toFixed(3) + ' м, столбцов ' + nfmt(r.columns) + (clipped.removed?' · исключены крайние точки: '+nfmt(clipped.removed):'') + ')');
+  }); }
+
+  function opCompareVolumes() { return run('Сравнение объёмов…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+    var c2 = await pickSecondCloud(setPct, 'Выберите второе облако для сравнения…', {requireComparable:true}); if (!c2) return;
+    setPct(0.7, 'Расчёт выемки/насыпи…'); await yieldFrame();
+    var a=trimVolumeOutliers(c),b=trimVolumeOutliers(c2),r = P.compareVolumes(a.cloud, b.cloud, { up: UP }); setPct(1, 'Готово');
+    toast('Сравнение: насыпь ' + m3(r.fill) + ', выемка ' + m3(r.cut) + ', баланс ' + m3(r.net) + ' (ячеек ' + nfmt(r.cells) + (a.removed+b.removed?' · исключены крайние точки: '+nfmt(a.removed+b.removed):'') + ')');
+  }); }
+
+  function opMesh() { return run('Mesh…', async function (setPct) {
+    var c = needCloud(); if (!c) return; var P = pcedit(); if (!P) return;
+    setPct(0.4, 'Триангуляция поверхности (heightfield)…'); await yieldFrame();
+    var mesh = P.meshHeightGrid(c, { upAxis: UP, resolution: 160 }); setPct(0.8, 'Экспорт OBJ…'); await yieldFrame();
+    var obj = P.meshToOBJ(mesh); download('mesh-' + Date.now() + '.obj', obj, 'text/plain'); setPct(1, 'Готово');
+    var tris = mesh.indices.length / 3, verts = mesh.vertices.length / 3;
+    toast('Mesh: ' + nfmt(tris) + ' треуг., ' + nfmt(verts) + ' вершин (OBJ сохранён)');
+  }); }
+
+  function opRemote() {
+    // Честно: «Удалённая передача» LixelStudio использует облачный сервис XGrids.
+    toast('Удалённая передача LixelStudio недоступна офлайн. Готовлю облако к передаче (экспорт PLY) — файл можно отправить вручную.');
+    return opWriteData();
+  }
+
+  // ---------- лента ----------
+  // Кнопки этих операций описаны в ui/commands.js и создаются лентой; здесь остаются только сами операции.
+  var built = false;
+  function build() { built = true; }
+
+  function boot() {
+    build();
+    // повтор, если тулбар строится позже
+    var tries = 0; var iv = setInterval(function () { tries++; if (built || tries > 40) { clearInterval(iv); return; } build(); }, 250);
+  }
+  if (typeof window !== 'undefined') {
+    window.__lxToolsExt = { isBusy: function () { return busy; }, build: build, addParsedCloud: addParsedCloud, addableCount: addableCount, ops: { opResample: opResample, opAutoClean: opAutoClean, opDeepClean: opDeepClean, opDynClean: opDynClean, opRefineScan: opRefineScan, opScanFolder: opScanFolder, opXbinCloud: opXbinCloud, opPhotoColor: opPhotoColor, opDenoise: opDenoise, opPeople: opPeople, opSmooth: opSmooth, opFlatten: opFlatten, opLevel: opLevel, opVertical: opVertical, opMerge: opMerge, opOverlay: opOverlay, opExportE57: opExportE57, opExportRCP: opExportRCP, opWriteData: opWriteData, opVolume: opVolume, opClosedVolume: opClosedVolume, opCompareVolumes: opCompareVolumes, opMesh: opMesh } };
+    window.addEventListener('lx-pctools-ready', boot);
+    if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 300);
+    else window.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 300); });
+  }
+})();

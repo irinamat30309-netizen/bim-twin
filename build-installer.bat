@@ -3,7 +3,7 @@ REM ============================================================
 REM  BIM Twin - сборка Windows-установщика (.exe)
 REM  Запустите этот файл двойным кликом на Windows.
 REM  Требуется: Node.js LTS (nodejs.org) + интернет.
-REM  Результат: dist\BIM Twin Setup 0.9.39.exe  (один файл-установщик).
+REM  Результат: dist\BIM Twin Setup <версия>.exe  (один файл-установщик).
 REM ============================================================
 setlocal
 cd /d "%~dp0"
@@ -39,7 +39,7 @@ if errorlevel 1 goto :err
 echo.
 echo ============================================================
 echo  ГОТОВО! Установщик лежит в папке:  dist\
-echo  Файл вида:  BIM Twin Setup 0.9.39.exe
+echo  Файл вида:  BIM Twin Setup (номер версии).exe
 echo.
 echo  (ОПЦИОНАЛЬНО) Для облаков «CloudCompare 1‚1» через Potree:
 echo   скачайте PotreeConverter (github.com/potree/PotreeConverter)
