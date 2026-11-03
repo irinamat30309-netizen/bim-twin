@@ -155,7 +155,8 @@ test('r51: densifyLas из LAS — опора без изменений, нов�
   rp.push({ x: 0.5, y: 4, z: 0.5, t: T + 40.5, c: [0, 0, 0] });
   writeLas(g, gp); writeLas(w, rp);
   const st = await D.densifyLas(g, out, { lasPath: w }, { tmpDir: d, cell: 0.01 });
-  assert.strictEqual(st.guide, gp.length); assert.ok(st.added > 3000, 'добавлено ' + st.added); assert.strictEqual(st.points, gp.length + st.added);
+  assert.strictEqual(st.guide, gp.length); // r52: общая карта ячеек — новые точки только в ячейки, пустые по всему облаку (сырые этого генератора покрывают ~45 % ячеек 1 см)
+  assert.ok(st.added > 2000, 'добавлено ' + st.added); assert.strictEqual(st.points, gp.length + st.added);
   const G = fs.readFileSync(g), O = fs.readFileSync(out);
   assert.strictEqual(O.readUInt32LE(107), st.points); assert.strictEqual(O.length, 227 + st.points * 34);
   assert.ok(G.subarray(227).equals(O.subarray(227, 227 + gp.length * 34)), 'опора — побайтно как была');
