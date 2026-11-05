@@ -569,6 +569,7 @@ a3e8a2bd1f70bfe83b4c2c275b284188b6aacb9932b8a159ce282d06b1d18bdc  test/r47-photo
 f1ab3963f6405811f1e87cf949164a97ebea29ae0409e82292c73a2bc659956a  test/r54-quality-tools.test.js
 23890277ff89abad7ba8305c9520af7ddb269a31b8d2a79382cb4b8c1395a919  test/r55-align-gauge.test.js
 4b1b4bdadbe05a2b5b6c75927cfb29c8cd2474caab9d6a295f1b29c9010eab43  test/r55-cli-open.test.js
+8514161d44dc36c690b8bfcff65756c9d7449a7b4090ffba7c8275c410ddbd50  test/r55-cloud-diff.test.js
 29d0065d8244fadb14d651eb654a9b2cdc3d4089a22e70331b766a2f9a2580c7  test/r55-fringe.test.js
 eca37fc3960021b6533616c7ef505b693ecc8583ed60dcabb3903655f8f31e23  test/r55-glass.test.js
 7dababb5f863b3787e53afbaa577c09375ed06c89cce5f7fb7c5402758250d82  test/r55-gpu-budget-ux.test.js
@@ -631,6 +632,7 @@ c3ce88d28a2bc1be3a416953096f2c5a63fe8b2095ee9d1dbbb99a48422c2a1a  test/webgl-oct
 3169b65408434a0751838aac0b27110ec2688bd790092d7769d4c3b3b29e9cd0  test/xray-view-v1091.test.js
 a26bcf2e65cfc38377d454b598c7312f0a82b56226b01622f6572086bcde3ac6  tools/build-ui-fonts.mjs
 842a8ac8cd66e6073e78d0a84f8469ff0215d639628c3c51103c4095048f0ad4  tools/build-ui-icons.mjs
+dded651fe6fc74711251a148d443ae2a3809714d2ca6c17a8cb025774f233929  tools/cloud-diff.js
 acde9f1687e00c01d983e3d8c131501fff1f3904fd69e7cd5d84fe26a3bd9b56  tools/cloud-quality.js
 734daa04d84c14cfd52c9e05da9268f62df2adc64d1dbadf542fa7f8cc2e0164  tools/dyn-clean-cli.js
 8398702f5ef0d0c807caf1b3b67cf360feee37530b3b237a7832b64b008ebfef  tools/las-crop.js
