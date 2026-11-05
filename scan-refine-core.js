@@ -207,6 +207,156 @@ function fixSpeckles(X, RGB, n, alive, o) {
   }
   return total;
 }
+/**
+ * Ревизия 55: «сиреневая кайма» — фиолетовая полоса в 1–3 точки на резком краю (хроматическая аберрация камеры).
+ * Точка считается каймой, если R и B заметно выше G, но в кубе 3×3×3 ячеек (по 5 см) таких точек меньше shareMax —
+ * тогда цвет берётся средним у соседей, которые не фиолетовые. Крупный фиолетовый предмет не трогается:
+ * у него доля «таких же» соседей высокая (и синий не проходит условие R−G > d).
+ */
+function fixFringe(X, RGB, n, alive, o) {
+  o = o || {}; const cell = o.cell || 0.05, d = o.minDiff || 25, shareMax = o.shareMax || 0.3, minNb = o.minNb || 8;
+  const G = cellsOf(X, n, cell, alive), m = G.m;
+  const cnt = new Float64Array(m), mag = new Float64Array(m), sum = new Float64Array(m * 3);
+  const isMag = new Uint8Array(n); let nM = 0;
+  for (let i = 0; i < n; i++) {
+    const j = G.cid[i]; if (j < 0) continue;
+    const r = RGB[i * 3], g = RGB[i * 3 + 1], b = RGB[i * 3 + 2];
+    cnt[j]++;
+    if (r - g > d && b - g > d) { isMag[i] = 1; mag[j]++; nM++; }
+    else { sum[j * 3] += r; sum[j * 3 + 1] += g; sum[j * 3 + 2] += b; }
+  }
+  if (!nM) return 0;
+  const S = nbSum(G, cnt, 1), SM = nbSum(G, mag, 1), SC = nbSum(G, sum, 3);
+  let r = 0;
+  for (let i = 0; i < n; i++) {
+    if (!isMag[i]) continue;
+    const j = G.cid[i]; if (j < 0) continue;
+    const tot = S[j], bad = SM[j], good = tot - bad;
+    if (tot < minNb || !(good >= 3)) continue;
+    if (bad / tot > shareMax) continue;                     // крупное фиолетовое — не трогаем
+    RGB[i * 3] = SC[j * 3] / good; RGB[i * 3 + 1] = SC[j * 3 + 1] / good; RGB[i * 3 + 2] = SC[j * 3 + 2] / good;
+    r++;
+  }
+  return r;
+}
+/**
+ * Ревизия 55: «сосульки» — редкая вертикальная «бахрома» под кромками навесов, козырьков и окон (скользящие лучи и
+ * отражения у края). Признаки: узкая по горизонтали (СКО < xyMax), вытянутая по высоте (zMin), редкая вдоль высоты
+ * (меньше maxPerCm точек на сантиметр) и под плотной поверхностью сверху (козырёк в 10 см выше). Трубы, кабели и стойки
+ * не трогаются: у них либо большая горизонтальная ширина (труба), либо плотность вдоль высоты выше порога (кабель).
+ */
+function fixIcicles(X, n, alive, o) {
+  o = o || {}; const cell = o.cell || 0.15, maxPts = o.maxPts || 80, xyMax = o.xyMax || 0.04, zMin = o.zMin || 0.04,
+    maxPerCm = o.maxPerCm || 6, aboveRatio = o.aboveRatio || 3;
+  const G = cellsOf(X, n, cell, alive), m = G.m;
+  const cnt = new Float64Array(m), sx = new Float64Array(m), sy = new Float64Array(m), sxx = new Float64Array(m), syy = new Float64Array(m);
+  const zmin = new Float64Array(m).fill(Infinity), zmax = new Float64Array(m).fill(-Infinity);
+  for (let i = 0; i < n; i++) {
+    const j = G.cid[i]; if (j < 0) continue;
+    const x = X[i * 3], y = X[i * 3 + 1], z = X[i * 3 + 2];
+    cnt[j]++; sx[j] += x; sy[j] += y; sxx[j] += x * x; syy[j] += y * y;
+    if (z < zmin[j]) zmin[j] = z; if (z > zmax[j]) zmax[j] = z;
+  }
+  const bad = new Uint8Array(m);
+  for (let j = 0; j < m; j++) {
+    const c = cnt[j]; if (!c || c > maxPts) continue;
+    const mx = sx[j] / c, my = sy[j] / c, vx = Math.max(0, sxx[j] / c - mx * mx), vy = Math.max(0, syy[j] / c - my * my);
+    if (!(Math.sqrt(vx + vy) < xyMax)) continue;
+    const dz = zmax[j] - zmin[j]; if (!(dz > zMin)) continue;
+    if (c / (dz * 100) > maxPerCm) continue;                    // плотная вертикаль — это кабель/стойка, не бахрома
+    let upCount = 0;                                            // опора сверху: козырёк/перекрытие в 1–2 ячейках выше
+    for (let s = 1; s <= 3; s++) {
+      const up = G.C.get(G.cx[j] + G.nx * (G.cy[j] + G.ny * (G.cz[j] + s)), false);
+      if (up >= 0 && cnt[up] > upCount) upCount = cnt[up];
+    }
+    if (upCount < aboveRatio * c) continue;
+    bad[j] = 1;
+  }
+  let r = 0;
+  for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0 && bad[j] && alive[i]) { alive[i] = 0; r++; } }
+  return r;
+}
+/**
+ * Ревизия 55 (опытный, по умолчанию выключен): «слой за стеклом» — тонкая параллельная плёнка точек в 3–10 см позади
+ * плотной плоскости (отражение в стекле). Признаки: в ячейке 10 см есть плотная плоскость, и на 3–10 см позади неё —
+ * ВТОРАЯ тонкая (разброс < 3 см) параллельная плёнка, которая в 50 раз реже основной (2–35 %). Реальные откосы,
+ * ниши и трубы не попадают: у них нет тонкой параллельной плёнки (разброс по глубине больше 3 см).
+ */
+function fixGlass(X, n, alive, o) {
+  o = o || {}; const cell = o.cell || 0.2, minPts = o.minPts || 80, near = o.near || 0.03, far = o.far || 0.10,
+    ratioMin = o.ratioMin || 0.02, ratioMax = o.ratioMax || 0.35, thick = o.thick || 0.03, inl = o.inl || 0.012;
+  const G = cellsOf(X, n, cell, alive), m = G.m;
+  // точки по ячейкам (CSR)
+  const start = new Int32Array(m + 1), ord = new Int32Array(n);
+  for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0) start[j + 1]++; }
+  for (let j = 0; j < m; j++) start[j + 1] += start[j];
+  { const pos = start.slice(0, m); for (let i = 0; i < n; i++) { const j = G.cid[i]; if (j >= 0) ord[pos[j]++] = i; } }
+  const BS = 0.005, NB = Math.ceil(far / BS) + 1, hist = new Int32Array(NB * 2 + 1), ev = new Float64Array(3);
+  let r = 0;
+  for (let j = 0; j < m; j++) {
+    const s0 = start[j], s1 = start[j + 1], c = s1 - s0;
+    if (c < minPts) continue;
+    // 1) черновая плоскость по всем точкам ячейки
+    let a = 0, b = 0, d0 = 0, e = 0, f0 = 0, g = 0, mx = 0, my = 0, mz = 0;
+    for (let t = s0; t < s1; t++) {
+      const i = ord[t], x = X[i * 3], y = X[i * 3 + 1], z = X[i * 3 + 2];
+      mx += x; my += y; mz += z;
+      a += x * x; b += x * y; d0 += x * z; e += y * y; f0 += y * z; g += z * z;
+    }
+    mx /= c; my /= c; mz /= c;
+    if (!(eig3(a / c - mx * mx, b / c - mx * my, d0 / c - mx * mz, e / c - my * my, f0 / c - my * mz, g / c - mz * mz, ev) < 0.15)) continue;
+    let nx = ev[0], ny = ev[1], nz = ev[2], px = mx, py = my, pz = mz, k0 = 0;
+    // 2) уточнение только по точкам у главного слоя (иначе плёнка за стеклом «тянет» плоскость на себя)
+    for (let it = 0; it < 2; it++) {
+      const ds = [];
+      for (let t = s0; t < s1; t++) {
+        const i = ord[t], dd = (X[i * 3] - px) * nx + (X[i * 3 + 1] - py) * ny + (X[i * 3 + 2] - pz) * nz;
+        ds.push(dd);
+      }
+      ds.sort((p, q) => p - q); const med = ds[ds.length >> 1];
+      a = b = d0 = e = f0 = g = 0; mx = my = mz = 0; k0 = 0;
+      for (let t = s0; t < s1; t++) {
+        const i = ord[t], dd = (X[i * 3] - px) * nx + (X[i * 3 + 1] - py) * ny + (X[i * 3 + 2] - pz) * nz;
+        if (Math.abs(dd - med) > inl) continue;
+        const x = X[i * 3], y = X[i * 3 + 1], z = X[i * 3 + 2];
+        mx += x; my += y; mz += z; a += x * x; b += x * y; d0 += x * z; e += y * y; f0 += y * z; g += z * z; k0++;
+      }
+      if (k0 < minPts) break;
+      mx /= k0; my /= k0; mz /= k0;
+      const curv = eig3(a / k0 - mx * mx, b / k0 - mx * my, d0 / k0 - mx * mz, e / k0 - my * my, f0 / k0 - my * mz, g / k0 - mz * mz, ev);
+      if (!(curv < 0.05)) { k0 = 0; break; }
+      nx = ev[0]; ny = ev[1]; nz = ev[2]; px = mx; py = my; pz = mz;
+    }
+    if (!(k0 >= minPts)) continue;
+    // 3) гистограмма расстояний до уточнённой плоскости
+    hist.fill(0);
+    for (let t = s0; t < s1; t++) {
+      const i = ord[t], dd = (X[i * 3] - px) * nx + (X[i * 3 + 1] - py) * ny + (X[i * 3 + 2] - pz) * nz;
+      const k = Math.round(dd / BS) + NB; if (k < 0 || k > NB * 2) continue;
+      hist[k]++;
+    }
+    let mainK = NB, mainC = 0;
+    for (let k = 0; k <= NB * 2; k++) if (hist[k] > mainC) { mainC = hist[k]; mainK = k; }
+    let secK = -1, secC = 0;
+    for (let k = 0; k <= NB * 2; k++) {
+      const dist = Math.abs((k - mainK) * BS);
+      if (dist < near || dist > far) continue;
+      if (hist[k] > secC) { secC = hist[k]; secK = k; }
+    }
+    if (secK < 0 || secC < ratioMin * mainC || secC > ratioMax * mainC) continue;
+    const halfB = Math.round(thick / 2 / BS); let band = 0;
+    for (let k = Math.max(0, secK - halfB); k <= Math.min(NB * 2, secK + halfB); k++) band += hist[k];
+    if (band > secC * 2.2) continue;
+    const secD = (secK - NB) * BS;
+    for (let t = s0; t < s1; t++) {
+      const i = ord[t];
+      if (!alive[i]) continue;
+      const dd = (X[i * 3] - px) * nx + (X[i * 3 + 1] - py) * ny + (X[i * 3 + 2] - pz) * nz;
+      if (Math.abs(dd - secD) <= thick / 2) { alive[i] = 0; r++; }
+    }
+  }
+  return r;
+}
 /** Одиночный шум: в кубе 3×3×3 ячеек (по 10 см) не больше maxNb точек, включая саму → удалить. */
 function isolated(X, n, alive, o) {
   const cell = o.cell || 0.1, maxNb = o.maxNb || 2, G = cellsOf(X, n, cell, alive), A = new Float64Array(G.m);
@@ -666,6 +816,10 @@ function processTile(B, T, ctx) {
   }
   const zm = n ? zs / n : 0; for (let i = 0; i < n; i++) X[i * 3 + 2] -= zm;
   if (opt.noise) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); denoise(X, n, alive, opt.noiseLevel || 'strong'); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
+  // ревизия 55: «сосульки» под кромками навесов и окон (по умолчанию выключено — опция icicles)
+  if (opt.icicles) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); fixIcicles(X, n, alive, opt.iciclesOpt || {}); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
+  // ревизия 55: тонкая плёнка за стеклом (опытное, по умолчанию выключено — опция glass)
+  if (opt.glass) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); fixGlass(X, n, alive, opt.glassOpt || {}); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
   if (opt.thin) { for (let it = 0; it < (opt.thinIters || 1); it++) nMoved += thinSurfaces(X, n, alive, { cell: opt.thinCell, planar: opt.planar }); }
   // ревизия 46: цвет для точек без цвета — от соседей (до очистки цвета: чёрные не тянут медианы); после очистки — местное
   // выравнивание проходов (по уже очищенному цвету разброс в ячейке — это перепад проходов, а не шум камеры)
@@ -674,6 +828,9 @@ function processTile(B, T, ctx) {
   if (opt.color && RGB && nNoColor && opt.fillNoColor !== false) fillNoColor(X, RGB, n, alive, nc, opt.fillNoColorOpt);
   if (RGB && nNoColor) for (let i = 0; i < n; i++) if (nc[i] && alive[i] && own[i]) nNoColorLeft++;
   if (opt.color && RGB) nColor += cleanColors(X, RGB, n, alive, opt.noiseLevel || 'strong', { clamp: opt.colorClamp !== false });
+  // ревизия 55: «сиреневая кайма» — тонкая полоса на резком краю (хроматическая аберрация камеры). Точка фиолетовая
+  // (R и B заметно выше G), но вокруг неё таких мало — это кайма, а не фиолетовый предмет: цвет берётся у соседей.
+  if (opt.color && RGB) nColor += fixFringe(X, RGB, n, alive, opt.fringeOpt || {});
   if (peqOn) peq = passEqualize(X, RGB, TT, n, alive, Object.assign({}, opt.passEqOpt || {}, { off: [cxm, cym, zm], skip: nc0 }));
   if (tfix && RGB) for (let i = 0; i < n; i++) if (alive[i] && own[i]) tfix(RGB, i * 3);   // тоновая кривая — последней
   // запись своих живых точек: исходная запись с новыми координатами и цветом
@@ -738,7 +895,7 @@ function refine(src, dst, opt, onProgress) {
           if (inR >= 0.9 * Math.ceil(smp.n / st)) { const f = require('./dynamic-clean-core').makePoseAt(Pz); poseAt = (t, out) => { f(t, out); return out; }; }
         }
         const sol = PA.solve(smp, poseAt, Object.assign({ onIter: (it) => prog(0.12 + 0.03 * Math.min(1, (it + 1) / 6), 'Сведение проходов…') }, opt.alignOpt || {}));
-        if (sol.ok) { alignSol = sol; alignTraj = !!poseAt; corr = PA.makeCorrector(sol, poseAt); align = { segments: sol.stats.segments, trajectory: !!poseAt, maxShift: sol.stats.maxShift, before: sol.stats.before.medRes, after: sol.stats.after.medRes, links: sol.stats.after.links }; }
+        if (sol.ok) { alignSol = sol; alignTraj = !!poseAt; corr = PA.makeCorrector(sol, poseAt); align = { segments: sol.stats.segments, trajectory: !!poseAt, maxShift: sol.stats.maxShift, before: sol.stats.before.medRes, after: sol.stats.after.medRes, links: sol.stats.after.links, gauge: sol.stats.gauge, gaugeShift: sol.stats.gaugeShift }; }
         else align = { skipped: sol.reason };
       } catch (e) { align = { skipped: String((e && e.message) || e) }; }
     }
@@ -813,4 +970,4 @@ function refine(src, dst, opt, onProgress) {
   }
 }
 
-module.exports = { processTile, finishLas, structureCells, nbSum, refine, cleanColors, clampColors, offSurface, fixSpeckles, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3, passEqualize, fillNoColor };
+module.exports = { processTile, finishLas, structureCells, nbSum, refine, cleanColors, clampColors, offSurface, fixSpeckles, fixFringe, fixIcicles, fixGlass, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3, passEqualize, fillNoColor };

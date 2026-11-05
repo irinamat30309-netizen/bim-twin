@@ -517,16 +517,25 @@
           showIf: function (v) { return densifyReady && v.traj !== 'off' && v.traj !== 'none'; }, hint: densifyNote },
         { key: 'align', label: 'Свести проходы (исправить дрейф)', type: 'checkbox', value: true,
           hint: 'Повторные проходы realtime-карты сдвинуты на 2–4 см: рамы двоятся, у окон и арматуры «ореол». Поправка ищется по времени точек (как при пересчёте в Lixel Studio); с траекторией точнее.' },
+        { key: 'alignGauge', label: 'Не уводить облако: опора — середина съёмки', type: 'checkbox', value: false, showIf: function (v) { return v.align !== false; },
+          hint: 'По умолчанию сведение закрепляет начало съёмки: поздние проходы уезжают вместе с исправлением дрейфа, и облако в среднем смещается (на реальном скане — до ~1 см). С этой галочкой опорой становится середина съёмки: типичная поверхность остаётся на месте, а проходы всё равно сводятся — важно, когда по облаку меряют и сверяют с эталоном.' },
         { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'none', options: trajOpts,
           hint: 'Нужно время точек (GPS time) в LAS. Траектория сканера (<проект Lixel>/project_data/poses.csv) не обязательна, с ней находится больше.' },
         { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }], showIf: function (v) { return v.traj !== 'off'; } },
         { key: 'noise', label: 'Убрать шум', type: 'checkbox', value: true },
+        { key: 'icicles', label: 'Убрать «сосульки» под кромками навесов и окон', type: 'checkbox', value: false, showIf: function (v) { return !!v.noise; },
+          hint: 'Редкая вертикальная «бахрома» под кромками: узкая по горизонтали, вытянутая вниз, под плотной поверхностью сверху. На реальной съёмке снимает около 0,45 % точек. Трубы, кабели и стойки не трогаются (они плотнее вдоль высоты), но на необычной геометрии проверьте результат перед сохранением.' },
+        { key: 'glass', label: 'Убрать слой за стеклом (опытное)', type: 'checkbox', value: false, showIf: function (v) { return !!v.noise; },
+          hint: 'Тонкая параллельная плёнка точек в 3–10 см позади плотной плоскости — отражение в стекле. Убирается только тонкая плёнка (разброс меньше 3 см), которая в 50 раз реже основной плоскости; откосы, ниши и трубы остаются. Опытное: включите и проверьте результат глазами.' },
         { key: 'noiseLevel', label: 'Сила очистки шума', type: 'select', value: 'strong', options: [{ value: 'soft', label: 'Мягко — только заведомый мусор' }, { value: 'normal', label: 'Обычно' }, { value: 'strong', label: 'Сильно (рекомендуется) — чёткая картинка' }, { value: 'max', label: 'Максимум — самая чистая картинка' }],
           showIf: function (v) { return !!v.noise; }, hint: 'Удаляются одиночные точки, «туман» и «лучи» за кромками и стеклом, мелкие облачка и «пыль» в 1–8 см перед стенами и полом; арматура, рамы и кабели защищены. «Максимум» может задеть провода тоньше 5 мм и самые редкие дальние участки.' },
         { key: 'thin', label: 'Тонкие чёткие поверхности (стены, пол, потолок)', type: 'checkbox', value: true, hint: 'Точки плоских участков ложатся на локальную плоскость: слой 5–10 мм становится тоньше миллиметра. Углы, трубы и мелкие детали не трогаются.' },
         { key: 'color', label: 'Исправить пёстрые точки', type: 'checkbox', value: true, hint: 'Белые и цветные одиночные точки (блики, пиксели неба) и «соль с перцем» приводятся к цвету поверхности; точки без цвета (чёрное зерно) получают цвет соседей, в тени остаются тёмными. Швы плитки и кладки не размываются.' },
         { key: 'colorBalance', label: 'Ровный цвет: яркость проходов и баланс белого', type: 'checkbox', value: true, showIf: function (v) { return !!v.color; },
-          hint: 'Камера сканера меняет экспозицию: поздние проходы темнее, стена становится «рябой». Яркость проходов выравнивается — по всему облаку и в каждом месте, серые поверхности становятся серыми, тёмное облако осветляется тоновой кривой, как в Lixel Studio: середина ярче, тени не «молочные».' }
+          hint: 'Камера сканера меняет экспозицию: поздние проходы темнее, стена становится «рябой». Яркость проходов выравнивается — по всему облаку и в каждом месте, серые поверхности становятся серыми, тёмное облако осветляется тоновой кривой, как в Lixel Studio: середина ярче, тени не «молочные».' },
+        { key: 'tone', label: 'Тон', type: 'select', value: 'lixel', showIf: function (v) { return !!v.color && !!v.colorBalance; },
+          options: [{ value: 'lixel', label: 'Как в Lixel Studio — светлее (рекомендуется)' }, { value: 'raw', label: 'Как снято — без осветления' }],
+          hint: 'Кривая «как в Lixel» осветляет облако примерно в 1,4 раза к цвету карты сканера (на реальной съёмке яркость 80 → 115): так выглядит экспорт Lixel Studio. «Как снято» оставляет цвет карты без осветления — темнее, но без риска пересветить светлые панели. Баланс белого и выравнивание проходов работают в обоих случаях.' }
       ] }) : Promise.resolve(null));
     if (!values) return;
     var inPlace = values.target !== 'new', keepBackup = !inPlace || values.backup !== false;
@@ -556,6 +565,9 @@
       try {
         res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, noiseLevel: values.noiseLevel || 'strong',
           thin: !!values.thin, color: !!values.color, align: values.align !== false, colorBalance: !!values.color && values.colorBalance !== false, photo: photo, xbinPath: xbinPath, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId,
+          alignGauge: values.alignGauge ? 'median' : 'start',
+          tone: values.tone === 'raw' ? 'raw' : 'lixel',
+          icicles: !!values.icicles, glass: !!values.glass,
           densify: densifyOn, densifyOpt: o.densifyOpt });
       } finally { if (stopSub) { try { stopSub(); } catch (e) {} } }
     }, { onCancel: function () { try { api.cancelRefineScan(jobId); } catch (e) {} } });
@@ -565,7 +577,7 @@
     var st = res.stats || {}, parts = [], al = st.align || null;
     if (values.noise) parts.push('шум −' + nfmt(st.noise || 0));
     if (dyn) parts.push(res.dynWarning ? 'прохожие не найдены' : 'прохожие −' + nfmt(st.dynamic || 0));
-    if (values.align !== false && al && !al.skipped) parts.push('проходы сведены');
+    if (values.align !== false && al && !al.skipped) parts.push(al.gauge === 'median' ? 'проходы сведены (опора — середина)' : 'проходы сведены');
     if (photo) parts.push(res.photo ? 'цвет по фото' : 'цвет по фото не применён');
     if (values.thin || values.color) parts.push('стены и цвет выровнены');
     if (st.densify) parts.push('просветы заполнены (+' + nfmt(st.densify.added) + ' точек)');

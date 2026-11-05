@@ -1505,6 +1505,12 @@ function registerIpc() {
       const opt = { noise: a.noise !== false, thin: a.thin !== false, color: a.color !== false, dynamic: !!a.dynamic,
         noiseLevel: NOISE_LEVELS.includes(a.noiseLevel) ? a.noiseLevel : 'strong',
         align: a.align !== false, colorBalance: a.colorBalance !== false,   // ревизия 21: сведение проходов и ровный цвет
+        // ревизия 55: опора сведения — начало съёмки (по умолчанию) или середина, чтобы облако не уезжало
+        alignOpt: a.alignGauge === 'median' ? { gauge: 'median' } : undefined,
+        // ревизия 55: тон — как в Lixel Studio (ярче, по умолчанию) или как снято (без осветления)
+        colorBalanceOpt: a.tone === 'raw' ? { brighten: false } : undefined,
+        // ревизия 55: опытные фильтры — «сосульки» под кромками и тонкая плёнка за стеклом (по умолчанию выключены)
+        icicles: a.icicles === true, glass: a.glass === true,
         // ревизия 54: уплотнение по сырому лидару — включено по умолчанию, окно «Чистовая обработка» даёт выключатель
         densify: a.densify !== false, densifyOpt: a.densifyOpt && typeof a.densifyOpt === 'object' ? a.densifyOpt : undefined };
       const job = { worker: null, cancelled: false, finished: false, recolorStop: null };

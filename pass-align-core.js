@@ -224,7 +224,24 @@ function solve(sample, poseAt, opt) {
   statsLast = evalPass(false).st;
   let maxShift = 0, maxRot = 0;
   for (let s = 0; s < S; s++) { maxShift = Math.max(maxShift, Math.hypot(X[s * 6 + 3], X[s * 6 + 4], X[s * 6 + 5])); maxRot = Math.max(maxRot, Math.hypot(X[s * 6], X[s * 6 + 1], X[s * 6 + 2])); }
-  const stats = { segments: S, dt, samples: n, before: stats0, after: statsLast, maxShift, maxRot };
+  // Ревизия 55: опора сведения. По умолчанию закреплено начало съёмки (первые anchor секунд) — тогда поздние проходы
+  // уезжают вместе с исправлением дрейфа, и облако в среднем сдвигается (на реальной съёмке — до ~1 см). С gauge: 'median'
+  // после решения вычитается медианный сдвиг всех точек: типичная поверхность остаётся на месте, а проходы по-прежнему
+  // сводятся между собой (важно для измерений и сверки координат с эталоном).
+  let gaugeShift = null;
+  if (opt.gauge === 'median') {
+    const base = makeCorrector({ t0, dt, S, X, centers: cen }, poseAt), o3 = [0, 0, 0];
+    const dx = new Float64Array(n), dy = new Float64Array(n), dz = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      base(P0[i * 3], P0[i * 3 + 1], P0[i * 3 + 2], T[i], o3);
+      dx[i] = o3[0] - P0[i * 3]; dy[i] = o3[1] - P0[i * 3 + 1]; dz[i] = o3[2] - P0[i * 3 + 2];
+    }
+    const med = [dx, dy, dz].map(a => { const s = Array.from(a).sort((u, v) => u - v); return s[s.length >> 1]; });
+    gaugeShift = Math.hypot(med[0], med[1], med[2]);
+    for (let s = 0; s < S; s++) { X[s * 6 + 3] -= med[0]; X[s * 6 + 4] -= med[1]; X[s * 6 + 5] -= med[2]; }
+    statsLast = evalPass(false).st;
+  }
+  const stats = { segments: S, dt, samples: n, before: stats0, after: statsLast, maxShift, maxRot, gauge: opt.gauge || 'start', gaugeShift };
   if (!(maxShift <= opt.maxShift)) return { ok: false, reason: 'поправка слишком велика (' + maxShift.toFixed(2) + ' м) — траектория не сходится', stats };
   if (!(statsLast.medRes <= stats0.medRes * 1.02)) return { ok: false, reason: 'сведение не улучшило совпадение проходов', stats };
   return { ok: true, t0, dt, S, X, centers: cen, stats };

@@ -23,7 +23,7 @@ function pickThreads(opt, nTiles, maxTile) {
   return Math.max(1, Math.min(Math.max(2, cpu - 1), cpu, byMem, 16, nTiles));   // одно ядро — интерфейсу, если ядер больше двух
 }
 function liteOpt(opt) {
-  const o = {}; for (const k of ['noise', 'noiseLevel', 'thin', 'thinIters', 'thinCell', 'planar', 'color', 'colorClamp', 'colorBalance', 'passEq', 'passEqOpt', 'fillNoColor', 'fillNoColorOpt', 'toneLate', 'degrain', 'degrainOpt']) if (opt[k] !== undefined) o[k] = opt[k];
+  const o = {}; for (const k of ['noise', 'noiseLevel', 'thin', 'thinIters', 'thinCell', 'planar', 'alignOpt', 'color', 'colorClamp', 'colorBalance', 'passEq', 'passEqOpt', 'fillNoColor', 'fillNoColorOpt', 'toneLate', 'degrain', 'degrainOpt', 'icicles', 'iciclesOpt', 'glass', 'glassOpt', 'fringeOpt']) if (opt[k] !== undefined) o[k] = opt[k];
   return o;
 }
 async function refineParallel(src, dst, opt, onProgress) {
