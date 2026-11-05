@@ -64,6 +64,9 @@ const {
 } = require('./octree-resource-budget');
 
 let octreeCleanupOnQuit = function () {};
+// Ревизия 55: путь к облаку, переданному при запуске (аргумент командной строки / «Открыть с помощью»).
+// Окно забирает его само, когда рабочая область готова (bim:takePendingOpen) — так не бывает гонки с загрузкой окна.
+let pendingOpen = null;
 
 function currentAvailableMemoryBytes() {
   const candidates = [];
@@ -656,7 +659,13 @@ function createWindow() {
     });
   } catch (_) {}
   if (!isMac) win.maximize();
-  // v1208.2: clear stale renderer cache before loading the UI hotfix.
+  // Ревизия 55: облако из командной строки (BIM Twin scan.las, «Открыть с помощью», ярлык) — окно заберёт его само
+  try {
+    for (const a of process.argv.slice(1)) {
+      if (!a || a.startsWith('-') || !/\.(las|laz|ply|pcd|e57|pts|xyz)$/i.test(a)) continue;
+      try { const abs = path.resolve(a); if (fs.statSync(abs).isFile()) { pendingOpen = abs; break; } } catch (_) {}
+    }
+  } catch (_) {}  // v1208.2: clear stale renderer cache before loading the UI hotfix.
   win.webContents.session.clearCache().catch(() => {}).finally(() => {
     win.loadFile(path.join(__dirname, 'renderer', 'startup.html'));
   });
@@ -1444,6 +1453,16 @@ function registerIpc() {
   // Чистовая обработка скана в новый LAS (движущиеся объекты по траектории, одиночный шум, тонкие поверхности, цвет) — любого размера.
   // Пишется во временный файл рядом с результатом и переименовывается в конце; временные плитки — в отдельной папке, удаляются всегда.
   const activeRefineJobs = new Map();
+  // Ревизия 55: облако, переданное при запуске, — окно забирает его само, когда рабочая область готова
+  ipcMain.handle('bim:takePendingOpen', async (event) => {
+    const p = pendingOpen; if (!p) return null;
+    pendingOpen = null;
+    try {
+      const sender = event && event.sender;
+      if (sender && typeof fileGrants.grantExistingFile === 'function') fileGrants.grantExistingFile(sender.id, p, { read: true });
+    } catch (_) {}
+    return p;
+  });
   ipcMain.handle('bim:refineScan', async (event, a) => {
     let workDir = null, tmpOut = null;
     const cleanup = () => {

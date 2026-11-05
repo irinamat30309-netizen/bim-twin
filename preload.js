@@ -299,6 +299,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   cancelDynamicClean: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelDynamicClean', { jobId }); },
   // Чистовая обработка скана в новый LAS (выбор файла результата — в диалоге главного процесса)
   refineScan: (payload) => inv('bim:refineScan', payload),
+  // Ревизия 55: файл, переданный при запуске приложения (аргумент командной строки, «Открыть с помощью», ярлык)
+  takePendingOpen: () => inv('bim:takePendingOpen'),
   onRefineScanProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };

@@ -284,7 +284,12 @@
       // Keep completion/error visible briefly so fast jobs still give feedback.
       await new Promise(resolve => setTimeout(resolve, 260));
       if (result && result.ok && result.pointBudget && result.pointBudget.memoryLimited) {
-        try { const pb = result.pointBudget; toast('По вашему согласию открыто ~' + Math.round(pb.applied / 1e6) + ' млн точек из ' + (pb.total / 1e6).toFixed(1) + ' млн: свободной памяти не хватает на весь файл. Чтобы увидеть все точки, сконвертируйте файл в LAS или PLY.'); } catch (_) {}
+        // Ревизия 55: честно и по делу — раньше здесь советовали «сконвертировать в LAS», даже когда файл уже LAS,
+        // и валили всё на «свободную память», хотя предел часто ставит видеокарта
+        try {
+          const pb = result.pointBudget, total = Number(pb.total) || 0, shown = Number(pb.applied) || 0;
+          toast('Показано ' + Math.round(shown / 1e6) + ' млн точек из ' + (total / 1e6).toFixed(1) + ' млн — это предел показа на этой видеокарте (он снижается сам, если видеопамять сбрасывалась). Все точки остаются в файле: их можно открыть частями, а предел — поднять в настройках вида облака.');
+        } catch (_) {}
       }
       return result;
     } finally {
@@ -528,6 +533,12 @@
       return true;
     } catch (e) { console.warn('open cloud', e); toast('Ошибка открытия облака'); return false; }
   };
+  // Ревизия 55: файл, переданный при запуске (BIM Twin scan.las, «Открыть с помощью», ярлык) — забираем и открываем
+  try {
+    if (API && typeof API.takePendingOpen === 'function') {
+      Promise.resolve(API.takePendingOpen()).then(function (p) { if (p) window.__bimOpenCloudPath(p, { fresh: true }); }).catch(function () {});
+    }
+  } catch (_) {}
   // Ревизия 19: «Папка сканера» — облако и траектория находятся в папке проекта сами
   window.__bimOpenScanFolder = async function () {
     if (!API || typeof API.pickScanFolder !== 'function') { toast('Открытие папки сканера доступно в десктоп-версии'); return false; }
