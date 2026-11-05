@@ -70,6 +70,7 @@
       '<div id="cpError" role="alert"></div>' +
       '<dl class="lx-cloud-stats"><dt>В исходном файле</dt><dd id="cpTotal"></dd><dt>Загружено точек</dt><dd id="cpLoaded"></dd></dl>' +
       '<div id="cpShareNote" class="lx-cp-note" hidden></div>' +
+      '<button type="button" id="cpShowAll" class="btn sm" hidden title="Показать все точки файла: видеокарта может не справиться, тогда предел снизится сам">Показать все точки файла</button>' +
       '<div class="lx-cp-caption">Габариты загруженных точек, м</div><div id="cpDimensions"></div>' +
       '<div class="lx-cp-note">Локальные оси · Y — высота</div><div id="cpColorNote" class="lx-cp-note"></div>' +
       '</div>';
@@ -208,6 +209,11 @@
       if (note) {
         note.hidden = !part;
         note.textContent = !part ? '' : 'Показана часть точек файла (' + info.loadedCount.toLocaleString('ru-RU') + ' из ' + info.sourceCount.toLocaleString('ru-RU') + '), выбранная равномерно по всему облаку: ' + (info.gpuThinned ? 'это предел показа для этой видеокарты. Все точки остаются в файле; чтобы показать их все, откройте файл заново и в окне «Перед загрузкой» выберите «Все точки» (там же есть кнопка «Вернуть полный предел», если предел был снижен после сброса изображения).' : 'всем точкам не хватило памяти. Закройте другие программы и откройте файл снова — тогда загрузятся все.');
+      }
+      const showAll = $('cpShowAll');
+      if (showAll) {
+        showAll.hidden = !part;
+        showAll.onclick = function () { try { if (window.__bimShowAllPoints) window.__bimShowAllPoints(); } catch (_) {} };
       }
     }
     $('cpDimensions').textContent = info.bounds.mx.map((x, i) => 'XYZ'[i] + ': ' + (x - info.bounds.mn[i]).toFixed(3)).join('  ·  ');

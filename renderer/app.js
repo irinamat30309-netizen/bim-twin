@@ -254,8 +254,10 @@
   }
   async function parseCloudWithProgress(filePath, label, extra) {
     let pre = null;
+    // Ревизия 55: «Показать все точки файла» из панели свойств — без окна «Перед загрузкой», предел не применяем
+    if (extra && extra.allPoints) pre = { maxPoints: 0 };
     if (!(extra && extra.noParts)) {
-      if (window.CloudPreview) {
+      if (!(extra && extra.allPoints) && window.CloudPreview) {
         try {
           if (extra && extra.skipPreview) pre = window.CloudPreview.lastFor(filePath);
           else pre = await window.CloudPreview.maybeOpen(filePath, { label });
@@ -542,13 +544,36 @@
     if (!p || !API || typeof API.parseCloud !== 'function') return false;
     if (opts && opts.fresh) window.__bimDropCloudCache(p);
     try {
-      const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop());
+      const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop(), opts && opts.allPoints ? { allPoints: true } : {});
       if (!pr || !pr.ok) { if (!(pr && pr.cancelled)) toast((pr && pr.message) || 'Не удалось открыть облако'); return false; }
       if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: p }); cacheCloud(p, pr); }
       lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0;
       toast('Облако открыто' + (lastCloudCount ? ': ' + Number(lastCloudCount).toLocaleString('ru-RU') + ' точек' : ''));
       return true;
     } catch (e) { console.warn('open cloud', e); toast('Ошибка открытия облака'); return false; }
+  };
+  // Ревизия 55: «Показать все точки файла» из панели свойств — без окна «Перед загрузкой», с предупреждением.
+  // Если видеопамяти не хватит, приложение само снизит предел (все точки остаются в файле).
+  window.__bimShowAllPoints = async function () {
+    const p = lastCloudPath;
+    if (!p) { toast('Облако открыто не из файла — показать все точки нельзя'); return false; }
+    const k = window.__lxKit;
+    let ok = true;
+    if (k && k.ask) {
+      try {
+        ok = await k.ask({
+          title: 'Показать все точки файла?',
+          message: 'Приложение перечитает файл целиком и покажет все точки. Если видеопамяти не хватит, картинка «моргнёт» и предел покажется снижен сам — все точки при этом останутся в файле.',
+          okLabel: 'Показать все', cancelLabel: 'Отмена'
+        });
+      } catch (_) { ok = false; }
+    }
+    if (!ok) return false;
+    try {
+      localStorage.setItem('bim.gpuPointBudget', '400000000');
+      localStorage.removeItem('bim.gpuResetAt');
+    } catch (_) {}
+    return window.__bimOpenCloudPath(p, { fresh: true, allPoints: true });
   };
   // Ревизия 55: файл, переданный при запуске (BIM Twin scan.las, «Открыть с помощью», ярлык) — забираем и открываем
   try {

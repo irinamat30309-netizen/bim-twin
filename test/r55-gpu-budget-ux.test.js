@@ -24,3 +24,15 @@ test('r55: свойства облака и итог объясняют пред
   assert.match(app, /предел показа на этой видеокарте/, 'итог объясняет предел');
   assert.ok(!/сконвертируйте файл в LAS или PLY/.test(app), 'старого совета «сконвертировать в LAS» больше нет');
 });
+
+test('r55: «Показать все точки файла» — кнопка в свойствах и перечитывание без предела', () => {
+  const ui = read('renderer/lixel-cloud-ui.js');
+  assert.match(ui, /id="cpShowAll"/, 'кнопка есть в панели');
+  assert.match(ui, /showAll\.hidden = !part/, 'видна только когда показана часть');
+  assert.match(ui, /window\.__bimShowAllPoints\(\)/, 'нажимает обработчик');
+  const app = read('renderer/app.js');
+  assert.match(app, /window\.__bimShowAllPoints = async function \(\)/, 'обработчик есть');
+  assert.match(app, /localStorage\.setItem\('bim\.gpuPointBudget', '400000000'\)/, 'поднимает предел');
+  assert.match(app, /window\.__bimOpenCloudPath\(p, \{ fresh: true, allPoints: true \}\)/, 'перечитывает файл целиком');
+  assert.match(app, /if \(extra && extra\.allPoints\) pre = \{ maxPoints: 0 \}/, 'окно загрузки и предел обходятся');
+});
