@@ -192,6 +192,23 @@
     const pre = extra.pre && !extra.pre.cancelled ? extra.pre : null;   // ревизия 27: выбор окна «Перед загрузкой» (предел, область, высоты, маршрут, шум)
     try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), pre ? { maxPoints: pre.maxPoints, filter: pre.filter || null, estimate: pre.estimate, force: true } : { maxPoints: gpuPointBudget() }); } catch (e) { return null; }
     if (!opened || !opened.ok || !opened.token) return null;
+    // Ревизия 55: если предел видеокарты срезал точки, а окна «Перед загрузкой» не было (открытие из командной строки,
+    // перетаскиванием, ярлыком) — спрашиваем один раз, показать ли все. Иначе человек видит часть облака без выбора.
+    if (!extra.noAllAsk && opened.thinned && !pre && Number(opened.sourceTotal) > Number(opened.total) && window.__lxKit && window.__lxKit.ask) {
+      let all = false;
+      try {
+        all = await window.__lxKit.ask({
+          title: 'Показать все точки?',
+          message: 'В файле ' + fmtMln(opened.sourceTotal) + ' млн точек. Сейчас видеокарта покажет ' + fmtMln(opened.total) + ' млн — это её предел после сбросов изображения.\n\nМожно показать все: видеопамяти хватит (у вашей карты запас есть), но если картинка «моргнёт», предел снова снизится сам.',
+          okLabel: 'Показать все', cancelLabel: 'Оставить ' + fmtMln(opened.total) + ' млн'
+        });
+      } catch (_) { all = false; }
+      if (all) {
+        try { await API.cloudPartsClose({ token: opened.token }); } catch (_) {}
+        try { localStorage.setItem('bim.gpuPointBudget', String(Math.min(Number(opened.sourceTotal) || 0, 400000000))); localStorage.removeItem('bim.gpuResetAt'); } catch (_) {}
+        return await tryPartsLoad(filePath, label, Object.assign({}, extra, { noAllAsk: true, pre: null }));
+      }
+    }
     const token = opened.token, nParts = Math.max(1, opened.segments | 0), total = Number(opened.total) || 0;
     const closeSession = () => { try { return Promise.resolve(API.cloudPartsClose({ token })).catch(() => {}); } catch (_) { return Promise.resolve(); } };
     if (typeof extra.confirmReplace === 'function') {

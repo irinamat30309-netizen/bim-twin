@@ -207,7 +207,7 @@
       const note = $('cpShareNote');
       if (note) {
         note.hidden = !part;
-        note.textContent = !part ? '' : 'Показана часть точек файла (' + info.loadedCount.toLocaleString('ru-RU') + ' из ' + info.sourceCount.toLocaleString('ru-RU') + '), выбранная равномерно по всему облаку: ' + (info.gpuThinned ? 'все точки видеокарта не покажет. Все точки остаются в файле — для Автоочистки и CloudCompare.' : 'всем точкам не хватило памяти. Закройте другие программы и откройте файл снова — тогда загрузятся все.');
+        note.textContent = !part ? '' : 'Показана часть точек файла (' + info.loadedCount.toLocaleString('ru-RU') + ' из ' + info.sourceCount.toLocaleString('ru-RU') + '), выбранная равномерно по всему облаку: ' + (info.gpuThinned ? 'это предел показа для этой видеокарты. Все точки остаются в файле; чтобы показать их все, откройте файл заново и в окне «Перед загрузкой» выберите «Все точки» (там же есть кнопка «Вернуть полный предел», если предел был снижен после сброса изображения).' : 'всем точкам не хватило памяти. Закройте другие программы и откройте файл снова — тогда загрузятся все.');
       }
     }
     $('cpDimensions').textContent = info.bounds.mx.map((x, i) => 'XYZ'[i] + ': ' + (x - info.bounds.mn[i]).toFixed(3)).join('  ·  ');

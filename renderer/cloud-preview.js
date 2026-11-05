@@ -499,7 +499,8 @@
           '<div>Память ' + fmtBytes(ram.total) + ' (свободно ' + fmtBytes(ram.free) + ')</div>' +
           (rec ? '<div class="bp-rec">Рекомендовано <b>' + fmtMln(recPts) + ' млн</b> · максимум <b>' + fmtMln(safePts) + ' млн</b></div>' +
             (rec.notes && rec.notes.length ? '<div class="bp-note">' + esc(rec.notes.join('; ')) + '</div>' : '') : '') +
-          (resetAt >= 1e6 ? '<div class="bp-note">Видеокарта сбрасывала изображение при ' + fmtMln(resetAt) + ' млн точек — пределы снижены' + (rec ? ' (для компьютера: ' + fmtMln(rec.points) + ' / ' + fmtMln(rec.safeMax) + ' млн)' : '') + '</div>' : '');
+          (resetAt >= 1e6 ? '<div class="bp-note">Видеокарта сбрасывала изображение при ' + fmtMln(resetAt) + ' млн точек — пределы снижены' + (rec ? ' (для компьютера: ' + fmtMln(rec.points) + ' / ' + fmtMln(rec.safeMax) + ' млн)' : '') +
+            ' <button type="button" class="btn xs" data-act="resetGpu">Вернуть полный предел</button></div>' : '');
       } else q('.bp-pc').textContent = 'Сведения о компьютере недоступны — предел ' + fmtMln(budget) + ' млн точек.';
       // вкладки
       back.querySelectorAll('[data-tab]').forEach(function (t) { t.onclick = function () { var k = t.getAttribute('data-tab'); back.querySelectorAll('[data-tab]').forEach(function (x) { x.classList.toggle('on', x === t); x.setAttribute('aria-selected', x === t ? 'true' : 'false'); }); back.querySelectorAll('[data-pane]').forEach(function (p) { p.hidden = p.getAttribute('data-pane') !== k; }); if (k === 'load') paintHist(); }; });
@@ -584,6 +585,17 @@
       var curFloor = null;
       fl.querySelectorAll('[data-floor]').forEach(function (b) { b.onclick = function () { curFloor = floors[+b.getAttribute('data-floor')]; setH(curFloor.min, curFloor.max); fl.querySelectorAll('[data-floor]').forEach(function (x) { x.classList.toggle('on', x === b); }); }; });
       var nc = fl.querySelector('[data-act="noCeil"]'); if (nc) nc.onclick = function () { var f = curFloor || floors[0]; curFloor = f; setH(f.min, f.ceiling != null ? f.ceiling - 0.15 : Math.min(f.max, f.floor + 2.4)); };
+      // ревизия 55: вернуть полный предел видеокарты, если он был снижен после сбросов изображения
+      var rg = q('[data-act="resetGpu"]');
+      if (rg) rg.onclick = function () {
+        try { localStorage.removeItem('bim.gpuPointBudget'); localStorage.removeItem('bim.gpuResetAt'); } catch (_) {}
+        budget = rec ? Math.max(budget, rec.safeMax || rec.points) : budget;
+        resetAt = 0;
+        var want = Math.min(total, Math.max(rec ? (rec.safeMax || rec.points) : budget, budget));
+        st.points = Math.min(total, want);
+        rg.parentNode && (rg.parentNode.innerHTML = 'Предел возвращён — можно выбрать до <b>' + fmtMln(Math.min(total, rec ? (rec.safeMax || rec.points) : budget)) + ' млн</b> точек этого файла.');
+        update(); paint();
+      };
       if (hasRoute) {
         var ron = q('[data-k="routeOn"]'), rad = q('[data-k="radius"]'), rf = q('[data-k="rfrom"]'), rt = q('[data-k="rto"]');
         var syncRoute = function () {
