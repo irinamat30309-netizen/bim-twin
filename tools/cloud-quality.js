@@ -65,6 +65,10 @@ function fitPlane(X, Y, Z, n) {
   const nr = new Float64Array(3);
   R.eig3(a / n, b / n, c / n, d / n, e / n, f / n, nr);
   const L = Math.hypot(nr[0], nr[1], nr[2]) || 1; nr[0] /= L; nr[1] /= L; nr[2] /= L;
+  // знак нормали — к каноническому виду: иначе оси u/v и сетка окон зависели бы от знака собственного вектора,
+  // а два облака одного места получали бы разные «плитки» и несравнимые цифры
+  const big = Math.abs(nr[0]) >= Math.abs(nr[1]) && Math.abs(nr[0]) >= Math.abs(nr[2]) ? 0 : (Math.abs(nr[1]) >= Math.abs(nr[2]) ? 1 : 2);
+  if (nr[big] < 0) { nr[0] = -nr[0]; nr[1] = -nr[1]; nr[2] = -nr[2]; }
   // оси в плоскости: u — проекция мировой оси с наименьшей связью с нормалью
   const ax = Math.abs(nr[0]) < Math.abs(nr[1]) && Math.abs(nr[0]) < Math.abs(nr[2]) ? [1, 0, 0] : (Math.abs(nr[1]) < Math.abs(nr[2]) ? [0, 1, 0] : [0, 0, 1]);
   let ux = ax[0] - (ax[0] * nr[0] + ax[1] * nr[1] + ax[2] * nr[2]) * nr[0], uy = ax[1] - (ax[0] * nr[0] + ax[1] * nr[1] + ax[2] * nr[2]) * nr[1], uz = ax[2] - (ax[0] * nr[0] + ax[1] * nr[1] + ax[2] * nr[2]) * nr[2];
@@ -90,23 +94,24 @@ function measure(file, opt) {
   const [mx, my, mz] = pl.m, [nx, ny, nz] = pl.n, [ux, uy, uz] = pl.u, [vx, vy, vz] = pl.v;
   const n = P.n, U = new Float64Array(n), V = new Float64Array(n), D = new Float64Array(n);
   let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  // u и v — в абсолютных мировых осях (не от центра): сетка окон одна и та же у разных облаков,
+  // иначе сдвиг центра на пол-окна сдвигал бы «плитки» и цифры двух облаков было нельзя сравнивать
   for (let i = 0; i < n; i++) {
-    const x = P.X[i] - mx, y = P.Y[i] - my, z = P.Z[i] - mz;
+    const x = P.X[i], y = P.Y[i], z = P.Z[i];
     const u = x * ux + y * uy + z * uz, v = x * vx + y * vy + z * vz;
-    U[i] = u; V[i] = v; D[i] = x * nx + y * ny + z * nz;
+    U[i] = u; V[i] = v; D[i] = (x - mx) * nx + (y - my) * ny + (z - mz) * nz;
     if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v;
   }
-  const tw = o.tile, iu0 = Math.ceil(u0 / tw), iu1 = Math.floor(u1 / tw), iv0 = Math.ceil(v0 / tw), iv1 = Math.floor(v1 / tw);
-  const grid = new Map();
-  const key = (iu, iv) => (iu + 65536) * 131072 + (iv + 65536);
+  const tw = o.tile, tol = 0.02 * tw, grid = new Map(), key = (iu, iv) => iu + ',' + iv;
   for (let i = 0; i < n; i++) {
-    const iu = Math.floor(U[i] / tw), iv = Math.floor(V[i] / tw);
-    if (iu < iu0 || iu > iu1 || iv < iv0 || iv > iv1) continue;
-    const k = key(iu, iv); let g = grid.get(k); if (!g) { g = []; grid.set(k, g); } g.push(i);
+    const k = key(Math.floor(U[i] / tw), Math.floor(V[i] / tw)); let g = grid.get(k); if (!g) { g = []; grid.set(k, g); } g.push(i);
   }
   const tiles = [], side = Math.max(1, Math.round(tw / o.pixel));
-  for (const [, idx] of grid) {
+  for (const [k, idx] of grid) {
     if (idx.length < o.minPoints) continue;
+    const [iu, iv] = k.split(',').map(Number), bu = iu * tw, bv = iv * tw;
+    // только окна, целиком лежащие в облаке (допуск 2 %): иначе «пустые пиксели» считали бы пустоту за краем куска
+    if (u0 - bu > tol || (bu + tw) - u1 > tol || v0 - bv > tol || (bv + tw) - v1 > tol) continue;
     let sum = 0; const dd = new Float64Array(idx.length);
     for (let q = 0; q < idx.length; q++) { const i = idx[q]; sum += D[i]; dd[q] = D[i]; }
     const mean = sum / idx.length;
@@ -114,8 +119,7 @@ function measure(file, opt) {
     const med = quant(dd, 0.5);
     const dev = new Float64Array(dd.length); for (let q = 0; q < dd.length; q++) dev[q] = Math.abs(dd[q] - med);
     // пустые пиксели 1 см в пределах плитки (ровно tw × tw)
-    const iu = Math.floor(U[idx[0]] / tw), iv = Math.floor(V[idx[0]] / tw);
-    const bu = iu * tw, bv = iv * tw, occ = new Uint8Array(side * side);
+    const occ = new Uint8Array(side * side);
     for (let q = 0; q < idx.length; q++) {
       const i = idx[q], cu = Math.min(side - 1, Math.max(0, Math.floor((U[i] - bu) / o.pixel))), cv = Math.min(side - 1, Math.max(0, Math.floor((V[i] - bv) / o.pixel)));
       occ[cv * side + cu] = 1;

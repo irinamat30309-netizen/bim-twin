@@ -66,7 +66,7 @@ test('r54: замер качества — плотность, толщина и
     const f = writeLas(path.join(d, 'wall.las'), pts);
     const m = Q.measure(f, { box: [4.9, -0.1, -0.1, 5.1, 2.1, 2.1], tile: 0.5, pixel: 0.01 });
     const s = m.summary;
-    assert.strictEqual(s.tiles, 1, 'одно окно 0,5 × 0,5 м внутри стены: ' + s.tiles);
+    assert.strictEqual(s.tiles, 4, 'окна 0,5 × 0,5 м внутри стены 1 × 1 м: ' + s.tiles);
     assert.ok(Math.abs(s.perWindow - (10000 - 4 * HOLE)) <= 2, 'точек в окне: ' + s.perWindow);
     assert.ok(Math.abs(s.densityPerM2 - Math.round((10000 - 4 * HOLE) / 0.25)) <= 10, 'плотность: ' + s.densityPerM2);
     assert.ok(Math.abs(s.rmsMm - SIG * 1000) < 0.2, 'толщина СКО: ' + s.rmsMm);
