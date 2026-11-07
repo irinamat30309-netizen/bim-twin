@@ -2219,6 +2219,14 @@
     }
     function applyVp() { try { if (viewer && viewer.setTheme) viewer.setTheme(vpIsLight() ? 'light' : 'dark'); } catch (_) {} paintVp(); }
     if (vpBtn) vpBtn.addEventListener('click', () => { try { localStorage.setItem('bim.vpLight', vpIsLight() ? '0' : '1'); } catch (_) {} applyVp(); });
+    // Ревизия 68: снимок окна в папку проекта (для отчётов и инструкций)
+    const shotBtn = $('vtShot');
+    if (shotBtn) shotBtn.addEventListener('click', async () => {
+      if (!API || typeof API.captureScreenshot !== 'function') { toast('Снимок окна — в десктоп-версии'); return; }
+      let r = null;
+      try { r = await API.captureScreenshot(); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
+      if (r && r.ok) toast('Снимок сохранён: ' + (r.name || r.path)); else toast('Снимок не получился' + (r && r.message ? ': ' + r.message : ''));
+    });
     applyVp();
     window.addEventListener('bim-cloud-change', () => { try { if (vpIsLight() && viewer && viewer.setTheme) viewer.setTheme('light'); } catch (_) {} });
     const zi = $('vtZoomIn'); if (zi) zi.addEventListener('click', () => { if (viewer && viewer.zoomBy) viewer.zoomBy(0.82); });

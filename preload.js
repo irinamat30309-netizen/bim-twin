@@ -94,6 +94,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   projectFolder: (action) => inv('bim:projectFolder', { action: action || 'get' }),
   // ревизия 38: где хранить проект — сведения о дисках, выбор папки (диалог), открыть папку
   projectStorage: (payload) => inv('bim:projectStorage', payload || {}),
+  // Ревизия 68: снимок окна в папку проекта (для отчётов)
+  captureScreenshot: () => inv('bim:captureScreenshot'),
   grantWorkInPlace: (p) => inv('bim:grantWorkInPlace', { path: p }),
   cloudBackups: (payload) => inv('bim:cloudBackups', payload || {}),
   cloudPartsRead: (a) => inv('bim:cloudPartsRead', a),

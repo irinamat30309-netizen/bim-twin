@@ -2288,6 +2288,32 @@ function registerIpc() {
       drives: sug.drives.map(d => ({ path: d.path, free: d.free, total: d.total, low: d.low, system: !!d.system })), lowFree: storagePaths.LOW_FREE
     };
   }
+  // Ревизия 68: снимок окна в файл (для отчётов и инструкций) — в папку проекта или на рабочий стол
+  ipcMain.handle('bim:captureScreenshot', async (event) => {
+    try {
+      const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
+      const win = BrowserWindow.fromWebContents(sender);
+      if (!win) return { ok: false, message: 'окно не найдено' };
+      const image = await win.webContents.capturePage();
+      if (!image || image.isEmpty()) return { ok: false, message: 'не удалось снять окно' };
+      let pid = null;
+      try {
+        const st = store && store.getState ? store.getState() : null;
+        pid = st && st.projectId ? vId(st.projectId) : null;
+      } catch (_) {}
+      let dir = null;
+      try { const w = storagePaths.workRoot(storageCtx(pid)); dir = w.projectDir || w.root; } catch (_) {}
+      if (!dir) { try { dir = app.getPath('desktop'); } catch (_) { dir = process.cwd(); } }
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const name = 'BIM-Twin-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.png';
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, image.toPNG());
+      try { shell.showItemInFolder(file); } catch (_) {}
+      return { ok: true, path: file, name };
+    } catch (e) { return { ok: false, message: String((e && e.message) || e) }; }
+  });
   ipcMain.handle('bim:projectStorage', async (event, a) => {
     try {
       const sender = ipcSender(event); if (!sender) return { ok: false, message: 'нет доступа' };
