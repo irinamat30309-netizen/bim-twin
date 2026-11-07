@@ -50,7 +50,7 @@
 .an-spin { flex: 0 0 auto; width: 14px; height: 14px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: lx-spin .7s linear infinite; }
 .docs-analyzing.done { border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: var(--ok-soft); cursor: pointer; transition: background var(--t-fast); }
 .docs-analyzing.done:hover { background: color-mix(in srgb, var(--ok) 20%, transparent); }
-.an-check { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--ok); color: #fff; font-size: 11px; font-weight: 700; }
+.an-check { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--ok); color: #fff; font-size: 11px; font-weight: 600; }
 .an-go { margin-left: auto; color: var(--accent); font-weight: 600; white-space: nowrap; }
 
 .kv { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
@@ -88,7 +88,7 @@ html[data-theme="light"] .finding .src.llm { color: #5b3fc4; }
 /* ---------- Сводка ---------- */
 .dash-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
 .dcard { padding: 12px 8px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); text-align: center; }
-.dcard .n { font-size: 26px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; }
+.dcard .n { font-size: 26px; font-weight: 600; letter-spacing: -.02em; line-height: 1.15; }
 .dcard .l { margin-top: 2px; color: var(--txt-3); font-size: var(--fs-xs); }
 .dcard.err .n { color: var(--err); }
 .dcard.warn .n { color: var(--warn); }

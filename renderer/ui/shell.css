@@ -13,7 +13,7 @@ html.lx-ready .lx-boot { opacity: 0; visibility: hidden; pointer-events: none; }
   animation: lx-breathe 2.4s var(--ease) infinite;
 }
 .lx-boot-mark svg.ic { width: 30px; height: 30px; }
-.lx-boot-title { font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
+.lx-boot-title { font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
 .lx-boot-sub { color: var(--txt-3); font-size: var(--fs-sm); min-height: 18px; }
 .lx-boot-bar { width: 100%; height: 3px; margin-top: 10px; overflow: hidden; border-radius: 3px; background: var(--bg-4); }
 .lx-boot-bar > i { display: block; width: 36%; height: 100%; border-radius: inherit; background: var(--accent); animation: lx-indet 1.15s var(--ease) infinite; }
@@ -32,7 +32,7 @@ body.lx-booting .titlebar, body.lx-booting .lx-tabs, body.lx-booting .lx-ribbon,
 .titlebar button, .titlebar select, .titlebar label, .titlebar input, .tb-winbtns { -webkit-app-region: no-drag; }
 .tb-left, .tb-right { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; }
 .tb-center { display: flex; flex: 1 1 auto; justify-content: center; min-width: 0; }
-.tb-brand { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 4px; font-weight: 650; letter-spacing: -.01em; }
+.tb-brand { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 4px; font-weight: 600; letter-spacing: -.01em; }
 .tb-mark {
   display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--on-accent); font-size: 14px;
   background: var(--accent-fill);
@@ -141,7 +141,7 @@ html.lx-ribbon-collapsed .lx-ribbon { flex-basis: 0; height: 0; border-color: tr
 .lx-rb:hover .lx-ico { opacity: 1; transform: translateY(-1px); }
 .lx-sm:hover .lx-ico { transform: none; }
 .lx-rb:active { transform: scale(.97); background: var(--bg-4); }
-.lx-rb.on, .lx-rb.active, .lx-rb.lx-mode-active, .lx-rb.lx-dactive, .lx-rb[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
+.lx-rb.on, .lx-rb.active, .lx-rb.lx-mode-active, .lx-rb.lx-dactive, .lx-rb[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .lx-rb.on .lx-ico, .lx-rb.active .lx-ico, .lx-rb.lx-mode-active .lx-ico, .lx-rb.lx-dactive .lx-ico, .lx-rb[aria-pressed="true"] .lx-ico { color: var(--accent); opacity: 1; }
 .lx-rb:disabled, .lx-rb[aria-disabled="true"] { opacity: .4; cursor: not-allowed; pointer-events: none; }
 .lx-rb.is-idle { opacity: .45; }

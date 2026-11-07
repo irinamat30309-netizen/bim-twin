@@ -90,7 +90,7 @@ body.editing .row-actions { display: inline-flex; }
 .insp-pane { flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
 #inspDocs { overflow: hidden; }
 .insp-head { flex: none; padding: 2px 16px 10px; }
-.insp-title { overflow: hidden; font-size: var(--fs-lg); font-weight: 650; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
+.insp-title { overflow: hidden; font-size: var(--fs-lg); font-weight: 600; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
 .insp-sub { margin-top: 2px; color: var(--txt-3); font-size: var(--fs-sm); }
 .insp-sub:empty { display: none; }
 .tabs { flex: none; display: flex; align-items: stretch; gap: 0; padding: 0 8px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }

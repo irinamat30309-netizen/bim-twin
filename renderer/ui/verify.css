@@ -33,7 +33,7 @@ button.vf-chip:hover { filter: brightness(1.12); }
   font: 500 var(--fs-sm)/1.2 var(--font); text-align: left; cursor: pointer; transition: background var(--t-fast), border-color var(--t-fast);
 }
 .vf-stat:hover { background: var(--bg-3); }
-.vf-stat-n { font-size: var(--fs-xl, 20px); font-weight: 650; font-variant-numeric: tabular-nums; color: var(--txt); }
+.vf-stat-n { font-size: var(--fs-xl, 20px); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--txt); }
 .vf-stat-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vf-stat.ok .vf-stat-n { color: var(--ok); }
 .vf-stat.err .vf-stat-n { color: var(--err); }

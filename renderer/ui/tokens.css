@@ -30,7 +30,7 @@ html[data-theme="dark"],
   --ok-soft: rgba(62, 207, 142, .12);
   --warn-soft: rgba(232, 163, 76, .13);
   --err-soft: rgba(229, 120, 127, .12);
-  --overlay: rgba(12, 11, 10, .62);
+  --overlay: rgba(12, 11, 10, .52);
   --glass: rgba(35, 34, 33, .96);
   --track: #3d3a36;
   --knob-off: #b3afa6;

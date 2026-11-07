@@ -9,7 +9,7 @@
 }
 html.st-mac .st-title { padding-left: 84px; }   /* место под «светофор» macOS */
 .st-title button, .st-win { -webkit-app-region: no-drag; }
-.st-brand { display: flex; align-items: center; gap: 8px; font-weight: 650; letter-spacing: -.01em; }
+.st-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: -.01em; }
 .st-mark {
   display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--on-accent);
   background: var(--accent-fill);
@@ -32,7 +32,7 @@ body.st-leaving .st-shell { opacity: 0; transform: scale(.994); pointer-events: 
 
 .st-side { display: flex; flex-direction: column; gap: 4px; padding: 20px 12px 14px; border-right: 1px solid var(--line); background: var(--bg-1); }
 .st-logo { display: flex; align-items: center; gap: 12px; padding: 2px 8px 22px; }
-.st-logo b { display: block; font-size: 16px; font-weight: 650; letter-spacing: -.02em; }
+.st-logo b { display: block; font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
 .st-logo span:not(.st-logo-mark) { display: block; margin-top: 1px; color: var(--txt-3); font-size: var(--fs-xs); }
 .st-logo-mark {
   display: grid; flex: none; place-items: center; width: 38px; height: 38px; border-radius: 8px; color: var(--on-accent);
@@ -55,7 +55,7 @@ body.st-leaving .st-shell { opacity: 0; transform: scale(.994); pointer-events: 
 .st-view:not([hidden]) { animation: lx-fade .24s var(--ease) both; }
 .st-scroll { flex: 1; min-height: 0; padding: 30px clamp(20px, 4vw, 48px) 24px; overflow-y: auto; }
 .st-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
-.st-head h1 { font-size: 24px; font-weight: 650; letter-spacing: -.02em; }
+.st-head h1 { font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
 .st-head p { margin-top: 5px; color: var(--txt-3); font-size: var(--fs-md); }
 .st-actions { display: flex; align-items: center; gap: 8px; }
 .st-search { position: relative; display: block; }

@@ -81,7 +81,7 @@
     var dl = inf ? drivesLine(inf.drives) : '';
     var v = await kit.form({
       title: 'Новый проект', wide: true, okLabel: 'Создать', className: 'ps-new',
-      message: inf ? 'Программа может стоять на диске C, а проект — на любом диске: в папке проекта хранятся облака, LAS, индексы для быстрого открытия, черновики и отчёты.' : 'Название появится в списке проектов и в заголовке рабочей области.',
+      message: inf ? 'В папке проекта хранятся облака, LAS, индексы и отчёты — можно на любом диске.' : 'Название появится в списке проектов.',
       hint: dl ? 'Диски: ' + dl : undefined,
       fields: fields,
       validate: function (x) { if (!x.name) return 'Введите название проекта'; if (inf && !x.folder) return 'Выберите, где хранить проект'; return null; }

@@ -7,8 +7,8 @@ body {
   overflow: hidden;
   background: var(--bg-0);
   color: var(--txt);
-  font: 400 var(--fs-md)/1.42 var(--font);
-  letter-spacing: -.003em;
+  font: 400 var(--fs-md)/1.5 var(--font);
+  letter-spacing: 0;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
