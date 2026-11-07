@@ -578,6 +578,9 @@
     // Ревизия 57: каждый явный импорт отменяет фоновое восстановление облака проекта (multicloud.js ждёт,
     // пока номер не изменится), иначе старое облако проекта могло открыться поверх только что загруженного.
     window.__bimImportSerial = (Number(window.__bimImportSerial) || 0) + 1;
+    // Ревизия 71: запоминаем, что пользователь сам загрузил облако в этом проекте — авто-восстановление проекта
+    // больше не подменяет его старым облаком ни сразу, ни после перезагрузки состояния.
+    try { window.__bimImportedProject = String((window.BimProjectState && window.BimProjectState.projectId) || ''); } catch (_) { window.__bimImportedProject = ''; }
     if (opts && opts.fresh) window.__bimDropCloudCache(p);
     try {
       const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop(), opts && opts.allPoints ? { allPoints: true } : {});
@@ -2207,6 +2210,24 @@
       b.addEventListener('click', () => setPresent(!document.body.classList.contains('lx-present')));
       document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('lx-present')) setPresent(false); });
       window.__bimPresent = setPresent;
+    })();
+    // Ревизия 71: кнопка «Главное меню» — выход к списку проектов (там же создание нового)
+    (function initHome() {
+      const b = $('tbHome'); if (!b) return;
+      b.addEventListener('click', async () => {
+        const k = window.__lxKit;
+        try {
+          const dirty = !!(window.__pcAutosave && window.__pcAutosave.isDirty && window.__pcAutosave.isDirty());
+          if (dirty) {
+            let ok = true;
+            if (k && k.ask) ok = await k.ask({ title: 'Выйти в главное меню?', message: 'В облаке есть несохранённые правки. Сохранить их перед выходом?', okLabel: 'Сохранить и выйти', cancelLabel: 'Остаться' });
+            if (!ok) return;
+            if (window.__pcAutosave && window.__pcAutosave.flush) { try { await window.__pcAutosave.flush(); } catch (_) {} }
+          }
+          if (window.BimProjectState && window.BimProjectState.flush) { try { await window.BimProjectState.flush(); } catch (_) {} }
+        } catch (_) {}
+        try { location.replace('startup.html'); } catch (_) { location.href = 'startup.html'; }
+      });
     })();
     // Ревизия 66: светлый фон 3D (запоминается между запусками)
     const vpBtn = $('vtVpTheme');

@@ -157,6 +157,12 @@
     _rebuildScene();
     var active = byId(_activeId);
     if (!active && viewer() && viewer()._cloudRecord && viewer().clearCloud) viewer().clearCloud();
+    // Ревизия 71: если пользователь уже загрузил своё облако в этом проекте — не открываем поверх него старое.
+    // Раньше состояние проекта могло перезагрузиться (после импорта) и вернуть облако, которое лежало в проекте раньше.
+    var v = viewer();
+    var hasCloudNow = !!(v && v._cloudRecord && ((v.pointCount | 0) > 0 || (v._cloudRecord.loadedCount | 0) > 0));
+    var sameProjectImport = String(window.__bimImportedProject || '') !== '' && String(window.__bimImportedProject) === String(ps.projectId || '');
+    if (active && hasCloudNow && sameProjectImport) return;
     if (active) openActiveProjectCloud(active, token, serial, 0);
   }
   function listenProjectState() {
