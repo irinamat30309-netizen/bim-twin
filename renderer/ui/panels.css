@@ -2,6 +2,11 @@
 
 /* ---------- Левая панель: структура ---------- */
 .sb-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 40px; padding: 0 14px; }
+/* Ревизия 62: кнопка сворачивания в шапке панели */
+.lx-fold { flex: none; width: 22px; height: 22px; margin-left: 6px; color: var(--txt-3); }
+.lx-fold:hover { color: var(--txt); background: var(--bg-3); }
+.insp-seg { position: relative; padding-right: 26px; }
+.insp-seg .lx-fold { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); margin: 0; }
 .sb-title { color: var(--txt-3); font: 600 11px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; }
 .sb-head .mode { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; max-width: 62%; height: 20px; padding: 0 9px 0 8px; overflow: hidden; border-radius: 999px; background: var(--bg-3); color: var(--txt-2); font: 600 var(--fs-xs)/1 var(--font); text-overflow: ellipsis; white-space: nowrap; }
 .sb-head .mode::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }

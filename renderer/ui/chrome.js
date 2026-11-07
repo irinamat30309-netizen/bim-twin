@@ -85,6 +85,18 @@
     }
     if (s) s.addEventListener('click', function () { setSide(R.classList.contains('lx-side-closed')); });
     if (i) i.addEventListener('click', function () { setInsp(R.classList.contains('lx-insp-closed')); });
+    // Ревизия 62: кнопки сворачивания прямо в шапках панелей — не нужно искать их в верхней строке
+    function foldBtn(host, ico, label, onClick) {
+      if (!host || host.querySelector('.lx-fold')) return;
+      var b = D.createElement('button');
+      b.type = 'button'; b.className = 'icon-btn xs lx-fold'; b.setAttribute('data-ico', ico); b.setAttribute('data-ico-size', '14');
+      b.setAttribute('aria-label', label); b.setAttribute('data-tip', label);
+      host.appendChild(b);
+      if (K()) K().hydrate(b);
+      b.addEventListener('click', function (e) { e.stopPropagation(); onClick(); });
+    }
+    foldBtn(D.querySelector('.sb-head'), 'chevron-left', 'Свернуть панель структуры', function () { setSide(false); });
+    foldBtn(D.querySelector('.insp-seg'), 'chevron-right', 'Свернуть панель свойств', function () { setInsp(false); });
     var wasDrawer = drawer();
     W.addEventListener('resize', function () {
       var d = drawer();

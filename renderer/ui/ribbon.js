@@ -94,8 +94,8 @@
     if (item.toggle && !b.hasAttribute('aria-pressed')) b.setAttribute('aria-pressed', 'false');
     if (MODE_TOOLS[item.id]) b.setAttribute('data-mode-tool', '1');
     var tip = item.tip || '';
-    // Ревизия 61: подписи у больших кнопок ленты скрыты — название уходит в подсказку и доступное имя
-    if (size === 'lg' && text) { b.setAttribute('aria-label', text); if (!hadI18nTitle) tip = tip ? text + ' — ' + tip : text; }
+    // Ревизия 61: подписи у больших кнопок ленты скрыты — название уходит в подсказку (жирным) и доступное имя
+    if (size === 'lg' && text) { b.setAttribute('aria-label', text); b.setAttribute('data-tip-title', text); }
     if (hadI18nTitle) { tip = ''; }  // перевод подсказки из словаря важнее
     else if (!tip) tip = b.getAttribute('title') || b.getAttribute('data-tip') || '';
     if (tip) { b.setAttribute('data-tip', tip); b.removeAttribute('title'); }
