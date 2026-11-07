@@ -128,17 +128,17 @@ html.lx-ribbon-collapsed .lx-ribbon { flex-basis: 0; height: 0; border-color: tr
 
 .lx-rb {
   position: relative; display: flex; flex: none; margin: 0; border: 1px solid transparent; border-radius: var(--r-2); background: transparent; color: var(--txt-2);
-  font: 500 11.5px/1.16 var(--font); letter-spacing: 0; cursor: pointer; transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast), transform var(--t-fast) var(--ease);
+  font: 500 12.5px/1.2 var(--font); letter-spacing: 0; cursor: pointer; transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast), transform var(--t-fast) var(--ease);
 }
 .lx-rb .lx-ico { display: inline-flex; flex: none; align-items: center; justify-content: center; color: var(--txt); opacity: .88; transition: color var(--t-fast), background var(--t-fast), opacity var(--t-fast), transform var(--t-med) var(--ease); }
 .lx-rb .lx-ico svg.ic { width: 100%; height: 100%; }
 .lx-lg { flex-direction: column; align-items: center; justify-content: center; gap: 0; min-width: 44px; max-width: 104px; height: 100%; padding: 6px; }
 /* Ревизия 61: лента без подписей — только значки, подпись уходит в подсказку (как в Lixel). Чище и воздушнее. */
 .lx-lg .lbl { display: none; }
-.lx-lg .lx-ico { width: 24px; height: 24px; }
+.lx-lg .lx-ico { width: 26px; height: 26px; }
 .lx-lg .lbl { display: none; }
 .lx-sm { flex-direction: row; align-items: center; gap: 8px; height: 100%; min-height: 32px; padding: 0 11px 0 9px; white-space: nowrap; text-align: left; }
-.lx-sm .lx-ico { width: 16px; height: 16px; }
+.lx-sm .lx-ico { width: 17px; height: 17px; }
 .lx-rb:hover { background: var(--bg-3); color: var(--txt); }
 .lx-rb:hover .lx-ico { opacity: 1; transform: translateY(-1px); }
 .lx-sm:hover .lx-ico { transform: none; }
@@ -204,26 +204,36 @@ html.lx-side-closed .sidebar, html.lx-insp-closed .inspector { visibility: hidde
 
 /* Навигационная рейка и куб видов */
 .nav-rail {
-  position: absolute; top: 112px; right: 12px; z-index: var(--z-stage); display: flex; flex-direction: column; gap: 2px; padding: 4px;
+  position: absolute; top: 152px; right: 12px; z-index: var(--z-stage); display: flex; flex-direction: column; gap: 2px; padding: 4px;
   border: 1px solid var(--glass-line); border-radius: var(--r-3); background: var(--glass); box-shadow: var(--shadow-2);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
 }
 .nav-btn { width: 32px; height: 32px; }
 .nav-sep { height: 1px; margin: 3px 5px; background: var(--line); }
-.viewcube { position: absolute; top: 6px; right: 6px; z-index: var(--z-stage); width: 100px; height: 100px; cursor: pointer; }
+.viewcube { position: absolute; top: 10px; right: 10px; z-index: var(--z-stage); width: 128px; height: 132px; cursor: pointer; }
 .lx-viewcube-svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.lx-vface polygon { fill: var(--glass); stroke: var(--txt-3); stroke-width: 1.2; stroke-linejoin: round; transition: fill var(--t-fast), stroke var(--t-fast); }
-.lx-vface text { fill: var(--txt-2); font: 600 8px var(--font); text-anchor: middle; pointer-events: none; }
+/* Ревизия 63: грани с заливкой и мягкими углами, подписи крупнее, оси — чипами снизу */
+.lx-vface polygon { stroke: var(--line-strong); stroke-width: 1.5; stroke-linejoin: round; transition: fill var(--t-fast), stroke var(--t-fast); }
+.lx-vtop polygon { fill: var(--bg-3); }
+.lx-vfront polygon { fill: var(--bg-2); }
+.lx-vright polygon { fill: var(--bg-1); }
+.lx-vface text { fill: var(--txt-2); font: 600 10px var(--font); text-anchor: middle; letter-spacing: .04em; pointer-events: none; }
 .lx-vface:hover polygon, .lx-vface.active polygon { fill: var(--accent-soft); stroke: var(--accent); }
 .lx-vface:hover text, .lx-vface.active text { fill: var(--accent); }
-.lx-vcenter circle { fill: var(--bg-1); stroke: var(--accent); stroke-width: 1.6; transition: r var(--t-fast), fill var(--t-fast); }
+.lx-vcenter circle { fill: var(--bg-2); stroke: var(--accent); stroke-width: 1.5; transition: fill var(--t-fast); }
+.lx-vcenter text { fill: var(--accent); font: 600 7px var(--font); text-anchor: middle; letter-spacing: .06em; pointer-events: none; }
 .lx-vcenter:hover circle, .lx-vcenter.active circle { fill: var(--accent); }
-.lx-axis line { stroke: var(--txt-3); stroke-width: 1.2; }
-.lx-axis circle { fill: var(--glass); stroke: var(--txt-3); stroke-width: 1; cursor: pointer; transition: fill var(--t-fast), stroke var(--t-fast); }
-.lx-axis text { fill: var(--txt-2); font: 600 7px var(--font); pointer-events: none; }
-.lx-axis circle:hover { fill: var(--accent-soft); stroke: var(--accent); }
+.lx-vcenter:hover text, .lx-vcenter.active text { fill: var(--on-accent); }
+.lx-chip rect { fill: var(--bg-2); stroke: var(--line-strong); stroke-width: 1; transition: fill var(--t-fast), stroke var(--t-fast); }
+.lx-chip text { font: 600 10px var(--font); text-anchor: middle; pointer-events: none; }
+.lx-chip-iso rect { stroke: var(--accent-line); }
+.lx-chip-iso text { fill: var(--accent); font: 600 8px var(--font); letter-spacing: .04em; }
+.lx-chip .t-x { fill: #d98b7a; }
+.lx-chip .t-y { fill: #7fb79a; }
+.lx-chip .t-z { fill: var(--accent); }
+.lx-chip:hover rect, .lx-chip-iso:hover rect { fill: var(--accent-soft); stroke: var(--accent); }
 .viewcube [data-view]:focus-visible { outline: none; }
-.viewcube [data-view]:focus-visible polygon, .viewcube [data-view]:focus-visible circle { stroke: var(--accent); stroke-width: 2; }
+.viewcube [data-view]:focus-visible polygon, .viewcube [data-view]:focus-visible circle, .viewcube [data-view]:focus-visible rect { stroke: var(--accent); stroke-width: 2; }
 
 /* ---------- Статус-бар ---------- */
 .lx-status {

@@ -106,10 +106,10 @@ html[data-theme="light"] {
 :root {
   --font: "Inter Variable", "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Roboto", "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", "SF Mono", "JetBrains Mono", Consolas, monospace;
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-md: 13px;
-  --fs-lg: 15px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
   --r-1: 6px;
   --r-2: 8px;
   --r-3: 10px;
@@ -121,10 +121,10 @@ html[data-theme="light"] {
   --t-slow: 280ms;
   --h-title: 38px;
   --h-tabs: 36px;
-  --h-ribbon: 88px;
+  --h-ribbon: 96px;
   --h-status: 26px;
-  --w-side: 264px;
-  --w-insp: 320px;
+  --w-side: 288px;
+  --w-insp: 340px;
 
   /* слои */
   --z-stage: 20;
