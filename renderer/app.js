@@ -2128,7 +2128,10 @@
             const dp = targetP - sp;
             const moving = Math.abs(d) > 0.0008 || Math.abs(dp) > 0.0008;
             if (moving) { sy += d * 0.18; sp += dp * 0.18; }
-            const yaw = sy, pitch = sp;
+            // Ревизия 70: куб показываем чуть «от себя» (наклон 22°/14°), чтобы в любом виде — даже строго спереди —
+            // были видны и доступны соседние грани: иначе после выбора «ФАС» остальные стороны не нажать.
+            const OFFSET_Y = 0.42, OFFSET_P = 0.30;
+            const yaw = sy + OFFSET_Y, pitch = Math.max(-1.3, Math.min(1.3, -sp - OFFSET_P));
             const key = (yaw * 180 / Math.PI).toFixed(1) + ':' + (pitch * 180 / Math.PI).toFixed(1);
             if (key !== lastKey) {
               lastKey = key;
@@ -2144,10 +2147,10 @@
                 const t = g.querySelector('text');
                 if (t) {
                   const faceOn = -n[2];
-                  t.style.display = faceOn < 0.42 ? 'none' : '';   // почти в профиль — подпись не читается, убираем
+                  t.style.display = faceOn < 0.28 ? 'none' : '';   // почти в профиль — подпись не читается, убираем
                   t.setAttribute('x', (CX - c[0] * K).toFixed(1)); t.setAttribute('y', (CY - c[1] * K + 3.5).toFixed(1));
                 }
-                g.style.opacity = Math.min(1, Math.max(0.35, -n[2] * 1.6)).toFixed(2);
+                g.style.opacity = Math.min(1, Math.max(0.45, -n[2] * 1.6)).toFixed(2);
               }
             }
           }
