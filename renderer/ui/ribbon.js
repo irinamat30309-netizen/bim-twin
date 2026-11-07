@@ -94,6 +94,8 @@
     if (item.toggle && !b.hasAttribute('aria-pressed')) b.setAttribute('aria-pressed', 'false');
     if (MODE_TOOLS[item.id]) b.setAttribute('data-mode-tool', '1');
     var tip = item.tip || '';
+    // Ревизия 61: подписи у больших кнопок ленты скрыты — название уходит в подсказку и доступное имя
+    if (size === 'lg' && text) { b.setAttribute('aria-label', text); if (!hadI18nTitle) tip = tip ? text + ' — ' + tip : text; }
     if (hadI18nTitle) { tip = ''; }  // перевод подсказки из словаря важнее
     else if (!tip) tip = b.getAttribute('title') || b.getAttribute('data-tip') || '';
     if (tip) { b.setAttribute('data-tip', tip); b.removeAttribute('title'); }
@@ -244,6 +246,7 @@
   function select(id, opts) {
     if (!panels[id]) id = C.TABS[0].id;
     opts = opts || {};
+    var prev = current;
     if (opts.user && id !== current) {
       try { if (W.__lxWorkspace) { W.__lxWorkspace.exitTools(); W.__lxWorkspace.menusClose(); } } catch (e) {}
       if (kit()) kit().closePopover();
@@ -254,6 +257,10 @@
       tabBtns[k].setAttribute('aria-selected', String(on)); tabBtns[k].tabIndex = on ? 0 : -1; tabBtns[k].classList.toggle('active', on);
       panels[k].classList.toggle('active', on);
     });
+    // Ревизия 61: смена вкладки — короткое проявление ленты (140 мс), чтобы переключение не было резким
+    if (opts.user && prev !== id) {
+      try { var p = panels[id]; p.classList.remove('lx-fade-in'); void p.offsetWidth; p.classList.add('lx-fade-in'); } catch (e) {}
+    }
     R.setAttribute('data-ribbon-tab', id);
     store(KEY_TAB, id);
     raf(navUpdate);

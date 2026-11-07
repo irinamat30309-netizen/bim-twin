@@ -3,6 +3,9 @@
 @keyframes lx-fade { from { opacity: 0; } }
 @keyframes lx-pop { from { opacity: 0; transform: translateY(6px) scale(.97); } }
 @keyframes lx-rise { from { opacity: 0; transform: translateY(10px); } }
+/* Ревизия 61: смена вкладки ленты — мягкое проявление 140 мс */
+@keyframes lx-tab-in { from { opacity: 0; transform: translateY(3px); } }
+.lx-panel.lx-fade-in { animation: lx-tab-in 140ms var(--ease); }
 @keyframes lx-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.045); } }
 @keyframes lx-indet { 0% { transform: translateX(-110%); } 100% { transform: translateX(300%); } }
 @keyframes lx-shimmer { to { background-position: -220% 0; } }

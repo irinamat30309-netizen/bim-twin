@@ -68,15 +68,27 @@
       '<label class="lx-cp-check"><input id="cpHide" type="checkbox">Скрыть точки вне диапазона</label><div id="cpHistNote" class="lx-cp-note"></div>' +
       '</div>' +
       '<div id="cpError" role="alert"></div>' +
-      '<dl class="lx-cloud-stats"><dt>В исходном файле</dt><dd id="cpTotal"></dd><dt>Загружено точек</dt><dd id="cpLoaded"></dd></dl>' +
       '<div id="cpShareNote" class="lx-cp-note" hidden></div>' +
       '<button type="button" id="cpShowAll" class="btn sm" hidden title="Показать все точки файла: видеокарта может не справиться, тогда предел снизится сам">Показать все точки файла</button>' +
+      // Ревизия 61: второстепенное — под «Ещё», чтобы на виду было меньше строк
+      '<button type="button" id="cpMore" class="lx-cp-more" aria-expanded="false">Ещё</button>' +
+      '<div id="cpMoreBody" hidden>' +
+      '<dl class="lx-cloud-stats"><dt>В исходном файле</dt><dd id="cpTotal"></dd><dt>Загружено точек</dt><dd id="cpLoaded"></dd></dl>' +
       '<div class="lx-cp-caption">Габариты загруженных точек, м</div><div id="cpDimensions"></div>' +
-      '<div class="lx-cp-note">Локальные оси · Y — высота</div><div id="cpColorNote" class="lx-cp-note"></div>' +
+      '<div class="lx-cp-note">Локальные оси · Y — высота</div>' +
+      '</div>' +
+      '<div id="cpColorNote" class="lx-cp-note"></div>' +
       '</div>';
     scene.after(panel);
     if (kit()) kit().hydrate(panel);
     $('lxCloudMore').onclick = e => { e.stopPropagation(); if ($('lxCloudMenu')) closeMenu(); else openMenu($('lxCloudMore')); };
+    $('cpMore').onclick = function () {
+      const body = $('cpMoreBody'); if (!body) return;
+      const open = body.hidden;
+      body.hidden = !open;
+      this.textContent = open ? 'Свернуть' : 'Ещё';
+      this.setAttribute('aria-expanded', String(open));
+    };
     const bindPair = (slider, num, method) => {
       for (const id of [slider, num]) {
         $(id).addEventListener(id === num ? 'change' : 'input', () => {

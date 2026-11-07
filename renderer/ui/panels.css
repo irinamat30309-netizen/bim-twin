@@ -183,6 +183,11 @@ body.editing .row-actions { display: inline-flex; }
 #cpError { min-height: 0; color: var(--err); font-size: var(--fs-xs); }
 #cpError:empty { display: none; }
 #cpDimensions { color: var(--txt); font: 12px/1.4 var(--mono); }
+/* Ревизия 61: «Ещё» — второстепенные строки свойств облака под одним нажатием */
+.lx-cp-more { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; margin: 8px 0 0; padding: 2px 0; border: 0; background: transparent; color: var(--txt-3); font: 500 11px/1.5 var(--font); cursor: pointer; }
+.lx-cp-more:hover { color: var(--txt); }
+.lx-cp-more::after { content: ""; width: 5px; height: 5px; margin-top: -3px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform var(--t-fast) var(--ease); }
+.lx-cp-more[aria-expanded="true"]::after { margin-top: 2px; transform: rotate(-135deg); }
 .lx-cloud-stats { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: var(--fs-sm); }
 .lx-cloud-stats dt { color: var(--txt-3); }
 .lx-cloud-stats dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
