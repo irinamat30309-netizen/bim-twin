@@ -20,7 +20,15 @@ if (!src || !dst || !xbin || !posesPath) {
   console.error('нужно: electron tools/recolor-cli.js in.las out.las scan.xbin poses.csv [json]');
   process.exit(2);
 }
-const opt = optJson ? JSON.parse(optJson) : {};
+// Опции: JSON-строкой в аргументе или в переменной окружения BIM_RECOLOR_OPT (удобно из PowerShell, где кавычки
+// в аргументах теряются). Ключи без кавычек тоже принимаются: {hardwareDecode:false}.
+function parseOpt(s) {
+  if (!s) return {};
+  try { return JSON.parse(s); } catch (_) {}
+  try { return JSON.parse(String(s).replace(/([{,]\s*)([A-Za-z_][\w]*)\s*:/g, '$1"$2":').replace(/'/g, '"')); } catch (_) {}
+  console.error('не понял опции: ' + s); process.exit(2);
+}
+const opt = parseOpt(optJson || process.env.BIM_RECOLOR_OPT);
 const posesText = fs.readFileSync(path.resolve(posesPath), 'utf8');
 const LOG = path.resolve(dst) + '.log';
 try { fs.writeFileSync(LOG, ''); } catch (_) {}
@@ -32,7 +40,8 @@ const log = (f, label) => {
   if (p !== lastP) { lastP = p; say(`[${((Date.now() - t0) / 60000).toFixed(1)} мин] ${label || ''} ${Math.round(f * 100)}%`); }
 };
 
-app.disableHardwareAcceleration();   // декодирование кадров — программное, видеокарта не нужна
+// Ревизия 56: аппаратное декодирование (NVDEC) требует включённого GPU — выключаем ускорение только в софтверном режиме
+if (!opt.hardwareDecode) app.disableHardwareAcceleration();
 app.whenReady().then(() => {
   const win = new BrowserWindow({
     show: false, width: 320, height: 240, skipTaskbar: true, title: 'BIM Twin: цвет по фото',

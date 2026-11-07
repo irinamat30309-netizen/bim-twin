@@ -18,27 +18,48 @@
     return 'avc1.64003c';
   }
   class FrameDecoder {
-    constructor() { this.dec = null; this.codec = null; this.queue = []; this.err = null; this.ts = 0; this.chain = Promise.resolve(); }
-    async _open(codec, w, h) {
+    constructor() { this.dec = null; this.codec = null; this.queue = []; this.err = null; this.ts = 0; this.chain = Promise.resolve(); this.hw = null; }
+    async _open(codec, w, h, allowHw) {
       if (typeof VideoDecoder === 'undefined') throw new Error('в этой версии нет декодера видео (WebCodecs)');
-      const tries = [{ codec, codedWidth: w, codedHeight: h, hardwareAcceleration: 'prefer-software', optimizeForLatency: true },
-        { codec, codedWidth: w, codedHeight: h, optimizeForLatency: true }, { codec: 'avc1.640033', codedWidth: w, codedHeight: h }];
+      // ревизия 56: сначала пробуем аппаратный декодер (NVIDIA NVDEC и аналоги) — он в разы быстрее софтверного,
+      // при любой ошибке откатываемся на программный. Цвет проверяется на кадрах калибровки в recolor-core.
+      const hw = { codec, codedWidth: w, codedHeight: h, hardwareAcceleration: 'prefer-hardware', optimizeForLatency: true };
+      const soft = { codec, codedWidth: w, codedHeight: h, hardwareAcceleration: 'prefer-software', optimizeForLatency: true };
+      const any = { codec, codedWidth: w, codedHeight: h, optimizeForLatency: true };
+      const tries = allowHw === false ? [soft, any, { codec: 'avc1.640033', codedWidth: w, codedHeight: h }] : [hw, soft, any, { codec: 'avc1.640033', codedWidth: w, codedHeight: h }];
       let cfg = null;
       for (const c of tries) { try { const s = await VideoDecoder.isConfigSupported(c); if (s && s.supported) { cfg = c; break; } } catch (_) {} }
       if (!cfg) throw new Error('декодер H.264 ' + w + '×' + h + ' недоступен');
       if (this.dec) { try { this.dec.close(); } catch (_) {} }
       this.dec = new VideoDecoder({ output: (fr) => { const q = this.queue.shift(); if (q) q.res(fr); else fr.close(); }, error: (e) => { this.err = e; const q = this.queue.splice(0); for (const x of q) x.rej(e); } });
-      this.dec.configure(cfg); this.codec = codec;
+      this.dec.configure(cfg); this.codec = codec; this.hw = cfg.hardwareAcceleration === 'prefer-hardware';
     }
     // bytes — Uint8Array кадра (Annex B), f — { w, h }; → { w, h, Y, U, V, sY, sU, uvStep, fullRange, close }
-    decode(bytes, f) {
-      const run = async () => {
+    decode(bytes, f, allowHw) {
+      const open = async () => {
         const codec = codecFromAnnexB(bytes);
-        if (!this.dec || this.dec.state === 'closed' || this.codec !== codec || this.err) { this.err = null; await this._open(codec, f.w || 4000, f.h || 3000); }
+        if (!this.dec || this.dec.state === 'closed' || this.codec !== codec || this.err) { this.err = null; await this._open(codec, f.w || 4000, f.h || 3000, allowHw); }
+        return codec;
+      };
+      const once = async () => {
+        await open();
         const p = new Promise((res, rej) => this.queue.push({ res, rej }));
+        // flush() на каждый кадр держит память под контролем: без него декодер копит кадры и процесс падает
+        // по памяти (проверено: «Array buffer allocation failed»). Кадры ключевые, поэтому flush дешёвый.
         this.dec.decode(new EncodedVideoChunk({ type: 'key', timestamp: this.ts++, data: bytes }));
         await this.dec.flush();
         return p;
+      };
+      const run = async () => {
+        try { return await once(); }
+        catch (e) {
+          // ревизия 56: аппаратный декодер может не справиться с конкретным кадром — тихо откатываемся на программный
+          if (!this.hw) throw e;
+          this.hw = false; this.dec = null;
+          this.softOnly = true;
+          await this._open(codecFromAnnexB(bytes), f.w || 4000, f.h || 3000, false);
+          return await once();
+        }
       };
       const r = this.chain.then(run);
       this.chain = r.then(() => {}, () => {});
@@ -67,21 +88,35 @@
   let ipc = null; try { ipc = require('electron').ipcRenderer; } catch (_) { return; }
   ipc.on('recolor:start', async (_e, cfg) => {
     const path = require('path');
-    const dec = new FrameDecoder();
+    // Ревизия 56: пул декодеров — кадры .xbin все ключевые, поэтому их можно декодировать параллельно
+    // (по умолчанию 3: столько же кадров одновременно готовит recolor-core). На многоядерных машинах это убирает
+    // простой на декодировании H.264 4000×3000.
+    // Ревизия 56: пул декодеров. Сравнение на окне 120 с (3,08 млн точек, 742 кадра): 1 декодер — 56,6 с,
+    // 3 декодера — 45,3 с, 5 декодеров — 41,5 с (на 6 ядрах). По умолчанию — по числу ядер (до 6).
+    // Аппаратный декодер (NVDEC) на этой машине оказался медленнее (61,5 с), поэтому включается только явно.
+    const opt = cfg.opt || {};
+    let cpuN = 6; try { cpuN = require('os').availableParallelism ? require('os').availableParallelism() : require('os').cpus().length; } catch (_) {}
+    const poolSize = Math.max(1, Math.min(6, Number(opt.decodePool) || Math.max(2, Math.min(6, cpuN - 1))));
+    const pool = []; for (let i = 0; i < poolSize; i++) pool.push(new FrameDecoder());
+    let nextDec = 0;
+    const hwOn = opt.hardwareDecode === true;
+    const decode = (bytes, f) => { const d = pool[nextDec++ % pool.length]; return d.decode(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length), f.src || f, hwOn); };
     try {
       const XB = require(path.join(cfg.appDir, 'xbin-core.js')), RC = require(path.join(cfg.appDir, 'recolor-core.js'));
       ipc.send('recolor:progress', { f: 0, label: 'Цвет по фото: оглавление .xbin…' });
       const index = XB.open(cfg.xbin, (f) => ipc.send('recolor:progress', { f: 0.02 * f, label: 'Цвет по фото: оглавление .xbin…' }));
-      const stats = await RC.recolor(cfg.src, cfg.dst, { index, posesText: cfg.posesText, tmpDir: cfg.tmpDir, opt: cfg.opt || {},
-        decode: (bytes, f) => dec.decode(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length), f.src || f),
+      const stats = await RC.recolor(cfg.src, cfg.dst, { index, posesText: cfg.posesText, tmpDir: cfg.tmpDir, opt,
+        decode,
         onProgress: (f, label) => ipc.send('recolor:progress', { f: 0.02 + 0.98 * f, label }) });
       stats.model = index.calib && index.calib.model;
+      stats.decodePool = poolSize;
+      stats.hardwareDecode = hwOn && pool.some(d => d.hw);
       // ревизия 51: путь к .xbin — для уплотнения по сырому лидару в той же чистовой обработке (scan-refine-worker.js)
       try { if (cfg.tmpDir) require('fs').writeFileSync(path.join(cfg.tmpDir, 'xbin-source.txt'), String(cfg.xbin)); } catch (_) {}
       ipc.send('recolor:done', { ok: true, stats });
     } catch (e) {
       ipc.send('recolor:done', { ok: false, error: String((e && e.message) || e) });
-    } finally { dec.close(); }
+    } finally { for (const d of pool) { try { d.close(); } catch (_) {} } }
   });
   ipc.send('recolor:ready', {});
 })(typeof window !== 'undefined' ? window : globalThis);
