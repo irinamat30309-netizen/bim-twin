@@ -2174,7 +2174,38 @@
       window.addEventListener('bim-language-change', function (e) { try { applyCubeLang((e && e.detail && e.detail.lang) || 'ru'); } catch (_) {} });
     }
     const ft = $('vtFit'); if (ft) ft.addEventListener('click', () => { if (viewer && viewer.resetView) viewer.resetView(); });
-    // Ревизия 66: светлый фон 3D для презентаций (запоминается между запусками)
+    // Ревизия 67: режим презентации — светлое окно, светлый 3D, панели убраны; Esc возвращает как было
+    (function initPresent() {
+      const b = $('tbPresent'); if (!b) return;
+      let saved = null;
+      const setPresent = (on) => {
+        const root = document.documentElement, body = document.body;
+        if (on) {
+          saved = { theme: root.getAttribute('data-theme') || 'dark', vp: (function () { try { return localStorage.getItem('bim.vpLight'); } catch (_) { return null; } })() };
+          try { if (window.__bimSetTheme) window.__bimSetTheme('light'); else root.setAttribute('data-theme', 'light'); } catch (_) {}
+          try { localStorage.setItem('bim.vpLight', '1'); } catch (_) {}
+          try { if (window.__lxChrome) { window.__lxChrome.setSide(false); window.__lxChrome.setInspector(false); } } catch (_) {}
+          try { if (viewer && viewer.setTheme) viewer.setTheme('light'); } catch (_) {}
+          body.classList.add('lx-present');
+          b.setAttribute('aria-pressed', 'true');
+          b.setAttribute('data-tip', 'Выйти из режима презентации (Esc)');
+        } else {
+          body.classList.remove('lx-present');
+          b.setAttribute('aria-pressed', 'false');
+          b.setAttribute('data-tip', 'Режим презентации: светлое окно, светлый 3D, без панелей');
+          if (saved) {
+            try { if (window.__bimSetTheme) window.__bimSetTheme(saved.theme); else root.setAttribute('data-theme', saved.theme); } catch (_) {}
+            try { if (saved.vp === null) localStorage.removeItem('bim.vpLight'); else localStorage.setItem('bim.vpLight', saved.vp); } catch (_) {}
+            try { if (window.__lxChrome) { window.__lxChrome.setSide(true); window.__lxChrome.setInspector(true); } } catch (_) {}
+            try { if (viewer && viewer.setTheme) viewer.setTheme(saved.vp === '1' ? 'light' : 'dark'); } catch (_) {}
+          }
+        }
+      };
+      b.addEventListener('click', () => setPresent(!document.body.classList.contains('lx-present')));
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('lx-present')) setPresent(false); });
+      window.__bimPresent = setPresent;
+    })();
+    // Ревизия 66: светлый фон 3D (запоминается между запусками)
     const vpBtn = $('vtVpTheme');
     function vpIsLight() { try { return localStorage.getItem('bim.vpLight') === '1'; } catch (_) { return false; } }
     function paintVp() {
