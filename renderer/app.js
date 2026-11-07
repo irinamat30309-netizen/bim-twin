@@ -2088,7 +2088,13 @@
     if (vc) {
       const setActive = b => { vc.querySelectorAll('.vc').forEach(x => x.classList.toggle('active', x === b)); };
       const iso0 = vc.querySelector('[data-view="iso"]'); if (iso0) setActive(iso0);
-      vc.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (!b) return; setActive(b); if (viewer && viewer.setStandardView) viewer.setStandardView(b.getAttribute('data-view')); });
+      vc.addEventListener('click', e => {
+        const b = e.target.closest('[data-view]'); if (!b) return;
+        setActive(b);
+        // Ревизия 65: короткое «нажатие» грани — понятная обратная связь
+        try { b.classList.remove('lx-pick'); void b.getBoundingClientRect(); b.classList.add('lx-pick'); setTimeout(function () { b.classList.remove('lx-pick'); }, 320); } catch (_) {}
+        if (viewer && viewer.setStandardView) viewer.setStandardView(b.getAttribute('data-view'));
+      });
       // Ревизия 64: куб — настоящий 3D: грани проецируются по положению камеры, плавно, без рывков
       const svg = vc.querySelector('.lx-viewcube-svg') || vc;
       const faces = Array.from(vc.querySelectorAll('.lx-face'));
@@ -2110,12 +2116,20 @@
         return [x1, y2, z2];
       }
       let lastKey = '';
+      // Ревизия 65: инерция — куб догоняет камеру с мягким запаздыванием, а не дёргается за каждым кадром
+      let sy = null, sp = null;
       const follow = () => {
         try {
           const v = viewer;
           if (v && typeof v.yaw === 'number' && typeof v.pitch === 'number') {
-            const yaw = v.yaw + Math.PI, pitch = v.pitch;
-            const key = (yaw * 180 / Math.PI).toFixed(0) + ':' + (pitch * 180 / Math.PI).toFixed(0);
+            const target = v.yaw + Math.PI, targetP = v.pitch;
+            if (sy === null) { sy = target; sp = targetP; }
+            let d = target - sy; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+            const dp = targetP - sp;
+            const moving = Math.abs(d) > 0.0008 || Math.abs(dp) > 0.0008;
+            if (moving) { sy += d * 0.18; sp += dp * 0.18; }
+            const yaw = sy, pitch = sp;
+            const key = (yaw * 180 / Math.PI).toFixed(1) + ':' + (pitch * 180 / Math.PI).toFixed(1);
             if (key !== lastKey) {
               lastKey = key;
               for (const g of faces) {

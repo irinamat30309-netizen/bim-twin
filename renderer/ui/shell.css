@@ -225,6 +225,10 @@ html.lx-side-closed .sidebar, html.lx-insp-closed .inspector { visibility: hidde
 .lx-face text { fill: var(--txt-2); font: 600 10px var(--font); text-anchor: middle; letter-spacing: .04em; pointer-events: none; transition: fill var(--t-fast); }
 .lx-face:hover polygon, .lx-face.active polygon { fill: var(--accent-soft); stroke: var(--accent); }
 .lx-face:hover text, .lx-face.active text { fill: var(--accent); }
+/* Ревизия 65: отклик на нажатие грани — короткое сжатие */
+.lx-face, .lx-chip { transform-box: fill-box; transform-origin: center; }
+.lx-face.lx-pick, .lx-chip.lx-pick { animation: lx-cube-pick 300ms var(--ease); }
+@keyframes lx-cube-pick { 0% { transform: scale(1); } 40% { transform: scale(.93); } 100% { transform: scale(1); } }
 .lx-chip rect { fill: var(--bg-2); stroke: var(--line-strong); stroke-width: 1; transition: fill var(--t-fast), stroke var(--t-fast); }
 .lx-chip text { font: 600 10px var(--font); text-anchor: middle; pointer-events: none; }
 .lx-chip-iso rect { stroke: var(--accent-line); }
