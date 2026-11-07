@@ -498,8 +498,41 @@
       $('btnBackRoom').style.display = '';
     } catch (e) { console.warn('model load', e); }
   }
+  // Ревизия 57: у проекта должна быть своя папка — облака, LAS, индексы и отчёты складываются в неё.
+  // Спрашиваем один раз за сеанс (и только если папки ещё нет), не мешая работе.
+  async function ensureProjectFolder() {
+    try {
+      if (!API || typeof API.projectStorage !== 'function') return null;
+      const ps = window.BimProjectState || {};
+      const pid = ps.projectId || null;
+      const key = 'bim.folderAsked:' + String(pid || 'none');
+      try { if (sessionStorage.getItem(key) === '1') return null; } catch (_) {}
+      const inf = await API.projectStorage(pid ? { action: 'info', projectId: pid } : { action: 'info' });
+      if (!inf || !inf.ok) return null;
+      if (inf.projectDir) return inf.projectDir;
+      const k = window.__lxKit;
+      let yes = true;
+      if (k && k.ask) {
+        try {
+          yes = await k.ask({
+            title: 'Папка проекта',
+            message: 'У проекта ещё нет своей папки: облака, LAS, индексы для быстрого открытия и отчёты сейчас сохраняются рядом с исходными файлами. Выберите папку один раз — дальше всё будет складываться в неё.',
+            okLabel: 'Выбрать папку', cancelLabel: 'Не сейчас'
+          });
+        } catch (_) { yes = false; }
+      }
+      try { sessionStorage.setItem(key, '1'); } catch (_) {}
+      if (!yes) return null;
+      const r = await API.projectStorage({ action: 'choose', projectId: pid, title: 'Где хранить проект (облака, LAS, кэш, отчёты)' });
+      if (r && r.ok && r.projectDir) { toast('Папка проекта: ' + r.projectDir); return r.projectDir; }
+      return null;
+    } catch (_) { return null; }
+  }
+  window.__bimEnsureProjectFolder = ensureProjectFolder;
   // Загрузка отложенного облака точек текущего помещения по требованию (кнопка «Открыть облако»).
   async function openPendingCloud() {
+    window.__bimImportSerial = (Number(window.__bimImportSerial) || 0) + 1;
+    await ensureProjectFolder();
     const room = current; const p = pendingCloudPath;
     if (!p) { const mi = $('modelInput'); if (mi) { toast('Нет сохранённого облака — выберите файл облака (LAS/LAZ/E57/PTX/PCD/PLY/PTS/XYZ/CSV)'); mi.click(); } else { toast('Для этого помещения нет сохранённого облака'); } return; }
     const btn = $('btnOpenCloud'); if (btn) btn.classList.add('on');
@@ -542,12 +575,22 @@
   };
   window.__bimOpenCloudPath = async function (p, opts) {
     if (!p || !API || typeof API.parseCloud !== 'function') return false;
+    // Ревизия 57: каждый явный импорт отменяет фоновое восстановление облака проекта (multicloud.js ждёт,
+    // пока номер не изменится), иначе старое облако проекта могло открыться поверх только что загруженного.
+    window.__bimImportSerial = (Number(window.__bimImportSerial) || 0) + 1;
     if (opts && opts.fresh) window.__bimDropCloudCache(p);
     try {
       const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop(), opts && opts.allPoints ? { allPoints: true } : {});
       if (!pr || !pr.ok) { if (!(pr && pr.cancelled)) toast((pr && pr.message) || 'Не удалось открыть облако'); return false; }
       if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: p }); cacheCloud(p, pr); }
       lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0;
+      // Ревизия 57: новое облако становится активным в проекте — при следующем открытии проекта поднимется оно,
+      // а не то, что лежало в проекте раньше.
+      try {
+        if (window.MultiCloud && typeof window.MultiCloud.syncFromViewer === 'function') {
+          window.MultiCloud.syncFromViewer(String(p).split(/[\\/]/).pop(), p);
+        }
+      } catch (_) {}
       toast('Облако открыто' + (lastCloudCount ? ': ' + Number(lastCloudCount).toLocaleString('ru-RU') + ' точек' : ''));
       return true;
     } catch (e) { console.warn('open cloud', e); toast('Ошибка открытия облака'); return false; }
@@ -584,6 +627,7 @@
   // Ревизия 19: «Папка сканера» — облако и траектория находятся в папке проекта сами
   window.__bimOpenScanFolder = async function () {
     if (!API || typeof API.pickScanFolder !== 'function') { toast('Открытие папки сканера доступно в десктоп-версии'); return false; }
+    await ensureProjectFolder();
     let r = null; try { r = await API.pickScanFolder(); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
     if (!r || !r.ok) { if (!(r && r.cancelled)) toast((r && r.message) || 'Не удалось открыть папку'); return false; }
     toast('Найдено облако ' + r.name + (r.trajectoryName ? ' и траектория ' + r.trajectoryName : ' (траектория не найдена — движущиеся объекты ищутся по времени точек)'));
@@ -631,6 +675,7 @@
   // Точки лидара переводятся в координаты проекта по траектории poses.csv и калибровкам из .xbin; результат — LAS рядом с .xbin.
   window.__bimXbinCloud = async function (p, info, lead) {
     if (!API || typeof API.xbinBuildCloud !== 'function') { toast('Облако из .xbin собирается в десктоп-версии'); return false; }
+    await ensureProjectFolder();
     if (!info) { try { info = await API.openXbin(p); } catch (e) { info = { ok: false, message: String((e && e.message) || e) }; } }
     if (!info || !info.ok) { toast((info && info.message) || 'Не удалось прочитать файл .xbin'); return false; }
     const x = info.xbin || {};

@@ -60,6 +60,7 @@
     if (!cloud || !cloud.path || typeof window === 'undefined') return;
     attempt = attempt || 0;
     var v = viewer(), api = window.bimAPI;
+    var importSerial = Number(window.__bimImportSerial) || 0;
     if (!v || !api || typeof api.parseCloud !== 'function') {
       if (attempt < 40) setTimeout(function () { openActiveProjectCloud(cloud, token, serial, attempt + 1); }, 100);
       return;
@@ -69,7 +70,11 @@
     // «Скан проекта не загружен», хотя то же облако затем нормально открывалось по частям.
     var stillCurrent = function () {
       var ps = window.BimProjectState;
-      return serial === _projectRestoreSerial && ps && token === String(ps.projectId || '') + ':' + String(ps.revision || 0);
+      // Ревизия 57: если пользователь успел загрузить своё облако (номер импорта изменился), восстановление проекта
+      // больше не применяется — иначе старое облако открывалось поверх нового.
+      return serial === _projectRestoreSerial && ps
+        && token === String(ps.projectId || '') + ':' + String(ps.revision || 0)
+        && (Number(window.__bimImportSerial) || 0) === importSerial;
     };
     var shownPath = function () { var r = v && v._cloudRecord; return r && r.sourceName ? String(r.sourceName) : ''; };
     var loader = typeof window.__bimLoadCloudForProject === 'function' ? window.__bimLoadCloudForProject : null;
