@@ -104,6 +104,6 @@ test('r26: связка — предел из окна в main, выборка �
   assert.match(v, /addEventListener\('webglcontextlost', \(e\) => this\._onGlLost\(e\)/);
   assert.match(v, /render\(\) \{ if \(this\._glLost\) return;/);
   assert.match(v, /sourceCount: Number\.isSafeInteger\(srcTotal\) \? srcTotal : null/);
-  assert.match(v, /gpuThinned:/); assert.match(ui, /info\.gpuThinned \?/);
+  assert.match(v, /gpuThinned:/); assert.match(ui, /предел видеокарты/);
   assert.doesNotMatch(read('renderer/lixel-cloud-ui.js') + gl, /[\u{1F300}-\u{1FAFF}]/u, 'без эмодзи');
 });

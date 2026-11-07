@@ -208,7 +208,7 @@
       const note = $('cpShareNote');
       if (note) {
         note.hidden = !part;
-        note.textContent = !part ? '' : 'Показана часть точек файла (' + info.loadedCount.toLocaleString('ru-RU') + ' из ' + info.sourceCount.toLocaleString('ru-RU') + '), выбранная равномерно по всему облаку: ' + (info.gpuThinned ? 'это предел показа для этой видеокарты. Все точки остаются в файле; чтобы показать их все, откройте файл заново и в окне «Перед загрузкой» выберите «Все точки» (там же есть кнопка «Вернуть полный предел», если предел был снижен после сброса изображения).' : 'всем точкам не хватило памяти. Закройте другие программы и откройте файл снова — тогда загрузятся все.');
+        note.textContent = !part ? '' : 'Показано ' + (info.loadedCount / 1e6).toFixed(1).replace('.', ',') + ' из ' + (info.sourceCount / 1e6).toFixed(1).replace('.', ',') + ' млн точек — предел видеокарты. «Показать все» поднимет его.';
       }
       const showAll = $('cpShowAll');
       if (showAll) {

@@ -198,5 +198,5 @@ test('интерфейс (ревизия 12): ни «Доли точек», ни
   assert.ok(!/'Доля точек файла'/.test(app) && !/applyPointShare/.test(app) && !/qDensity/.test(app) && !/setOctreeIdleLimit/.test(app));
   assert.ok(/id="qMove"/.test(html), 'доля точек только на время движения камеры остаётся');
   const ui = R_('renderer', 'lixel-cloud-ui.js');
-  assert.ok(/cpShareNote/.test(ui) && /Показана часть точек файла/.test(ui) && !/bim-preview-state/.test(ui));
+  assert.ok(/cpShareNote/.test(ui) && /Показано .* из .* млн точек/.test(ui) && !/bim-preview-state/.test(ui));
 });

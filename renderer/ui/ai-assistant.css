@@ -37,7 +37,7 @@
 .ai-typing i:nth-child(2) { animation-delay: .15s; } .ai-typing i:nth-child(3) { animation-delay: .3s; }
 .ai-empty { color: var(--txt-2); font-size: var(--fs-sm); line-height: 1.45; } .ai-empty p { margin: 0 0 10px; }
 .ai-sugg { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
-.ai-chip { padding: 5px 10px; border: 1px solid var(--line); border-radius: 14px; background: transparent; color: var(--txt); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
+.ai-chip { padding: 5px 10px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--txt); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
 .ai-chip:hover { border-color: var(--accent-line); background: var(--accent-soft); }
 .ai-form { display: flex; flex: none; align-items: flex-end; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
 .ai-form textarea { flex: 1 1 auto; min-height: 34px; max-height: 160px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-0); color: var(--txt); font: inherit; resize: none; outline: none; }

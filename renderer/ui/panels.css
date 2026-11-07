@@ -52,7 +52,7 @@ body.editing .row-actions { display: inline-flex; }
 .room.active::before { content: ""; position: absolute; top: 7px; bottom: 7px; left: 0; width: 2px; border-radius: 2px; background: var(--accent); }
 .room .rn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room.active .rn { font-weight: 600; }
-.rcount { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--err-soft); color: var(--err); font: 600 10.5px/18px var(--font); text-align: center; }
+.rcount { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 8px; background: var(--err-soft); color: var(--err); font: 600 10.5px/18px var(--font); text-align: center; }
 .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--txt-3); }
 .dot.err { background: var(--err); box-shadow: 0 0 0 3px var(--err-soft); }
 .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
