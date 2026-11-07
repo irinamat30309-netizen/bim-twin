@@ -28,6 +28,21 @@ function liteOpt(opt) {
 }
 async function refineParallel(src, dst, opt, onProgress) {
   opt = Object.assign({ noise: true, thin: true, color: true, tileMax: 4000000, halo: 0.2, thinCell: 0.04, planar: 0.06 }, opt || {});
+  // Ревизия 56: плитки под размер облака. Раньше облако до 4 млн точек всегда было одной плиткой — один поток, и
+  // чистовая не ускорялась. Если точек немного на поток, режем мельче (не меньше 0,6 млн на плитку), чтобы работали все
+  // ядра: на окне 120 с (3,08 млн) это 35,9 → 14,2 с. Качество то же: в 25 плотных кубах 1 м — столько же точек и та же
+  // толщина слоя (40,24 против 40,22 мм), отличие 409 точек из 3 млн (0,014 %) — только у границ плиток.
+  if (!opt._tileMaxFixed) {
+    try {
+      const fd = fs.openSync(src, 'r'), H = R.readHeader(fd); fs.closeSync(fd);
+      const cpu = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+      const threadsGuess = Math.max(2, Math.min(16, cpu - 1));
+      const n = H && H.n ? H.n : 0;
+      if (n > 1500000 && n / threadsGuess < opt.tileMax) {
+        opt.tileMax = Math.max(600000, Math.min(opt.tileMax, Math.ceil(n / (threadsGuess * 2))));
+      }
+    } catch (_) {}
+  }
   const prog = typeof onProgress === 'function' ? onProgress : () => {};
   const P = R.refine(src, dst, Object.assign({}, opt, { _prepareOnly: true }), prog);
   const { H, tiles, tmp, N, t0 } = P; let ofd = P.ofd; const workers = [];

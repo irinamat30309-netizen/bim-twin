@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const R = require('../scan-refine-core');
 const D = require('../dynamic-clean-core');
 const [src, dst, poses, o] = process.argv.slice(2);
-const opt = o ? JSON.parse(o) : {};
+// Опции: JSON-строкой или файлом (@путь.json) — из PowerShell кавычки в аргументах теряются
+const opt = !o ? {} : (o[0] === '@' ? JSON.parse(fs.readFileSync(o.slice(1), 'utf8')) : JSON.parse(o));
 let lastP = -1;
 const log = (f, l) => { const p = Math.floor(f * 20); if (p !== lastP) { lastP = p; process.stderr.write(`${l} ${Math.round(f * 100)}%\n`); } };
 if (poses && poses !== '-') {
