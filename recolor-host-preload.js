@@ -100,6 +100,9 @@
     const pool = []; for (let i = 0; i < poolSize; i++) pool.push(new FrameDecoder());
     let nextDec = 0;
     const hwOn = opt.hardwareDecode === true;
+    // ревизия 56: кадров в работе столько же, сколько декодеров (по умолчанию 3) — иначе декодеры простаивают.
+    // Замер: 3 кадра — 40,0 с, 5 кадров — 38,3 с, 8 кадров — 42,2 с (память и конкуренция за ядра).
+    if (opt.prefetch == null) opt.prefetch = Math.min(6, poolSize);
     const decode = (bytes, f) => { const d = pool[nextDec++ % pool.length]; return d.decode(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length), f.src || f, hwOn); };
     try {
       const XB = require(path.join(cfg.appDir, 'xbin-core.js')), RC = require(path.join(cfg.appDir, 'recolor-core.js'));

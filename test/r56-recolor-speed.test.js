@@ -18,6 +18,7 @@ test('r56: пул декодеров кадров — по числу ядер, 
   assert.match(p, /hardwareAcceleration: 'prefer-hardware'/, 'аппаратный декодер пробуется, когда включён');
   assert.match(p, /if \(!this\.hw\) throw e;/, 'при ошибке аппаратного — откат на программный');
   assert.match(p, /stats\.decodePool = poolSize/, 'в итог пишется размер пула');
+  assert.match(p, /if \(opt\.prefetch == null\) opt\.prefetch = Math\.min\(6, poolSize\)/, 'кадров впрок — по числу декодеров');
   assert.match(p, /stats\.hardwareDecode = hwOn && pool\.some\(d => d\.hw\)/, 'в итог пишется, был ли аппаратный');
 });
 
