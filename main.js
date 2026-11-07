@@ -647,6 +647,8 @@ function createWindow() {
     minWidth: 1024, minHeight: 680,   // окно нельзя уменьшить до поломки раскладки
     backgroundColor: '#1e2126',   // тёмный фон с первого кадра (без белой вспышки)
     darkTheme: true,              // тёмные системные меню/диалоги
+    // Ревизия 69: значок окна/панели задач — облако с точками (build/icon.png, есть и .ico для установщика)
+    ...(fs.existsSync(path.join(__dirname, 'build', 'icon.png')) ? { icon: path.join(__dirname, 'build', 'icon.png') } : {}),
     // Полностью своя рамка: на Win/Linux убираем системную (frame:false),
     // кнопки окна рисует тайтлбар приложения; на macOS — системные «светофоры».
     ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
