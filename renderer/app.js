@@ -2155,8 +2155,41 @@
         requestAnimationFrame(follow);
       };
       requestAnimationFrame(follow);
+      // Ревизия 66: подписи куба на языке интерфейса
+      const CUBE_LABELS = {
+        ru: { top: 'ВЕРХ', bottom: 'НИЗ', front: 'ФАС', back: 'ТЫЛ', right: 'ПРАВО', left: 'ЛЕВО', iso: 'ИЗО' },
+        en: { top: 'TOP', bottom: 'BOT', front: 'FRONT', back: 'BACK', right: 'RIGHT', left: 'LEFT', iso: 'ISO' },
+        uk: { top: 'ВЕРХ', bottom: 'НИЗ', front: 'ФАС', back: 'ТИЛ', right: 'ПРАВО', left: 'ЛІВО', iso: 'ІЗО' },
+        pl: { top: 'GÓRA', bottom: 'DÓŁ', front: 'PRZÓD', back: 'TYŁ', right: 'PRAWO', left: 'LEWO', iso: 'IZO' }
+      };
+      function applyCubeLang(lang) {
+        const L = CUBE_LABELS[lang] || CUBE_LABELS.ru;
+        for (const g of faces) {
+          const k = g.getAttribute('data-face'); const t = g.querySelector('text');
+          if (t && L[k]) t.textContent = L[k];
+        }
+        const iso = vc.querySelector('.lx-chip-iso text'); if (iso) iso.textContent = L.iso;
+      }
+      applyCubeLang(document.documentElement.getAttribute('lang') || (window.LxI18n && window.LxI18n.lang) || 'ru');
+      window.addEventListener('bim-language-change', function (e) { try { applyCubeLang((e && e.detail && e.detail.lang) || 'ru'); } catch (_) {} });
     }
     const ft = $('vtFit'); if (ft) ft.addEventListener('click', () => { if (viewer && viewer.resetView) viewer.resetView(); });
+    // Ревизия 66: светлый фон 3D для презентаций (запоминается между запусками)
+    const vpBtn = $('vtVpTheme');
+    function vpIsLight() { try { return localStorage.getItem('bim.vpLight') === '1'; } catch (_) { return false; } }
+    function paintVp() {
+      if (!vpBtn) return;
+      const light = vpIsLight();
+      vpBtn.setAttribute('aria-pressed', String(light));
+      const title = light ? 'Тёмный фон 3D' : 'Светлый фон 3D (для презентации)';
+      vpBtn.title = title; vpBtn.setAttribute('aria-label', title);
+      vpBtn.setAttribute('data-ico', light ? 'moon' : 'sun');
+      try { if (window.__lxIcons && window.__lxIcons.svg) vpBtn.innerHTML = window.__lxIcons.svg(light ? 'moon' : 'sun', 18); } catch (_) {}
+    }
+    function applyVp() { try { if (viewer && viewer.setTheme) viewer.setTheme(vpIsLight() ? 'light' : 'dark'); } catch (_) {} paintVp(); }
+    if (vpBtn) vpBtn.addEventListener('click', () => { try { localStorage.setItem('bim.vpLight', vpIsLight() ? '0' : '1'); } catch (_) {} applyVp(); });
+    applyVp();
+    window.addEventListener('bim-cloud-change', () => { try { if (vpIsLight() && viewer && viewer.setTheme) viewer.setTheme('light'); } catch (_) {} });
     const zi = $('vtZoomIn'); if (zi) zi.addEventListener('click', () => { if (viewer && viewer.zoomBy) viewer.zoomBy(0.82); });
     const zo = $('vtZoomOut'); if (zo) zo.addEventListener('click', () => { if (viewer && viewer.zoomBy) viewer.zoomBy(1.22); });
     // Патч 30: панель «Качество облака» — цвет RGB/высота, яркость, размер точки, плотность, EDL
