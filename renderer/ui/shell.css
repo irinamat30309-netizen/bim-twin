@@ -212,18 +212,19 @@ html.lx-side-closed .sidebar, html.lx-insp-closed .inspector { visibility: hidde
 .nav-sep { height: 1px; margin: 3px 5px; background: var(--line); }
 .viewcube { position: absolute; top: 10px; right: 10px; z-index: var(--z-stage); width: 128px; height: 132px; cursor: pointer; }
 .lx-viewcube-svg { display: block; width: 100%; height: 100%; overflow: visible; }
-/* Ревизия 63: грани с заливкой и мягкими углами, подписи крупнее, оси — чипами снизу */
-.lx-vface polygon { stroke: var(--line-strong); stroke-width: 1.5; stroke-linejoin: round; transition: fill var(--t-fast), stroke var(--t-fast); }
-.lx-vtop polygon { fill: var(--bg-3); }
-.lx-vfront polygon { fill: var(--bg-2); }
-.lx-vright polygon { fill: var(--bg-1); }
-.lx-vface text { fill: var(--txt-2); font: 600 10px var(--font); text-anchor: middle; letter-spacing: .04em; pointer-events: none; }
-.lx-vface:hover polygon, .lx-vface.active polygon { fill: var(--accent-soft); stroke: var(--accent); }
-.lx-vface:hover text, .lx-vface.active text { fill: var(--accent); }
-.lx-vcenter circle { fill: var(--bg-2); stroke: var(--accent); stroke-width: 1.5; transition: fill var(--t-fast); }
-.lx-vcenter text { fill: var(--accent); font: 600 7px var(--font); text-anchor: middle; letter-spacing: .06em; pointer-events: none; }
-.lx-vcenter:hover circle, .lx-vcenter.active circle { fill: var(--accent); }
-.lx-vcenter:hover text, .lx-vcenter.active text { fill: var(--on-accent); }
+@media (prefers-reduced-motion: reduce) { .lx-viewcube-svg { transition: none; } }
+/* Ревизия 64: грани куба проецируются в SVG по камере; заливка по граням, подписи крупные */
+.lx-cube3d { cursor: pointer; }
+.lx-face polygon { stroke: var(--line-strong); stroke-width: 1.4; stroke-linejoin: round; transition: fill var(--t-fast), stroke var(--t-fast); }
+.lx-face[data-face="top"] polygon { fill: var(--bg-3); }
+.lx-face[data-face="bottom"] polygon { fill: var(--bg-1); }
+.lx-face[data-face="front"] polygon { fill: var(--bg-2); }
+.lx-face[data-face="back"] polygon { fill: var(--bg-2); }
+.lx-face[data-face="right"] polygon { fill: var(--bg-1); }
+.lx-face[data-face="left"] polygon { fill: var(--bg-1); }
+.lx-face text { fill: var(--txt-2); font: 600 10px var(--font); text-anchor: middle; letter-spacing: .04em; pointer-events: none; transition: fill var(--t-fast); }
+.lx-face:hover polygon, .lx-face.active polygon { fill: var(--accent-soft); stroke: var(--accent); }
+.lx-face:hover text, .lx-face.active text { fill: var(--accent); }
 .lx-chip rect { fill: var(--bg-2); stroke: var(--line-strong); stroke-width: 1; transition: fill var(--t-fast), stroke var(--t-fast); }
 .lx-chip text { font: 600 10px var(--font); text-anchor: middle; pointer-events: none; }
 .lx-chip-iso rect { stroke: var(--accent-line); }

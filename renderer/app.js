@@ -2089,6 +2089,58 @@
       const setActive = b => { vc.querySelectorAll('.vc').forEach(x => x.classList.toggle('active', x === b)); };
       const iso0 = vc.querySelector('[data-view="iso"]'); if (iso0) setActive(iso0);
       vc.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (!b) return; setActive(b); if (viewer && viewer.setStandardView) viewer.setStandardView(b.getAttribute('data-view')); });
+      // Ревизия 64: куб — настоящий 3D: грани проецируются по положению камеры, плавно, без рывков
+      const svg = vc.querySelector('.lx-viewcube-svg') || vc;
+      const faces = Array.from(vc.querySelectorAll('.lx-face'));
+      const S = 30, CX = 64, CY = 50, K = 1.05;
+      const V = {};   // 8 вершин куба
+      for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) V[sx + ',' + sy + ',' + sz] = [sx * S, sy * S, sz * S];
+      const FACE = {
+        top: { n: [0, 1, 0], v: [[-1, 1, -1], [1, 1, -1], [1, 1, 1], [-1, 1, 1]] },
+        bottom: { n: [0, -1, 0], v: [[-1, -1, 1], [1, -1, 1], [1, -1, -1], [-1, -1, -1]] },
+        front: { n: [0, 0, 1], v: [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]] },
+        back: { n: [0, 0, -1], v: [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]] },
+        right: { n: [1, 0, 0], v: [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]] },
+        left: { n: [-1, 0, 0], v: [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]] }
+      };
+      function rot(p, yaw, pitch) {
+        const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+        const x1 = cy * p[0] - sy * p[2], z1 = sy * p[0] + cy * p[2];
+        const y2 = cp * p[1] - sp * z1, z2 = sp * p[1] + cp * z1;
+        return [x1, y2, z2];
+      }
+      let lastKey = '';
+      const follow = () => {
+        try {
+          const v = viewer;
+          if (v && typeof v.yaw === 'number' && typeof v.pitch === 'number') {
+            const yaw = v.yaw + Math.PI, pitch = v.pitch;
+            const key = (yaw * 180 / Math.PI).toFixed(0) + ':' + (pitch * 180 / Math.PI).toFixed(0);
+            if (key !== lastKey) {
+              lastKey = key;
+              for (const g of faces) {
+                const f = FACE[g.getAttribute('data-face')]; if (!f) continue;
+                const n = rot(f.n, yaw, pitch);
+                const vis = n[2] < -0.02;                        // нормаль смотрит на нас
+                if (!vis) { g.style.display = 'none'; continue; }
+                g.style.display = '';
+                const pts = f.v.map(q => { const r = rot(V[q.join()], yaw, pitch); return (CX - r[0] * K).toFixed(1) + ',' + (CY - r[1] * K).toFixed(1); }).join(' ');
+                const poly = g.querySelector('polygon'); if (poly) poly.setAttribute('points', pts);
+                const c = f.v.reduce((a, q) => { const r = rot(V[q.join()], yaw, pitch); return [a[0] + r[0] / 4, a[1] + r[1] / 4, a[2] + r[2] / 4]; }, [0, 0, 0]);
+                const t = g.querySelector('text');
+                if (t) {
+                  const faceOn = -n[2];
+                  t.style.display = faceOn < 0.42 ? 'none' : '';   // почти в профиль — подпись не читается, убираем
+                  t.setAttribute('x', (CX - c[0] * K).toFixed(1)); t.setAttribute('y', (CY - c[1] * K + 3.5).toFixed(1));
+                }
+                g.style.opacity = Math.min(1, Math.max(0.35, -n[2] * 1.6)).toFixed(2);
+              }
+            }
+          }
+        } catch (_) {}
+        requestAnimationFrame(follow);
+      };
+      requestAnimationFrame(follow);
     }
     const ft = $('vtFit'); if (ft) ft.addEventListener('click', () => { if (viewer && viewer.resetView) viewer.resetView(); });
     const zi = $('vtZoomIn'); if (zi) zi.addEventListener('click', () => { if (viewer && viewer.zoomBy) viewer.zoomBy(0.82); });
