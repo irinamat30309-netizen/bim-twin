@@ -11,6 +11,13 @@ if (!file) { console.error('укажите .las/.laz'); process.exit(2); }
 const outIfc = (process.argv[3] && !process.argv[3].startsWith('--')) ? process.argv[3] : null;
 const maxArg = (process.argv.find(a => a.startsWith('--max-points=')) || '').split('=')[1];
 const maxPts = Number(maxArg) || 1500000;
+// --range=4.8:7.6 — вручную задать этаж (пол:потолок), если автоопределение не видит уровней
+const rangeArg = (process.argv.find(a => a.startsWith('--range=')) || '').split('=')[1];
+let range = null;
+if (rangeArg) {
+  const [a, b] = rangeArg.split(':').map(Number);
+  if (isFinite(a) && isFinite(b) && b > a) range = { floorY: a, ceilY: b };
+}
 
 const t0 = Date.now();
 const cloud = L.parseCloudFile(file);
@@ -27,7 +34,7 @@ console.log(`точек: ${n}, в работе: ${pts.length}, чтение ${((
 
 const t1 = Date.now();
 const levels = S.detectStoreys(pts);
-const model = S.reconstruct(pts, { voxel: 0.05 });
+const model = S.reconstruct(pts, range ? { voxel: 0.05, range } : { voxel: 0.05 });
 console.log(`реконструкция ${((Date.now() - t1) / 1000).toFixed(1)} с, ok = ${model.ok}`);
 if (!model.ok) process.exit(1);
 

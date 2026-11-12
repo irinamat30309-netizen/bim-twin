@@ -1653,13 +1653,18 @@
     var pts = toPts(input, opts.colors);
     if (pts.length < 20) return { ok: false, error: 'Слишком мало точек для реконструкции', walls: [], slabs: [], storey: null };
     // v1251: многоэтажный скан — строим каждый этаж отдельно и объединяем (стены/помещения с номером этажа)
-    if (opts.detectStoreys !== false && !opts._singleStorey) {
+    if (opts.detectStoreys !== false && !opts._singleStorey && !opts.range) {
       var levels = detectStoreys(pts, opts);
       if (levels.length > 1) return reconstructStoreys(pts, opts, levels);
     }
     var vox = opts.voxel != null ? opts.voxel : 0.03;
     var pd = voxelDownsample(pts, vox);
     var lv = detectLevels(pd);
+    // v1257: пользователь может задать этаж вручную (для «слепых» фасадов и нестандартных сканов):
+    // opts.range = { floorY, ceilY } — доверяем ему больше, чем автоопределению
+    if (opts.range && isFinite(opts.range.floorY) && isFinite(opts.range.ceilY) && opts.range.ceilY - opts.range.floorY > 0.5) {
+      lv = { floorY: Number(opts.range.floorY), ceilY: Number(opts.range.ceilY), height: Number(opts.range.ceilY) - Number(opts.range.floorY), floorRms: 0, ceilRms: 0 };
+    }
     var h = lv.height > 0.3 ? lv.height : (lv.height || 3);
     var pad = Math.max(0.1, h * 0.2);
     var band = [];

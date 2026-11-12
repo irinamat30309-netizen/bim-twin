@@ -8,7 +8,7 @@
   'use strict';
   if (typeof window === 'undefined') return;
 
-  var state = { model: null, opts: { voxel: 0.03, wallThreshold: 0.05, minWallLen: 0.4, defaultThickness: 0.15, snapAngles: true, closeCorners: true }, previewOn: true };
+  var state = { model: null, opts: { voxel: 0.03, wallThreshold: 0.05, minWallLen: 0.4, defaultThickness: 0.15, snapAngles: true, closeCorners: true, floorYManual: 0, ceilYManual: 0 }, previewOn: true };
 
   function mainV() { try { if (window.__pcTools && window.__pcTools.viewer) return window.__pcTools.viewer(); } catch (e) {} return window.__viewer || null; }
   function toast(msg, err) { try { if (window.__toast) return window.__toast(msg, err ? 'error' : 'info'); } catch (e) {} console[err ? 'error' : 'log']('[scan2bim] ' + msg); }
@@ -70,7 +70,12 @@
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     setTimeout(function () {
       var model;
-      try { model = window.Scan2BIM.reconstruct(pts, state.opts); }
+      // v1257: этаж можно задать вручную (важно для фасадов и нестандартных сканов)
+      var opts = state.opts;
+      var fY = parseFloat(opts.floorYManual), cY = parseFloat(opts.ceilYManual);
+      if (isFinite(fY) && isFinite(cY) && cY - fY > 0.5) opts.range = { floorY: fY, ceilY: cY };
+      else delete opts.range;
+      try { model = window.Scan2BIM.reconstruct(pts, opts); }
       catch (e) { try { if (_stop) _stop(); } catch (e2) {} toast('Ошибка реконструкции: ' + (e && e.message || e), true); setStatus('Ошибка'); return; }
       var dt = ((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0);
       try { if (_stop) _stop(); } catch (e2) {}
@@ -158,6 +163,8 @@
     body.appendChild(numField('Толщина по умолч., м', 'defaultThickness'));
     body.appendChild(chkField('Выравнивать углы (90°)', 'snapAngles'));
     body.appendChild(chkField('Замыкать углы', 'closeCorners'));
+    body.appendChild(numField('Этаж: пол, м (0 — авто)', 'floorYManual', '0.1'));
+    body.appendChild(numField('Этаж: потолок, м (0 — авто)', 'ceilYManual', '0.1'));
 
     var bBuild = actBtn('Построить BIM', 'building', 'primary', build); bBuild.id = 'lxScan2BimBuildBtn';
     body.appendChild(bBuild);

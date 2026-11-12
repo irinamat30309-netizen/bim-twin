@@ -248,6 +248,27 @@ test('r74: фасад — уровни по полосам перекрытий,
   }
 });
 
+test('r74: ручной диапазон этажа (opts.range) — берётся ровно заданная полоса', () => {
+  const pts = twoStoreyCloud();
+  const m = S.reconstruct(pts, { voxel: 0.04, range: { floorY: 3, ceilY: 6 } });
+  assert.equal(m.ok, true, m.error);
+  assert.ok(!m.storeys || m.storeys.length <= 1, 'при ручном диапазоне этаж один');
+  assert.ok(Math.abs(m.storey.floorY - 3) <= 0.02, 'пол ' + m.storey.floorY);
+  assert.ok(Math.abs(m.storey.height - 3) <= 0.02, 'высота ' + m.storey.height);
+  assert.equal(m.walls.length, 5, 'стен на втором этаже: ' + m.walls.length);
+  assert.equal(m.stats.openingCount, 2, 'проёмов: ' + m.stats.openingCount);
+  const ifc = S.toIFC(m, { name: 'range.ifc' });
+  assert.equal((ifc.match(/=IFCBUILDINGSTOREY\(/g) || []).length, 1, 'один этаж в IFC');
+});
+
+test('r74: ручной диапазон этажа — поля в окне «Скан → BIM» и передача в движок', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'lixel-scan2bim-ui.js'), 'utf8');
+  assert.match(src, /Этаж: пол, м \(0 — авто\)/, 'поле «пол этажа»');
+  assert.match(src, /Этаж: потолок, м \(0 — авто\)/, 'поле «потолок этажа»');
+  assert.match(src, /opts\.range = \{ floorY: fY, ceilY: cY \}/, 'диапазон уходит в движок');
+  assert.match(src, /delete opts\.range/, 'пустые поля возвращают автоопределение');
+});
+
 test('r74: два этажа — уровни, стены и проёмы каждого этажа, IfcBuildingStorey на этаж', () => {
   const pts = twoStoreyCloud();
   const levels = S.detectStoreys(pts);
