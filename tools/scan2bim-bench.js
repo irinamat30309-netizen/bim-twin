@@ -290,6 +290,15 @@ function evaluate(sc, model) {
   }
   out.areaGt = sc.area; out.area = +model.stats.floorArea.toFixed(2);
   out.areaErrPct = sc.area == null ? null : +(100 * (model.stats.floorArea - sc.area) / sc.area).toFixed(2);
+  // перекрытия: пол и потолок, площадь плиты и отметка уровня
+  const slabs = model.slabs || [];
+  out.slabsGt = 2; out.slabs = slabs.length;
+  const floorSlab = slabs.find(s => s.type === 'floor');
+  if (floorSlab && sc.area) {
+    out.slabArea = +S.polyArea(floorSlab.polygon).toFixed(2);
+    out.slabAreaErrPct = +(100 * (out.slabArea - sc.area) / sc.area).toFixed(2);
+    out.slabLevel = +floorSlab.level.toFixed(3);
+  }
   out.heightGt = sc.H; out.height = +model.storey.height.toFixed(3); out.heightErr = +(model.storey.height - sc.H).toFixed(3);
   out.openingsGt = sc.walls.reduce((a, w) => a + (w.openings || []).length, 0);
   out.openings = model.stats.openingCount;
@@ -346,11 +355,13 @@ else {
     if (r.multi) {
       console.log(`этажей: ${r.storeys} (ждём ${r.storeysGt}), стен всего ${r.totalWalls} (ждём ${r.wallsGt})`);
       for (const e of r.errors) console.log(`  этаж ${e.storey}: пол ${e.floor} (эт. ${e.floorGt}), высота ${e.height} (эт. ${e.heightGt}), стен ${e.walls}/${e.wallsGt}, проёмов ${e.openings}/${e.openingsGt}`);
+      if (r.slabs != null) console.log(`плиты: ${r.slabs} (ждём ${r.slabsGt})`);
       continue;
     }
     console.log(`стен: ${r.walls} (ждём ${r.expectedWalls}), лишних: ${r.extraWalls}`);
     console.log(`площадь: ${r.area} м² (эталон ${r.areaGt}, ошибка ${r.areaErrPct} %), высота ${r.height} (${r.heightGt}), проёмы ${r.openings} (ждём ${r.openingsGt})`);
     console.log(`положение оси: медиана ${r.posMedian} м, максимум ${r.posMax} м; толщина: медиана ошибки ${r.thickMedian} м`);
+    if (r.slabs != null) console.log(`плиты: ${r.slabs} (ждём ${r.slabsGt})` + (r.slabArea != null ? `, площадь пола ${r.slabArea} м² (ошибка ${r.slabAreaErrPct} %), отметка ${r.slabLevel} м` : ''));
     if (r.columnsGt || r.columns) console.log(`колонны: ${r.columns} (ждём ${r.columnsGt})` + (r.columnErr ? `, смещение ${Math.max(...r.columnErr)} м` : ''));
     if (r.beamsGt || r.beams) console.log(`балки: ${r.beams} (ждём ${r.beamsGt})` + (r.beamLen != null ? `, длина ${r.beamLen} (эт. ${r.beamLenGt}), ширина ${r.beamWidth} (эт. ${r.beamWidthGt})` : ''));
     for (const e of r.errors) console.log('  ', e.missing ? `ПРОПУЩЕНА ${e.gt}` : `стена ${e.wall}: сдвиг ${e.posErr} м, угол ${e.angErr}°, толщина ${e.thick} (эт. ${e.thickGt}), длина ${e.len} (эт. ${e.lenGt}), проёмы ${e.openings}/${e.expectOpenings}` + (e.openingErr ? ` [смещение ${e.openingErr.midMax} м, ширина ±${e.openingErr.wMax} м, подоконник ±${e.openingErr.sillMax} м, перемычка ±${e.openingErr.headMax} м]` : ''));

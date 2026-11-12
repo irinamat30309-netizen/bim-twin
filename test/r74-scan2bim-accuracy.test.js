@@ -119,6 +119,18 @@ test('r74: IFC — окно и дверь заполняют проёмы (IfcRe
   }
 });
 
+test('r74: перекрытия — пол и потолок, площадь плиты и отметка уровня в допуске', () => {
+  assert.equal(model.slabs.length, 2, 'плит: ' + model.slabs.length);
+  const floor = model.slabs.find(s => s.type === 'floor');
+  const ceil = model.slabs.find(s => s.type === 'ceiling');
+  assert.ok(floor && ceil, 'нужны пол и потолок');
+  assert.ok(Math.abs(floor.level) <= 0.01, 'отметка пола ' + floor.level);
+  assert.ok(Math.abs(ceil.level - sc.H) <= 0.01, 'отметка потолка ' + ceil.level);
+  const gtArea = (8 + 0.24) * (6 + 0.24);
+  assert.ok(Math.abs(S.polyArea(floor.polygon) - gtArea) / gtArea <= 0.01, 'площадь плиты ' + S.polyArea(floor.polygon));
+  assert.ok(Math.abs(floor.thickness - 0.2) <= 0.01, 'толщина плиты ' + floor.thickness);
+});
+
 test('r74: помещения — три комнаты с площадями в допуске 5 %, в IFC как IfcSpace', () => {
   // квартира 12×6: две перегородки 0.1 с дверями → три помещения по ~ (12/3 - 0.1) × (6 - 0.28)
   const H = 2.7, T = 0.28, Ti = 0.1;
@@ -224,4 +236,12 @@ test('r74: два этажа — уровни, стены и проёмы каж
   assert.equal((ifc.match(/=IFCBUILDINGSTOREY\(/g) || []).length, 2, 'IfcBuildingStorey на этаж');
   assert.equal((ifc.match(/=IFCRELCONTAINEDINSPATIALSTRUCTURE\(/g) || []).length, 2, 'связь элементов по этажам');
   assert.equal((ifc.match(/=IFCWALLSTANDARDCASE\(/g) || []).length, 9, 'все стены в IFC');
+  // целостность STEP: все ссылки #N существуют, все строки закрыты «;»
+  const ids = new Set([...ifc.matchAll(/^#(\d+)=/gm)].map(m => '#' + m[1]));
+  assert.ok(ids.size > 100, 'сущностей в IFC: ' + ids.size);
+  const broken = [...ifc.matchAll(/#(\d+)/g)].map(m => '#' + m[1]).filter(r => !ids.has(r));
+  assert.deepEqual(broken.slice(0, 5), [], 'битые ссылки: ' + broken.slice(0, 5).join(','));
+  for (const line of ifc.split(/\r?\n/)) {
+    if (/^#\d+=/.test(line)) assert.ok(line.trimEnd().endsWith(';'), 'строка без «;»: ' + line.slice(0, 60));
+  }
 });
