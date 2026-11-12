@@ -557,7 +557,14 @@
       if (cnt[si * nZ + zi] < 60000) cnt[si * nZ + zi]++;
     }
     var occupied = new Uint8Array(nS * nZ);
-    for (var c = 0; c < nS * nZ; c++) occupied[c] = cnt[c] >= 2 ? 1 : 0;
+    // v1259: «занято» = плотность как у стены. Стекло и блики дают редкие точки (1–2 в ячейке),
+    // и раньше они «заращивали» окно: проём находился узкой щелью. Порог — половина медианной плотности.
+    var posCnt = [];
+    for (var cp = 0; cp < nS * nZ; cp++) if (cnt[cp] > 0) posCnt.push(cnt[cp]);
+    posCnt.sort(function (a, b) { return a - b; });
+    var medDens = posCnt.length ? posCnt[Math.floor(posCnt.length / 2)] : 2;
+    var occMin = Math.max(2, Math.min(12, Math.round(medDens * 0.5)));
+    for (var c = 0; c < nS * nZ; c++) occupied[c] = cnt[c] >= occMin ? 1 : 0;
     // по каждой позиции вдоль стены — самый высокий разрыв в профиле
     var holes = new Array(nS);
     for (var si2 = 0; si2 < nS; si2++) {
@@ -1081,6 +1088,81 @@
     w.thickness = Math.max(0.05, Math.min(0.5, thk));
     w.rms = newRms;
     refreshWall(w);
+  }
+
+  // v1259: проёмы длинной стены (фасад) по развёртке: сетка 5 см вдоль стены и по высоте,
+  // пустоты внутри стены = окна. Устойчиво к импостам и редким точкам стекла (они не «заращивают» проём).
+  function detectFacadeOpenings(w, pts, lv) {
+    if (!pts || pts.length < 400 || !(w.length >= 14)) return [];
+    var dir = norm2(w.dir), nrm = [-dir[1], dir[0]], a = w.a, L = w.length;
+    var base = lv && isFinite(lv.floorY) ? lv.floorY : (w.base || 0);
+    var top = lv && isFinite(lv.ceilY) ? lv.ceilY : (w.top || base + (w.height || 3));
+    var H = Math.max(1.2, top - base);
+    var half = Math.max(0.12, (w.thickness || 0.15) / 2 + 0.10);
+    var cell = 0.05;
+    var nS = Math.max(8, Math.ceil(L / cell)), nZ = Math.max(8, Math.ceil(H / cell));
+    var occ = new Uint8Array(nS * nZ);
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      if (p[1] < base - 0.1 || p[1] > top + 0.1) continue;
+      var px = p[0] - a[0], pz = p[2] - a[1];
+      var perp = px * nrm[0] + pz * nrm[1];
+      if (perp < -half || perp > half) continue;
+      var s = px * dir[0] + pz * dir[1];
+      if (s < 0 || s >= L) continue;
+      var z = p[1] - base;
+      if (z < 0 || z >= H) continue;
+      occ[Math.min(nZ - 1, (z / cell) | 0) * nS + Math.min(nS - 1, (s / cell) | 0)] = 1;
+    }
+    // расширяем занятость на 1 клетку (тонкие линии облака не должны давать щели)
+    var occ2 = new Uint8Array(nS * nZ);
+    for (var z2 = 0; z2 < nZ; z2++) for (var s2 = 0; s2 < nS; s2++) {
+      if (!occ[z2 * nS + s2]) continue;
+      for (var dz = -1; dz <= 1; dz++) for (var ds = -1; ds <= 1; ds++) {
+        var nz = z2 + dz, ns = s2 + ds;
+        if (nz >= 0 && ns >= 0 && nz < nZ && ns < nS) occ2[nz * nS + ns] = 1;
+      }
+    }
+    // пустоты, не касающиеся границ
+    var seen = new Uint8Array(nS * nZ), out = [], stack = new Int32Array(nS * nZ);
+    for (var idx = 0; idx < nS * nZ; idx++) {
+      if (occ2[idx] || seen[idx]) continue;
+      var sp = 0; stack[sp++] = idx; seen[idx] = 1;
+      var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, touch = false, cntCell = 0;
+      while (sp) {
+        var c = stack[--sp]; cntCell++;
+        var cx = c % nS, cy = (c / nS) | 0;
+        if (cx === 0 || cy === 0 || cx === nS - 1 || cy === nZ - 1) touch = true;
+        if (cx < x0) x0 = cx; if (cx > x1) x1 = cx; if (cy < y0) y0 = cy; if (cy > y1) y1 = cy;
+        var nb = [c - 1, c + 1, c - nS, c + nS];
+        for (var k = 0; k < 4; k++) {
+          var id = nb[k];
+          if (id < 0 || id >= nS * nZ || seen[id] || occ2[id]) continue;
+          if (k === 0 && cx === 0) continue; if (k === 1 && cx === nS - 1) continue;
+          seen[id] = 1; stack[sp++] = id;
+        }
+      }
+      if (touch || cntCell < 40) continue;
+      var wd = (x1 - x0 + 1) * cell, ht = (y1 - y0 + 1) * cell;
+      if (wd < 0.5 || ht < 0.45 || wd > 8 || ht > 4) continue;
+      if (wd * ht < 0.35) continue;
+      out.push({ along: x0 * cell, width: wd, sill: y0 * cell, head: Math.min(H - 0.05, (y1 + 1) * cell), kind: y0 * cell <= 0.35 ? 'door' : 'window', uncertain: false });
+    }
+    // склейка импостов: зазор ≤0.6 м при совпадающей высоте
+    out.sort(function (p1, p2) { return p1.along - p2.along; });
+    for (var m = 0; m + 1 < out.length;) {
+      var A = out[m], B = out[m + 1];
+      var gap = B.along - (A.along + A.width);
+      if (gap <= 0.4 && gap >= -0.05 && Math.abs((A.sill || 0) - (B.sill || 0)) <= 0.35 && Math.abs((A.head || 0) - (B.head || 0)) <= 0.35) {
+        A.width = B.along + B.width - A.along;
+        A.sill = Math.min(A.sill || 0, B.sill || 0);
+        A.head = Math.max(A.head || 0, B.head || 0);
+        out.splice(m + 1, 1);
+        continue;
+      }
+      m++;
+    }
+    return out;
   }
 
   function detectWallOpenings(w, band, thr) {
@@ -1755,8 +1837,13 @@
       for (var wi = 0; wi < walls.length; wi++) {
         refineWallThickness(walls[wi], nearWall[wi], lv, walls);
         refineWallFit(walls[wi], nearWall[wi], lv);
-        detectWallOpenings3d(walls[wi], nearWall[wi], thr, lv);
-        if (!walls[wi].openings.length) detectWallOpenings(walls[wi], doorBand, thr);
+        // v1259: длинные стены (фасады) — проёмы по развёртке, короткие — по вертикальному профилю
+        var faceOps = detectFacadeOpenings(walls[wi], nearWall[wi], lv);
+        if (faceOps.length) { walls[wi].openings = faceOps; }
+        else {
+          detectWallOpenings3d(walls[wi], nearWall[wi], thr, lv);
+          if (!walls[wi].openings.length) detectWallOpenings(walls[wi], doorBand, thr);
+        }
         walls[wi].openings = (walls[wi].openings || []); openingCount += walls[wi].openings.length;
       }
     }
