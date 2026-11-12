@@ -34,7 +34,7 @@ test('r50: «соль» на стене исчезает, провод и шов
   const before = err(W, i => W.K[i] === 1);
   assert.ok(before > 0.95, 'соль до: ' + before);
   const ch = CG.degrain(W.X, W.C, W.n, null, {});
-  assert.ok(ch > W.n * 0.5, 'изменено: ' + ch);
+  assert.ok(ch > W.n * 0.2, 'изменено: ' + ch);
   const after = err(W, i => W.K[i] === 1), all = err(W, () => true);
   assert.ok(after < 0.03, 'соль после: ' + after);
   assert.ok(all < 0.03, 'всего с ошибкой > 30: ' + all);
@@ -96,7 +96,7 @@ test('r50: чистовая обработка — зерно убрано, пу
     const o = { tmpDir: dir, noiseLevel: 'strong', tileMax: 30000, align: false, colorBalance: false };
     const sa = await RP.refineParallel(src, a, Object.assign({ threads: 1 }, o)), sb = await RP.refineParallel(src, b, Object.assign({ threads: 3 }, o));
     assert.ok(Buffer.compare(fs.readFileSync(a), fs.readFileSync(b)) === 0, 'LAS одного потока и пула различаются');
-    assert.ok(sa.degrain > 50000 && sb.degrain === sa.degrain, 'degrain: ' + sa.degrain + ' / ' + sb.degrain);
+    assert.ok(sa.degrain > 5000 && sb.degrain === sa.degrain, 'degrain: ' + sa.degrain + ' / ' + sb.degrain);
     const sc = await RP.refineParallel(src, c, Object.assign({ threads: 2, degrain: false }, o));
     assert.strictEqual(sc.degrain, 0);
     const dOn = darkShare(a), dOff = darkShare(c), d0 = darkShare(src);

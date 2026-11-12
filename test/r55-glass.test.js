@@ -38,7 +38,7 @@ test('r55: тонкая плёнка за стеклом убирается, с�
   assert.ok(rm > 5000, 'снято всего: ' + rm);
 });
 
-test('r55: «слой за стеклом» — опция, по умолчанию выключен, и доходит до обработки', () => {
+test('r55: «слой за стеклом» — включён по умолчанию и доходит до обработки', () => {
   const core = read('scan-refine-core.js');
   assert.match(core, /if \(opt\.glass\) \{ const before/, 'вызов в processTile по опции');
   assert.match(core, /function fixGlass\(X, n, alive, o\)/, 'функция есть');
@@ -46,7 +46,7 @@ test('r55: «слой за стеклом» — опция, по умолчан�
   assert.match(read('scan-refine-parallel.js'), /'glass'/, 'пул плиток передаёт опцию');
   assert.match(read('main.js'), /icicles: a\.icicles === true, glass: a\.glass === true/, 'main передаёт обе опции');
   const ui = read('renderer/lixel-tools-ext.js');
-  assert.match(ui, /key: 'glass', label: 'Убрать слой за стеклом \(опытное\)'/, 'галочка в окне');
+  assert.match(ui, /key: 'glass', label: 'Убрать слой за стеклом \(отражения в окнах\)', type: 'checkbox', value: true/, 'галочка в окне, включена по умолчанию');
   assert.match(ui, /key: 'icicles', label: 'Убрать «сосульки» под кромками навесов и окон'/, 'вторая галочка');
   assert.match(ui, /icicles: !!values\.icicles, glass: !!values\.glass/, 'выбор окна уходит в обработку');
 });

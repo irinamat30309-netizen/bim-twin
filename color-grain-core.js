@@ -74,7 +74,7 @@ function trimmed(idx, a0, a1, W, w, vr, vg, vb, out) {
 function degrain(X, RGB, n, alive, o) {
   o = o || {};
   const r = o.radius > 0 ? o.radius : 0.025, r2 = r * r, sg2 = 2 * Math.pow(o.sigma > 0 ? o.sigma : r / 2, 2);
-  const T = o.T != null ? o.T : 8, keep = o.keep != null ? Math.max(0, Math.min(1, o.keep)) : 0.3, minW = o.minW != null ? o.minW : 2;
+  const T = o.T != null ? o.T : 14, keep = o.keep != null ? Math.max(0, Math.min(1, o.keep)) : 0.85, minW = o.minW != null ? o.minW : 2;
   const tau = o.tau > 0 ? o.tau : 25, s0 = o.s0 != null ? o.s0 : 0.12, s1 = o.s1 != null ? o.s1 : 0.3;
   const MAXC = Math.max(8, Math.min(128, o.maxNb > 0 ? Math.floor(o.maxNb) : 32));
   const G = grid(X, n, alive, r), { H, start, ord, S } = G;
