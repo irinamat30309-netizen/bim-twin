@@ -36,6 +36,25 @@ function cloud(sc, step = 0.02, noise = 0.004) {
     }
   }
   for (let x = 0; x <= W; x += 0.1) for (let z = 0; z <= D; z += 0.1) { pts.push([x, 0, z]); pts.push([x, sc.H, z]); }
+  if (sc.column) {
+    const c = sc.column, half = c.size / 2;
+    for (let y = 0.05; y < sc.H - 0.05; y += 0.05) for (let o = -half; o <= half; o += 0.05) {
+      pts.push([c.x + o, y, c.z - half], [c.x + o, y, c.z + half], [c.x - half, y, c.z + o], [c.x + half, y, c.z + o]);
+    }
+  }
+  if (sc.beam) {
+    const b = sc.beam, y0 = sc.H - b.h;
+    for (let x = b.x0; x <= b.x1; x += 0.05) for (let zo = -b.w / 2; zo <= b.w / 2; zo += 0.05) pts.push([x, y0, b.z + zo], [x, sc.H, b.z + zo]);
+    for (let x = b.x0; x <= b.x1; x += 0.05) for (let y = y0; y <= sc.H; y += 0.05) pts.push([x, y, b.z - b.w / 2], [x, y, b.z + b.w / 2]);
+  }
+  if (sc.furniture) {
+    for (const f of sc.furniture) {
+      for (let x = f.x0; x <= f.x1; x += 0.06) for (let z = f.z0; z <= f.z1; z += 0.06) for (let y = f.y0; y <= f.y1; y += 0.06) {
+        const edge = x <= f.x0 + 0.06 || x >= f.x1 - 0.06 || z <= f.z0 + 0.06 || z >= f.z1 - 0.06 || y >= f.y1 - 0.06;
+        if (edge) pts.push([x, y, z]);
+      }
+    }
+  }
   return pts;
 }
 
@@ -125,4 +144,29 @@ test('r74: помещения — три комнаты с площадями в
   const ifc = S.toIFC(m3, { name: 'rooms.ifc' });
   assert.equal((ifc.match(/=IFCSPACE\(/g) || []).length, 3, 'IfcSpace в IFC');
   assert.equal((ifc.match(/=IFCRELAGGREGATES\(/g) || []).length, 4, 'этаж + помещения');
+});
+
+test('r74: колонна и балка находятся и экспортируются в IFC', () => {
+  const sc2 = scene();
+  sc2.column = { x: 6.0, z: 4.0, size: 0.4 };
+  sc2.beam = { x0: 3.0, x1: 7.6, z: 2.0, w: 0.3, h: 0.12 };
+  const m = S.reconstruct(cloud(sc2, 0.03, 0.004), { voxel: 0.04 });
+  assert.equal(m.ok, true, m.error);
+  const cols = m.objects.filter(o => o.kind === 'column');
+  assert.equal(cols.length, 1, 'колонн: ' + cols.length);
+  assert.ok(Math.abs(cols[0].cx - 6.0) <= 0.05 && Math.abs(cols[0].cz - 4.0) <= 0.05, `центр колонны ${cols[0].cx},${cols[0].cz}`);
+  assert.equal(m.beams.length, 1, 'балок: ' + m.beams.length);
+  assert.ok(Math.abs(m.beams[0].length - 4.6) <= 0.15, 'длина балки ' + m.beams[0].length);
+  const ifc = S.toIFC(m, { name: 'struct.ifc' });
+  assert.equal((ifc.match(/=IFCCOLUMN\(/g) || []).length, 1, 'IfcColumn');
+  assert.equal((ifc.match(/=IFCBEAM\(/g) || []).length, 1, 'IfcBeam');
+});
+
+test('r74: высокая мебель у стены не становится стеной', () => {
+  const sc3 = scene();
+  sc3.furniture = [{ x0: 0.15, x1: 0.75, z0: 3.0, z1: 4.6, y0: 0, y1: 2.0 }];
+  const m = S.reconstruct(cloud(sc3, 0.03, 0.004), { voxel: 0.04 });
+  assert.equal(m.ok, true, m.error);
+  assert.equal(m.walls.length, 5, 'стен: ' + m.walls.length);
+  assert.ok(m.objects.some(o => o.kind === 'equipment'), 'шкаф должен попасть в объекты');
 });

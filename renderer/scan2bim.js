@@ -245,8 +245,15 @@
 
   function snapWallAngles(walls) {
     if (!walls.length) return;
-    // доминантный угол (по самой длинной стене), выравнивание к 0/90° относительно него
-    var base = walls.slice().sort(function (a, b) { return b.length - a.length; })[0].angleDeg * Math.PI / 180;
+    // v1249: базовый угол — взвешенное круговое среднее по всем стенам (mod 90°), а не угол одной самой длинной:
+    // у одной стены ошибка подгонки 0.1–0.2°, и она разворачивала весь этаж (на 12 м это 1.7 см на концах).
+    var sx = 0, sy = 0, wsum = 0;
+    for (var q = 0; q < walls.length; q++) {
+      var aq = walls[q].angleDeg * Math.PI / 180, wq = Math.max(0.3, walls[q].length || 0.3);
+      sx += Math.cos(4 * aq) * wq; sy += Math.sin(4 * aq) * wq; wsum += wq;
+    }
+    var base = Math.atan2(sy, sx) / 4;
+    if (!isFinite(base) || wsum <= 0) base = walls.slice().sort(function (a, b) { return b.length - a.length; })[0].angleDeg * Math.PI / 180;
     for (var i = 0; i < walls.length; i++) {
       var w = walls[i], ang = w.angleDeg * Math.PI / 180;
       var rel = ang - base, k = Math.round(rel / (Math.PI / 2)), snapped = base + k * Math.PI / 2;
@@ -503,47 +510,56 @@
       return false;
     }
     var offs = [];
-    for (var i = 0; i < pts.length; i++) {
-      if (pts[i][1] < yLo || pts[i][1] > yHi) continue;               // пол и потолок не считаем гранями стены
-      var px = pts[i][0] - a[0], pz = pts[i][2] - a[1];
-      var perp = px * nrm[0] + pz * nrm[1];
-      if (perp < -0.45 || perp > 0.45) continue;
-      var s = px * dir[0] + pz * dir[1];
-      if (s < 0.3 || s > L - 0.3) continue;
-      if (nearOther(pts[i][0], pts[i][2])) continue;
-      offs.push(perp);
+    for (var i1 = 0; i1 < pts.length; i1++) {
+      if (pts[i1][1] < yLo || pts[i1][1] > yHi) continue;
+      var px1 = pts[i1][0] - a[0], pz1 = pts[i1][2] - a[1];
+      var p1 = px1 * nrm[0] + pz1 * nrm[1];
+      if (p1 < -0.45 || p1 > 0.45) continue;
+      var s1 = px1 * dir[0] + pz1 * dir[1];
+      if (s1 < 0.3 || s1 > L - 0.3) continue;
+      if (nearOther(pts[i1][0], pts[i1][2])) continue;
+      offs.push(p1);
     }
     if (offs.length < 60) return;
-    // две моды распределения = две грани; толщина = расстояние между ними, ось = середина
-    var bin = 0.02, hist = Object.create(null), best1 = null, best2 = null;
-    for (var k = 0; k < offs.length; k++) {
-      var b = Math.round(offs[k] / bin) * bin, key = b.toFixed(2);
-      hist[key] = (hist[key] || 0) + 1;
+    // v1250: по каждому участку вдоль стены ищем ДВЕ грани (два кластера смещений). Участки, где кластеров
+    // больше двух (шкаф, подоконник, откос), пропускаем; ось и толщина — медиана по «чистым» участкам.
+    var centers = [], widths = [], binStep = 0.25, nb2 = Math.max(2, Math.ceil(L / binStep));
+    for (var b2 = 0; b2 < nb2; b2++) {
+      var lo2 = b2 * binStep, hi2 = lo2 + binStep, seg = [];
+      for (var q3 = 0; q3 < pts.length; q3++) {
+        if (pts[q3][1] < yLo || pts[q3][1] > yHi) continue;
+        var px3 = pts[q3][0] - a[0], pz3 = pts[q3][2] - a[1];
+        var s3 = px3 * dir[0] + pz3 * dir[1];
+        if (s3 < lo2 || s3 >= hi2) continue;
+        var p3 = px3 * nrm[0] + pz3 * nrm[1];
+        if (p3 < -0.45 || p3 > 0.45) continue;
+        seg.push(p3);
+      }
+      if (seg.length < 30) continue;
+      seg.sort(function (x, y) { return x - y; });
+      // разрезы там, где между соседними точками разрыв больше 4 см
+      var groups = [[seg[0]]];
+      for (var g2 = 1; g2 < seg.length; g2++) {
+        if (seg[g2] - seg[g2 - 1] > 0.04) groups.push([seg[g2]]);
+        else groups[groups.length - 1].push(seg[g2]);
+      }
+      var big = groups.filter(function (gr) { return gr.length >= seg.length * 0.12; });
+      if (big.length !== 2) continue;
+      var m1 = big[0].reduce(function (x, y) { return x + y; }, 0) / big[0].length;
+      var m2 = big[1].reduce(function (x, y) { return x + y; }, 0) / big[1].length;
+      var wdt = Math.abs(m2 - m1);
+      if (!(wdt > 0.035 && wdt < 0.55)) continue;
+      centers.push((m1 + m2) / 2); widths.push(wdt);
     }
-    var keys = Object.keys(hist).map(Number).sort(function (x, y) { return x - y; });
-    for (var q = 0; q < keys.length; q++) {
-      if (!best1 || hist[keys[q].toFixed(2)] > hist[best1.toFixed(2)]) best1 = keys[q];
-    }
-    if (best1 == null) return;
-    for (var q2 = 0; q2 < keys.length; q2++) {
-      if (Math.abs(keys[q2] - best1) < 0.06) continue;
-      if (!best2 || hist[keys[q2].toFixed(2)] > hist[best2.toFixed(2)]) best2 = keys[q2];
-    }
-    var thk, mid;
-    if (best2 != null && Math.abs(best2 - best1) > 0.05 && Math.abs(best2 - best1) < 0.5) {
-      thk = Math.abs(best2 - best1); mid = (best1 + best2) / 2;
-    } else {
-      var sortedOff = offs.slice().sort(function (x, y) { return x - y; });
-      var p5 = sortedOff[Math.floor(sortedOff.length * 0.05)], p95 = sortedOff[Math.floor(sortedOff.length * 0.95)];
-      thk = p95 - p5; mid = (p5 + p95) / 2;
-    }
+    if (!centers.length) return;
+    centers.sort(function (x, y) { return x - y; }); widths.sort(function (x, y) { return x - y; });
+    var mid = centers[Math.floor(centers.length / 2)], thk = widths[Math.floor(widths.length / 2)];
     if (!(thk > 0.035 && thk < 0.55)) return;
     if (Math.abs(mid) > 0.12) return;                                  // ось уехала — доверяем прежней
-    // у двусторонней стены уже есть измеренная пара граней: моды могут «слипнуться» на шумной толстой стене,
-    // поэтому принимаем модовую оценку только если она близка к парной
-    if (w.faces === 2 && Math.abs(thk - (w.thickness || 0)) > 0.06) return;
+    // у двусторонней стены парная оценка толщины уже есть — принимаем уточнение, только если оно близко
+    if (w.faces === 2 && Math.abs(thk - (w.thickness || 0)) > 0.05) return;
     // для двусторонней стены распределение симметрично: толщина не меняется, ось почти не двигается
-    if (w.faces === 2 && Math.abs(thk - (w.thickness || 0)) < 0.02 && Math.abs(mid) < 0.015) return;
+    if (w.faces === 2 && Math.abs(thk - (w.thickness || 0)) < 0.02 && Math.abs(mid) < 0.005) return;
     w.a = [w.a[0] + nrm[0] * mid, w.a[1] + nrm[1] * mid];
     w.b = [w.b[0] + nrm[0] * mid, w.b[1] + nrm[1] * mid];
     w.thickness = Math.max(0.05, Math.min(0.5, thk));
@@ -573,6 +589,11 @@
           if (d < bestD) { bestD = d; best = o; }
         }
         if (!best) continue;
+        // v1246: если соседняя стена тоже КОНЧАЕТСЯ в этом узле (угол), обе уже сведены по осям —
+        // режем только Т-стык, где сосед проходит дальше и его тело накрывает наш торец.
+        var dA = Math.hypot(best.a[0] - end[0], best.a[1] - end[1]);
+        var dB = Math.hypot(best.b[0] - end[0], best.b[1] - end[1]);
+        if (Math.min(dA, dB) < 0.3) continue;                          // угол, не Т-стык
         var cut = Math.max(0.03, Math.min(0.3, (best.thickness || 0.15) / 2));
         var L = Math.hypot(other[0] - end[0], other[1] - end[1]);
         if (L - cut < 0.3) continue;
@@ -749,6 +770,47 @@
       out.push([l1.px + l1.dx * t, l1.pz + l1.dz * t]);
     }
     return out;
+  }
+
+  // v1248: высокая мебель (шкаф 2 м) даёт плотную вертикальную плоскость и попадает в стены.
+  // Настоящая стена доходит до потолка: если опора стены кончается ниже потолка на 0.45 м и она короче 3 м —
+  // это мебель: убираем из стен и отдаём в объекты.
+  function filterFurnitureWalls(walls, nearPts, lv, extraObjects, o) {
+    if (!walls || !walls.length || !lv) return walls;
+    var ceilY = lv.ceilY, floorY = lv.floorY, keep = [];
+    for (var i = 0; i < walls.length; i++) {
+      var w = walls[i], pts = nearPts && nearPts[i] ? nearPts[i] : null;
+      if (!pts || pts.length < 40) { keep.push(w); continue; }
+      var top = -Infinity, yHiOk = ceilY - 0.25, yLoOk = floorY + 0.10;
+      var vpts = [];
+      for (var k = 0; k < pts.length; k++) {
+        var py = pts[k][1];
+        if (py < yLoOk || py > yHiOk) continue;      // пол и потолок не считаем опорой стены по высоте
+        vpts.push(pts[k]);
+        if (py > top) top = py;
+      }
+      if (vpts.length < 40) { keep.push(w); continue; }
+      var short = w.length < 3.0;
+      if (short && top < ceilY - Math.max(0.45, (ceilY - floorY) * 0.18)) {
+        var minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity, minz = Infinity, maxz = -Infinity;
+        for (var j = 0; j < vpts.length; j++) {
+          var p = vpts[j];
+          if (p[0] < minx) minx = p[0]; if (p[0] > maxx) maxx = p[0];
+          if (p[1] < miny) miny = p[1]; if (p[1] > maxy) maxy = p[1];
+          if (p[2] < minz) minz = p[2]; if (p[2] > maxz) maxz = p[2];
+        }
+        if (extraObjects && maxx - minx > 0.2 && maxz - minz > 0.2) {
+          extraObjects.push({
+            cx: (minx + maxx) / 2, cy: (miny + maxy) / 2, cz: (minz + maxz) / 2,
+            hx: Math.max((maxx - minx) / 2, 0.02), hy: Math.max((maxy - miny) / 2, 0.02), hz: Math.max((maxz - minz) / 2, 0.02),
+            points: pts.length, kind: 'equipment'
+          });
+        }
+        continue;
+      }
+      keep.push(w);
+    }
+    return keep;
   }
 
   function detectWallOpenings(w, band, thr) {
@@ -1085,10 +1147,29 @@
     if (o.detectObjects === false) return [];
     var floorY = lv.floorY, ceilY = lv.ceilY, h = (ceilY - floorY) || 3;
     var lo = floorY + Math.max(0.06, h * 0.03), hi = ceilY - Math.max(0.1, h * 0.06);
+    // v1247: точки балок не должны попадать в кластеры объектов — иначе колонна, касающаяся балки,
+    // сливается с ней в вытянутый кластер и отбрасывается как «недостроенная стена».
+    var beams = o.beams || [];
+    function inBeam(p) {
+      for (var bi = 0; bi < beams.length; bi++) {
+        var b = beams[bi];
+        if (!b || !b.a || !b.b) continue;
+        var bd = norm2([b.b[0] - b.a[0], b.b[1] - b.a[1]]), bn = [-bd[1], bd[0]];
+        var px = p[0] - b.a[0], pz = p[2] - b.a[1];
+        var along = px * bd[0] + pz * bd[1];
+        if (along < -0.1 || along > (b.length || 1e9) + 0.1) continue;
+        var perp = px * bn[0] + pz * bn[1];
+        if (Math.abs(perp) > (b.width || 0.3) / 2 + 0.08) continue;
+        if (Math.abs(p[1] - (b.y || ceilY)) > (b.depth || 0.2) / 2 + 0.10) continue;
+        return true;
+      }
+      return false;
+    }
     var res = [];
     for (var i = 0; i < pd.length; i++) {
       var p = pd[i], y = p[1]; if (y < lo || y > hi) continue;
       if (nearAnyWall(p[0], p[2], walls, 0.15)) continue;
+      if (beams.length && inBeam(p)) continue;
       res.push(p);
     }
     if (res.length < 40) return [];
@@ -1349,10 +1430,12 @@
     var ev = wallEvidence(pd, lv, { voxel: vox });
     var wallInput = ev.cells.length >= 8 ? ev.cells : band;
     var thr = opts.wallThreshold != null ? opts.wallThreshold : Math.max(0.03, ev.cell * 1.2);
-    var minLen = opts.minWallLen != null ? opts.minWallLen : 0.4;
+    var minLen = opts.minWallLen != null ? opts.minWallLen : 0.55;
     var lines = detectLines(wallInput, {
-      threshold: thr, iters: opts.iters || 600, minLen: minLen,
-      minInliers: opts.minInliers || Math.max(5, Math.floor(wallInput.length * 0.02)),
+      threshold: thr, iters: opts.iters || 900, minLen: minLen,
+      // v1246: порог опоры 0.8 % (было 2 %) — иначе короткие стены с дверью (осталось 1.1–1.9 м)
+      // не набирали голосов и пропадали: в Г-образной сцене терялась стена у нишы.
+      minInliers: opts.minInliers || Math.max(6, Math.floor(wallInput.length * 0.008)),
       maxWalls: opts.maxWalls || 80, seed: opts.seed || 12345
     });
     var walls = buildWalls(lines, {
@@ -1388,6 +1471,12 @@
     }
     // v1178: materialy sten (kirpich/metall/beton) po RGB
     classifyMaterial(walls, pd, lv);
+    // v1248: высокая мебель не должна считаться стеной
+    var furnitureObjects = [];
+    try {
+      if (!nearWall) nearWall = collectNearWallPoints(pd, walls, Math.max(0.25, (opts.maxThickness || 0.6) * 0.55 + 0.12));
+      walls = filterFurnitureWalls(walls, nearWall, lv, furnitureObjects, opts);
+    } catch (e) { furnitureObjects = []; }
     // v1245: помещения (связные области пола между стенами)
     var rooms = [];
     if (opts.detectRooms !== false) {
@@ -1395,17 +1484,18 @@
     }
     var slabThk = opts.slabThickness != null ? opts.slabThickness : 0.2;
     var area = polyArea(hull);
+    // v1161: балки под потолком — считаем ДО объектов, чтобы их точки не склеивали колонну в «стену»
+    var beams = detectBeams(pd, lv, walls, {
+      voxel: vox, seed: opts.seed || 12345, detectBeams: opts.detectBeams, maxBeams: opts.maxBeams, pipes: pipes
+    });
     // v1160: внутренние объекты (оборудование/колонны) → bbox-прокси
     var objects = detectObjects(pd, lv, walls, {
-      voxel: vox, detectObjects: opts.detectObjects, minObjPts: opts.minObjPts, roomArea: area
+      voxel: vox, detectObjects: opts.detectObjects, minObjPts: opts.minObjPts, roomArea: area, beams: beams
     });
+    if (furnitureObjects && furnitureObjects.length) objects = objects.concat(furnitureObjects);
     // v1230: известная колонна не должна повторно классифицироваться как вертикальный кабель.
     var cables = detectCables(pd, lv, walls, {
       detectCables: opts.detectCables, maxCables: opts.maxCables, objects: objects
-    });
-    // v1161: балки под потолком
-    var beams = detectBeams(pd, lv, walls, {
-      voxel: vox, seed: opts.seed || 12345, detectBeams: opts.detectBeams, maxBeams: opts.maxBeams, pipes: pipes
     });
     // v1230: pipe detection sees long beam edges as thin traces; suppress only
     // candidates contained in a same-height, parallel structural beam.

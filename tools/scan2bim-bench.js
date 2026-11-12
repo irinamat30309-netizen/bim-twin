@@ -46,7 +46,25 @@ function sceneFlat() {
     { a: [0, 8], b: [0, 0], t: T, h: H, openings: [] },
     { a: [4.5, 0.15], b: [4.5, 8 - 0.15], t: Ti, h: H, openings: [{ s0: 3.0, s1: 3.9, z0: 0, z1: 2.1 }] }
   ];
-  return { name: 'квартира 10×8: 4 наружные + перегородка, 2 окна, дверь', walls, H, area: (10 + 0.3) * (8 + 0.3), column: { x: 7.5, z: 4.0, size: 0.4 } };
+  return { name: 'квартира 10×8: 4 наружные + перегородка, 2 окна, дверь, колонна, балка', w: 10, d: 8, walls, H, area: (10 + 0.3) * (8 + 0.3), column: { x: 7.5, z: 4.0, size: 0.4 }, beam: { x0: 5.0, x1: 9.8, z: 2.0, w: 0.3, h: 0.12 } };
+}
+
+function sceneFurniture() {
+  // «реальный» случай: комната 8×6 с мебелью у стен (шкаф 0.6 глубиной, диван), окно за шкафом частично закрыто
+  const H = 2.75, T = 0.25, Ti = 0.12;
+  const walls = [
+    { a: [0, 0], b: [8, 0], t: T, h: H, openings: [{ s0: 1.4, s1: 2.8, z0: 0.9, z1: 2.3 }] },
+    { a: [8, 0], b: [8, 6], t: T, h: H, openings: [] },
+    { a: [8, 6], b: [0, 6], t: T, h: H, openings: [] },
+    { a: [0, 6], b: [0, 0], t: T, h: H, openings: [] },
+    { a: [4, 0.12], b: [4, 5.88], t: Ti, h: H, openings: [{ s0: 1.8, s1: 2.7, z0: 0, z1: 2.1 }] }
+  ];
+  const furniture = [
+    { x0: 0.15, x1: 0.75, z0: 3.0, z1: 4.6, y0: 0, y1: 2.0 },     // шкаф у левой стены
+    { x0: 5.0, x1: 6.8, z0: 5.2, z1: 5.75, y0: 0, y1: 0.85 },     // диван у дальней
+    { x0: 2.0, x1: 2.8, z0: 4.0, z1: 4.8, y0: 0, y1: 0.75 }       // стол
+  ];
+  return { name: 'комната 8×6 с мебелью (шкаф, диван, стол)', w: 8, d: 6, walls, H, area: (8 + 0.25) * (6 + 0.25), furniture };
 }
 
 function sceneLShape() {
@@ -60,7 +78,7 @@ function sceneLShape() {
     { a: [3, 4], b: [0, 4], t: T, h: H, openings: [] },
     { a: [0, 4], b: [0, 0], t: T, h: H, openings: [] }
   ];
-  return { name: 'Г-образное 9×7 (вырез 3×3), окно, дверь', walls, H, area: null };
+  return { name: 'Г-образное 9×7 (вырез 3×3), окно, дверь', w: 9, d: 7, walls, H, area: null, cut: (x, z) => !(x > 3 && z > 4) };
 }
 
 function sceneRooms() {
@@ -81,12 +99,44 @@ function buildCloud(sc, opt) {
   const rand = rng(opt.seed || 1);
   const pts = [];
   for (const w of sc.walls) sampleWall(pts, w, { floorY: 0, step: opt.step, noise: opt.noise, skip: opt.skip }, rand);
-  sampleSlab(pts, 0, 0, 10, 8, 0, { step: 0.08, noise: opt.noise }, rand);
-  sampleSlab(pts, 0, 0, 10, 8, sc.H, { step: 0.08, noise: opt.noise }, rand);
+  const W = sc.w || 10, D = sc.d || 8;
+  const cut = sc.cut || (() => true);
+  const sampleSlab2 = (y) => {
+    for (let x = 0; x <= W; x += 0.08) for (let z = 0; z <= D; z += 0.08) {
+      if (!cut(x, z)) continue;
+      pts.push([x + (rand() - 0.5) * opt.noise, y + (rand() - 0.5) * opt.noise, z + (rand() - 0.5) * opt.noise]);
+    }
+  };
+  sampleSlab2(0); sampleSlab2(sc.H);
   if (sc.column) {
-    const c = sc.column;
+    // колонна 0.4×0.4: четыре грани (как в реальном скане), а не только рёбра
+    const c = sc.column, half = c.size / 2;
     for (let y = 0.05; y < sc.H - 0.05; y += 0.04) {
-      for (const [dx, dz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) pts.push([c.x + dx * c.size / 2, y, c.z + dz * c.size / 2]);
+      for (let o = -half; o <= half; o += 0.04) {
+        pts.push([c.x + o, y, c.z - half], [c.x + o, y, c.z + half]);
+        pts.push([c.x - half, y, c.z + o], [c.x + half, y, c.z + o]);
+      }
+    }
+  }
+  if (sc.beam) {
+    // балка под потолком: длина L, ширина w, высота h (грани + низ)
+    const b = sc.beam, y0 = sc.H - b.h;
+    for (let x = b.x0; x <= b.x1; x += 0.04) for (let zo = -b.w / 2; zo <= b.w / 2; zo += 0.04) {
+      pts.push([x, y0, b.z + zo], [x, sc.H, b.z + zo]);
+    }
+    for (let x = b.x0; x <= b.x1; x += 0.04) for (let y = y0; y <= sc.H; y += 0.04) {
+      pts.push([x, y, b.z - b.w / 2], [x, y, b.z + b.w / 2]);
+    }
+  }
+  if (sc.furniture) {
+    // «реальная» мебель: шкаф и стол — закрывают часть стены, проверяем устойчивость стен
+    for (const f of sc.furniture) {
+      for (let x = f.x0; x <= f.x1; x += 0.05) for (let z = f.z0; z <= f.z1; z += 0.05) {
+        for (let y = f.y0; y <= f.y1; y += 0.05) {
+          const edge = x <= f.x0 + 0.05 || x >= f.x1 - 0.05 || z <= f.z0 + 0.05 || z >= f.z1 - 0.05 || y >= f.y1 - 0.05;
+          if (edge) pts.push([x, y, z]);
+        }
+      }
     }
   }
   return pts;
@@ -143,9 +193,11 @@ function evaluate(sc, model) {
     if (best == null) { out.errors.push({ gt: g.a + '→' + g.b, missing: true }); continue; }
     used.add(best);
     const w = model.walls[best];
-    // положение оси: расстояние между серединами + угол
+    // положение оси: перпендикулярное смещение СЕРЕДИНЫ (концы гуляют от ошибки угла — это отдельная метрика)
     const wm = wallMid(w);
-    const posErr = Math.hypot(gm[0] - wm[0], gm[1] - wm[1]);
+    const gLen0 = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]);
+    const gn0 = [-(g.b[1] - g.a[1]) / gLen0, (g.b[0] - g.a[0]) / gLen0];
+    const posErr = Math.abs((wm[0] - gm[0]) * gn0[0] + (wm[1] - gm[1]) * gn0[1]);
     const angGt = Math.atan2(g.b[1] - g.a[1], g.b[0] - g.a[0]) * 180 / Math.PI;
     const angW = Math.atan2(w.b[1] - w.a[1], w.b[0] - w.a[0]) * 180 / Math.PI;
     let da = Math.abs(angGt - angW) % 180; if (da > 90) da = 180 - da;
@@ -153,6 +205,7 @@ function evaluate(sc, model) {
     const gtLen = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]);
     out.errors.push({
       wall: g.a + '→' + g.b,
+      detected: w.a.map(v => +v.toFixed(3)) + '→' + w.b.map(v => +v.toFixed(3)),
       posErr: +posErr.toFixed(3), angErr: +da.toFixed(1),
       thickGt: g.t, thick: +w.thickness.toFixed(3), thickErr: +(w.thickness - g.t).toFixed(3),
       lenGt: +gtLen.toFixed(2), len: +w.length.toFixed(2), lenErr: +(w.length - gtLen).toFixed(2),
@@ -161,6 +214,21 @@ function evaluate(sc, model) {
     });
   }
   out.extraWalls = model.walls.length - used.size;
+  // колонны и балки
+  const cols = (model.objects || []).filter(o => o.kind === 'column');
+  out.columnsGt = sc.column ? 1 : 0; out.columns = cols.length;
+  if (sc.column && cols.length) {
+    const c = cols[0];
+    out.columnErr = [+(c.cx - sc.column.x).toFixed(3), +(c.cz - sc.column.z).toFixed(3)].map(Math.abs);
+    out.columnSize = c.size != null ? c.size : null;
+  }
+  out.beamsGt = sc.beam ? 1 : 0; out.beams = (model.beams || []).length;
+  if (sc.beam && (model.beams || []).length) {
+    const b = model.beams[0];
+    out.beamLenGt = +(sc.beam.x1 - sc.beam.x0).toFixed(2);
+    out.beamLen = +(b.length || 0).toFixed(2);
+    out.beamWidthGt = sc.beam.w; out.beamWidth = b.width != null ? +b.width.toFixed(3) : null;
+  }
   out.areaGt = sc.area; out.area = +model.stats.floorArea.toFixed(2);
   out.areaErrPct = sc.area == null ? null : +(100 * (model.stats.floorArea - sc.area) / sc.area).toFixed(2);
   out.heightGt = sc.H; out.height = +model.storey.height.toFixed(3); out.heightErr = +(model.storey.height - sc.H).toFixed(3);
@@ -174,25 +242,43 @@ function evaluate(sc, model) {
   return out;
 }
 
-const scenes = { flat: sceneFlat, lshape: sceneLShape, rooms: sceneRooms };
+const scenes = { flat: sceneFlat, lshape: sceneLShape, rooms: sceneRooms, furniture: sceneFurniture };
 const list = process.argv[2] && scenes[process.argv[2]] ? [process.argv[2]] : Object.keys(scenes);
+const seedArg = (process.argv.find(a => /^--seed=/.test(a)) || '').split('=')[1];
 const results = [];
 for (const key of list) {
   const sc = scenes[key]();
-  const opt = { step: 0.04, noise: 0.006 };
+  const opt = { step: 0.025, noise: 0.006, seed: seedArg ? Number(seedArg) : 1 };
   if (key === 'flat') { sc.walls[0].openings.length = 2; }
   const pts = buildCloud(sc, opt);
   const model = S.reconstruct(pts, { voxel: 0.04 });
   if (!model.ok) { results.push({ scene: sc.name, error: model.error }); continue; }
+  if (process.argv.includes('--plan')) {
+    const plan = {
+      scene: sc.name,
+      gt: sc.walls.map(w => ({ a: w.a, b: w.b, t: w.t, openings: (w.openings || []).map(o => ({ s0: o.s0, s1: o.s1, z0: o.z0, z1: o.z1 })) })),
+      det: model.walls.map(w => ({ a: w.a, b: w.b, t: w.thickness, openings: (w.openings || []).map(o => ({ along: o.along, width: o.width, kind: o.kind })) })),
+      rooms: (model.rooms || []).map(r => ({ polygon: r.polygon, area: r.area }))
+    };
+    results.push({ plan });
+    continue;
+  }
+  if (process.argv.includes('--dump')) {
+    console.log('--- ' + sc.name + ' ---');
+    for (const w of model.walls) console.log(`  ${w.a.map(v => v.toFixed(2))}→${w.b.map(v => v.toFixed(2))} L=${w.length.toFixed(2)} thk=${w.thickness.toFixed(2)} op=${(w.openings || []).length}`);
+  }
   results.push(evaluate(sc, model));
 }
-if (process.argv.includes('--json')) console.log(JSON.stringify(results, null, 1));
+if (process.argv.includes('--plan')) console.log(JSON.stringify(results.map(r => r.plan).filter(Boolean)));
+else if (process.argv.includes('--json')) console.log(JSON.stringify(results, null, 1));
 else {
   for (const r of results) {
     console.log('\n=== ' + r.scene + ' ===');
     console.log(`стен: ${r.walls} (ждём ${r.expectedWalls}), лишних: ${r.extraWalls}`);
     console.log(`площадь: ${r.area} м² (эталон ${r.areaGt}, ошибка ${r.areaErrPct} %), высота ${r.height} (${r.heightGt}), проёмы ${r.openings} (ждём ${r.openingsGt})`);
     console.log(`положение оси: медиана ${r.posMedian} м, максимум ${r.posMax} м; толщина: медиана ошибки ${r.thickMedian} м`);
+    if (r.columnsGt || r.columns) console.log(`колонны: ${r.columns} (ждём ${r.columnsGt})` + (r.columnErr ? `, смещение ${Math.max(...r.columnErr)} м` : ''));
+    if (r.beamsGt || r.beams) console.log(`балки: ${r.beams} (ждём ${r.beamsGt})` + (r.beamLen != null ? `, длина ${r.beamLen} (эт. ${r.beamLenGt}), ширина ${r.beamWidth} (эт. ${r.beamWidthGt})` : ''));
     for (const e of r.errors) console.log('  ', e.missing ? `ПРОПУЩЕНА ${e.gt}` : `стена ${e.wall}: сдвиг ${e.posErr} м, угол ${e.angErr}°, толщина ${e.thick} (эт. ${e.thickGt}), длина ${e.len} (эт. ${e.lenGt}), проёмы ${e.openings}/${e.expectOpenings}` + (e.openingErr ? ` [смещение ${e.openingErr.midMax} м, ширина ±${e.openingErr.wMax} м, подоконник ±${e.openingErr.sillMax} м, перемычка ±${e.openingErr.headMax} м]` : ''));
   }
 }
