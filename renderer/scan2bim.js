@@ -1099,7 +1099,7 @@
     var top = lv && isFinite(lv.ceilY) ? lv.ceilY : (w.top || base + (w.height || 3));
     var H = Math.max(1.2, top - base);
     var half = Math.max(0.12, (w.thickness || 0.15) / 2 + 0.10);
-    var cell = 0.05;
+    var cell = 0.025;
     var nS = Math.max(8, Math.ceil(L / cell)), nZ = Math.max(8, Math.ceil(H / cell));
     var occ = new Uint8Array(nS * nZ);
     for (var i = 0; i < pts.length; i++) {
@@ -1153,7 +1153,7 @@
     for (var m = 0; m + 1 < out.length;) {
       var A = out[m], B = out[m + 1];
       var gap = B.along - (A.along + A.width);
-      if (gap <= 0.4 && gap >= -0.05 && Math.abs((A.sill || 0) - (B.sill || 0)) <= 0.35 && Math.abs((A.head || 0) - (B.head || 0)) <= 0.35) {
+      if (gap <= 0.25 && gap >= -0.05 && Math.abs((A.sill || 0) - (B.sill || 0)) <= 0.25 && Math.abs((A.head || 0) - (B.head || 0)) <= 0.35) {
         A.width = B.along + B.width - A.along;
         A.sill = Math.min(A.sill || 0, B.sill || 0);
         A.head = Math.max(A.head || 0, B.head || 0);
