@@ -613,6 +613,36 @@
         uncertain: width > 3.2
       });
     }
+    // v1258: окна на реальных фасадах разбиты импостами (стойками рамы) на «фрамуги» — детектор видел
+    // несколько узких проёмов. Склеиваем соседние проёмы с общей высотой, если между ними узкая перемычка,
+    // которая НЕ доходит до потолка/пола (импост), а не полноценный простенок.
+    w.openings.sort(function (x, y) { return x.along - y.along; });
+    function gapIsMullion(s0, s1, sill, head) {
+      var i0 = Math.max(0, Math.floor(s0 / sBin)), i1 = Math.min(nS - 1, Math.ceil(s1 / sBin));
+      if (i1 < i0) return false;
+      var z0 = Math.max(0, Math.floor(sill / zBin)), z1 = Math.min(nZ - 1, Math.ceil(head / zBin));
+      if (z1 < z0) return false;
+      var maxCov = 0;
+      for (var gi = i0; gi <= i1; gi++) {
+        var cov = 0;
+        for (var gz = z0; gz <= z1; gz++) if (occupied[gi * nZ + gz]) cov++;
+        if (cov > maxCov) maxCov = cov;
+      }
+      return maxCov / Math.max(1, z1 - z0 + 1) < 0.85;             // в пределах окна импост почти пустой
+    }
+    for (var mi = 0; mi + 1 < w.openings.length;) {
+      var A0 = w.openings[mi], B0 = w.openings[mi + 1];
+      var gap = B0.along - (A0.along + A0.width);
+      var sameVert = Math.abs((A0.sill || 0) - (B0.sill || 0)) <= 0.3 && Math.abs((A0.head || 0) - (B0.head || 0)) <= 0.3;
+      if (sameVert && gap <= 0.45 && gap >= -0.05) {
+        A0.width = B0.along + B0.width - A0.along;
+        A0.head = Math.max(A0.head || 0, B0.head || 0);
+        A0.sill = Math.min(A0.sill || 0, B0.sill || 0);
+        w.openings.splice(mi + 1, 1);
+        continue;
+      }
+      mi++;
+    }
     // слияние пересекающихся
     w.openings.sort(function (x, y) { return x.along - y.along; });
     for (var m = 0; m + 1 < w.openings.length;) {
@@ -1652,8 +1682,18 @@
     opts = opts || {};
     var pts = toPts(input, opts.colors);
     if (pts.length < 20) return { ok: false, error: 'Слишком мало точек для реконструкции', walls: [], slabs: [], storey: null };
+    // v1258: уровни могут быть измерены по облаку (фасады, «слепые» этажи) и переданы снаружи
+    if (opts.levels && opts.levels.length && !opts._singleStorey) {
+      var forced = [];
+      for (var fi = 0; fi < opts.levels.length; fi++) {
+        var lvI = opts.levels[fi];
+        if (!lvI || !isFinite(lvI.floorY) || !isFinite(lvI.ceilY) || lvI.ceilY - lvI.floorY < 0.5) continue;
+        forced.push({ floorY: Number(lvI.floorY), ceilY: Number(lvI.ceilY), height: Number(lvI.ceilY) - Number(lvI.floorY) });
+      }
+      if (forced.length > 1) return reconstructStoreys(pts, opts, forced);
+    }
     // v1251: многоэтажный скан — строим каждый этаж отдельно и объединяем (стены/помещения с номером этажа)
-    if (opts.detectStoreys !== false && !opts._singleStorey && !opts.range) {
+    if (opts.detectStoreys !== false && !opts._singleStorey && !opts.range && !(opts.levels && opts.levels.length)) {
       var levels = detectStoreys(pts, opts);
       if (levels.length > 1) return reconstructStoreys(pts, opts, levels);
     }

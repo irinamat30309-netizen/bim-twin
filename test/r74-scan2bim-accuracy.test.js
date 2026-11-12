@@ -269,6 +269,36 @@ test('r74: ручной диапазон этажа — поля в окне «�
   assert.match(src, /delete opts\.range/, 'пустые поля возвращают автоопределение');
 });
 
+test('r74: уровни можно задать снаружи (opts.levels) — по измеренным рядам окон', () => {
+  const pts = twoStoreyCloud();
+  const m = S.reconstruct(pts, { voxel: 0.04, levels: [{ floorY: 0, ceilY: 3 }, { floorY: 3, ceilY: 6 }] });
+  assert.equal(m.ok, true, m.error);
+  assert.equal(m.storeys.length, 2, 'этажей: ' + m.storeys.length);
+  assert.ok(Math.abs(m.storeys[0].floorY - 0) <= 0.05, 'пол 1: ' + m.storeys[0].floorY);
+  assert.ok(Math.abs(m.storeys[1].floorY - 3) <= 0.05, 'пол 2: ' + m.storeys[1].floorY);
+  assert.equal(m.walls.length, 9, 'стен: ' + m.walls.length);
+});
+
+test('r74: окно, разбитое импостом на две фрамуги, собирается в один проём', () => {
+  // стена 6 м, окно 1.6 м с импостом 0.2 м посредине: две «фрамуги» по 0.7 м
+  const H = 2.8, T = 0.24, wall = { a: [0, 0], b: [6, 0], t: T, openings: [] };
+  const segs = [{ s0: 2.2, s1: 2.9 }, { s0: 3.1, s1: 3.8 }];
+  const pts = [], rnd = rng(3), step = 0.04;
+  for (const side of [-1, 1]) for (let s = 0; s <= 6; s += step) for (let z = 0.02; z <= H - 0.02; z += step) {
+    let hole = false;
+    for (const o of segs) if (s >= o.s0 && s <= o.s1 && z >= 0.9 && z <= 2.3) hole = true;
+    if (hole) continue;
+    pts.push([s + (rnd() - 0.5) * 0.004, z, side * T / 2 + (rnd() - 0.5) * 0.004]);
+  }
+  for (let x = 0; x <= 6; x += 0.1) for (let z = -1; z <= 1; z += 0.1) { pts.push([x, 0, z], [x, H, z]); }
+  const m = S.reconstruct(pts, { voxel: 0.04 });
+  assert.equal(m.ok, true, m.error);
+  const w = m.walls.find(q => (q.openings || []).length);
+  assert.ok(w, 'нет стены с проёмом');
+  assert.equal(w.openings.length, 1, 'проёмов на стене: ' + w.openings.length + ' (должен быть один)');
+  assert.ok(Math.abs(w.openings[0].width - 1.6) <= 0.2, 'ширина проёма ' + w.openings[0].width.toFixed(2));
+});
+
 test('r74: два этажа — уровни, стены и проёмы каждого этажа, IfcBuildingStorey на этаж', () => {
   const pts = twoStoreyCloud();
   const levels = S.detectStoreys(pts);
