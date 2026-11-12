@@ -164,6 +164,18 @@ function storageCtx(projectId) {
   return { settings, projectId: projectId || activeProjectIdFast(), userData };
 }
 function workDir(kind) { return storagePaths.workDir(kind, storageCtx()); }
+// Ревизия 72: результаты обработки (облако из .xbin, цвет по фото, чистовая) складываем в папку проекта,
+// если она выбрана; иначе — рядом с исходным файлом, как раньше.
+function projectOutputDir(projectId) {
+  try {
+    const pid = projectId == null || projectId === '' ? null : vId(projectId);
+    const w = storagePaths.workRoot(storageCtx(pid));
+    const dir = w && w.source === 'project' ? w.projectDir : null;   // только папка, выбранная для проекта
+    if (!dir) return null;
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  } catch (_) { return null; }
+}
 function workRootsAll(kind) { return storagePaths.allRoots(storageCtx()).map(r => path.join(r, kind)); }
 // временные файлы разбора (PCD LZF и т. п.) — тоже в папку проекта, если она задана
 {
@@ -1193,7 +1205,7 @@ function registerIpc() {
       const pst = fs.statSync(info.poses.path); if (pst.size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
       const posesText = fs.readFileSync(info.poses.path, 'utf8');
       const density = Object.prototype.hasOwnProperty.call(XBIN_DENSITY, a.density) ? a.density : 'normal';
-      const dir = path.dirname(abs), stem = path.basename(abs).replace(/\.xbin$/i, '') + '-lidar';
+      const dir = projectOutputDir(a.projectId) || path.dirname(abs), stem = path.basename(abs).replace(/\.xbin$/i, '') + '-lidar';
       cleanupStaleCloudTemp(dir);   // ревизия 37
       let target = null; for (let i = 0; i < 1000 && !target; i++) { const f = path.join(dir, stem + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f) && !fs.existsSync(f + '.part')) target = f; }
       if (!target) return { ok: false, error: 'no_name' };
@@ -1240,7 +1252,7 @@ function registerIpc() {
       try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
       try { fileGrants.grantExistingFile(sender.id, info.poses.path, { read: true }); const k = path.resolve(target); scanFolderPoses.set(process.platform === 'win32' ? k.toLowerCase() : k, info.poses.path); } catch (_) {}
       const r1 = v => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null), rf = r.refine ? { residualBeforeMm: r1(r.refine.residualBeforeMm), residualAfterMm: r1(r.refine.residualAfterMm), seconds: Math.round(r.refine.seconds || 0) } : null;
-      return { ok: true, path: target, name: path.basename(target), points: r.points, step: r.step, seconds: r.seconds, trajectory: info.poses.name, density, refine: rf, edge: Number(r.edge) || 0,
+      return { ok: true, path: target, name: path.basename(target), inProjectFolder: !!projectOutputDir(a.projectId), points: r.points, step: r.step, seconds: r.seconds, trajectory: info.poses.name, density, refine: rf, edge: Number(r.edge) || 0,
         color: photoStats ? 'photo' : 'gray', photo: photoStats, photoWarning, photoAvailable: !!(info.xbin && info.xbin.photoReady) };
     } catch (e) {
       if (partFile) { try { fs.rmSync(partFile, { force: true }); } catch (_) {} }
@@ -1333,7 +1345,8 @@ function registerIpc() {
       if (fs.statSync(posesAbs).size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
       const posesText = fs.readFileSync(posesAbs, 'utf8');
       const base = path.basename(abs).replace(/\.las$/i, '');
-      let target = null; for (let i = 0; i < 1000 && !target; i++) { const f = path.join(path.dirname(abs), base + '-color' + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f)) target = f; }
+      const outDir = projectOutputDir(a.projectId) || path.dirname(abs);
+      let target = null; for (let i = 0; i < 1000 && !target; i++) { const f = path.join(outDir, base + '-color' + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f)) target = f; }
       if (!target) return { ok: false, error: 'no_name' };
       const job = { cancelled: false, recolorStop: null };
       activePhotoColorJobs.set(key, job);
@@ -1347,7 +1360,7 @@ function registerIpc() {
       try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
       try { const k = path.resolve(target); scanFolderPoses.set(process.platform === 'win32' ? k.toLowerCase() : k, posesAbs); } catch (_) {}
       const s0 = r.stats || {};
-      return { ok: true, path: target, name: path.basename(target), xbin: path.basename(xbinAbs), photo: { points: s0.points, colored: s0.colored, frames: s0.frames, cameras: s0.cameras, seconds: Math.round((s0.ms || 0) / 1000) } };
+      return { ok: true, path: target, name: path.basename(target), inProjectFolder: !!projectOutputDir(a.projectId), xbin: path.basename(xbinAbs), photo: { points: s0.points, colored: s0.colored, frames: s0.frames, cameras: s0.cameras, seconds: Math.round((s0.ms || 0) / 1000) } };
     } catch (e) { return { ok: false, error: 'photo_failed', message: String((e && e.message) || e) }; }
   });
   ipcMain.on('bim:cancelPhotoColor', (event, payload) => {
@@ -1506,9 +1519,10 @@ function registerIpc() {
       const uniqueName = (dir0, stem) => { for (let i = 0; i < 1000; i++) { const f = path.join(dir0, stem + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f)) return f; } return path.join(dir0, stem + '-' + Date.now() + '.las'); };
       let target;
       if (inPlace) target = path.resolve(abs);
-      else if (a.autoOut === true) target = uniqueName(path.dirname(abs), base + '-inspect');   // ревизия 32: подготовка облака перед контролем — рядом, без диалога
+      else if (a.autoOut === true) target = uniqueName(projectOutputDir(a.projectId) || path.dirname(abs), base + '-inspect');   // ревизия 32: подготовка облака перед контролем — рядом, без диалога
       else {
-        const options = { title: 'Сохранить обработанное облако', defaultPath: path.join(path.dirname(abs), base + '-clean.las'), filters: [{ name: 'LAS', extensions: ['las'] }] };
+        const outDir = projectOutputDir(a.projectId) || path.dirname(abs);
+        const options = { title: 'Сохранить обработанное облако', defaultPath: path.join(outDir, base + '-clean.las'), filters: [{ name: 'LAS', extensions: ['las'] }] };
         const res = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
         if (!res || res.canceled || !res.filePath) return { ok: false, cancelled: true };
         target = path.resolve(String(res.filePath)); if (path.extname(target).toLowerCase() !== '.las') target += '.las';

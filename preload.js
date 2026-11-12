@@ -280,7 +280,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   },
   cancelXbinCloud: (jobId) => { if (typeof jobId === 'string' && jobId) snd('bim:cancelXbinCloud', { jobId }); },
   // ревизия 36: «Раскрасить по фото камер» уже открытое облако LAS (серое облако из лидара) → «<имя>-color.las» рядом
-  photoColorCloud: (p, jobId, opts) => inv('bim:photoColorCloud', { path: p, jobId, xbinPath: opts && opts.xbinPath ? String(opts.xbinPath) : undefined, posesPath: opts && opts.posesPath ? String(opts.posesPath) : undefined }),
+  photoColorCloud: (p, jobId, opts) => inv('bim:photoColorCloud', { path: p, jobId, xbinPath: opts && opts.xbinPath ? String(opts.xbinPath) : undefined, posesPath: opts && opts.posesPath ? String(opts.posesPath) : undefined, projectId: opts && opts.projectId ? String(opts.projectId) : undefined }),
   onPhotoColorProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };

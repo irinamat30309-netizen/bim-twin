@@ -716,6 +716,8 @@
     const pc = r.photo && r.photo.points ? ', цвет по фото: ' + Math.round(100 * (r.photo.colored || 0) / r.photo.points) + ' % точек' : '';
     const eg = r.edge > 0 ? ', убрано «бахромы» и пыли ' + fmtMln(r.edge) + ' млн' : '';
     toast('Облако из лидара: ' + fmtMln(r.points || 0) + ' млн точек' + rf + pc + eg + ', файл ' + r.name);
+    // Ревизия 72: если папка проекта не выбрана, результат лёг рядом с .xbin — подсказываем, как это изменить
+    if (r.inProjectFolder === false) setTimeout(() => toast('Облако сохранено рядом с .xbin. Чтобы результаты складывались в папку проекта, выберите её: Ctrl+K → «Папка проекта»'), 2600);
     if (r.photoWarning) setTimeout(() => toast('Цвет по фото не получен: ' + r.photoWarning + '. Раскрасить: «Цвет по фото камер» на ленте или кнопка в свойствах облака'), 2500);
     const opened = await window.__bimOpenCloudPath(r.path, { fresh: true });
     // ревизия 37: сразу Чистовая обработка открытого облака (форма с настройками; цвет по фото уже есть — не повторяется)

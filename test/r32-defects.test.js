@@ -205,7 +205,7 @@ test('вывод, CSV и PDF: наклон, дефекты и проёмы', () 
 
 test('проводка: очистка рядом без диалога, поиск очищенной копии, система координат исходника, сборка, скрипты', () => {
   const main = read('main.js'), pre = read('preload.js'), pkg = JSON.parse(read('package.json')), ui = read('renderer/cloud-inspect-ui.js');
-  assert.match(main, /a\.autoOut === true\) target = uniqueName\(path\.dirname\(abs\), base \+ '-inspect'\)/);
+  assert.match(main, /a\.autoOut === true\) target = uniqueName\(projectOutputDir\(a\.projectId\) \|\| path\.dirname\(abs\), base \+ '-inspect'\)/);
   assert.match(main, /ipcMain\.handle\('bim:findCleanCloud'/); assert.match(main, /-inspect\(-\\\\d\+\)\?\\\\\.las\$/);
   assert.match(main, /const NOISE_LEVELS = \['soft', 'normal', 'strong', 'max', 'inspect'\]/);
   assert.match(main, /planDesc: frame && frame\.desc && opened\.desc\.kind === frame\.desc\.kind \? frame\.desc : null/);
