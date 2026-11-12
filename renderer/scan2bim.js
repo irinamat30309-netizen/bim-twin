@@ -977,6 +977,82 @@
     return keep;
   }
 
+  // v1256: точная подгонка двух граней стены по точкам (наименьшие квадраты с отбраковкой выбросов).
+  // Даёт ось и толщину без смещения от разной плотности граней и уменьшает RMS на реальных сканах.
+  function refineWallFit(w, pts, lv) {
+    if (!pts || pts.length < 120 || !(w.length > 0.5)) return;
+    var dir = norm2(w.dir), nrm = [-dir[1], dir[0]], a = w.a, L = w.length;
+    var yLo = lv ? lv.floorY + 0.20 : -Infinity, yHi = lv ? lv.ceilY - 0.20 : Infinity;
+    var seg = [];
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      if (p[1] < yLo || p[1] > yHi) continue;
+      var px = p[0] - a[0], pz = p[2] - a[1];
+      var s = px * dir[0] + pz * dir[1];
+      if (s < 0.15 || s > L - 0.15) continue;
+      var perp = px * nrm[0] + pz * nrm[1];
+      if (perp < -0.45 || perp > 0.45) continue;
+      seg.push([s, perp]);
+    }
+    if (seg.length < 120) return;
+    // делим на две грани по знаку смещения относительно текущей оси
+    function fitSide(list) {
+      if (list.length < 40) return null;
+      var fit = { n: list.length };
+      var cur = list;
+      for (var it = 0; it < 3; it++) {
+        var sn = 0, sp = 0, ss = 0, sss = 0, spp = 0;
+        for (var k = 0; k < cur.length; k++) {
+          var s = cur[k][0], p = cur[k][1];
+          sn++; sp += p; ss += s; sss += s * s; spp += s * p;
+        }
+        var den = sn * sss - ss * ss;
+        var b = Math.abs(den) > 1e-9 ? (sn * spp - ss * sp) / den : 0;
+        var a0 = (sp - b * ss) / sn;
+        fit.a = a0; fit.b = b; fit.n = cur.length;
+        var res = [];
+        for (var k2 = 0; k2 < cur.length; k2++) res.push(cur[k2][1] - (a0 + b * cur[k2][0]));
+        var abs = res.map(Math.abs).sort(function (x, y) { return x - y; });
+        var sigma = abs[Math.floor(abs.length / 2)] * 1.4826;
+        if (sigma <= 0) break;
+        var keep = [];
+        for (var k3 = 0; k3 < cur.length; k3++) if (Math.abs(res[k3]) <= 2.5 * sigma) keep.push(cur[k3]);
+        if (keep.length < 40 || Math.abs(keep.length - cur.length) < 3) break;
+        cur = keep;
+      }
+      var sres = 0;
+      for (var k4 = 0; k4 < cur.length; k4++) { var d = cur[k4][1] - (fit.a + fit.b * cur[k4][0]); sres += d * d; }
+      fit.rms = Math.sqrt(sres / cur.length);
+      fit.mid = cur.reduce(function (acc, q) { return acc + q[0]; }, 0) / cur.length;
+      return fit;
+    }
+    var left = [], right = [];
+    for (var j = 0; j < seg.length; j++) (seg[j][1] <= 0 ? left : right).push(seg[j]);
+    var fl = fitSide(left), fr = fitSide(right);
+    if (!fl || !fr) return;
+    // ось = середина между подогнанными гранями, толщина = расстояние между ними на середине стены
+    var sMid = (Math.max(0.2, Math.min(L - 0.2, Math.max(fl.mid, fr.mid))));
+    var pl = fl.a + fl.b * sMid, pr = fr.a + fr.b * sMid;
+    var thk = pr - pl;
+    if (!(thk > 0.035 && thk < 0.55)) return;
+    var midPerp = (pl + pr) / 2;
+    if (Math.abs(midPerp) > 0.2) return;
+    var base = [a[0] + nrm[0] * midPerp + dir[0] * 0, a[1] + nrm[1] * midPerp];
+    var tilt = (fl.b + fr.b) / 2;
+    // концы оси: от 0 до L по s, смещение по нормали меняется с наклоном tilt
+    var p0 = [a[0] + nrm[0] * (midPerp + tilt * (0 - sMid)), a[1] + nrm[1] * (midPerp + tilt * (0 - sMid))];
+    var p1 = [a[0] + dir[0] * L + nrm[0] * (midPerp + tilt * (L - sMid)), a[1] + dir[1] * L + nrm[1] * (midPerp + tilt * (L - sMid))];
+    var newRms = Math.max(fl.rms, fr.rms);
+    // v1256: принимаем подгонку только если она не хуже прежней (на реальных сканах плоскость может быть неоднородной)
+    var oldRms = typeof w.rms === 'number' ? w.rms : null;
+    if (oldRms != null && newRms > Math.max(oldRms * 1.05, oldRms + 0.002)) return;
+    if (oldRms != null && Math.abs(thk - (w.thickness || thk)) > 0.12) return;
+    w.a = p0; w.b = p1;
+    w.thickness = Math.max(0.05, Math.min(0.5, thk));
+    w.rms = newRms;
+    refreshWall(w);
+  }
+
   function detectWallOpenings(w, band, thr) {
     w.openings = [];
     var L = w.length; if (L < 1.2) return;
@@ -1633,6 +1709,7 @@
       var nearWall = collectNearWallPoints(pd, walls, Math.max(0.25, (opts.maxThickness || 0.6) * 0.55 + 0.12));
       for (var wi = 0; wi < walls.length; wi++) {
         refineWallThickness(walls[wi], nearWall[wi], lv, walls);
+        refineWallFit(walls[wi], nearWall[wi], lv);
         detectWallOpenings3d(walls[wi], nearWall[wi], thr, lv);
         if (!walls[wi].openings.length) detectWallOpenings(walls[wi], doorBand, thr);
         walls[wi].openings = (walls[wi].openings || []); openingCount += walls[wi].openings.length;
