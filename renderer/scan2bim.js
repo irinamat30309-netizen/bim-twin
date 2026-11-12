@@ -1162,6 +1162,34 @@
       }
       m++;
     }
+    // v1260: границы окон по точкам, а не по ячейкам — убирает утолщение проёма на 1–2 клетки
+    for (var r = 0; r < out.length; r++) {
+      var op = out[r];
+      var zLo = (op.sill || 0) + 0.08, zHi = (op.head || 0) - 0.08;
+      var s0 = op.along, s1 = op.along + op.width;
+      var leftS = -Infinity, rightS = Infinity, sillZ = op.sill || 0, headZ = op.head || H;
+      for (var pi = 0; pi < pts.length; pi++) {
+        var pp = pts[pi];
+        if (pp[1] < base - 0.05 || pp[1] > top + 0.05) continue;
+        var qx = pp[0] - a[0], qz = pp[2] - a[1];
+        var qperp = qx * nrm[0] + qz * nrm[1];
+        if (qperp < -half || qperp > half) continue;
+        var qs = qx * dir[0] + qz * dir[1], qy = pp[1] - base;
+        if (qy >= zLo && qy <= zHi) {
+          if (qs < s0 && qs > s0 - 0.35 && qs > leftS) leftS = qs;
+          if (qs > s1 && qs < s1 + 0.35 && qs < rightS) rightS = qs;
+        }
+        if (qs >= s0 + 0.05 && qs <= s1 - 0.05) {
+          if (qy < (op.sill || 0) + 0.05 && qy > (op.sill || 0) - 0.35 && qy > sillZ) sillZ = qy;
+          if (qy > (op.head || H) - 0.05 && qy < (op.head || H) + 0.35 && qy < headZ) headZ = qy;
+        }
+      }
+      if (isFinite(leftS)) s0 = Math.max(0, leftS + 0.01);
+      if (isFinite(rightS)) s1 = Math.min(L, rightS - 0.01);
+      if ((op.sill || 0) > 0.05) op.sill = Math.max(0, sillZ + 0.01);
+      if (headZ < H) op.head = Math.min(H - 0.03, headZ - 0.01);
+      if (s1 - s0 >= 0.45) { op.along = s0; op.width = s1 - s0; }
+    }
     return out;
   }
 
