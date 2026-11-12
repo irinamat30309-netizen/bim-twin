@@ -95,9 +95,48 @@ function sceneRooms() {
   return { name: 'три комнаты 12×6, две перегородки, 3 окна + 2 двери', walls, H, area: (12 + 0.28) * (6 + 0.28) };
 }
 
+function sceneTwoStorey() {
+  // два этажа 8×6, высота 3.0 каждый, перекрытие на 3.0; на первом окно, на втором дверь в перегородке
+  const T = 0.25, H = 3.0;
+  const base = (opening) => ([
+    { a: [0, 0], b: [8, 0], t: T, h: H, openings: opening ? [{ s0: 1.5, s1: 2.9, z0: 0.9, z1: 2.3 }] : [] },
+    { a: [8, 0], b: [8, 6], t: T, h: H, openings: [] },
+    { a: [8, 6], b: [0, 6], t: T, h: H, openings: [] },
+    { a: [0, 6], b: [0, 0], t: T, h: H, openings: [] }
+  ]);
+  const walls2 = base(false).concat([{ a: [4, 0.12], b: [4, 6 - 0.12], t: 0.12, h: H, openings: [{ s0: 2.0, s1: 2.9, z0: 0, z1: 2.1 }] }]);
+  return {
+    name: 'два этажа 8×6 по 3 м: окно на первом, дверь на втором', w: 8, d: 6, H: 6,
+    area: (8 + 0.25) * (6 + 0.25),
+    multi: [
+      { floor: 0, ceil: H, walls: base(true) },
+      { floor: H, ceil: 2 * H, walls: walls2 }
+    ]
+  };
+}
+
 function buildCloud(sc, opt) {
   const rand = rng(opt.seed || 1);
   const pts = [];
+  if (sc.multi) {
+    // многоэтажная сцена: стены каждого этажа на своей высоте + плиты на каждом уровне
+    const W = sc.w || 8, D = sc.d || 6;
+    for (const st of sc.multi) {
+      const h = st.ceil - st.floor, tmp = [];
+      for (const w of st.walls) sampleWall(tmp, w, { floorY: 0, step: opt.step, noise: opt.noise }, rand);
+      for (const p of tmp) pts.push([p[0], p[1] + st.floor, p[2]]);
+    }
+    for (const st of sc.multi) {
+      for (let x = 0; x <= W; x += 0.08) for (let z = 0; z <= D; z += 0.08) {
+        pts.push([x + (rand() - 0.5) * opt.noise, st.floor + (rand() - 0.5) * opt.noise, z + (rand() - 0.5) * opt.noise]);
+      }
+    }
+    // верхнее перекрытие
+    for (let x = 0; x <= W; x += 0.08) for (let z = 0; z <= D; z += 0.08) {
+      pts.push([x + (rand() - 0.5) * opt.noise, sc.H + (rand() - 0.5) * opt.noise, z + (rand() - 0.5) * opt.noise]);
+    }
+    return pts;
+  }
   for (const w of sc.walls) sampleWall(pts, w, { floorY: 0, step: opt.step, noise: opt.noise, skip: opt.skip }, rand);
   const W = sc.w || 10, D = sc.d || 8;
   const cut = sc.cut || (() => true);
@@ -179,7 +218,27 @@ function openingErrors(g, w) {
   return res;
 }
 
+function evaluateStoreys(sc, model) {
+  const out = { scene: sc.name, multi: true, storeysGt: sc.multi.length, storeys: model.storeyCount || model.stats.storeyCount || (model.storeys ? model.storeys.length : 1), errors: [] };
+  const got = model.storeys || [];
+  for (let i = 0; i < sc.multi.length; i++) {
+    const gt = sc.multi[i], m = got[i];
+    out.errors.push({
+      storey: i + 1,
+      floorGt: gt.floor, floor: m ? +m.floorY.toFixed(3) : null,
+      heightGt: gt.ceil - gt.floor, height: m ? +m.height.toFixed(3) : null,
+      wallsGt: gt.walls.length, walls: m ? m.walls.length : 0,
+      openingsGt: gt.walls.reduce((a, w) => a + (w.openings || []).length, 0),
+      openings: m ? m.walls.reduce((a, w) => a + (w.openings || []).length, 0) : 0
+    });
+  }
+  out.totalWalls = model.walls.length;
+  out.wallsGt = sc.multi.reduce((a, s) => a + s.walls.length, 0);
+  return out;
+}
+
 function evaluate(sc, model) {
+  if (sc.multi) return evaluateStoreys(sc, model);
   const out = { scene: sc.name, walls: model.walls.length, expectedWalls: sc.walls.length, errors: [] };
   const used = new Set();
   for (const g of sc.walls) {
@@ -242,7 +301,7 @@ function evaluate(sc, model) {
   return out;
 }
 
-const scenes = { flat: sceneFlat, lshape: sceneLShape, rooms: sceneRooms, furniture: sceneFurniture };
+const scenes = { flat: sceneFlat, lshape: sceneLShape, rooms: sceneRooms, furniture: sceneFurniture, twostorey: sceneTwoStorey };
 const list = process.argv[2] && scenes[process.argv[2]] ? [process.argv[2]] : Object.keys(scenes);
 const seedArg = (process.argv.find(a => /^--seed=/.test(a)) || '').split('=')[1];
 const results = [];
@@ -251,10 +310,20 @@ for (const key of list) {
   const opt = { step: 0.025, noise: 0.006, seed: seedArg ? Number(seedArg) : 1 };
   if (key === 'flat') { sc.walls[0].openings.length = 2; }
   const pts = buildCloud(sc, opt);
+  if (process.argv.includes('--dump')) console.log('[отладка] точек', pts.length, 'уровней', S.detectStoreys(pts).length, 'многоэтажная', !!sc.multi);
   const model = S.reconstruct(pts, { voxel: 0.04 });
   if (!model.ok) { results.push({ scene: sc.name, error: model.error }); continue; }
   if (process.argv.includes('--plan')) {
-    const plan = {
+    const plan = sc.multi ? {
+      scene: sc.name,
+      storeys: model.storeys.map((st, si) => ({
+        index: st.index + 1,
+        floorY: st.floorY,
+        gt: sc.multi[si].walls.map(w => ({ a: w.a, b: w.b, t: w.t, openings: (w.openings || []).map(o => ({ s0: o.s0, s1: o.s1 })) })),
+        det: st.walls.map(w => ({ a: w.a, b: w.b, t: w.thickness, openings: (w.openings || []).map(o => ({ along: o.along, width: o.width })) })),
+        rooms: (st.rooms || []).map(r => ({ polygon: r.polygon, area: r.area }))
+      }))
+    } : {
       scene: sc.name,
       gt: sc.walls.map(w => ({ a: w.a, b: w.b, t: w.t, openings: (w.openings || []).map(o => ({ s0: o.s0, s1: o.s1, z0: o.z0, z1: o.z1 })) })),
       det: model.walls.map(w => ({ a: w.a, b: w.b, t: w.thickness, openings: (w.openings || []).map(o => ({ along: o.along, width: o.width, kind: o.kind })) })),
@@ -274,6 +343,11 @@ else if (process.argv.includes('--json')) console.log(JSON.stringify(results, nu
 else {
   for (const r of results) {
     console.log('\n=== ' + r.scene + ' ===');
+    if (r.multi) {
+      console.log(`этажей: ${r.storeys} (ждём ${r.storeysGt}), стен всего ${r.totalWalls} (ждём ${r.wallsGt})`);
+      for (const e of r.errors) console.log(`  этаж ${e.storey}: пол ${e.floor} (эт. ${e.floorGt}), высота ${e.height} (эт. ${e.heightGt}), стен ${e.walls}/${e.wallsGt}, проёмов ${e.openings}/${e.openingsGt}`);
+      continue;
+    }
     console.log(`стен: ${r.walls} (ждём ${r.expectedWalls}), лишних: ${r.extraWalls}`);
     console.log(`площадь: ${r.area} м² (эталон ${r.areaGt}, ошибка ${r.areaErrPct} %), высота ${r.height} (${r.heightGt}), проёмы ${r.openings} (ждём ${r.openingsGt})`);
     console.log(`положение оси: медиана ${r.posMedian} м, максимум ${r.posMax} м; толщина: медиана ошибки ${r.thickMedian} м`);

@@ -81,6 +81,55 @@
     return { floorY: f.y, ceilY: c.y, height: c.y - f.y, floorRms: f.rms, ceilRms: c.rms };
   }
 
+  // v1252: многоэтажный скан. Плотность точек по высоте зависит от густоты съёмки, поэтому уровни ищем
+  // по ПЛОЩАДИ покрытия: у пола/потолка в слое 10 см занято почти всё пятно плана, у стен — только линии.
+  // Возвращает [{floorY, ceilY, height}].
+  function detectStoreys(pts, o) {
+    o = o || {};
+    if (!pts || pts.length < 5000) return [];
+    var ys = sortedNum(pts.map(function (p) { return p[1]; }));
+    var lo = ys[0] - 0.12, hi = ys[ys.length - 1] + 0.12;
+    var bin = 0.10, nb = Math.max(8, Math.min(2000, Math.round((hi - lo) / bin)));
+    var cells = [], i, b;
+    for (b = 0; b < nb; b++) cells.push(null);
+    for (i = 0; i < pts.length; i++) {
+      var p = pts[i], bi = Math.floor((p[1] - lo) / bin);
+      if (bi < 0 || bi >= nb) continue;
+      var cx = Math.floor(p[0] / 0.20), cz = Math.floor(p[2] / 0.20);
+      var s = cells[bi]; if (!s) s = cells[bi] = new Set();
+      s.add(cx * 100003 + cz);
+    }
+    var cov = new Float64Array(nb);
+    for (b = 0; b < nb; b++) cov[b] = cells[b] ? cells[b].size : 0;
+    var maxCov = 0; for (b = 0; b < nb; b++) if (cov[b] > maxCov) maxCov = cov[b];
+    if (!maxCov) return [];
+    var minCov = maxCov * (o.levelCoverFrac || 0.45), peaks = [];
+    for (b = 0; b < nb; b++) {
+      if (cov[b] < minCov) continue;
+      var leftOk = b === 0 || cov[b] >= cov[b - 1];
+      var rightOk = b === nb - 1 || cov[b] >= cov[b + 1];
+      if (!leftOk || !rightOk) continue;
+      var y = lo + (b + 0.5) * bin;
+      if (peaks.length && y - peaks[peaks.length - 1].y < 0.45) {
+        if (cov[b] > peaks[peaks.length - 1].c) peaks[peaks.length - 1] = { y: y, c: cov[b] };
+        continue;
+      }
+      peaks.push({ y: y, c: cov[b] });
+    }
+    if (peaks.length < 2) return [];
+    for (var q = 0; q < peaks.length; q++) {
+      var r = refineLevel(pts, peaks[q].y, 0.14);
+      if (r.count > 50) peaks[q].y = r.y;
+    }
+    var out = [];
+    for (var a2 = 0; a2 < peaks.length - 1; a2++) {
+      var h = peaks[a2 + 1].y - peaks[a2].y;
+      if (h < 1.8 || h > 6.0) continue;
+      out.push({ floorY: peaks[a2].y, ceilY: peaks[a2 + 1].y, height: h });
+    }
+    return out;
+  }
+
   // ---------- 2D RANSAC-линия (план X,Z) ----------
   function norm2(v) { var l = Math.hypot(v[0], v[1]) || 1; return [v[0] / l, v[1] / l]; }
   function ransacLine2(pts, idx, thr, iters, minLen, rng) {
@@ -1412,6 +1461,11 @@
     opts = opts || {};
     var pts = toPts(input, opts.colors);
     if (pts.length < 20) return { ok: false, error: 'Слишком мало точек для реконструкции', walls: [], slabs: [], storey: null };
+    // v1251: многоэтажный скан — строим каждый этаж отдельно и объединяем (стены/помещения с номером этажа)
+    if (opts.detectStoreys !== false && !opts._singleStorey) {
+      var levels = detectStoreys(pts, opts);
+      if (levels.length > 1) return reconstructStoreys(pts, opts, levels);
+    }
     var vox = opts.voxel != null ? opts.voxel : 0.03;
     var pd = voxelDownsample(pts, vox);
     var lv = detectLevels(pd);
@@ -1521,6 +1575,52 @@
       walls: walls, slabs: slabs, pipes: pipes, cables: cables, beams: beams, objects: objects, footprint: hull, rooms: rooms,
       pipeGroups: pipeGroups,
       stats: { pointsIn: pts.length, pointsUsed: pd.length, bandPoints: band.length, wallCount: walls.length, openingCount: openingCount, openingUncertainCount: openingUncertainCount, roomCount: rooms.length, roomsArea: rooms.reduce(function (s2, r2) { return s2 + (r2.area || 0); }, 0), pipeCount: pipes.length, pipeGroupCount: pipeGroups.length, pipeSuppressedByBeamCount: pipeSuppression.suppressed, cableCount: cables.length, beamCount: beams.length, objectCount: objects.length, columnCount: columnCount, totalWallLength: totalLen, floorArea: area, meanWallRms: meanRms }
+    };
+  }
+
+  // v1251: сборка многоэтажной модели: каждый этаж — отдельная реконструкция, затем слияние с номером этажа.
+  function reconstructStoreys(pts, opts, levels) {
+    var storeys = [], allWalls = [], allSlabs = [], allRooms = [], allPipes = [], allBeams = [], allObjects = [], allCables = [];
+    for (var s = 0; s < levels.length; s++) {
+      var lv = levels[s], pad = Math.max(0.15, lv.height * 0.06);
+      var sub = [];
+      for (var i = 0; i < pts.length; i++) {
+        var y = pts[i][1];
+        if (y < lv.floorY - pad || y > lv.ceilY + pad) continue;
+        sub.push(pts[i]);
+      }
+      if (sub.length < 500) continue;
+      var m = reconstruct(sub, Object.assign({}, opts, { _singleStorey: true, detectStoreys: false }));
+      if (!m || !m.ok) continue;
+      var idx = storeys.length;
+      function tag(list) { for (var q = 0; q < (list || []).length; q++) list[q].storeyIndex = idx; return list || []; }
+      tag(m.walls); tag(m.slabs); tag(m.rooms); tag(m.pipes); tag(m.beams); tag(m.objects); tag(m.cables);
+      allWalls = allWalls.concat(m.walls); allSlabs = allSlabs.concat(m.slabs); allRooms = allRooms.concat(m.rooms || []);
+      allPipes = allPipes.concat(m.pipes); allBeams = allBeams.concat(m.beams); allObjects = allObjects.concat(m.objects); allCables = allCables.concat(m.cables);
+      storeys.push({ index: idx, floorY: m.storey.floorY, ceilY: m.storey.ceilY, height: m.storey.height, walls: m.walls, rooms: m.rooms || [], slabs: m.slabs, stats: m.stats, footprint: m.footprint });
+    }
+    if (!storeys.length) return { ok: false, error: 'Не удалось разобрать этажи', walls: [], slabs: [], storey: null };
+    var openCount = 0, roomArea = 0;
+    for (var w = 0; w < allWalls.length; w++) openCount += (allWalls[w].openings || []).length;
+    for (var r = 0; r < allRooms.length; r++) roomArea += allRooms[r].area || 0;
+    var first = storeys[0];
+    return {
+      ok: true, units: 'm', multiStorey: true,
+      storey: { floorY: first.floorY, ceilY: first.ceilY, height: first.height },
+      storeys: storeys,
+      walls: allWalls, slabs: allSlabs, rooms: allRooms, pipes: allPipes, beams: allBeams, objects: allObjects, cables: allCables,
+      footprint: first.footprint,
+      pipeGroups: [],
+      stats: {
+        pointsIn: pts.length, pointsUsed: pts.length, bandPoints: 0,
+        wallCount: allWalls.length, openingCount: openCount, openingUncertainCount: 0,
+        roomCount: allRooms.length, roomsArea: roomArea,
+        pipeCount: allPipes.length, pipeGroupCount: 0, pipeSuppressedByBeamCount: 0,
+        cableCount: allCables.length, beamCount: allBeams.length,
+        objectCount: allObjects.length, columnCount: allObjects.filter(function (o) { return o.kind === 'column'; }).length,
+        totalWallLength: allWalls.reduce(function (a, w2) { return a + (w2.length || 0); }, 0),
+        floorArea: first.stats ? first.stats.floorArea : 0, meanWallRms: 0, storeyCount: storeys.length
+      }
     };
   }
 
@@ -1652,11 +1752,29 @@
     var site = add('IFCSITE(' + G() + ',$,\'Site\',$,$,' + siteLP + ',$,$,.ELEMENT.,$,$,$,$,$)');
     var bLP = add('IFCLOCALPLACEMENT(' + siteLP + ',' + wcs + ')');
     var building = add('IFCBUILDING(' + G() + ',$,\'Building\',$,$,' + bLP + ',$,$,.ELEMENT.,$,$,$)');
-    var sLP = add('IFCLOCALPLACEMENT(' + bLP + ',' + wcs + ')');
-    var storey = add('IFCBUILDINGSTOREY(' + G() + ',$,\'Storey\',$,$,' + sLP + ',$,$,.ELEMENT.,' + fnum(vertical(st.floorY)) + ')');
+    // v1251: этажи. Один этаж — как раньше; многоэтажная модель — отдельный IfcBuildingStorey на каждый уровень.
+    var modelStoreys = (model.storeys && model.storeys.length) ? model.storeys : null;
+    var storeyLPs = [], storeyEnts = [], storeyProducts = [];
+    if (modelStoreys) {
+      for (var si = 0; si < modelStoreys.length; si++) {
+        var sl = modelStoreys[si];
+        var slp = add('IFCLOCALPLACEMENT(' + bLP + ',' + add('IFCAXIS2PLACEMENT3D(' + pt3(0, 0, vertical(sl.floorY)) + ',' + ZDIR + ',' + XDIR + ')') + ')');
+        storeyLPs.push(slp);
+        storeyEnts.push(add('IFCBUILDINGSTOREY(' + G() + ',$,\'Этаж ' + (si + 1) + '\',$,$,' + slp + ',$,$,.ELEMENT.,' + fnum(vertical(sl.floorY)) + ')'));
+        storeyProducts.push([]);
+      }
+    } else {
+      var sLP0 = add('IFCLOCALPLACEMENT(' + bLP + ',' + wcs + ')');
+      storeyLPs.push(sLP0);
+      storeyEnts.push(add('IFCBUILDINGSTOREY(' + G() + ',$,\'Storey\',$,$,' + sLP0 + ',$,$,.ELEMENT.,' + fnum(vertical(st.floorY)) + ')'));
+      storeyProducts.push([]);
+    }
+    add('IFCRELAGGREGATES(' + G() + ',$,$,$,' + building + ',(' + storeyEnts.join(',') + '))');
+    var sLP = storeyLPs[0], storey = storeyEnts[0];
+    function lpFor(idx) { return storeyLPs[idx] != null ? storeyLPs[idx] : storeyLPs[0]; }
+    function pushProduct(ref, idx) { (storeyProducts[idx] || storeyProducts[0]).push(ref); }
     add('IFCRELAGGREGATES(' + G() + ',$,$,$,' + project + ',(' + site + '))');
     add('IFCRELAGGREGATES(' + G() + ',$,$,$,' + site + ',(' + building + '))');
-    add('IFCRELAGGREGATES(' + G() + ',$,$,$,' + building + ',(' + storey + '))');
 
     var products = [];
     // стены (план X,Z → IFC X,Y; высота Y → IFC Z). v1160: одна стена = несколько тел (проёмы).
@@ -1676,9 +1794,9 @@
       if (!solidRefs.length) continue;
       var shp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + solidRefs.join(',') + '))');
       var pds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + shp + '))');
-      var wLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + wcs + ')');
+      var wLP = add('IFCLOCALPLACEMENT(' + lpFor(w.storeyIndex || 0) + ',' + wcs + ')');
       var wall = add('IFCWALLSTANDARDCASE(' + G() + ',$,\'Стена ' + (i + 1) + '\',$,$,' + wLP + ',' + pds + ',$,$)');
-      products.push(wall);
+      pushProduct(wall, w.storeyIndex || 0);
       // v1231: сохраняем каждый распознанный проём отдельным IFC feature и
       // связываем его со стеной через IfcRelVoidsElement. Геометрия стены
       // остаётся разбитой на сегменты вокруг проёма для совместимости readers.
@@ -1698,7 +1816,7 @@
         var openingRelativePlacement = add('IFCAXIS2PLACEMENT3D(' +
           pt3(openingPlan[0], openingPlan[1], vertical(w.base + vb.sill)) + ',' +
           ZDIR + ',' + dir3(openingAxis[0], openingAxis[1], 0) + ')');
-        var openingLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + openingRelativePlacement + ')');
+        var openingLP = add('IFCLOCALPLACEMENT(' + lpFor(w.storeyIndex || 0) + ',' + openingRelativePlacement + ')');
         var openingProfilePlace = add('IFCAXIS2PLACEMENT2D(' + pt2(0, 0) + ',' + dir2(1, 0) + ')');
         var wallThickness = Math.max(Number(w.thickness) || 0, 1e-3);
         var openingProfile = add('IFCRECTANGLEPROFILEDEF(.AREA.,$,' + openingProfilePlace + ',' +
@@ -1713,7 +1831,7 @@
           stepString('Проём ' + (oi + 1) + ' (' + openingKind + ')') +
           ',$,$,' + openingLP + ',' + openingPds + ',$,.OPENING.)');
         add('IFCRELVOIDSELEMENT(' + G() + ',$,$,$,' + wall + ',' + opening + ')');
-        products.push(opening);
+        pushProduct(opening, w.storeyIndex || 0);
         // v1242: заполнение проёма — IfcWindow / IfcDoor, как в полноценной модели (IfcRelFillsElement)
         var isWindow = op.kind === 'window' || (!isFinite(op.kind) && (vb.sill || 0) > 0.35);
         if (op.kind !== 'opening') {
@@ -1722,17 +1840,18 @@
           var fillSolid = add('IFCEXTRUDEDAREASOLID(' + fillProfile + ',' + openingSolidPlace + ',' + ZDIR + ',' + fnum(vb.head - vb.sill) + ')');
           var fillShape = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + fillSolid + '))');
           var fillPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + fillShape + '))');
-          var fillLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + openingRelativePlacement + ')');
+          var fillLP = add('IFCLOCALPLACEMENT(' + lpFor(w.storeyIndex || 0) + ',' + openingRelativePlacement + ')');
           var fillEnt = isWindow
             ? add('IFCWINDOW(' + G() + ',$,' + stepString('Окно ' + (oi + 1)) + ',$,$,' + fillLP + ',' + fillPds + ',$,' + fnum(vb.head - vb.sill) + ',' + fnum(oe - os) + ',$,$,$,$)')
             : add('IFCDOOR(' + G() + ',$,' + stepString('Дверь ' + (oi + 1)) + ',$,$,' + fillLP + ',' + fillPds + ',$,' + fnum(vb.head - vb.sill) + ',' + fnum(oe - os) + ',$,$,$)');
           add('IFCRELFILLSELEMENT(' + G() + ',$,$,$,' + opening + ',' + fillEnt + ')');
-          products.push(fillEnt);
+          pushProduct(fillEnt, w.storeyIndex || 0);
         }
       }
     }
     // v1245: помещения — IfcSpace (объём от пола до потолка), привязка к этажу через IfcRelAggregates
     var spaceRefs = [];
+    var spaceRefsByStorey = storeyEnts.map(function () { return []; });
     for (var rm = 0; rm < rooms.length; rm++) {
       var room = rooms[rm], rpoly = room.polygon || [];
       if (rpoly.length < 3 || !(room.area > 0.5)) continue;
@@ -1745,10 +1864,13 @@
       var rsolid = add('IFCEXTRUDEDAREASOLID(' + rprof + ',' + rplc + ',' + ZDIR + ',' + fnum(Math.max(0.5, st.height)) + ')');
       var rshp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + rsolid + '))');
       var rpds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + rshp + '))');
-      var rLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + wcs + ')');
-      spaceRefs.push(add('IFCSPACE(' + G() + ',$,' + stepString('Помещение ' + (rm + 1) + ' — ' + room.area.toFixed(1) + ' м²') + ',$,$,' + rLP + ',' + rpds + ',$,.ELEMENT.,.INTERNAL.,$)'));
+      var rLP = add('IFCLOCALPLACEMENT(' + lpFor(room.storeyIndex || 0) + ',' + wcs + ')');
+      var spaceEnt = add('IFCSPACE(' + G() + ',$,' + stepString('Помещение ' + (rm + 1) + ' — ' + room.area.toFixed(1) + ' м²') + ',$,$,' + rLP + ',' + rpds + ',$,.ELEMENT.,.INTERNAL.,$)');
+      (spaceRefsByStorey[room.storeyIndex || 0] || spaceRefsByStorey[0]).push(spaceEnt);
     }
-    if (spaceRefs.length) add('IFCRELAGGREGATES(' + G() + ',$,$,$,' + storey + ',(' + spaceRefs.join(',') + '))');
+    for (var sr = 0; sr < spaceRefsByStorey.length; sr++) {
+      if (spaceRefsByStorey[sr].length) add('IFCRELAGGREGATES(' + G() + ',$,$,$,' + storeyEnts[sr] + ',(' + spaceRefsByStorey[sr].join(',') + '))');
+    }
     // плиты пола/потолка
     for (var s = 0; s < slabs.length; s++) {
       var sl = slabs[s], poly = sl.polygon || [];
@@ -1764,10 +1886,10 @@
       var sSolid = add('IFCEXTRUDEDAREASOLID(' + prof2 + ',' + sPlc + ',' + dir3(0, 0, 1) + ',' + fnum(sl.thickness) + ')');
       var sShp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + sSolid + '))');
       var sPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + sShp + '))');
-      var slLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + wcs + ')');
+      var slLP = add('IFCLOCALPLACEMENT(' + lpFor(sl.storeyIndex || 0) + ',' + wcs + ')');
       var predefined = sl.type === 'ceiling' ? '.ROOF.' : '.FLOOR.';
       var slab = add('IFCSLAB(' + G() + ',$,\'' + (sl.type === 'ceiling' ? 'Потолок' : 'Пол') + '\',$,$,' + slLP + ',' + sPds + ',$,' + predefined + ')');
-      products.push(slab);
+      pushProduct(slab, sl.storeyIndex || 0);
     }
     // трубы/MEP (v1160) — круглый профиль, экструзия вдоль оси; IfcPipeSegment.
     for (var pp = 0; pp < pipes.length; pp++) {
@@ -1782,10 +1904,10 @@
       var pSolid = add('IFCEXTRUDEDAREASOLID(' + cProf + ',' + pPlc + ',' + dir3(0, 0, 1) + ',' + fnum(plen) + ')');
       var pShp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + pSolid + '))');
       var pPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + pShp + '))');
-      var pLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + wcs + ')');
+      var pLP = add('IFCLOCALPLACEMENT(' + lpFor(pipe.storeyIndex || 0) + ',' + wcs + ')');
       var pipeName = 'Труба ' + (pp + 1) + (pipe.dn ? ' ' + pipe.dn : '') + (pipe.material ? ' (' + pipe.material + ')' : '');
       var pipeProd = add('IFCPIPESEGMENT(' + G() + ',$,\'' + pipeName + '\',$,$,' + pLP + ',' + pPds + ',$,$)');
-      products.push(pipeProd);
+      pushProduct(pipeProd, pipe.storeyIndex || 0);
     }
     // балки (v1161) — прямоугольный профиль, экструзия вдоль оси; IfcBeam.
     for (var bm = 0; bm < beams.length; bm++) {
@@ -1799,9 +1921,9 @@
       var bSolid = add('IFCEXTRUDEDAREASOLID(' + bProf + ',' + bPlc + ',' + dir3(0, 0, 1) + ',' + fnum(blen) + ')');
       var bShp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + bSolid + '))');
       var bPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + bShp + '))');
-      var bLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + wcs + ')');
+      var bLP = add('IFCLOCALPLACEMENT(' + lpFor(bmw.storeyIndex || 0) + ',' + wcs + ')');
       var beamProd = add('IFCBEAM(' + G() + ',$,\'Балка ' + (bm + 1) + '\',$,$,' + bLP + ',' + bPds + ',$,$)');
-      products.push(beamProd);
+      pushProduct(beamProd, bmw.storeyIndex || 0);
     }
     // объекты/оборудование (v1160) — прокси-параллелепипеды IfcBuildingElementProxy
     var objects = model.objects || [];
@@ -1814,13 +1936,15 @@
       var oSolid = add('IFCEXTRUDEDAREASOLID(' + oProf + ',' + oPlc + ',' + dir3(0, 0, 1) + ',' + fnum(Math.max(obj.hy * 2, 1e-3)) + ')');
       var oShp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + oSolid + '))');
       var oPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + oShp + '))');
-      var oLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + wcs + ')');
+      var oLP = add('IFCLOCALPLACEMENT(' + lpFor(obj.storeyIndex || 0) + ',' + wcs + ')');
       var oprod;
       if (obj.kind === 'column') oprod = add('IFCCOLUMN(' + G() + ',$,\'Колонна ' + (ob + 1) + '\',$,$,' + oLP + ',' + oPds + ',$,$)');
       else oprod = add('IFCBUILDINGELEMENTPROXY(' + G() + ',$,\'Объект ' + (ob + 1) + '\',$,$,' + oLP + ',' + oPds + ',$,.NOTDEFINED.)');
-      products.push(oprod);
+      pushProduct(oprod, obj.storeyIndex || 0);
     }
-    if (products.length) add('IFCRELCONTAINEDINSPATIALSTRUCTURE(' + G() + ',$,$,$,(' + products.join(',') + '),' + storey + ')');
+    for (var sp = 0; sp < storeyProducts.length; sp++) {
+      if (storeyProducts[sp].length) add('IFCRELCONTAINEDINSPATIALSTRUCTURE(' + G() + ',$,$,$,(' + storeyProducts[sp].join(',') + '),' + storeyEnts[sp] + ')');
+    }
 
     var now = new Date().toISOString();
     var header = [
@@ -1986,7 +2110,7 @@
   var API = {
     reconstruct: reconstruct, toIFC: toIFC, toOBJ: toOBJ, toDXF: toDXF,
     voxelDownsample: voxelDownsample, detectLevels: detectLevels, hull2d: hull2d, polyArea: polyArea,
-    detectRooms: detectRooms, roomOutline: roomOutline, simplifyPoly: simplifyPoly,
+    detectRooms: detectRooms, roomOutline: roomOutline, simplifyPoly: simplifyPoly, detectStoreys: detectStoreys,
     version: '1245'
   };
   if (typeof window !== 'undefined') window.Scan2BIM = API;

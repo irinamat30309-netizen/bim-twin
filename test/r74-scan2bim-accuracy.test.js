@@ -170,3 +170,58 @@ test('r74: высокая мебель у стены не становится �
   assert.equal(m.walls.length, 5, 'стен: ' + m.walls.length);
   assert.ok(m.objects.some(o => o.kind === 'equipment'), 'шкаф должен попасть в объекты');
 });
+
+// два этажа по 3 м: плиты на 0, 3 и 6 → два этажа, у каждого свои стены и проёмы
+function twoStoreyCloud(step = 0.04) {
+  const W = 8, D = 6, H = 3, T = 0.25, rand = rng(5), pts = [];
+  const rings = () => [
+    { a: [0, 0], b: [W, 0], t: T, openings: [{ s0: 1.5, s1: 2.9, z0: 0.9, z1: 2.3 }] },
+    { a: [W, 0], b: [W, D], t: T, openings: [] },
+    { a: [W, D], b: [0, D], t: T, openings: [] },
+    { a: [0, D], b: [0, 0], t: T, openings: [] }
+  ];
+  const levels = [
+    { y: 0, walls: rings() },
+    { y: H, walls: rings().concat([{ a: [4, 0.12], b: [4, D - 0.12], t: 0.12, openings: [{ s0: 2.0, s1: 2.9, z0: 0, z1: 2.1 }] }]) }
+  ];
+  for (const lv of levels) {
+    for (const w of lv.walls) {
+      const len = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+      const dx = (w.b[0] - w.a[0]) / len, dz = (w.b[1] - w.a[1]) / len, nx = -dz, nz = dx;
+      for (const side of [-1, 1]) for (let s = 0; s <= len; s += step) for (let z = 0.02; z <= H - 0.02; z += step) {
+        let hole = false;
+        for (const o of (w.openings || [])) if (s >= o.s0 && s <= o.s1 && z >= o.z0 && z <= o.z1) hole = true;
+        if (hole) continue;
+        const off = side * w.t / 2 + (rand() - 0.5) * 0.004;
+        pts.push([w.a[0] + dx * s + nx * off, lv.y + z, w.a[1] + dz * s + nz * off]);
+      }
+    }
+    for (let x = 0; x <= W; x += 0.08) for (let z = 0; z <= D; z += 0.08) pts.push([x, lv.y, z]);
+  }
+  for (let x = 0; x <= W; x += 0.08) for (let z = 0; z <= D; z += 0.08) pts.push([x, 2 * H, z]);
+  return pts;
+}
+
+test('r74: два этажа — уровни, стены и проёмы каждого этажа, IfcBuildingStorey на этаж', () => {
+  const pts = twoStoreyCloud();
+  const levels = S.detectStoreys(pts);
+  assert.equal(levels.length, 2, 'уровней: ' + levels.length);
+  assert.ok(Math.abs(levels[0].floorY - 0) <= 0.03, 'пол 1: ' + levels[0].floorY);
+  assert.ok(Math.abs(levels[1].floorY - 3) <= 0.03, 'пол 2: ' + levels[1].floorY);
+  const m = S.reconstruct(pts, { voxel: 0.04 });
+  assert.equal(m.ok, true, m.error);
+  assert.equal(m.storeys.length, 2, 'этажей в модели: ' + m.storeys.length);
+  assert.equal(m.walls.length, 9, 'стен всего: ' + m.walls.length);
+  assert.equal(m.storeys[0].walls.length, 4, 'стен 1 этажа');
+  assert.equal(m.storeys[1].walls.length, 5, 'стен 2 этажа');
+  assert.equal(m.stats.openingCount, 3, 'проёмов: ' + m.stats.openingCount);
+  const ops0 = m.storeys[0].walls.reduce((a, w) => a + (w.openings || []).length, 0);
+  const ops1 = m.storeys[1].walls.reduce((a, w) => a + (w.openings || []).length, 0);
+  assert.equal(ops0, 1, 'проёмов на 1 этаже');
+  assert.equal(ops1, 2, 'проёмов на 2 этаже (окно + дверь)');
+  for (const w of m.walls) assert.ok(w.storeyIndex === 0 || w.storeyIndex === 1, 'у стены есть номер этажа');
+  const ifc = S.toIFC(m, { name: 'two.ifc' });
+  assert.equal((ifc.match(/=IFCBUILDINGSTOREY\(/g) || []).length, 2, 'IfcBuildingStorey на этаж');
+  assert.equal((ifc.match(/=IFCRELCONTAINEDINSPATIALSTRUCTURE\(/g) || []).length, 2, 'связь элементов по этажам');
+  assert.equal((ifc.match(/=IFCWALLSTANDARDCASE\(/g) || []).length, 9, 'все стены в IFC');
+});
