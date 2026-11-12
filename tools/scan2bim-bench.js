@@ -115,6 +115,18 @@ function sceneTwoStorey() {
   };
 }
 
+function sceneFacade() {
+  // фасад 20 м, 3 этажа по 3 м: одна длинная стена на этаж + горизонтальные полосы перекрытий
+  const H = 3.0, T = 0.3, len = 20, floors = 3;
+  const wall = (i) => ({
+    a: [-len / 2, 0], b: [len / 2, 0], t: T, h: H,
+    openings: [0, 1, 2, 3, 4, 5].map(k => ({ s0: 1.2 + k * 3.1, s1: 2.6 + k * 3.1, z0: 0.9 + (i % 2) * 0.1, z1: 2.3 }))
+  });
+  const multi = [];
+  for (let i = 0; i < floors; i++) multi.push({ floor: i * H, ceil: (i + 1) * H, walls: [wall(i)] });
+  return { name: 'фасад 20 м, 3 этажа по 3 м (окна, полосы перекрытий)', w: len, d: 4, H: floors * H, multi, facade: true };
+}
+
 function buildCloud(sc, opt) {
   const rand = rng(opt.seed || 1);
   const pts = [];
@@ -125,6 +137,15 @@ function buildCloud(sc, opt) {
       const h = st.ceil - st.floor, tmp = [];
       for (const w of st.walls) sampleWall(tmp, w, { floorY: 0, step: opt.step, noise: opt.noise }, rand);
       for (const p of tmp) pts.push([p[0], p[1] + st.floor, p[2]]);
+    }
+    if (sc.facade) {
+      // полосы перекрытий: горизонтальные полосы по 0.6 м в глубину у каждого уровня
+      for (const st of sc.multi) for (const y of [st.floor, st.ceil]) {
+        for (let x = -W / 2; x <= W / 2; x += 0.08) for (let z = -0.35; z <= 0.35; z += 0.08) {
+          pts.push([x + (rand() - 0.5) * opt.noise, y + (rand() - 0.5) * opt.noise, z + (rand() - 0.5) * opt.noise]);
+        }
+      }
+      return pts;
     }
     for (const st of sc.multi) {
       for (let x = 0; x <= W; x += 0.08) for (let z = 0; z <= D; z += 0.08) {
@@ -310,7 +331,7 @@ function evaluate(sc, model) {
   return out;
 }
 
-const scenes = { flat: sceneFlat, lshape: sceneLShape, rooms: sceneRooms, furniture: sceneFurniture, twostorey: sceneTwoStorey };
+const scenes = { flat: sceneFlat, lshape: sceneLShape, rooms: sceneRooms, furniture: sceneFurniture, twostorey: sceneTwoStorey, facade: sceneFacade };
 const list = process.argv[2] && scenes[process.argv[2]] ? [process.argv[2]] : Object.keys(scenes);
 const seedArg = (process.argv.find(a => /^--seed=/.test(a)) || '').split('=')[1];
 const results = [];
@@ -319,7 +340,7 @@ for (const key of list) {
   const opt = { step: 0.025, noise: 0.006, seed: seedArg ? Number(seedArg) : 1 };
   if (key === 'flat') { sc.walls[0].openings.length = 2; }
   const pts = buildCloud(sc, opt);
-  if (process.argv.includes('--dump')) console.log('[отладка] точек', pts.length, 'уровней', S.detectStoreys(pts).length, 'многоэтажная', !!sc.multi);
+  if (process.argv.includes('--dump')) console.log('[отладка] точек', pts.length, 'уровней', S.detectStoreys(pts).length, S.detectStoreys(pts).map(l => l.floorY.toFixed(2)).join(','), 'многоэтажная', !!sc.multi);
   const model = S.reconstruct(pts, { voxel: 0.04 });
   if (!model.ok) { results.push({ scene: sc.name, error: model.error }); continue; }
   if (process.argv.includes('--plan')) {

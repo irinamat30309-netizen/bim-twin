@@ -81,8 +81,107 @@
     return { floorY: f.y, ceilY: c.y, height: c.y - f.y, floorRms: f.rms, ceilRms: c.rms };
   }
 
+  // v1253: нормаль по точкам вокселя — наименьший собственный вектор ковариации (метод Якоби для 3×3).
+  function voxelNormal(acc) {
+    var n = acc.n; if (n < 4) return null;
+    var mx = acc.sx / n, my = acc.sy / n, mz = acc.sz / n;
+    var cxx = acc.sxx / n - mx * mx, cyy = acc.syy / n - my * my, czz = acc.szz / n - mz * mz;
+    var cxy = acc.sxy / n - mx * my, cxz = acc.sxz / n - mx * mz, cyz = acc.syz / n - my * mz;
+    var A = [[cxx, cxy, cxz], [cxy, cyy, cyz], [cxz, cyz, czz]];
+    var V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    for (var it = 0; it < 8; it++) {
+      var p = 0, q = 1, maxOff = Math.abs(A[0][1]);
+      if (Math.abs(A[0][2]) > maxOff) { maxOff = Math.abs(A[0][2]); p = 0; q = 2; }
+      if (Math.abs(A[1][2]) > maxOff) { maxOff = Math.abs(A[1][2]); p = 1; q = 2; }
+      if (maxOff < 1e-12) break;
+      var app = A[p][p], aqq = A[q][q], apq = A[p][q];
+      var theta = 0.5 * Math.atan2(2 * apq, app - aqq);
+      var c = Math.cos(theta), s = Math.sin(theta);
+      for (var k = 0; k < 3; k++) {
+        var akp = A[k][p], akq = A[k][q];
+        A[k][p] = c * akp - s * akq; A[k][q] = s * akp + c * akq;
+      }
+      for (var k2 = 0; k2 < 3; k2++) {
+        var apk = A[p][k2], aqk = A[q][k2];
+        A[p][k2] = c * apk - s * aqk; A[q][k2] = s * apk + c * aqk;
+      }
+      for (var k3 = 0; k3 < 3; k3++) {
+        var vkp = V[k3][p], vkq = V[k3][q];
+        V[k3][p] = c * vkp - s * vkq; V[k3][q] = s * vkp + c * vkq;
+      }
+    }
+    var best = 0;
+    if (A[1][1] < A[best][best]) best = 1;
+    if (A[2][2] < A[best][best]) best = 2;
+    return [V[0][best], V[1][best], V[2][best]];
+  }
+
+  // v1253: уровни по ГОРИЗОНТАЛЬНЫМ поверхностям. Нужно для фасадов: плоскостей перекрытий почти нет,
+  // но остаются горизонтальные полосы (кромки плит, откосы окон) — их нормали смотрят вверх/вниз.
+  function horizontalLevels(pts, o) {
+    if (!pts || pts.length < 5000) return [];
+    var cell = (o && o.normalCell) || 0.15;
+    var grid = Object.create(null);
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      var k = Math.floor(p[0] / cell) + '_' + Math.floor(p[1] / cell) + '_' + Math.floor(p[2] / cell);
+      var a = grid[k];
+      if (!a) a = grid[k] = { n: 0, sx: 0, sy: 0, sz: 0, sxx: 0, syy: 0, szz: 0, sxy: 0, sxz: 0, syz: 0 };
+      a.n++; a.sx += p[0]; a.sy += p[1]; a.sz += p[2];
+      a.sxx += p[0] * p[0]; a.syy += p[1] * p[1]; a.szz += p[2] * p[2];
+      a.sxy += p[0] * p[1]; a.sxz += p[0] * p[2]; a.syz += p[1] * p[2];
+    }
+    var ys = [], hpts = [];
+    for (var key in grid) {
+      var acc = grid[key];
+      if (acc.n < 5) continue;
+      var nrm = voxelNormal(acc);
+      if (!nrm) continue;
+      if (Math.abs(nrm[1]) >= 0.72) {
+        var hx = acc.sx / acc.n, hy = acc.sy / acc.n, hz = acc.sz / acc.n;
+        ys.push(hy); hpts.push([hx, hy, hz]);
+      }
+    }
+    if (ys.length < 200) return [];
+    ys.sort(function (x, y) { return x - y; });
+    var lo = ys[0] - 0.1, hi = ys[ys.length - 1] + 0.1;
+    var bin = 0.10, nb = Math.max(8, Math.min(2000, Math.round((hi - lo) / bin)));
+    var hist = new Float64Array(nb);
+    for (var j = 0; j < ys.length; j++) { var bi = Math.floor((ys[j] - lo) / bin); if (bi >= 0 && bi < nb) hist[bi]++; }
+    var sm = new Float64Array(nb);
+    for (var b = 0; b < nb; b++) sm[b] = (hist[Math.max(0, b - 1)] + hist[b] + hist[Math.min(nb - 1, b + 1)]) / 3;
+    var maxH = 0; for (var m = 0; m < nb; m++) if (sm[m] > maxH) maxH = sm[m];
+    if (!maxH) return [];
+    var minC = Math.max(8, maxH * 0.18), peaks = [];
+    for (var b2 = 0; b2 < nb; b2++) {
+      if (sm[b2] < minC) continue;
+      var lOk = b2 === 0 || sm[b2] >= sm[b2 - 1], rOk = b2 === nb - 1 || sm[b2] >= sm[b2 + 1];
+      if (!lOk || !rOk) continue;
+      var y = lo + (b2 + 0.5) * bin;
+      if (peaks.length && y - peaks[peaks.length - 1] < 0.45) {
+        if (sm[b2] > sm[Math.round((peaks[peaks.length - 1] - lo) / bin)]) peaks[peaks.length - 1] = y;
+        continue;
+      }
+      peaks.push(y);
+    }
+    // v1254: горизонтальные полосы должны быть ПЛОЩАДНЫМИ (перекрытие), а не подоконником/откосом:
+    // считаем занятую площадь (клетки 20 см) в слое ±6 см и оставляем только крупные
+    var out = [];
+    for (var q = 0; q < peaks.length; q++) {
+      var cellsSet = new Set();
+      for (var r = 0; r < hpts.length; r++) {
+        if (Math.abs(hpts[r][1] - peaks[q]) > 0.08) continue;
+        cellsSet.add(Math.floor(hpts[r][0] / 0.2) * 100003 + Math.floor(hpts[r][2] / 0.2));
+      }
+      if (cellsSet.size < (o && o.minLevelCells ? o.minLevelCells : 30)) continue;
+      out.push(peaks[q]);
+    }
+    return out;
+  }
+
   // v1252: многоэтажный скан. Плотность точек по высоте зависит от густоты съёмки, поэтому уровни ищем
   // по ПЛОЩАДИ покрытия: у пола/потолка в слое 10 см занято почти всё пятно плана, у стен — только линии.
+  // v1253: плюс уровни по горизонтальным поверхностям (для фасадов, где плоскостей перекрытий почти нет).
   // Возвращает [{floorY, ceilY, height}].
   function detectStoreys(pts, o) {
     o = o || {};
@@ -109,12 +208,28 @@
       var leftOk = b === 0 || cov[b] >= cov[b - 1];
       var rightOk = b === nb - 1 || cov[b] >= cov[b + 1];
       if (!leftOk || !rightOk) continue;
+      // v1255: настоящий уровень — всплеск покрытия, а не «полка» стены: сравниваем с соседями в ±0.4–0.6 м
+      var sideCov = [];
+      if (b - 5 >= 0) sideCov.push(cov[b - 5]);
+      if (b + 5 <= nb - 1) sideCov.push(cov[b + 5]);
+      var aroundCov = (sideCov.length ? sideCov.reduce(function (x, y3) { return x + y3; }, 0) / sideCov.length : cov[b]) || 1;
+      if (cov[b] / aroundCov < 1.45) continue;
       var y = lo + (b + 0.5) * bin;
       if (peaks.length && y - peaks[peaks.length - 1].y < 0.45) {
         if (cov[b] > peaks[peaks.length - 1].c) peaks[peaks.length - 1] = { y: y, c: cov[b] };
         continue;
       }
       peaks.push({ y: y, c: cov[b] });
+    }
+    // v1253: если покрытие не дало уровней (фасады, разреженные сканы) — берём горизонтальные полосы
+    if (peaks.length < 2 && o.useHorizontalLevels !== false) {
+      var hl = horizontalLevels(pts, o);
+      for (var h = 0; h < hl.length; h++) {
+        var exists = false;
+        for (var q0 = 0; q0 < peaks.length; q0++) if (Math.abs(peaks[q0].y - hl[h]) < 0.35) { exists = true; break; }
+        if (!exists) peaks.push({ y: hl[h], c: maxCov * 0.2 });
+      }
+      peaks.sort(function (a3, b3) { return a3.y - b3.y; });
     }
     if (peaks.length < 2) return [];
     for (var q = 0; q < peaks.length; q++) {
@@ -123,9 +238,9 @@
     }
     var out = [];
     for (var a2 = 0; a2 < peaks.length - 1; a2++) {
-      var h = peaks[a2 + 1].y - peaks[a2].y;
-      if (h < 1.8 || h > 6.0) continue;
-      out.push({ floorY: peaks[a2].y, ceilY: peaks[a2 + 1].y, height: h });
+      var hh = peaks[a2 + 1].y - peaks[a2].y;
+      if (hh < 1.8 || hh > 6.0) continue;
+      out.push({ floorY: peaks[a2].y, ceilY: peaks[a2 + 1].y, height: hh });
     }
     return out;
   }
@@ -2110,7 +2225,7 @@
   var API = {
     reconstruct: reconstruct, toIFC: toIFC, toOBJ: toOBJ, toDXF: toDXF,
     voxelDownsample: voxelDownsample, detectLevels: detectLevels, hull2d: hull2d, polyArea: polyArea,
-    detectRooms: detectRooms, roomOutline: roomOutline, simplifyPoly: simplifyPoly, detectStoreys: detectStoreys,
+    detectRooms: detectRooms, roomOutline: roomOutline, simplifyPoly: simplifyPoly, detectStoreys: detectStoreys, horizontalLevels: horizontalLevels,
     version: '1245'
   };
   if (typeof window !== 'undefined') window.Scan2BIM = API;

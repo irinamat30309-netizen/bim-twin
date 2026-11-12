@@ -214,6 +214,40 @@ function twoStoreyCloud(step = 0.04) {
   return pts;
 }
 
+test('r74: фасад — уровни по полосам перекрытий, 3 этажа по 3 м', () => {
+  // фасад 20 м, три этажа: вертикальная стена + горизонтальные полосы перекрытий
+  const H = 3, T = 0.3, len = 20, floors = 3, step = 0.05, rnd = rng(9), pts = [];
+  const wins = (f) => [0, 1, 2, 3, 4, 5].map(k => ({ s0: 1.2 + k * 3.1, s1: 2.6 + k * 3.1, z0: 0.9 + (f % 2) * 0.1, z1: 2.3 }));
+  for (let f = 0; f < floors; f++) {
+    const y0 = f * H, ops = wins(f);
+    for (const side of [-1, 1]) for (let s = 0; s <= len; s += step) for (let z = 0.02; z <= H - 0.02; z += step) {
+      let hole = false;
+      for (const o of ops) if (s >= o.s0 && s <= o.s1 && z >= o.z0 && z <= o.z1) hole = true;
+      if (hole) continue;
+      pts.push([-len / 2 + s, y0 + z + (rnd() - 0.5) * 0.004, side * T / 2]);
+    }
+    // полосы перекрытий (пол этажа и его потолок)
+    for (const y of [y0, y0 + H]) {
+      for (let x = -len / 2; x <= len / 2; x += 0.1) for (let z = -0.35; z <= 0.35; z += 0.1) {
+        pts.push([x, y + (rnd() - 0.5) * 0.004, z]);
+      }
+    }
+  }
+  const levels = S.detectStoreys(pts);
+  assert.equal(levels.length, floors, 'уровней: ' + levels.length);
+  for (let f = 0; f < floors; f++) assert.ok(Math.abs(levels[f].floorY - f * H) <= 0.05, `уровень ${f}: ${levels[f].floorY}`);
+  const m = S.reconstruct(pts, { voxel: 0.05 });
+  assert.equal(m.ok, true, m.error);
+  assert.equal(m.storeys.length, floors, 'этажей: ' + m.storeys.length);
+  for (let f = 0; f < floors; f++) {
+    const st = m.storeys[f];
+    assert.ok(Math.abs(st.floorY - f * H) <= 0.05, `пол этажа ${f + 1}: ${st.floorY}`);
+    assert.ok(Math.abs(st.height - H) <= 0.08, `высота этажа ${f + 1}: ${st.height}`);
+    assert.equal(st.walls.length, 1, `стен на этаже ${f + 1}: ${st.walls.length}`);
+    assert.equal(st.walls[0].openings.length, 6, `окон на этаже ${f + 1}: ${st.walls[0].openings.length}`);
+  }
+});
+
 test('r74: два этажа — уровни, стены и проёмы каждого этажа, IfcBuildingStorey на этаж', () => {
   const pts = twoStoreyCloud();
   const levels = S.detectStoreys(pts);
