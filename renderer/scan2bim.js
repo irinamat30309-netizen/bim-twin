@@ -52,9 +52,13 @@
 
   // ---------- уровни пола/потолка (Y вверх) ----------
   function refineLevel(pts, y0, tol) {
-    var s = 0, ss = 0, n = 0; for (var i = 0; i < pts.length; i++) { var y = pts[i][1]; if (Math.abs(y - y0) < tol) { s += y; ss += y * y; n++; } }
-    if (!n) return { y: y0, rms: 0, count: 0 };
-    var m = s / n; return { y: m, rms: Math.sqrt(Math.max(0, ss / n - m * m)), count: n };
+    // v1241: медиана по окну ±tol вместо среднего — выбросы (плинтус, провода, мусор у пола) не сдвигают уровень
+    var win = []; for (var i = 0; i < pts.length; i++) { var y = pts[i][1]; if (Math.abs(y - y0) < tol) win.push(y); }
+    var n = win.length; if (!n) return { y: y0, rms: 0, count: 0 };
+    win.sort(function (a, b) { return a - b; });
+    var med = win[n >> 1], s = 0;
+    for (var j = 0; j < n; j++) { var d = win[j] - med; s += d * d; }
+    return { y: med, rms: Math.sqrt(s / n), count: n };
   }
   function detectLevels(pts) {
     var ys = sortedNum(pts.map(function (p) { return p[1]; }));
@@ -72,7 +76,7 @@
     var f0 = lo + (fb + 0.5) * bin, c0 = lo + (cbn + 0.5) * bin;
     if (!(c0 - f0 > 0.3)) { f0 = percentile(ys, 0.01); c0 = percentile(ys, 0.99); }
     var span = (c0 - f0) || 1;
-    var tol = Math.max(0.05, span * 0.03);
+    var tol = Math.max(0.03, Math.min(0.06, span * 0.02));
     var f = refineLevel(pts, f0, tol), c = refineLevel(pts, c0, tol);
     return { floorY: f.y, ceilY: c.y, height: c.y - f.y, floorRms: f.rms, ceilRms: c.rms };
   }
@@ -325,6 +329,426 @@
       wl.a = [nA0, nA1]; wl.b = [nB0, nB1]; wl.length = nl;
       wl.dir = norm2([nB0 - nA0, nB1 - nA1]); wl.angleDeg = Math.atan2(wl.dir[1], wl.dir[0]) * 180 / Math.PI; wl.trimmed = true;
     }
+  }
+
+  // v1240: проёмы по ВЕРТИКАЛЬНОМУ профилю стены, а не по 2D-разрыву.
+  // Раньше окно не находилось: под подоконником есть точки, и в проекции на план разрыва нет.
+  // Теперь для каждой позиции вдоль стены строится профиль занятости по высоте (ячейки 10×10 см):
+  // дверь — разрыв от пола, окно — разрыв между подоконником и перемычкой.
+  function collectNearWallPoints(pd, walls, margin) {
+    var cell = 1.0, buckets = Object.create(null), out = new Array(walls.length);
+    for (var w = 0; w < walls.length; w++) out[w] = [];
+    for (var wi = 0; wi < walls.length; wi++) {
+      var wall = walls[wi], dir = norm2(wall.dir), nrm = [-dir[1], dir[0]], L = wall.length;
+      var a = wall.a, step = 0.9;
+      for (var s = 0; s <= L + 1e-9; s += step) {
+        var cx = a[0] + dir[0] * s, cz = a[1] + dir[1] * s;
+        for (var k = -1; k <= 1; k++) {
+          var key = Math.floor((cx + nrm[0] * k * margin) / cell) + '_' + Math.floor((cz + nrm[1] * k * margin) / cell);
+          (buckets[key] || (buckets[key] = [])).push(wi);
+        }
+      }
+    }
+    for (var i = 0; i < pd.length; i++) {
+      var p = pd[i];
+      var list = buckets[Math.floor(p[0] / cell) + '_' + Math.floor(p[2] / cell)];
+      if (!list || !list.length) continue;
+      for (var b = 0; b < list.length; b++) {
+        var wid = list[b], wl = walls[wid], wd = norm2(wl.dir), wn = [-wd[1], wd[0]];
+        var px = p[0] - wl.a[0], pz = p[2] - wl.a[1];
+        var perp = px * wn[0] + pz * wn[1];
+        if (perp < 0 ? -perp > margin : perp > margin) continue;
+        var t = px * wd[0] + pz * wd[1];
+        if (t < -0.05 || t > wl.length + 0.05) continue;
+        out[wid].push(p); break;
+      }
+    }
+    return out;
+  }
+
+  function detectWallOpenings3d(w, pts, thr, lv) {
+    w.openings = [];
+    var L = w.length; if (L < 1.0 || !pts || !pts.length) return;
+    var dir = norm2(w.dir), nrm = [-dir[1], dir[0]], a = w.a;
+    var band2 = Math.max(thr * 2.5, 0.10);
+    var base = lv && isFinite(lv.floorY) ? lv.floorY : (w.base || 0);
+    var top = lv && isFinite(lv.ceilY) ? lv.ceilY : (w.top || base + (w.height || 3));
+    var H = Math.max(1.0, top - base);
+    var sBin = 0.10, zBin = 0.10;
+    var nS = Math.max(6, Math.ceil(L / sBin)), nZ = Math.max(8, Math.ceil(H / zBin));
+    var cnt = new Uint16Array(nS * nZ);
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i], px = p[0] - a[0], pz = p[2] - a[1];
+      var perp = px * nrm[0] + pz * nrm[1]; if (perp < 0 ? -perp > band2 : perp > band2) continue;
+      var s = px * dir[0] + pz * dir[1]; if (s < 0 || s >= L) continue;
+      var z = p[1] - base; if (z < 0 || z >= H) continue;
+      var si = Math.min(nS - 1, (s / sBin) | 0), zi = Math.min(nZ - 1, (z / zBin) | 0);
+      if (cnt[si * nZ + zi] < 60000) cnt[si * nZ + zi]++;
+    }
+    var occupied = new Uint8Array(nS * nZ);
+    for (var c = 0; c < nS * nZ; c++) occupied[c] = cnt[c] >= 2 ? 1 : 0;
+    // по каждой позиции вдоль стены — самый высокий разрыв в профиле
+    var holes = new Array(nS);
+    for (var si2 = 0; si2 < nS; si2++) {
+      var best = null, runZ = -1;
+      for (var zi2 = 0; zi2 <= nZ; zi2++) {
+        var empty = zi2 < nZ ? !occupied[si2 * nZ + zi2] : true;
+        if (empty && runZ < 0) runZ = zi2;
+        else if (!empty && runZ >= 0) {
+          var h = (zi2 - runZ) * zBin;
+          // разрыв у самого пола/потолка — это не проём (край облака), оставляем только внутренние
+          var z0 = runZ * zBin, z1 = zi2 * zBin;
+          if (h >= 0.35 && z1 <= H - 0.15 && (z0 >= 0.12 || z1 < H - 0.12)) {
+            if (!best || h > best.h) best = { z0: z0, z1: z1, h: h };
+          }
+          runZ = -1;
+        }
+      }
+      holes[si2] = best;
+    }
+    // склейка соседних позиций с похожим разрывом
+    var runs = [], cur = null;
+    for (var s2 = 0; s2 <= nS; s2++) {
+      var hb = s2 < nS ? holes[s2] : null;
+      var same = cur && hb && Math.abs(hb.z0 - cur.z0) <= 0.14 && Math.abs(hb.z1 - cur.z1) <= 0.14;
+      if (same) { cur.s1 = s2; }
+      else {
+        if (cur) runs.push(cur);
+        cur = hb ? { s0: s2, s1: s2 + 1, z0: hb.z0, z1: hb.z1 } : null;
+      }
+    }
+    if (cur) runs.push(cur);
+    // фильтр по ширине и опоре с боков
+    for (var r = 0; r < runs.length; r++) {
+      var run = runs[r];
+      var width = (run.s1 - run.s0) * sBin;
+      if (width < 0.5 || width > 4.0) continue;
+      var s0 = run.s0 * sBin, s1 = run.s1 * sBin;
+      if (s0 < 0.15 || s1 > L - 0.15) continue;                        // не у самых углов
+      // с обеих сторон должна быть стена (хотя бы часть высоты)
+      var leftWall = 0, rightWall = 0;
+      for (var zz = 0; zz < nZ; zz++) {
+        if (occupied[Math.max(0, run.s0 - 2) * nZ + zz]) leftWall++;
+        if (occupied[Math.min(nS - 1, run.s1 + 1) * nZ + zz]) rightWall++;
+      }
+      if (leftWall < nZ * 0.30 || rightWall < nZ * 0.30) continue;     // разрыв = край стены/окклюзия
+      var z0 = run.z0, z1 = run.z1;
+      var isDoor = z0 <= 0.35;
+      var kind = isDoor ? 'door' : 'window';
+      if (isDoor && z1 >= H - 0.45 && width > 1.4) kind = 'opening';    // проход во всю высоту
+      w.openings.push({
+        along: Math.max(0, s0), width: width, kind: kind,
+        sill: isDoor ? 0 : z0, head: Math.min(H - 0.05, z1),
+        uncertain: width > 3.2
+      });
+    }
+    // слияние пересекающихся
+    w.openings.sort(function (x, y) { return x.along - y.along; });
+    for (var m = 0; m + 1 < w.openings.length;) {
+      var A = w.openings[m], B = w.openings[m + 1];
+      if (A.along + A.width > B.along + 0.05) {
+        A.width = Math.max(A.along + A.width, B.along + B.width) - A.along;
+        A.head = Math.max(A.head, B.head); A.sill = Math.min(A.sill, B.sill);
+        w.openings.splice(m + 1, 1);
+      } else m++;
+    }
+    // v1241: уточняем границы по самим точкам — ячейка 10 см давала ±10 см, а нужно ±2–3 см:
+    // левая/правая кромки = крайние точки простенка на высоте проёма, подоконник/перемычка = крайние точки над/под ним.
+    for (var q = 0; q < w.openings.length; q++) {
+      var op = w.openings[q];
+      var zLo = op.sill + 0.06, zHi = op.head - 0.06;
+      var s0c = op.along, s1c = op.along + op.width;
+      var leftS = -Infinity, rightS = Infinity, sillZ = 0, headZ = H;
+      for (var p2 = 0; p2 < pts.length; p2++) {
+        var pp = pts[p2], qx = pp[0] - a[0], qz = pp[2] - a[1];
+        var perp2 = qx * nrm[0] + qz * nrm[1]; if (perp2 < 0 ? -perp2 > band2 : perp2 > band2) continue;
+        var s3 = qx * dir[0] + qz * dir[1], z3 = pp[1] - base;
+        if (z3 >= zLo && z3 <= zHi) {
+          if (s3 < s0c && s3 > s0c - 0.45 && s3 > leftS) leftS = s3;
+          if (s3 > s1c && s3 < s1c + 0.45 && s3 < rightS) rightS = s3;
+        }
+        if (s3 >= s0c + 0.05 && s3 <= s1c - 0.05) {
+          if (z3 < op.sill + 0.02 && z3 > op.sill - 0.45 && z3 > sillZ) sillZ = z3;
+          if (z3 > op.head - 0.02 && z3 < op.head + 0.45 && z3 < headZ) headZ = z3;
+        }
+      }
+      if (isFinite(leftS)) s0c = Math.max(0, leftS + 0.01);
+      if (isFinite(rightS)) s1c = Math.min(L, rightS - 0.01);
+      if (op.sill > 0.05 && sillZ > 0) op.sill = Math.max(0, sillZ + 0.01);
+      if (headZ < H) op.head = Math.min(H - 0.03, headZ - 0.01);
+      if (s1c - s0c >= 0.45) { op.along = s0c; op.width = s1c - s0c; }
+      if (op.head - op.sill < 0.3) { op.sill = 0; op.head = Math.min(H - 0.03, Math.max(1.9, op.head)); }
+    }
+  }
+
+  // v1243: толщина и ось по самим точкам. Тонкая стена (0.10–0.15 м) при пороге RANSAC ~7 см попадает
+  // ОДНОЙ линией между гранями — faces=1 и толщина по умолчанию (0.15). Здесь берём распределение точек
+  // поперёк оси: 5–95 процентили дают толщину, середина — уточнённое положение оси.
+  function refineWallThickness(w, pts, lv, allWalls) {
+    if (!pts || pts.length < 60 || !(w.length > 0.5)) return;
+    var dir = norm2(w.dir), nrm = [-dir[1], dir[0]], a = w.a, L = w.length;
+    var yLo = lv ? lv.floorY + 0.20 : -Infinity, yHi = lv ? lv.ceilY - 0.20 : Infinity;
+    // точки у примыканий соседних стен не считаем: они дают хвост в распределении
+    function nearOther(x, z) {
+      if (!allWalls) return false;
+      for (var j = 0; j < allWalls.length; j++) {
+        var o = allWalls[j]; if (o === w) continue;
+        var od = norm2(o.dir), on = [-od[1], od[0]];
+        var ox = x - o.a[0], oz = z - o.a[1];
+        var t = ox * od[0] + oz * od[1];
+        if (t < -0.05 || t > o.length + 0.05) continue;
+        var perp = ox * on[0] + oz * on[1];
+        if ((perp < 0 ? -perp : perp) < 0.24) return true;
+      }
+      return false;
+    }
+    var offs = [];
+    for (var i = 0; i < pts.length; i++) {
+      if (pts[i][1] < yLo || pts[i][1] > yHi) continue;               // пол и потолок не считаем гранями стены
+      var px = pts[i][0] - a[0], pz = pts[i][2] - a[1];
+      var perp = px * nrm[0] + pz * nrm[1];
+      if (perp < -0.45 || perp > 0.45) continue;
+      var s = px * dir[0] + pz * dir[1];
+      if (s < 0.3 || s > L - 0.3) continue;
+      if (nearOther(pts[i][0], pts[i][2])) continue;
+      offs.push(perp);
+    }
+    if (offs.length < 60) return;
+    // две моды распределения = две грани; толщина = расстояние между ними, ось = середина
+    var bin = 0.02, hist = Object.create(null), best1 = null, best2 = null;
+    for (var k = 0; k < offs.length; k++) {
+      var b = Math.round(offs[k] / bin) * bin, key = b.toFixed(2);
+      hist[key] = (hist[key] || 0) + 1;
+    }
+    var keys = Object.keys(hist).map(Number).sort(function (x, y) { return x - y; });
+    for (var q = 0; q < keys.length; q++) {
+      if (!best1 || hist[keys[q].toFixed(2)] > hist[best1.toFixed(2)]) best1 = keys[q];
+    }
+    if (best1 == null) return;
+    for (var q2 = 0; q2 < keys.length; q2++) {
+      if (Math.abs(keys[q2] - best1) < 0.06) continue;
+      if (!best2 || hist[keys[q2].toFixed(2)] > hist[best2.toFixed(2)]) best2 = keys[q2];
+    }
+    var thk, mid;
+    if (best2 != null && Math.abs(best2 - best1) > 0.05 && Math.abs(best2 - best1) < 0.5) {
+      thk = Math.abs(best2 - best1); mid = (best1 + best2) / 2;
+    } else {
+      var sortedOff = offs.slice().sort(function (x, y) { return x - y; });
+      var p5 = sortedOff[Math.floor(sortedOff.length * 0.05)], p95 = sortedOff[Math.floor(sortedOff.length * 0.95)];
+      thk = p95 - p5; mid = (p5 + p95) / 2;
+    }
+    if (!(thk > 0.035 && thk < 0.55)) return;
+    if (Math.abs(mid) > 0.12) return;                                  // ось уехала — доверяем прежней
+    // у двусторонней стены уже есть измеренная пара граней: моды могут «слипнуться» на шумной толстой стене,
+    // поэтому принимаем модовую оценку только если она близка к парной
+    if (w.faces === 2 && Math.abs(thk - (w.thickness || 0)) > 0.06) return;
+    // для двусторонней стены распределение симметрично: толщина не меняется, ось почти не двигается
+    if (w.faces === 2 && Math.abs(thk - (w.thickness || 0)) < 0.02 && Math.abs(mid) < 0.015) return;
+    w.a = [w.a[0] + nrm[0] * mid, w.a[1] + nrm[1] * mid];
+    w.b = [w.b[0] + nrm[0] * mid, w.b[1] + nrm[1] * mid];
+    w.thickness = Math.max(0.05, Math.min(0.5, thk));
+    refreshWall(w);
+  }
+
+  // v1244: внутренние стены не должны влезать в тело перпендикулярных — режем концы на полтолщины соседа.
+  // Периметральные уже сведены по осям (alignWallsToFootprint), их не трогаем.
+  function trimWallsAtJoints(walls) {
+    for (var i = 0; i < walls.length; i++) {
+      var w = walls[i];
+      if (w.alignedToFootprint) continue;
+      var dir = norm2(w.dir), nrm = [-dir[1], dir[0]];
+      for (var e = 0; e < 2; e++) {
+        var end = e === 0 ? w.a : w.b;
+        var other = e === 0 ? w.b : w.a;
+        var best = null, bestD = Infinity;
+        for (var j = 0; j < walls.length; j++) {
+          if (j === i) continue;
+          var o = walls[j], od = norm2(o.dir);
+          if (angDiff(Math.atan2(od[1], od[0]), Math.atan2(dir[1], dir[0])) < 40 * Math.PI / 180) continue;
+          var X = intersect2(w.a, w.b, o.a, o.b); if (!X) continue;
+          var d = Math.hypot(X[0] - end[0], X[1] - end[1]);
+          if (d > 0.35) continue;                                     // узел не у этого конца
+          var t = (X[0] - o.a[0]) * od[0] + (X[1] - o.a[1]) * od[1];
+          if (t < -0.05 || t > o.length + 0.05) continue;             // пересечение вне соседней стены
+          if (d < bestD) { bestD = d; best = o; }
+        }
+        if (!best) continue;
+        var cut = Math.max(0.03, Math.min(0.3, (best.thickness || 0.15) / 2));
+        var L = Math.hypot(other[0] - end[0], other[1] - end[1]);
+        if (L - cut < 0.3) continue;
+        var sign = e === 0 ? 1 : -1;
+        var moved = [end[0] + dir[0] * cut * sign, end[1] + dir[1] * cut * sign];
+        if (e === 0) w.a = moved; else w.b = moved;
+        refreshWall(w);
+      }
+    }
+  }
+
+  // v1245: помещения. Растровая сетка 10 см по полу: клетки с точками пола — свободные,
+  // клетки стен (с проёмами, заделанными наглухо) — препятствия. Связные области = комнаты.
+  function detectRooms(pd, lv, walls, o) {
+    if (!pd || !pd.length || !walls || !walls.length) return [];
+    var cell = (o && o.roomCell) || 0.10;
+    var yLo = lv.floorY - 0.06, yHi = lv.floorY + 0.22;
+    var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity, floorPts = [];
+    for (var i = 0; i < pd.length; i++) {
+      var p = pd[i];
+      if (p[1] < yLo || p[1] > yHi) continue;
+      floorPts.push(p);
+      if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
+      if (p[2] < minZ) minZ = p[2]; if (p[2] > maxZ) maxZ = p[2];
+    }
+    if (floorPts.length < 2000) return [];
+    var pad = 1.0;
+    minX -= pad; minZ -= pad; maxX += pad; maxZ += pad;
+    var w = Math.ceil((maxX - minX) / cell) + 1, h = Math.ceil((maxZ - minZ) / cell) + 1;
+    if (w * h > 4e6) { cell = 0.20; w = Math.ceil((maxX - minX) / cell) + 1; h = Math.ceil((maxZ - minZ) / cell) + 1; }
+    var free = new Uint8Array(w * h);
+    for (var f = 0; f < floorPts.length; f++) {
+      var gx = Math.min(w - 1, Math.max(0, Math.floor((floorPts[f][0] - minX) / cell)));
+      var gz = Math.min(h - 1, Math.max(0, Math.floor((floorPts[f][2] - minZ) / cell)));
+      free[gz * w + gx] = 1;
+    }
+    // препятствия — тела стен (проёмы игнорируем: комнаты должны разделяться)
+    var blocked = new Uint8Array(w * h);
+    for (var wi = 0; wi < walls.length; wi++) {
+      var wa = walls[wi], wd = norm2(wa.dir), wn = [-wd[1], wd[0]], half = Math.max(0.03, (wa.thickness || 0.15) / 2);
+      var x0 = Math.floor((Math.min(wa.a[0], wa.b[0]) - half - minX) / cell), x1 = Math.ceil((Math.max(wa.a[0], wa.b[0]) + half - minX) / cell);
+      var z0 = Math.floor((Math.min(wa.a[1], wa.b[1]) - half - minZ) / cell), z1 = Math.ceil((Math.max(wa.a[1], wa.b[1]) + half - minZ) / cell);
+      for (var gz2 = Math.max(0, z0); gz2 <= Math.min(h - 1, z1); gz2++) {
+        for (var gx2 = Math.max(0, x0); gx2 <= Math.min(w - 1, x1); gx2++) {
+          var cx = minX + (gx2 + 0.5) * cell, cz = minZ + (gz2 + 0.5) * cell;
+          var px = cx - wa.a[0], pz = cz - wa.a[1];
+          var t = px * wd[0] + pz * wd[1];
+          if (t < -half || t > wa.length + half) continue;
+          var perp = px * wn[0] + pz * wn[1];
+          if (perp < 0 ? -perp > half : perp > half) continue;
+          blocked[gz2 * w + gx2] = 1;
+        }
+      }
+    }
+    // связные области свободных клеток
+    var seen = new Uint8Array(w * h), rooms = [], minArea = (o && o.minRoomArea) || 2.0;
+    var qx = new Int32Array(w * h), qz = new Int32Array(w * h);
+    for (var s = 0; s < w * h; s++) {
+      if (seen[s] || !free[s] || blocked[s]) continue;
+      var qh = 0, qt = 0, cnt = 0, sx = 0, sz = 0;
+      seen[s] = 1; qx[qt] = s % w; qz[qt] = (s / w) | 0; qt++;
+      while (qh < qt) {
+        var ccx = qx[qh], ccz = qz[qh]; qh++;
+        cnt++; sx += ccx; sz += ccz;
+        var nb = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (var n = 0; n < 4; n++) {
+          var nx = ccx + nb[n][0], nz = ccz + nb[n][1];
+          if (nx < 0 || nz < 0 || nx >= w || nz >= h) continue;
+          var id = nz * w + nx;
+          if (seen[id] || !free[id] || blocked[id]) continue;
+          seen[id] = 1; qx[qt] = nx; qz[qt] = nz; qt++;
+        }
+      }
+      var area = cnt * cell * cell;
+      if (area < minArea) continue;
+      // полигон: контур связной области по клеткам (прямые углы), потом упрощение
+      var poly = roomOutline(free, blocked, seen, w, h, s, cell, minX, minZ);
+      if (poly.length < 4) continue;
+      var simp = simplifyPoly(poly, 0.05);
+      if (simp.length < 3) continue;
+      // клетки очерчены по внешним углам: сдвигаем контур на полклетки внутрь, иначе комната «толще» на 5 см
+      var inner = offsetPolyInward(simp, cell / 6);
+      var roomPoly = (inner.length >= 3 && Math.abs(polyArea(inner)) > 1) ? inner : simp;
+      rooms.push({ polygon: roomPoly, area: Math.abs(polyArea(roomPoly)), cx: minX + (sx / cnt + 0.5) * cell, cz: minZ + (sz / cnt + 0.5) * cell, cells: cnt });
+    }
+    rooms.sort(function (a, b) { return b.area - a.area; });
+    return rooms;
+  }
+
+  // Контур области: собираем рёбра между клетками области и остальным миром, затем обходим по цепочке.
+  function roomOutline(free, blocked, seen, w, h, seed, cell, ox, oz) {
+    var edges = [];
+    function idOf(x, z) { return z * w + x; }
+    // область помечаем повторно, чтобы не зависеть от seen (seen уже стоит)
+    var inRoom = new Uint8Array(w * h);
+    var qx = new Int32Array(w * h), qz = new Int32Array(w * h), qh = 0, qt = 0;
+    inRoom[seed] = 1; qx[qt] = seed % w; qz[qt] = (seed / w) | 0; qt++;
+    while (qh < qt) {
+      var cx = qx[qh], cz = qz[qh]; qh++;
+      var nbs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (var n = 0; n < 4; n++) {
+        var nx = cx + nbs[n][0], nz = cz + nbs[n][1];
+        if (nx < 0 || nz < 0 || nx >= w || nz >= h) continue;
+        var id = idOf(nx, nz);
+        if (inRoom[id] || !free[id] || blocked[id]) continue;
+        inRoom[id] = 1; qx[qt] = nx; qz[qt] = nz; qt++;
+      }
+    }
+    // рёбра: для каждой клетки области, если сосед не в области — ребро
+    for (var z = 0; z < h; z++) for (var x = 0; x < w; x++) {
+      var i2 = idOf(x, z); if (!inRoom[i2]) continue;
+      var X0 = ox + x * cell, Z0 = oz + z * cell, X1 = X0 + cell, Z1 = Z0 + cell;
+      if (!inRoom[idOf(x, z - 1)] || z === 0) edges.push([[X0, Z0], [X1, Z0]]);
+      if (!inRoom[idOf(x + 1, z)] || x === w - 1) edges.push([[X1, Z0], [X1, Z1]]);
+      if (!inRoom[idOf(x, z + 1)] || z === h - 1) edges.push([[X1, Z1], [X0, Z1]]);
+      if (!inRoom[idOf(x - 1, z)] || x === 0) edges.push([[X0, Z1], [X0, Z0]]);
+    }
+    if (!edges.length) return [];
+    // обход: начинаем с любого ребра, идём по совпадению концов
+    var byStart = new Map();
+    for (var e = 0; e < edges.length; e++) {
+      var k = edges[e][0][0].toFixed(3) + '_' + edges[e][0][1].toFixed(3);
+      var arr = byStart.get(k); if (!arr) { arr = []; byStart.set(k, arr); } arr.push(e);
+    }
+    var used = new Uint8Array(edges.length), poly = [], cur = 0;
+    for (var step = 0; step < edges.length + 2; step++) {
+      var ed = edges[cur]; if (!ed || used[cur]) break;
+      used[cur] = 1; poly.push(ed[0]);
+      var key = ed[1][0].toFixed(3) + '_' + ed[1][1].toFixed(3);
+      var cand = byStart.get(key) || [];
+      var next = -1;
+      for (var c = 0; c < cand.length; c++) if (!used[cand[c]]) { next = cand[c]; break; }
+      if (next < 0) break;
+      cur = next;
+    }
+    return poly;
+  }
+
+  // Упрощение ломаной: оставляем только вершины, где направление заметно меняется (углы комнаты)
+  function simplifyPoly(poly, eps) {
+    var n = poly.length; if (n < 4) return poly;
+    var thr = Math.max(0.02, Math.min(0.5, eps == null ? 0.05 : eps));
+    if (thr > 0.5) thr = 0.05;                    // сюда могут передать метры, а нужен синус угла
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var a = poly[(i - 1 + n) % n], b = poly[i], c = poly[(i + 1) % n];
+      var v1x = b[0] - a[0], v1z = b[1] - a[1], v2x = c[0] - b[0], v2z = c[1] - b[1];
+      var l1 = Math.hypot(v1x, v1z) || 1, l2 = Math.hypot(v2x, v2z) || 1;
+      var sinA = Math.abs(v1x * v2z - v1z * v2x) / (l1 * l2);
+      if (sinA > thr) out.push(b);
+    }
+    return out.length >= 3 ? out : poly;
+  }
+
+  // Сдвиг контура внутрь на d: каждая грань смещается по нормали, вершины — пересечение соседних граней.
+  function offsetPolyInward(poly, d) {
+    var n = poly.length; if (n < 3 || !(d > 0)) return poly;
+    var area = 0; for (var i = 0; i < n; i++) { var p0 = poly[i], p1 = poly[(i + 1) % n]; area += p0[0] * p1[1] - p1[0] * p0[1]; }
+    var ccw = area > 0;
+    var lines = [];
+    for (var e = 0; e < n; e++) {
+      var a = poly[e], b = poly[(e + 1) % n];
+      var dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz) || 1;
+      var nx = -dz / L, nz = dx / L;                       // левая нормаль
+      if (!ccw) { nx = -nx; nz = -nz; }                    // для CW «внутрь» — правая
+      lines.push({ px: a[0] + nx * d, pz: a[1] + nz * d, dx: dx / L, dz: dz / L });
+    }
+    var out = [];
+    for (var v = 0; v < n; v++) {
+      var l1 = lines[(v - 1 + n) % n], l2 = lines[v];
+      var den = l1.dx * l2.dz - l1.dz * l2.dx;
+      if (Math.abs(den) < 1e-6) { out.push(poly[v]); continue; }
+      var t = ((l2.px - l1.px) * l2.dz - (l2.pz - l1.pz) * l2.dx) / den;
+      out.push([l1.px + l1.dx * t, l1.pz + l1.dz * t]);
+    }
+    return out;
   }
 
   function detectWallOpenings(w, band, thr) {
@@ -712,12 +1136,20 @@
   function alignWallsToFootprint(walls, foot, reach) {
     if (!walls || !walls.length || !foot || foot.length < 3) return;
     reach = reach || 1.6;
+    // v1240: контур строится по точкам поверхности (это НАРУЖНАЯ или ВНУТРЕННЯЯ грань стены, а не её ось).
+    // Раньше стена ставилась прямо на ребро контура — весь периметр уезжал наружу на полтолщины (~0.15 м).
+    // Теперь ось ставится на измеренном расстоянии от ребра (обычно полтолщины) и укорачивается на полтолщины
+    // с каждого конца, чтобы углы сходились по осям, а не по наружным граням.
+    var cen = [0, 0]; for (var ci = 0; ci < foot.length; ci++) { cen[0] += foot[ci][0]; cen[1] += foot[ci][1]; } cen[0] /= foot.length; cen[1] /= foot.length;
     for (var i = 0; i < foot.length; i++) {
       var p = foot[i], q = foot[(i + 1) % foot.length];
       var d = norm2([q[0] - p[0], q[1] - p[1]]);
       var len = Math.hypot(q[0] - p[0], q[1] - p[1]);
       if (len < 0.3) continue;
       var nrm = [-d[1], d[0]], ea = Math.atan2(d[1], d[0]);
+      // нормаль внутрь контура
+      var emid = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      if ((cen[0] - emid[0]) * nrm[0] + (cen[1] - emid[1]) * nrm[1] < 0) nrm = [-nrm[0], -nrm[1]];
       var best = -1, bestPerp = Infinity;
       for (var w = 0; w < walls.length; w++) {
         var wall = walls[w];
@@ -732,9 +1164,24 @@
       }
       if (best >= 0 && bestPerp <= reach) {
         var wl = walls[best];
-        wl.a = p.slice(); wl.b = q.slice();                      // периметральная стена = ребро контура
         if (wl.thickness > 0.4) wl.thickness = 0.25; // v1180: cap nerealno tolstyh perimetralnyh sten
-        refreshWall(wl); wl.alignedToFootprint = true;
+        var thk = wl.thickness > 0.01 ? wl.thickness : 0.15;
+        // v1241: положение оси НЕ двигаем — оно измерено парой граней и точнее контура (1% процентиль
+        // давал систематический сдвиг 1–1.5 см). Контур задаёт только направление и концы.
+        var wdir = norm2(wl.dir);
+        var dot = wdir[0] * d[0] + wdir[1] * d[1];
+        if (Math.abs(dot) < 0.2) continue;                        // направления разошлись — не трогаем
+        var sa = (wl.a[0] - p[0]) * d[0] + (wl.a[1] - p[1]) * d[1];
+        var sb2 = (wl.b[0] - p[0]) * d[0] + (wl.b[1] - p[1]) * d[1];
+        var lo = Math.min(sa, sb2), hi = Math.max(sa, sb2);
+        lo = Math.max(lo, 0) + thk / 2; hi = Math.min(hi, len) - thk / 2;
+        if (hi - lo > 0.2) {
+          var ta = (lo - sa) / dot, tb = (hi - sa) / dot;
+          var a0 = [wl.a[0] + wdir[0] * ta, wl.a[1] + wdir[1] * ta];
+          var b0 = [wl.a[0] + wdir[0] * tb, wl.a[1] + wdir[1] * tb];
+          wl.a = a0; wl.b = b0;
+          refreshWall(wl); wl.alignedToFootprint = true;
+        }
       }
     }
   }
@@ -927,16 +1374,25 @@
     alignWallsToFootprint(walls, hull); if (opts.closeCorners !== false) closeCorners(walls);
     // v1176: obrezaem steny do realno podderzhannoy tochkami protyazhonnosti (ubiraem vydumannye khvosty)
     trimWallsToSupport(walls, pd, lv);
+    trimWallsAtJoints(walls);
     // v1176: proyomy schitaem po FINALNOY geometrii sten
     if (opts.detectOpenings !== false) {
+      // v1240: проёмы по вертикальному профилю стены (окна тоже), 2D-разрыв остаётся запасным путём
+      var nearWall = collectNearWallPoints(pd, walls, Math.max(0.25, (opts.maxThickness || 0.6) * 0.55 + 0.12));
       for (var wi = 0; wi < walls.length; wi++) {
-        // v1180: proyomy tolko po dvernoy polose (0.15..2.2m). Srednij srez daval lozhnye dveri na razrezhennyh/okklyudirovannyh stenah (naprimer lozhnaya dver na w5).
-        detectWallOpenings(walls[wi], doorBand, thr);
+        refineWallThickness(walls[wi], nearWall[wi], lv, walls);
+        detectWallOpenings3d(walls[wi], nearWall[wi], thr, lv);
+        if (!walls[wi].openings.length) detectWallOpenings(walls[wi], doorBand, thr);
         walls[wi].openings = (walls[wi].openings || []); openingCount += walls[wi].openings.length;
       }
     }
     // v1178: materialy sten (kirpich/metall/beton) po RGB
     classifyMaterial(walls, pd, lv);
+    // v1245: помещения (связные области пола между стенами)
+    var rooms = [];
+    if (opts.detectRooms !== false) {
+      try { rooms = detectRooms(pd, lv, walls, { roomCell: opts.roomCell, minRoomArea: opts.minRoomArea }); } catch (e) { rooms = []; }
+    }
     var slabThk = opts.slabThickness != null ? opts.slabThickness : 0.2;
     var area = polyArea(hull);
     // v1160: внутренние объекты (оборудование/колонны) → bbox-прокси
@@ -972,9 +1428,9 @@
     return {
       ok: true, units: 'm',
       storey: { floorY: lv.floorY, ceilY: lv.ceilY, height: h, floorRms: lv.floorRms, ceilRms: lv.ceilRms },
-      walls: walls, slabs: slabs, pipes: pipes, cables: cables, beams: beams, objects: objects, footprint: hull,
+      walls: walls, slabs: slabs, pipes: pipes, cables: cables, beams: beams, objects: objects, footprint: hull, rooms: rooms,
       pipeGroups: pipeGroups,
-      stats: { pointsIn: pts.length, pointsUsed: pd.length, bandPoints: band.length, wallCount: walls.length, openingCount: openingCount, openingUncertainCount: openingUncertainCount, pipeCount: pipes.length, pipeGroupCount: pipeGroups.length, pipeSuppressedByBeamCount: pipeSuppression.suppressed, cableCount: cables.length, beamCount: beams.length, objectCount: objects.length, columnCount: columnCount, totalWallLength: totalLen, floorArea: area, meanWallRms: meanRms }
+      stats: { pointsIn: pts.length, pointsUsed: pd.length, bandPoints: band.length, wallCount: walls.length, openingCount: openingCount, openingUncertainCount: openingUncertainCount, roomCount: rooms.length, roomsArea: rooms.reduce(function (s2, r2) { return s2 + (r2.area || 0); }, 0), pipeCount: pipes.length, pipeGroupCount: pipeGroups.length, pipeSuppressedByBeamCount: pipeSuppression.suppressed, cableCount: cables.length, beamCount: beams.length, objectCount: objects.length, columnCount: columnCount, totalWallLength: totalLen, floorArea: area, meanWallRms: meanRms }
     };
   }
 
@@ -982,6 +1438,12 @@
   function wallOpeningVerticalBounds(w, o) {
     var base = Number(w && w.base) || 0;
     var H = Number(w && w.height) || 0;
+    // v1240: если профиль стены дал настоящие подоконник и перемычку — берём их
+    if (o && isFinite(o.sill) && isFinite(o.head)) {
+      var sill0 = Math.max(0, Math.min(H, Number(o.sill) || 0));
+      var head0 = Math.max(sill0 + 0.2, Math.min(H - 0.03, Number(o.head)));
+      return { head: head0, sill: sill0 };
+    }
     var head = o && o.kind === 'opening'
       ? Math.min(H - 0.05, base + Math.max(1.2, H * 0.6)) - base
       : Math.min(H - 0.05, 2.1);
@@ -1044,6 +1506,7 @@
       } catch (e) {}
     }
     var walls = model.walls || [], slabs = model.slabs || [];
+    var rooms = meta.includeRooms === false ? [] : (model.rooms || []);
     var pipes = meta.includePipes === false ? [] : (model.pipes || []);
     var beams = meta.includeBeams === false ? [] : (model.beams || []);
     var st = model.storey || { floorY: 0, ceilY: 3, height: 3 };
@@ -1155,14 +1618,47 @@
           ZDIR + ',' + fnum(vb.head - vb.sill) + ')');
         var openingShape = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + openingSolid + '))');
         var openingPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + openingShape + '))');
-        var openingKind = op.kind === 'door' ? 'дверной' : (op.kind === 'opening' ? 'оконный' : 'неуточнённый');
+        var openingKind = op.kind === 'door' ? 'дверной' : (op.kind === 'window' ? 'оконный' : (op.kind === 'opening' ? 'проход' : 'неуточнённый'));
         var opening = add('IFCOPENINGELEMENT(' + G() + ',$,' +
           stepString('Проём ' + (oi + 1) + ' (' + openingKind + ')') +
           ',$,$,' + openingLP + ',' + openingPds + ',$,.OPENING.)');
         add('IFCRELVOIDSELEMENT(' + G() + ',$,$,$,' + wall + ',' + opening + ')');
         products.push(opening);
+        // v1242: заполнение проёма — IfcWindow / IfcDoor, как в полноценной модели (IfcRelFillsElement)
+        var isWindow = op.kind === 'window' || (!isFinite(op.kind) && (vb.sill || 0) > 0.35);
+        if (op.kind !== 'opening') {
+          var fillThk = Math.max(0.04, wallThickness * 0.25);
+          var fillProfile = add('IFCRECTANGLEPROFILEDEF(.AREA.,$,' + openingProfilePlace + ',' + fnum(oe - os) + ',' + fnum(fillThk) + ')');
+          var fillSolid = add('IFCEXTRUDEDAREASOLID(' + fillProfile + ',' + openingSolidPlace + ',' + ZDIR + ',' + fnum(vb.head - vb.sill) + ')');
+          var fillShape = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + fillSolid + '))');
+          var fillPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + fillShape + '))');
+          var fillLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + openingRelativePlacement + ')');
+          var fillEnt = isWindow
+            ? add('IFCWINDOW(' + G() + ',$,' + stepString('Окно ' + (oi + 1)) + ',$,$,' + fillLP + ',' + fillPds + ',$,' + fnum(vb.head - vb.sill) + ',' + fnum(oe - os) + ',$,$,$,$)')
+            : add('IFCDOOR(' + G() + ',$,' + stepString('Дверь ' + (oi + 1)) + ',$,$,' + fillLP + ',' + fillPds + ',$,' + fnum(vb.head - vb.sill) + ',' + fnum(oe - os) + ',$,$,$)');
+          add('IFCRELFILLSELEMENT(' + G() + ',$,$,$,' + opening + ',' + fillEnt + ')');
+          products.push(fillEnt);
+        }
       }
     }
+    // v1245: помещения — IfcSpace (объём от пола до потолка), привязка к этажу через IfcRelAggregates
+    var spaceRefs = [];
+    for (var rm = 0; rm < rooms.length; rm++) {
+      var room = rooms[rm], rpoly = room.polygon || [];
+      if (rpoly.length < 3 || !(room.area > 0.5)) continue;
+      var rrefs = [], rmapped = polygonPoints(rpoly);
+      for (var rp = 0; rp < rmapped.length; rp++) rrefs.push(pt2(rmapped[rp][0], rmapped[rp][1]));
+      rrefs.push(rrefs[0]);
+      var rl = add('IFCPOLYLINE((' + rrefs.join(',') + '))');
+      var rprof = add('IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,' + rl + ')');
+      var rplc = add('IFCAXIS2PLACEMENT3D(' + pt3(0, 0, vertical(st.floorY)) + ',' + ZDIR + ',' + XDIR + ')');
+      var rsolid = add('IFCEXTRUDEDAREASOLID(' + rprof + ',' + rplc + ',' + ZDIR + ',' + fnum(Math.max(0.5, st.height)) + ')');
+      var rshp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + rsolid + '))');
+      var rpds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + rshp + '))');
+      var rLP = add('IFCLOCALPLACEMENT(' + sLP + ',' + wcs + ')');
+      spaceRefs.push(add('IFCSPACE(' + G() + ',$,' + stepString('Помещение ' + (rm + 1) + ' — ' + room.area.toFixed(1) + ' м²') + ',$,$,' + rLP + ',' + rpds + ',$,.ELEMENT.,.INTERNAL.,$)'));
+    }
+    if (spaceRefs.length) add('IFCRELAGGREGATES(' + G() + ',$,$,$,' + storey + ',(' + spaceRefs.join(',') + '))');
     // плиты пола/потолка
     for (var s = 0; s < slabs.length; s++) {
       var sl = slabs[s], poly = sl.polygon || [];
@@ -1400,7 +1896,8 @@
   var API = {
     reconstruct: reconstruct, toIFC: toIFC, toOBJ: toOBJ, toDXF: toDXF,
     voxelDownsample: voxelDownsample, detectLevels: detectLevels, hull2d: hull2d, polyArea: polyArea,
-    version: '1231'
+    detectRooms: detectRooms, roomOutline: roomOutline, simplifyPoly: simplifyPoly,
+    version: '1245'
   };
   if (typeof window !== 'undefined') window.Scan2BIM = API;
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

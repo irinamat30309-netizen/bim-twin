@@ -54,4 +54,4 @@ test('чистая комната: нет ложных колонн и бало�
   assert.strictEqual(cols.length, 0, 'ложные колонны');
 });
 
-test('версия движка = 1231', () => { assert.strictEqual(S.version, '1231'); });
+test('версия движка = 1245', () => { assert.strictEqual(S.version, '1245'); });

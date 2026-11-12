@@ -81,7 +81,8 @@ test('IFC4 emits a separate void relation for each valid opening and rejects out
   assert.equal(voids.length, 2);
   const labels = openings.map(([, e]) => e.body);
   assert.ok(labels.some(s => s.includes('(дверной)')));
-  assert.ok(labels.some(s => s.includes('(оконный)')));
+  // v1242: «opening» — проход во всю высоту (без заполнения), «window» — окно с подоконником
+  assert.ok(labels.some(s => s.includes('(проход)')), 'проход должен быть подписан как проход: ' + labels.join(' | '));
   for (const [, relation] of voids) {
     const [wallRef, openingRef] = relationshipRefs(relation);
     assert.equal(entities.get(wallRef)?.type, 'IFCWALLSTANDARDCASE');

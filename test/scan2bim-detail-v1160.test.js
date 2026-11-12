@@ -110,6 +110,6 @@ test('objects: пустая комната не плодит ложные объ
   assert.strictEqual(m.stats.objectCount, 0, 'ложные объекты в пустой комнате');
 });
 
-test('версия движка 1231', () => {
-  assert.strictEqual(S.version, '1231');
+test('версия движка 1245', () => {
+  assert.strictEqual(S.version, '1245');
 });
