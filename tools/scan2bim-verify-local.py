@@ -48,7 +48,9 @@ def opening_void(w, o):
         cx, cz = a[0] + d[0] * s, a[1] + d[1] * s
         dx = P[:, 0] - cx; dz = P[:, 2] - cz
         perp = dx * nrm[0] + dz * nrm[1]
-        m = np.abs(perp) <= 0.12
+        # вдоль стены — только в пределах проёма (иначе выбирается вся стена)
+        along = dx * d[0] + dz * d[1]
+        m = (np.abs(perp) <= 0.12) & (np.abs(along) <= 0.06)
         if not m.any(): continue
         ys = P[m, 1]
         cnt += int(((ys >= z0) & (ys <= z1)).sum()); tot += 1
@@ -79,6 +81,35 @@ def pipe_cov(p):
 pc = [pipe_cov(p) for p in J['pipes']]
 if pc:
     print(f"трубы: среднее покрытие по длине {100*np.mean(pc):.0f} % (мин {100*min(pc):.0f} %)")
+
+# --- опорная плотность сплошной стены: сечения между проёмами той же площади ---
+def wall_section_count(w, s_center, perp_half=0.12, along_half=0.06, z0=0.3, z1=2.9):
+    a = np.array(w['a']); b = np.array(w['b'])
+    L = float(np.linalg.norm(b - a)) or 1
+    d = (b - a) / L; nrm = np.array([-d[1], d[0]])
+    cx, cz = a[0] + d[0] * s_center, a[1] + d[1] * s_center
+    dx = P[:, 0] - cx; dz = P[:, 2] - cz
+    perp = dx * nrm[0] + dz * nrm[1]
+    along = dx * d[0] + dz * d[1]
+    m = (np.abs(perp) <= perp_half) & (np.abs(along) <= along_half)
+    if not m.any(): return 0
+    ys = P[m, 1]
+    return int(((ys >= z0) & (ys <= z1)).sum())
+
+solid = []
+for w in J['walls']:
+    if w['length'] < 1.5: continue
+    ops = w.get('openings', [])
+    used = []
+    for k in range(8):
+        s = w['length'] * (0.06 + 0.88 * k / 7)
+        if any((o['along'] - 0.3) <= s <= (o['along'] + o['width'] + 0.3) for o in ops): continue
+        solid.append(wall_section_count(w, s))
+    used = None
+if solid:
+    print(f"сплошная стена: {np.mean(solid):.0f} точек на сечение (опора)")
+    if empty:
+        print(f"проём/стена: {100*np.mean(empty)/max(1e-9,np.mean(solid)):.0f} % точек — проём пуст, если <10 %")
 
 # --- сумма площадей помещений против площади пола
 area = sum(r['area'] for r in J['rooms'])

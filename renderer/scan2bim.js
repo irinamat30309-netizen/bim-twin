@@ -831,8 +831,32 @@
       var gz = Math.min(h - 1, Math.max(0, Math.floor((floorPts[f][2] - minZ) / cell)));
       free[gz * w + gx] = 1;
     }
-    // препятствия — тела стен (проёмы игнорируем: комнаты должны разделяться)
+    // v1265: замыкание сетки пола — узкие щели от труб/мусора не должны делить помещение на части.
+    // Расширяем на клетку и сжимаем обратно: площадь остаётся, разрывы шириной в клетку закрываются.
+    var dil = new Uint8Array(w * h);
+    for (var dz0 = 0; dz0 < h; dz0++) for (var dx0 = 0; dx0 < w; dx0++) {
+      var nearFree = false;
+      for (var ddz = -1; ddz <= 1 && !nearFree; ddz++) for (var ddx = -1; ddx <= 1; ddx++) {
+        var nx0 = dx0 + ddx, nz0 = dz0 + ddz;
+        if (nx0 < 0 || nz0 < 0 || nx0 >= w || nz0 >= h) continue;
+        if (free[nz0 * w + nx0]) { nearFree = true; break; }
+      }
+      if (nearFree) dil[dz0 * w + dx0] = 1;
+    }
+    var free2 = new Uint8Array(w * h);
+    for (var ez0 = 0; ez0 < h; ez0++) for (var ex0 = 0; ex0 < w; ex0++) {
+      if (!dil[ez0 * w + ex0]) continue;
+      var all4 = true;
+      if (ex0 === 0 || !dil[ez0 * w + ex0 - 1]) all4 = false;
+      if (ex0 === w - 1 || !dil[ez0 * w + ex0 + 1]) all4 = false;
+      if (ez0 === 0 || !dil[(ez0 - 1) * w + ex0]) all4 = false;
+      if (ez0 === h - 1 || !dil[(ez0 + 1) * w + ex0]) all4 = false;
+      if (all4) free2[ez0 * w + ex0] = 1;
+    }
+    for (var fr = 0; fr < free.length; fr++) if (free2[fr]) free[fr] = 1;
+    // v1264: (объявление сетки препятствий — заполняется ниже телами стен)
     var blocked = new Uint8Array(w * h);
+
     for (var wi = 0; wi < walls.length; wi++) {
       var wa = walls[wi], wd = norm2(wa.dir), wn = [-wd[1], wd[0]], half = Math.max(0.03, (wa.thickness || 0.15) / 2);
       var x0 = Math.floor((Math.min(wa.a[0], wa.b[0]) - half - minX) / cell), x1 = Math.ceil((Math.max(wa.a[0], wa.b[0]) + half - minX) / cell);
@@ -849,6 +873,10 @@
         }
       }
     }
+    // v1264: эрозию тонких препятствий здесь не делаем — в blocked попадают только тела стен,
+    // а тонкие стены (0.10–0.12 м) при клетке 10 см сами становятся толщиной в клетку и исчезали.
+    // Тонкие препятствия, мешающие комнатам, приходят из сетки пола (free), а не отсюда.
+    var eroded = blocked;
     // связные области свободных клеток
     var seen = new Uint8Array(w * h), rooms = [], minArea = (o && o.minRoomArea) || 2.0;
     var qx = new Int32Array(w * h), qz = new Int32Array(w * h);
@@ -1214,6 +1242,55 @@
     sill = Math.max(0, Math.min(head - 0.3, sill));
     if (o) { o.sill = sill; o.head = head; }
     return { sill: sill, head: head };
+  }
+
+  // v1263: проверка проёмов по облаку. Разрыв в профиле стены — ещё не дверь: его могут дать трубы,
+  // провода и затенение. Считаем плотность точек внутри прямоугольника проёма и сравниваем с плотностью
+  // самой стены: если «проём» заполнен хотя бы наполовину — это не проём, убираем.
+  function validateOpenings(walls, pd, lv) {
+    if (!walls || !pd || !pd.length) return 0;
+    var removed = 0;
+    for (var wi = 0; wi < walls.length; wi++) {
+      var w = walls[wi], ops = w.openings || [];
+      if (!ops.length) continue;
+      var dir = norm2(w.dir), nrm = [-dir[1], dir[0]], a = w.a, L = w.length;
+      var H = (lv && lv.ceilY > lv.floorY) ? (lv.ceilY - lv.floorY) : (w.height || 3);
+      var base = (lv && isFinite(lv.floorY)) ? lv.floorY : (w.base || 0);
+      var half = Math.max(0.14, (w.thickness || 0.15) / 2 + 0.06);
+      var cntWall = 0, cntOp = new Array(ops.length);
+      for (var q = 0; q < ops.length; q++) cntOp[q] = 0;
+      for (var i = 0; i < pd.length; i++) {
+        var p = pd[i];
+        var y = p[1]; if (y < base - 0.05 || y > base + H + 0.05) continue;
+        var px = p[0] - a[0], pz = p[2] - a[1];
+        var perp = px * nrm[0] + pz * nrm[1];
+        if (perp < -half || perp > half) continue;
+        var s = px * dir[0] + pz * dir[1];
+        if (s < 0 || s > L) continue;
+        cntWall++;
+        var zz = y - base;
+        for (var k = 0; k < ops.length; k++) {
+          var o = ops[k];
+          if (s < o.along || s > o.along + o.width) continue;
+          if (zz < (o.sill || 0) || zz > (o.head || H)) continue;
+          cntOp[k]++; break;
+        }
+      }
+      var wallArea = Math.max(0.5, L * H);
+      var wallDens = cntWall / wallArea;
+      if (!(wallDens > 0.2)) continue;
+      var keep = [];
+      for (var k2 = 0; k2 < ops.length; k2++) {
+        var op = ops[k2];
+        var area = Math.max(0.25, op.width * Math.max(0.3, (op.head || 0) - (op.sill || 0)));
+        var dens = cntOp[k2] / area;
+        if (dens > wallDens * 0.45) { removed++; continue; }      // «проём» забит точками — это стена
+        if (dens > wallDens * 0.30) op.uncertain = true;
+        keep.push(op);
+      }
+      w.openings = keep;
+    }
+    return removed;
   }
 
   function detectWallOpenings(w, band, thr) {
@@ -1898,6 +1975,12 @@
         walls[wi].openings = (walls[wi].openings || []);
         for (var oi2 = 0; oi2 < walls[wi].openings.length; oi2++) ensureOpeningBounds(walls[wi], walls[wi].openings[oi2]);   // v1261
         openingCount += walls[wi].openings.length;
+      }
+      // v1263: отбрасываем «проёмы», которые на самом деле заполнены точками (трубы, провода, затенение)
+      var removedOpenings = validateOpenings(walls, pd, lv);
+      if (removedOpenings > 0) {
+        openingCount = 0;
+        for (var wo = 0; wo < walls.length; wo++) openingCount += (walls[wo].openings || []).length;
       }
     }
     // v1178: materialy sten (kirpich/metall/beton) po RGB
