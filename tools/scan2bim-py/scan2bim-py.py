@@ -259,6 +259,67 @@ for w in merged:
                       'material': 'brick' if w['color'][0] > 0.45 else 'concrete', 'rms': 0.02})
 print('стен итог:', len(wall_defs), '| проёмов:', sum(len(w['openings']) for w in wall_defs))
 
+# ---------- 5.2 закрытие углов/примыканий и толщина по двум граням облака ----------
+for i, w in enumerate(wall_defs):
+    ax, az = w['a']; ux, uz = w['dir']; L = w['length']
+    nxv, nzv = -uz, ux
+    shiftA = 0.0; extB = 0.0
+    for j, v in enumerate(wall_defs):
+        if i == j:
+            continue
+        vx, vz = v['dir']
+        det = ux * vz - uz * vx
+        if abs(det) < 0.2:                       # параллельны — не примыкание
+            continue
+        vax, vaz = v['a']
+        b1x, b1z = vax - ax, vaz - az
+        t = (b1x * vz - b1z * vx) / det          # положение пересечения вдоль нашей стены
+        s = (b1x * uz - b1z * ux) / det
+        if not (-0.9 <= s <= v['length'] + 0.9):
+            continue
+        # примыкание должно быть подтверждено облаком у точки пересечения
+        px = ax + ux * t; pz = az + uz * t
+        dd = (PT[:, 0] - px) ** 2 + (PT[:, 2] - pz) ** 2
+        near = dd <= 0.25 ** 2
+        if near.sum() < 10:
+            continue
+        if -0.9 <= t < 0 and -t > shiftA:
+            shiftA = -t                          # доводим начало до примыкания
+        elif L <= t <= L + 0.9 and (t - L) > extB:
+            extB = t - L                         # доводим торец
+    if shiftA > 0.02:
+        w['a'] = [ax - ux * shiftA, az - uz * shiftA]
+        for o in w['openings']:
+            o['along'] = float(round(o['along'] + shiftA, 3))
+        w['length'] = float(round(L + shiftA, 3))
+        L = w['length']
+    if extB > 0.02:
+        w['length'] = float(round(L + extB, 3))
+        L = w['length']
+    ax, az = w['a']
+    w['b'] = [float(round(ax + ux * L, 4)), float(round(az + uz * L, 4))]
+    # толщина и ось — по двум модам облака в полосе стены
+    su2 = (PT[:, 0] - ax) * ux + (PT[:, 2] - az) * uz
+    sn2 = (PT[:, 0] - ax) * nxv + (PT[:, 2] - az) * nzv
+    band2 = (np.abs(sn2) <= 0.55) & (su2 >= 0) & (su2 <= L) & (PT[:, 1] >= floorY + 0.20) & (PT[:, 1] <= ceilY - 0.20)
+    if band2.sum() > 400:
+        snm2 = sn2[band2]
+        hist2, ed2 = np.histogram(snm2, bins=56)
+        cen2 = (ed2[:-1] + ed2[1:]) / 2
+        idx2 = [k for k in range(1, len(hist2) - 1) if hist2[k] >= hist2[k - 1] and hist2[k] >= hist2[k + 1] and hist2[k] > hist2.max() * 0.22]
+        idx2.sort(key=lambda k: -hist2[k])
+        if len(idx2) >= 2:
+            a2, b2 = sorted(idx2[:2])
+            th = abs(cen2[b2] - cen2[a2])
+            if 0.08 <= th <= 0.7:
+                # ось ставим между гранями
+                mid = (cen2[a2] + cen2[b2]) / 2
+                dx, dz = nxv * mid, nzv * mid
+                w['a'] = [w['a'][0] + dx, w['a'][1] + dz]
+                w['b'] = [w['b'][0] + dx, w['b'][1] + dz]
+                w['thickness'] = float(round(th, 3))
+print('углы закрыты, толщина по граням облака')
+
 # ---------- 5.1 проверка проёмов по плотности облака (как в JS-движке) ----------
 def band_mask(w):
     ux, uz = w['dir']; nxv, nzv = -uz, ux
