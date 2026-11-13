@@ -366,13 +366,14 @@ gz = np.floor((floorPts[:, 2] - bz0) / cell).astype(int)
 ok = (gx >= 0) & (gx < nx) & (gz >= 0) & (gz < nz)
 free[gz[ok], gx[ok]] = True
 # замыкание: узкие щели от труб/мусора не дробят помещение на части
-dil = free.copy()
-for ax in (0, 1):
-    dil = dil | np.roll(dil, 1, axis=ax) | np.roll(dil, -1, axis=ax)
-ero = dil.copy()
-for ax in (0, 1):
-    ero = ero & np.roll(dil, 1, axis=ax) & np.roll(dil, -1, axis=ax)
-free = ero
+for _ in range(2):
+    dil = free.copy()
+    for ax in (0, 1):
+        dil = dil | np.roll(dil, 1, axis=ax) | np.roll(dil, -1, axis=ax)
+    ero = dil.copy()
+    for ax in (0, 1):
+        ero = ero & np.roll(dil, 1, axis=ax) & np.roll(dil, -1, axis=ax)
+    free = ero
 blocked = np.zeros((nz, nx), bool)
 gxc, gzc = np.meshgrid((np.arange(nx) + 0.5) * cell + bx0, (np.arange(nz) + 0.5) * cell + bz0)
 for w in wall_defs:
