@@ -78,7 +78,7 @@ def pipe_cov(p):
         m = np.einsum('ij,ij->i', dd, dd) <= 0.25 ** 2
         if m.sum() >= 3: hit += 1
     return hit / (n + 1)
-pc = [pipe_cov(p) for p in J['pipes']]
+pc = [pipe_cov(p) for p in J.get('pipes', [])]
 if pc:
     print(f"трубы: среднее покрытие по длине {100*np.mean(pc):.0f} % (мин {100*min(pc):.0f} %)")
 
