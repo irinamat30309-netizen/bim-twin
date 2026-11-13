@@ -1028,7 +1028,10 @@
       var s = px * dir[0] + pz * dir[1];
       if (s < 0.15 || s > L - 0.15) continue;
       var perp = px * nrm[0] + pz * nrm[1];
-      if (perp < -0.45 || perp > 0.45) continue;
+      // v1262: берём только полосу вокруг самой стены (грани + 6 см), а не ±45 см:
+      // трубы, провода и полки у стены иначе попадают в подгонку и раздувают RMS
+      var fitHalf = Math.max(0.16, Math.min(0.35, (w.thickness || 0.15) / 2 + 0.06));
+      if (perp < -fitHalf || perp > fitHalf) continue;
       seg.push([s, perp]);
     }
     if (seg.length < 120) return;
@@ -1191,6 +1194,26 @@
       if (s1 - s0 >= 0.45) { op.along = s0; op.width = s1 - s0; }
     }
     return out;
+  }
+
+  // v1261: у проёма должны быть внятные низ и верх. На реальных интерьерах верх иногда не находится
+  // (трубы/провода над дверью «заращивают» полосу) — подставляем типовую высоту двери/окна, иначе проём
+  // выпадает из IFC (вырез нулевой высоты).
+  function ensureOpeningBounds(w, o) {
+    var H = (w && w.height) || 3;
+    var sill = Number(o && o.sill);
+    var head = Number(o && o.head);
+    if (!isFinite(sill)) sill = 0;
+    if (!isFinite(head) || head <= sill + 0.25) {
+      var isDoor = (o && o.kind) === 'door' || sill <= 0.35;
+      sill = isDoor ? 0 : Math.max(0.5, Math.min(1.1, sill || 0.9));
+      head = isDoor ? Math.min(2.1, H - 0.05) : Math.min(2.3, H - 0.05);
+      if (o) { o.kind = o.kind || (isDoor ? 'door' : 'window'); }
+    }
+    head = Math.max(sill + 0.3, Math.min(H - 0.03, head));
+    sill = Math.max(0, Math.min(head - 0.3, sill));
+    if (o) { o.sill = sill; o.head = head; }
+    return { sill: sill, head: head };
   }
 
   function detectWallOpenings(w, band, thr) {
@@ -1872,7 +1895,9 @@
           detectWallOpenings3d(walls[wi], nearWall[wi], thr, lv);
           if (!walls[wi].openings.length) detectWallOpenings(walls[wi], doorBand, thr);
         }
-        walls[wi].openings = (walls[wi].openings || []); openingCount += walls[wi].openings.length;
+        walls[wi].openings = (walls[wi].openings || []);
+        for (var oi2 = 0; oi2 < walls[wi].openings.length; oi2++) ensureOpeningBounds(walls[wi], walls[wi].openings[oi2]);   // v1261
+        openingCount += walls[wi].openings.length;
       }
     }
     // v1178: materialy sten (kirpich/metall/beton) po RGB
