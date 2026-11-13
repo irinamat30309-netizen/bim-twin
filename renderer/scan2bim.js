@@ -908,6 +908,45 @@
       var roomPoly = (inner.length >= 3 && Math.abs(polyArea(inner)) > 1) ? inner : simp;
       rooms.push({ polygon: roomPoly, area: Math.abs(polyArea(roomPoly)), cx: minX + (sx / cnt + 0.5) * cell, cz: minZ + (sz / cnt + 0.5) * cell, cells: cnt });
     }
+    // v1267: прямоугольные помещения. Контур из растровой сетки зубчатый — если комната почти
+    // прямоугольная, заменяем контур на ориентированный прямоугольник по сетке стен. Это и точнее
+    // по площади (зубцы дают +1–2 клетки по периметру), и план выглядит как чертёж.
+    var baseAng = 0;
+    if (walls && walls.length) {
+      var angs = [];
+      for (var wi2 = 0; wi2 < walls.length; wi2++) {
+        var dd2 = norm2(walls[wi2].dir);
+        var a2 = Math.atan2(dd2[1], dd2[0]);
+        angs.push(((a2 % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2));
+      }
+      angs.sort(function (x, y) { return x - y; });
+      baseAng = angs[Math.floor(angs.length / 2)] || 0;
+    }
+    var cs0 = Math.cos(-baseAng), sn0 = Math.sin(-baseAng);
+    for (var ri2 = 0; ri2 < rooms.length; ri2++) {
+      var rm = rooms[ri2], poly2 = rm.polygon || [];
+      if (poly2.length < 3) continue;
+      var umin = Infinity, umax = -Infinity, vmin = Infinity, vmax = -Infinity;
+      var rot = [];
+      for (var pi2 = 0; pi2 < poly2.length; pi2++) {
+        var u2 = poly2[pi2][0] * cs0 - poly2[pi2][1] * sn0;
+        var v2 = poly2[pi2][0] * sn0 + poly2[pi2][1] * cs0;
+        rot.push([u2, v2]);
+        if (u2 < umin) umin = u2; if (u2 > umax) umax = u2;
+        if (v2 < vmin) vmin = v2; if (v2 > vmax) vmax = v2;
+      }
+      var rectArea = (umax - umin) * (vmax - vmin);
+      if (rectArea <= 0.3) continue;
+      var fill = Math.abs(rm.area) / rectArea;
+      if (fill < 0.72) continue;                                        // контур действительно сложный — не трогаем
+      var inn = [[umin, vmin], [umax, vmin], [umax, vmax], [umin, vmax]];
+      var back = [];
+      var cs1 = Math.cos(baseAng), sn1 = Math.sin(baseAng);
+      for (var qi = 0; qi < inn.length; qi++) back.push([inn[qi][0] * cs1 - inn[qi][1] * sn1, inn[qi][0] * sn1 + inn[qi][1] * cs1]);
+      rm.polygon = back;
+      rm.area = rectArea;
+      rm.rectified = true;
+    }
     rooms.sort(function (a, b) { return b.area - a.area; });
     return rooms;
   }
@@ -2237,6 +2276,25 @@
     add('IFCRELAGGREGATES(' + G() + ',$,$,$,' + site + ',(' + building + '))');
 
     var products = [];
+    // v1266: цвет из облака → IFC-стиль элемента (IfcSurfaceStyle). Материал стены/трубы берётся
+    // из среднего цвета точек, поэтому модель в просмотрщике выглядит как скан, а не серой заглушкой.
+    var styleCache = Object.create(null);
+    function colorStyle(color, name) {
+      var c = (color && color.length >= 3) ? color : [0.72, 0.70, 0.66];
+      var BR = 1.22;   // скан в подвале тёмный: слегка поднимаем яркость, иначе модель почти чёрная
+      var r = Math.max(0, Math.min(1, (+c[0] || 0) * BR)), g = Math.max(0, Math.min(1, (+c[1] || 0) * BR)), b = Math.max(0, Math.min(1, (+c[2] || 0) * BR));
+      var key = Math.round(r * 255) + '_' + Math.round(g * 255) + '_' + Math.round(b * 255);
+      if (styleCache[key]) return styleCache[key];
+      var col = add('IFCCOLOURRGB($,' + fnum(r) + ',' + fnum(g) + ',' + fnum(b) + ')');
+      var ren = add('IFCSURFACESTYLERENDERING(' + col + ',0.2,$,$,$,$,$,.NOTDEFINED.)');
+      var st = add('IFCSURFACESTYLE(' + stepString(name || 'Surface') + ',.BOTH.,(' + ren + '))');
+      styleCache[key] = st;
+      return st;
+    }
+    function styleItem(item, color, name) {
+      if (!item) return;
+      add('IFCSTYLEDITEM(' + item + ',(' + colorStyle(color, name) + '),$)');
+    }
     // стены (план X,Z → IFC X,Y; высота Y → IFC Z). v1160: одна стена = несколько тел (проёмы).
     for (var i = 0; i < walls.length; i++) {
       var w = walls[i];
@@ -2256,6 +2314,7 @@
       var pds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + shp + '))');
       var wLP = add('IFCLOCALPLACEMENT(' + lpFor(w.storeyIndex || 0) + ',' + wcs + ')');
       var wall = add('IFCWALLSTANDARDCASE(' + G() + ',$,\'Стена ' + (i + 1) + '\',$,$,' + wLP + ',' + pds + ',$,$)');
+      styleItem(solidRefs[0], w.color, w.material ? ('Wall ' + w.material) : 'Wall');   // v1266
       pushProduct(wall, w.storeyIndex || 0);
       // v1231: сохраняем каждый распознанный проём отдельным IFC feature и
       // связываем его со стеной через IfcRelVoidsElement. Геометрия стены
@@ -2348,6 +2407,7 @@
       var sPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + sShp + '))');
       var slLP = add('IFCLOCALPLACEMENT(' + lpFor(sl.storeyIndex || 0) + ',' + wcs + ')');
       var predefined = sl.type === 'ceiling' ? '.ROOF.' : '.FLOOR.';
+      styleItem(sSolid, [0.78, 0.76, 0.71], 'Slab');
       var slab = add('IFCSLAB(' + G() + ',$,\'' + (sl.type === 'ceiling' ? 'Потолок' : 'Пол') + '\',$,$,' + slLP + ',' + sPds + ',$,' + predefined + ')');
       pushProduct(slab, sl.storeyIndex || 0);
     }
@@ -2366,6 +2426,7 @@
       var pPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + pShp + '))');
       var pLP = add('IFCLOCALPLACEMENT(' + lpFor(pipe.storeyIndex || 0) + ',' + wcs + ')');
       var pipeName = 'Труба ' + (pp + 1) + (pipe.dn ? ' ' + pipe.dn : '') + (pipe.material ? ' (' + pipe.material + ')' : '');
+      styleItem(pSolid, pipe.color, pipe.dn ? ('Pipe ' + pipe.dn) : 'Pipe');
       var pipeProd = add('IFCPIPESEGMENT(' + G() + ',$,\'' + pipeName + '\',$,$,' + pLP + ',' + pPds + ',$,$)');
       pushProduct(pipeProd, pipe.storeyIndex || 0);
     }
@@ -2382,6 +2443,7 @@
       var bShp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + bSolid + '))');
       var bPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + bShp + '))');
       var bLP = add('IFCLOCALPLACEMENT(' + lpFor(bmw.storeyIndex || 0) + ',' + wcs + ')');
+      styleItem(bSolid, bmw.color, 'Beam');
       var beamProd = add('IFCBEAM(' + G() + ',$,\'Балка ' + (bm + 1) + '\',$,$,' + bLP + ',' + bPds + ',$,$)');
       pushProduct(beamProd, bmw.storeyIndex || 0);
     }
@@ -2400,6 +2462,7 @@
       var oprod;
       if (obj.kind === 'column') oprod = add('IFCCOLUMN(' + G() + ',$,\'Колонна ' + (ob + 1) + '\',$,$,' + oLP + ',' + oPds + ',$,$)');
       else oprod = add('IFCBUILDINGELEMENTPROXY(' + G() + ',$,\'Объект ' + (ob + 1) + '\',$,$,' + oLP + ',' + oPds + ',$,.NOTDEFINED.)');
+      styleItem(oSolid, obj.color, obj.kind === 'column' ? 'Column' : 'Object');
       pushProduct(oprod, obj.storeyIndex || 0);
     }
     for (var sp = 0; sp < storeyProducts.length; sp++) {

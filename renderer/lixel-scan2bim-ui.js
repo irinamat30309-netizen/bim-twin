@@ -20,14 +20,36 @@
   // --------- чтение активного облака (все точки базы) ---------
   function collectPoints(v) {
     if (!v || !v.base) return null;
-    var chunks = [], total = 0;
-    for (var i = 0; i < v.base.length; i++) { var o = v.base[i]; if (o && o.points && o.pos && o.pos.length) { chunks.push(o.pos); total += o.pos.length; } }
+    var chunks = [], colors = [], hasColor = false, total = 0;
+    for (var i = 0; i < v.base.length; i++) {
+      var o = v.base[i];
+      if (!(o && o.points && o.pos && o.pos.length)) continue;
+      chunks.push(o.pos); total += o.pos.length;
+      if (o.col && o.col.length >= o.pos.length) { colors.push(o.col); hasColor = true; }
+      else { colors.push(null); }
+    }
     if (!total) return null;
-    if (chunks.length === 1) return chunks[0];
-    var out = new Float32Array(total), off = 0;
-    for (var c = 0; c < chunks.length; c++) { out.set(chunks[c], off); off += chunks[c].length; }
+    var out;
+    if (chunks.length === 1) out = chunks[0];
+    else {
+      out = new Float32Array(total);
+      var off = 0;
+      for (var c = 0; c < chunks.length; c++) { out.set(chunks[c], off); off += chunks[c].length; }
+    }
+    // v1266: цвет облака — чтобы материалы стен/труб брались из скана, а не из палитры по умолчанию
+    if (hasColor) {
+      var colOut = new Float32Array(total);
+      var off2 = 0;
+      for (var c2 = 0; c2 < colors.length; c2++) {
+        var src = colors[c2];
+        if (src) { for (var k2 = 0; k2 < chunks[c2].length; k2++) colOut[off2 + k2] = src[k2]; }
+        off2 += chunks[c2].length;
+      }
+      out.colorAttr = colOut;
+    }
     return out;
   }
+  function pointsColors(pts) { return pts && pts.colorAttr ? pts.colorAttr : null; }
 
   // --------- предпросмотр: каркас стен + контур пола накладкой ---------
   function boxEdgesXform(cx, cy, cz, ax, ay, hx, hy, hz, out) {
@@ -75,7 +97,7 @@
       var fY = parseFloat(opts.floorYManual), cY = parseFloat(opts.ceilYManual);
       if (isFinite(fY) && isFinite(cY) && cY - fY > 0.5) opts.range = { floorY: fY, ceilY: cY };
       else delete opts.range;
-      try { model = window.Scan2BIM.reconstruct(pts, opts); }
+      try { model = window.Scan2BIM.reconstruct(pts, Object.assign({}, opts, pointsColors(pts) ? { colors: pointsColors(pts) } : {})); }
       catch (e) { try { if (_stop) _stop(); } catch (e2) {} toast('Ошибка реконструкции: ' + (e && e.message || e), true); setStatus('Ошибка'); return; }
       var dt = ((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0);
       try { if (_stop) _stop(); } catch (e2) {}
