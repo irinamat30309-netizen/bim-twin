@@ -11,6 +11,7 @@ import open3d as o3d
 from shapely.geometry import box, MultiPolygon, Polygon
 from shapely.ops import unary_union
 
+o3d.utility.random.seed(42)
 args = dict(a.split('=') for a in sys.argv[3:] if '=' in a)
 vox = float(args.get('voxel', '0.04'))
 cloud_path, out_json = sys.argv[1], sys.argv[2]
@@ -158,7 +159,7 @@ for w in sorted(walls, key=lambda q: -(q['s1'] - q['s0'])):
             continue
         if abs(m['off'] - w['off']) > 0.10:
             continue
-        if overlap(m['s0'], m['s1'], w['s0'], w['s1']) < -0.15:
+        if overlap(m['s0'], m['s1'], w['s0'], w['s1']) < -1.6:
             continue
         m['s0'] = min(m['s0'], w['s0']); m['s1'] = max(m['s1'], w['s1'])
         m['thk'] = (m['thk'] + w['thk']) / 2
@@ -209,7 +210,7 @@ for w in merged:
                 b += 1
             b1 = b
             width = (b1 - b0) * hbins
-            if width >= 0.5:
+            if width >= 0.6:
                 s_lo = w['s0'] + b0 * hbins; s_hi = w['s0'] + b1 * hbins
                 # вертикальные границы: ищем пустой интервал по высоте в этих колонках
                 m2 = (np.abs(sn - off) <= max(0.10, w['thk'] / 2 + 0.06)) & (su >= s_lo) & (su <= s_hi) & \
@@ -232,9 +233,16 @@ for w in merged:
                     best = (ceilY - cur, cur, ceilY)
                 sill = max(0.0, best[1] - floorY)
                 head = min(H, best[2] - floorY)
+                if head - sill < 0.9:
+                    continue
+                is_door = sill <= 0.3
+                if is_door and not (0.6 <= width <= 2.2):
+                    continue
+                if not is_door and not (0.7 <= width <= 3.5):
+                    continue
                 ops.append({'along': float(s_lo - w['s0']), 'width': float(width),
                             'sill': float(round(sill, 3)), 'head': float(round(head, 3)),
-                            'kind': 'door' if sill <= 0.3 else 'window'})
+                            'kind': 'door' if is_door else 'window'})
             continue
         b += 1
     s0 = w['s0'] + first * hbins; s1 = w['s0'] + (last + 1) * hbins
@@ -275,7 +283,7 @@ for w in wall_defs:
         mo = m & (su >= s0) & (su <= s1) & (PT[:, 1] >= z0) & (PT[:, 1] <= z1)
         area = max(0.25, o['width'] * max(0.3, o['head'] - o['sill']))
         dens = mo.sum() / area
-        if dens > wall_dens * 0.45:
+        if dens > wall_dens * 0.22:
             removed += 1
             continue
         keep.append(o)
@@ -296,6 +304,14 @@ gx = np.floor((floorPts[:, 0] - bx0) / cell).astype(int)
 gz = np.floor((floorPts[:, 2] - bz0) / cell).astype(int)
 ok = (gx >= 0) & (gx < nx) & (gz >= 0) & (gz < nz)
 free[gz[ok], gx[ok]] = True
+# замыкание: узкие щели от труб/мусора не дробят помещение на части
+dil = free.copy()
+for ax in (0, 1):
+    dil = dil | np.roll(dil, 1, axis=ax) | np.roll(dil, -1, axis=ax)
+ero = dil.copy()
+for ax in (0, 1):
+    ero = ero & np.roll(dil, 1, axis=ax) & np.roll(dil, -1, axis=ax)
+free = ero
 blocked = np.zeros((nz, nx), bool)
 gxc, gzc = np.meshgrid((np.arange(nx) + 0.5) * cell + bx0, (np.arange(nz) + 0.5) * cell + bz0)
 for w in wall_defs:
