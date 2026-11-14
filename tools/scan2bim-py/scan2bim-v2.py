@@ -590,12 +590,34 @@ else:
     floorPoly = [[bx0, bz0], [bx1, bz0], [bx1, bz1], [bx0, bz1]]
 floorPoly = [[round(p[0], 3), round(p[1], 3)] for p in floorPoly]
 
+# ---------- 8.1 цвета из облака: пол, потолок, помещения ----------
+_yf = np.abs(PT[:, 1] - floorY) <= 0.30
+_floor_col = [round(float(v), 3) for v in (np.median(CL[_yf], axis=0) if _yf.sum() > 100 else np.array([0.72, 0.70, 0.66]))]
+_yc = np.abs(PT[:, 1] - ceilY) <= 0.30
+_ceil_col = [round(float(v), 3) for v in (np.median(CL[_yc], axis=0) if _yc.sum() > 100 else np.array([0.74, 0.72, 0.68]))]
+_fp_all = PT[(PT[:, 1] >= floorY - 0.10) & (PT[:, 1] <= floorY + 0.40)]
+_fc_all = CL[(PT[:, 1] >= floorY - 0.10) & (PT[:, 1] <= floorY + 0.40)]
+try:
+    from shapely import contains_xy as _contains_xy
+    for _rm in rooms:
+        _poly2 = Polygon(_rm['polygon'])
+        _minx2, _minz2, _maxx2, _maxz2 = _poly2.bounds
+        _bb = ((_fp_all[:, 0] >= _minx2) & (_fp_all[:, 0] <= _maxx2) &
+               (_fp_all[:, 2] >= _minz2) & (_fp_all[:, 2] <= _maxz2))
+        if _bb.sum() > 20:
+            _inside = _contains_xy(_poly2, _fp_all[_bb, 0], _fp_all[_bb, 2])
+            if _inside.sum() > 20:
+                _rm['color'] = [round(float(v), 3) for v in np.median(_fc_all[_bb][_inside], axis=0)]
+except Exception as _e:
+    print('цвета помещений: пропущено', _e)
+print('цвет пола из облака:', _floor_col, '| потолка:', _ceil_col)
+
 model = {
     'ok': True,
     'storey': {'floorY': round(floorY, 3), 'ceilY': round(ceilY, 3), 'height': round(float(H), 3)},
     'walls': wall_defs,
-    'slabs': [{'type': 'floor', 'level': round(floorY, 3), 'thickness': 0.10, 'polygon': floorPoly},
-              {'type': 'ceiling', 'level': round(ceilY, 3), 'thickness': 0.10, 'polygon': floorPoly}],
+    'slabs': [{'type': 'floor', 'level': round(floorY, 3), 'thickness': 0.10, 'polygon': floorPoly, 'color': _floor_col},
+              {'type': 'ceiling', 'level': round(ceilY, 3), 'thickness': 0.10, 'polygon': floorPoly, 'color': _ceil_col}],
     'rooms': rooms, 'pipes': [], 'objects': [], 'beams': [], 'cables': [],
     'stats': {'wallCount': len(wall_defs), 'openingCount': sum(len(w['openings']) for w in wall_defs),
               'roomCount': len(rooms), 'floorArea': round(sum(r['area'] for r in rooms), 1),

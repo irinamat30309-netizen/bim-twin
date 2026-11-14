@@ -2385,6 +2385,7 @@
       var rpds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + rshp + '))');
       var rLP = add('IFCLOCALPLACEMENT(' + lpFor(room.storeyIndex || 0) + ',' + wcs + ')');
       var spaceEnt = add('IFCSPACE(' + G() + ',$,' + stepString('Помещение ' + (rm + 1) + ' — ' + room.area.toFixed(1) + ' м²') + ',$,$,' + rLP + ',' + rpds + ',$,.ELEMENT.,.INTERNAL.,$)');
+      styleItem(rsolid, room.color, 'Space');
       (spaceRefsByStorey[room.storeyIndex || 0] || spaceRefsByStorey[0]).push(spaceEnt);
     }
     for (var sr = 0; sr < spaceRefsByStorey.length; sr++) {
@@ -2407,7 +2408,7 @@
       var sPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + sShp + '))');
       var slLP = add('IFCLOCALPLACEMENT(' + lpFor(sl.storeyIndex || 0) + ',' + wcs + ')');
       var predefined = sl.type === 'ceiling' ? '.ROOF.' : '.FLOOR.';
-      styleItem(sSolid, [0.78, 0.76, 0.71], 'Slab');
+      styleItem(sSolid, (sl && sl.color) ? sl.color : [0.78, 0.76, 0.71], 'Slab ' + (sl.type || ''));
       var slab = add('IFCSLAB(' + G() + ',$,\'' + (sl.type === 'ceiling' ? 'Потолок' : 'Пол') + '\',$,$,' + slLP + ',' + sPds + ',$,' + predefined + ')');
       pushProduct(slab, sl.storeyIndex || 0);
     }
