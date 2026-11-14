@@ -395,7 +395,7 @@ for _w in merged:
     _nxv, _nzv = _w['n']
     _axw = _ux * _w['s0'] + _nxv * _w['off']
     _azw = _uz * _w['s0'] + _nzv * _w['off']
-    _half = max(0.05, _w['thk'] / 2)
+    _half = max(0.11, _w['thk'] / 2 + 0.05)   # +5 см: при сетке 5 см и наклоне 2° тонкая стена иначе не перекрывает клетку
     _Lw = _w['s1'] - _w['s0']
     _su = (_gxc - _axw) * _ux + (_gzc - _azw) * _uz
     _sn = (_gxc - _axw) * _nxv + (_gzc - _azw) * _nzv
@@ -438,13 +438,13 @@ for _gz in range(_nz):
                     'cx': round(float(_poly.centroid.x), 2), 'cz': round(float(_poly.centroid.y), 2)})
 _kept = list(rooms)
 for _r in _rr:
-    if _r['area'] < 3.0:
+    if _r['area'] < 2.0:
         continue
     _pg = Polygon(_r['polygon'])
     _overlap = False
     for _k in _kept:
         _kp = Polygon(_k['polygon'])
-        if _kp.area > 0 and _pg.intersection(_kp).area / max(_pg.area, 1e-6) > 0.5:
+        if _kp.area > 0 and _pg.intersection(_kp).area / max(_pg.area, 1e-6) > 0.65:
             _overlap = True
             break
     if not _overlap:
