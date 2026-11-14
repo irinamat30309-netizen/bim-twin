@@ -138,19 +138,21 @@ for w in M['walls']:
     med = np.median(occ[occ > 0]) if np.any(occ > 0) else 1
     filled = occ >= max(2, med * 0.20)
     gaps = []
+    def _push_gap(_b0, _b1):
+        wdt = (_b1 - _b0) * L / nb
+        _st = _b0 * L / nb
+        # разрыв у торца стены — край области скана/стены, а не проём
+        if 0.6 <= wdt <= 2.5 and _st >= 0.25 and _st + wdt <= L - 0.25:
+            gaps.append({'start': round(_st, 2), 'width': round(wdt, 2)})
     b0 = None
     for bi, f in enumerate(filled):
         if not f and b0 is None:
             b0 = bi
         elif f and b0 is not None:
-            wdt = (bi - b0) * L / nb
-            if 0.5 <= wdt <= 3.5:
-                gaps.append({'start': round(b0 * L / nb, 2), 'width': round(wdt, 2)})
+            _push_gap(b0, bi)
             b0 = None
     if b0 is not None:
-        wdt = (nb - b0) * L / nb
-        if 0.5 <= wdt <= 3.5:
-            gaps.append({'start': round(b0 * L / nb, 2), 'width': round(wdt, 2)})
+        _push_gap(b0, nb)
     rows.append({'wall': len(rows), 'L': round(L, 3), 'T': round(T, 3),
                  'coverage': round(100 * coverage, 0),
                  'T_cloud': None if T_cloud is None else round(T_cloud, 3),

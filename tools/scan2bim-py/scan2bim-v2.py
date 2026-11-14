@@ -258,6 +258,29 @@ for _w in sorted(merged, key=lambda q: -(q['s1'] - q['s0'])):
 print('после дедупликации:', len(_ded))
 merged = _ded
 
+# ---------- 5.15 фильтр стен без поддержки облаком ----------
+_keep = []
+_dropped = 0
+for _w in merged:
+    _u, _n2, _off = _w['u'], _w['n'], _w['off']
+    _L = _w['s1'] - _w['s0']
+    if _L < 0.5:
+        continue
+    _ax = _u[0] * _w['s0'] + _n2[0] * _off
+    _az = _u[1] * _w['s0'] + _n2[1] * _off
+    _su = (PT[:, 0] - _ax) * _u[0] + (PT[:, 2] - _az) * _u[1]
+    _sn = (PT[:, 0] - _ax) * _n2[0] + (PT[:, 2] - _az) * _n2[1]
+    _band = (np.abs(_sn) <= max(0.10, _w['thk'] / 2 + 0.08)) & \
+            (PT[:, 1] >= floorY + 0.20) & (PT[:, 1] <= ceilY - 0.20) & \
+            (_su >= 0) & (_su <= _L)
+    _cnt = int(_band.sum())
+    if _cnt < max(150, 40.0 * _L):
+        _dropped += 1
+        continue
+    _keep.append(_w)
+merged = _keep
+print('убрано стен без поддержки:', _dropped, '| осталось:', len(merged))
+
 # ---------- 6. проёмы (профиль вдоль стены) ----------
 for w in merged:
     u, n, off = w['u'], w['n'], w['off']
@@ -286,7 +309,8 @@ for w in merged:
                 b += 1
             b1 = b
             width = (b1 - b0) * L / nb
-            if width >= 0.55:
+            _gap_start = b0 * L / nb
+            if width >= 0.60 and _gap_start >= 0.22 and _gap_start + width <= L - 0.22:
                 s_lo = b0 * L / nb; s_hi = b1 * L / nb
                 m2 = m & (su >= s_lo) & (su <= s_hi)
                 yy = np.sort(PT[m2, 1]) if np.any(m2) else np.array([])
