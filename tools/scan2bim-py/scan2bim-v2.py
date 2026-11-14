@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""scan2bim v2 (ревизия 96): Manhattan-стены + граф примыканий + polygonize помещений.
+"""scan2bim v2 (ревизия 104): Manhattan-стены + граф примыканий + polygonize помещений.
 
 Отличия от v1:
   * стены доводятся до примыканий по облаку (без «висячих» торцов);
@@ -7,6 +7,14 @@
     пола — контуры закрываются точно, площадь не зависит от видимости пола;
   * толщина и ось — по двум модам облака;
   * проёмы — разрывы вдоль стены + проверка пустоты облаком.
+
+r104:
+  * проём — только разрыв 0.6..2.5 м; пустота шире 2.5 м — проход, а не дверь/окно;
+  * физическая проверка перемычки: сквозной разрыв (head >= H-0.10 и sill <= 0.05)
+    у края широкой пустоты отбрасывается, иначе помечается kind='passage';
+  * стена режется по неподтверждённым пустотам: реальные участки + inferred-перемычка
+    (линия сохраняется, топология помещений не меняется);
+  * достройка периметра помещений за 2-3 прохода, сегменты 0.8..10 м точно по ребру.
 
    python scan2bim-v2.py cloud.bin model.json [--voxel=0.04]
 """
@@ -294,54 +302,87 @@ for w in merged:
         (PT[:, 1] >= floorY + 0.15) & (PT[:, 1] <= ceilY - 0.15)
     if m.sum() < 300:
         w['openings'] = []
+        w['passages'] = []
         continue
     nb = max(8, int(math.ceil(L / 0.10)))
     occ, _ = np.histogram(su[m], bins=nb, range=(0, L))
     med = np.median(occ[occ > 0]) if np.any(occ > 0) else 1
     val = (occ >= max(2, med * 0.25)) & (occ < med * 20)
     wall_dens = m.sum() / max(0.5, L * H)
-    ops = []
+    # пустые интервалы вдоль стены (в метрах)
+    _runs = []
     b = 0
     while b < nb:
         if not val[b]:
             b0 = b
             while b < nb and not val[b]:
                 b += 1
-            b1 = b
-            width = (b1 - b0) * L / nb
-            _gap_start = b0 * L / nb
-            if width >= 0.60 and _gap_start >= 0.22 and _gap_start + width <= L - 0.22:
-                s_lo = b0 * L / nb; s_hi = b1 * L / nb
-                m2 = m & (su >= s_lo) & (su <= s_hi)
-                yy = np.sort(PT[m2, 1]) if np.any(m2) else np.array([])
-                zs = np.arange(floorY, ceilY + 1e-6, 0.05)
-                empty = [int(np.sum((yy >= z - 0.06) & (yy <= z + 0.06))) < 3 for z in zs]
-                best = (0.0, floorY, floorY); cur = None
-                for z, e in zip(zs, empty):
-                    if e and cur is None:
-                        cur = z
-                    elif not e and cur is not None:
-                        if z - cur > best[0]:
-                            best = (z - cur, cur, z)
-                        cur = None
-                if cur is not None and ceilY - cur > best[0]:
-                    best = (ceilY - cur, cur, ceilY)
-                sill = max(0.0, best[1] - floorY); head = min(H, best[2] - floorY)
-                cnt = m2 & (PT[:, 1] >= floorY + sill) & (PT[:, 1] <= floorY + head)
-                dens = cnt.sum() / max(0.25, width * max(0.3, head - sill))
-                if head - sill >= 0.9 and dens <= wall_dens * 0.10:
-                    if width > 4.5:
-                        continue
-                    if width > 2.2:
-                        kind = 'opening'
-                    else:
-                        kind = 'door' if sill <= 0.3 else 'window'
-                    ops.append({'along': float(round(s_lo, 3)), 'width': float(round(width, 3)),
-                                'sill': float(round(sill, 3)), 'head': float(round(head, 3)),
-                                'kind': kind})
+            _runs.append((b0 * L / nb, b * L / nb))
+        else:
+            b += 1
+    # пустота шире 2.5 м — это не дверь/окно, а проход или отсутствие стены в скане
+    _wide = [(a2, b2) for (a2, b2) in _runs if b2 - a2 > 2.5]
+    ops = []
+    passages = []
+    for (_s_lo, _s_hi) in _runs:
+        width = _s_hi - _s_lo
+        if width < 0.60:
             continue
-        b += 1
+        if _s_lo < 0.22 or _s_hi > L - 0.22:
+            continue
+        m2 = m & (su >= _s_lo) & (su <= _s_hi)
+        yy = np.sort(PT[m2, 1]) if np.any(m2) else np.array([])
+        zs = np.arange(floorY, ceilY + 1e-6, 0.05)
+        empty = [int(np.sum((yy >= z - 0.06) & (yy <= z + 0.06))) < 3 for z in zs]
+        best = (0.0, floorY, floorY); cur = None
+        for z, e in zip(zs, empty):
+            if e and cur is None:
+                cur = z
+            elif not e and cur is not None:
+                if z - cur > best[0]:
+                    best = (z - cur, cur, z)
+                cur = None
+        if cur is not None and ceilY - cur > best[0]:
+            best = (ceilY - cur, cur, ceilY)
+        sill = max(0.0, best[1] - floorY); head = min(H, best[2] - floorY)
+        cnt = m2 & (PT[:, 1] >= floorY + sill) & (PT[:, 1] <= floorY + head)
+        dens = cnt.sum() / max(0.25, width * max(0.3, head - sill))
+        if head - sill < 0.9 or dens > wall_dens * 0.10:
+            continue
+        if width > 2.5:
+            # пустота с физическими признаками проёма, но не дверь/окно: проход.
+            # Стена здесь облаком не подтверждена — участок будет помечен inferred.
+            passages.append({'along': float(round(_s_lo, 3)), 'width': float(round(width, 3)),
+                             'sill': float(round(sill, 3)), 'head': float(round(head, 3)),
+                             'reason': 'wide_void', 'valid': True})
+            continue
+        # физическая проверка «перемычка/сквозной проход»:
+        # у двери/окна есть стена над проёмом (перемычка, head < H-0.10) или под ним
+        # (подоконник, sill > 0.05). Пустота до потолка И до пола одновременно — сквозной
+        # разрыв (край стены/тень скана). Условно такой разрыв отбрасываем как проём
+        # только если рядом (<=0.5 м) есть широкая пустота: это хвост прохода/обрыв стены.
+        # Иначе помечаем kind='passage' (реальный проём без видимой перемычки).
+        _through = (head >= H - 0.10) and (sill <= 0.05)
+        _near_void = False
+        if _wide:
+            _near_void = min(min(abs(_s_lo - a2), abs(_s_hi - a2), abs(_s_lo - b2), abs(_s_hi - b2))
+                             for (a2, b2) in _wide) <= 0.50
+        if _through and _near_void:
+            passages.append({'along': float(round(_s_lo, 3)), 'width': float(round(width, 3)),
+                             'sill': float(round(sill, 3)), 'head': float(round(head, 3)),
+                             'reason': 'through_gap_at_void'})
+            continue
+        if _through:
+            kind = 'passage'
+        elif width > 2.2:
+            kind = 'opening'
+        else:
+            kind = 'door' if sill <= 0.3 else 'window'
+        ops.append({'along': float(round(_s_lo, 3)), 'width': float(round(width, 3)),
+                    'sill': float(round(sill, 3)), 'head': float(round(head, 3)),
+                    'kind': kind})
     w['openings'] = ops
+    w['passages'] = passages
 
 # ---------- 7. граф стен → грани (помещения) ----------
 lines = []
@@ -476,6 +517,82 @@ for _r in _rr:
 rooms = sorted(_kept, key=lambda r: -r['area'])
 print('помещений итог:', len(rooms), '| площадь', round(sum(r['area'] for r in rooms), 1))
 
+# ---------- 7b.2 разрез стен по неподтверждённым пустотам ----------
+# Если в стене есть широкая (>2.5 м) пустота с признаками проёма, то стена там облаком
+# не подтверждена. Режем её на реальные участки и помечаем пустой участок как inferred:
+# линия стены сохраняется (топология помещений не меняется), но неподтверждённая часть
+# не выдаётся за измеренную стену. Слишком короткие обломки (<1.5 м) не создаём.
+_def_split = 0
+_def_parts = 0
+_new_merged = []
+for _w in merged:
+    if _w.get('inferred'):
+        _new_merged.append(_w)
+        continue
+    _L = _w['s1'] - _w['s0']
+    _cuts = []
+    _wide_ok = []
+    for _p in _w.get('passages', []):
+        if _p.get('reason') == 'wide_void' and _p.get('valid'):
+            _a0, _b0 = _p['along'], _p['along'] + _p['width']
+            _cuts.append((_a0, _b0))
+            _wide_ok.append((_a0, _b0))
+    for _p in _w.get('passages', []):
+        if _p.get('reason') != 'through_gap_at_void':
+            continue
+        _a0, _b0 = _p['along'], _p['along'] + _p['width']
+        if any(min(abs(_a0 - _a), abs(_b0 - _a), abs(_a0 - _b), abs(_b0 - _b)) <= 0.50
+               for (_a, _b) in _wide_ok):
+            _cuts.append((_a0, _b0))
+    if not _cuts:
+        _new_merged.append(_w)
+        continue
+    _cuts.sort()
+    _mg = []
+    for _a, _b in _cuts:
+        if _mg and _a <= _mg[-1][1] + 0.50:
+            _mg[-1] = (_mg[-1][0], max(_mg[-1][1], _b))
+        else:
+            _mg.append((_a, _b))
+    _pieces = []
+    _cur = 0.0
+    for _a, _b in _mg:
+        if _a > _cur + 1e-6:
+            _pieces.append((_cur, _a, False))
+        _pieces.append((_a, _b, True))
+        _cur = _b
+    if _L > _cur + 1e-6:
+        _pieces.append((_cur, _L, False))
+    _real_lens = [_b - _a for (_a, _b, _inf) in _pieces if not _inf]
+    if not _pieces or (not _real_lens) or min(_real_lens) < 1.5:
+        _new_merged.append(_w)
+        continue
+    _def_split += 1
+    for (_a, _b, _inf) in _pieces:
+        _nw = dict(_w)
+        _nw['s0'] = _w['s0'] + _a
+        _nw['s1'] = _w['s0'] + _b
+        _nw['openings'] = []
+        for _o in _w.get('openings', []):
+            if _o['along'] >= _a - 1e-6 and _o['along'] + _o['width'] <= _b + 1e-6:
+                _oo = dict(_o)
+                _oo['along'] = float(round(_o['along'] - _a, 3))
+                _nw['openings'].append(_oo)
+        _nw['passages'] = []
+        for _p in _w.get('passages', []):
+            if _p['along'] >= _a - 1e-6 and _p['along'] + _p['width'] <= _b + 1e-6:
+                _pp = dict(_p)
+                _pp['along'] = float(round(_p['along'] - _a, 3))
+                _nw['passages'].append(_pp)
+        if _inf:
+            _nw['inferred'] = True
+            _nw['thk'] = 0.12
+            _nw['color'] = np.array([0.62, 0.61, 0.58])
+        _new_merged.append(_nw)
+        _def_parts += 1
+merged = _new_merged
+print('разрезано стен по неподтверждённым пустотам: %d (участков %d)' % (_def_split, _def_parts))
+
 # ---------- 7c. достройка стен по незакрытому периметру помещений ----------
 def _seg_dist(px, pz, ax_, az_, bx_, bz_):
     vx, vz = bx_ - ax_, bz_ - az_
@@ -491,78 +608,86 @@ for _w in merged:
     _a = (_w['u'][0] * _w['s0'] + _w['n'][0] * _w['off'], _w['u'][1] * _w['s0'] + _w['n'][1] * _w['off'])
     _b = (_w['u'][0] * _w['s1'] + _w['n'][0] * _w['off'], _w['u'][1] * _w['s1'] + _w['n'][1] * _w['off'])
     _segs.append((_a[0], _a[1], _b[0], _b[1]))
+
+# 2-3 прохода: после добавления стен заново ищем незакрытые участки периметра.
+# Сегмент 0.8..10 м, кладём точно по ребру полигона помещения (любое направление),
+# новые стены — inferred (облаком не подтверждены, только замыкают контур).
 _added = 0
-for _rm in rooms:
-    _poly = _rm.get('polygon') or []
-    if len(_poly) < 3:
-        continue
-    for _i in range(len(_poly)):
-        _x0, _z0 = _poly[_i]
-        _x1, _z1 = _poly[(_i + 1) % len(_poly)]
-        _L = math.hypot(_x1 - _x0, _z1 - _z0)
-        if _L < 1.0:
+_iters = []
+for _it in range(3):
+    _added_it = 0
+    for _rm in rooms:
+        _poly = _rm.get('polygon') or []
+        if len(_poly) < 3:
             continue
-        _n = max(2, int(_L / 0.20))
-        _unc = 0
-        for _k in range(_n):
-            _f = (_k + 0.5) / _n
-            _px = _x0 + (_x1 - _x0) * _f
-            _pz = _z0 + (_z1 - _z0) * _f
-            _d = min(_seg_dist(_px, _pz, *s) for s in _segs) if _segs else 99.0
-            if _d > 0.20:
-                _unc += 1
-        if _unc / _n < 0.6:
-            continue
-        _dx, _dz = _x1 - _x0, _z1 - _z0
-        _dir = None
-        for _k in (0, 1):
-            _ax = axes[_k]
-            _dot = (_dx * _ax[0] + _dz * _ax[1]) / _L
-            if abs(_dot) > 0.85:
-                _dir = (_ax[0], _ax[1]) if _dot >= 0 else (-_ax[0], -_ax[1])
-                break
-        if _dir is None:
-            continue
-        _nn = (-_dir[1], _dir[0])
-        _s0 = _x0 * _dir[0] + _z0 * _dir[1]
-        _s1 = _x1 * _dir[0] + _z1 * _dir[1]
-        _off = ((_x0 + _x1) / 2) * _nn[0] + ((_z0 + _z1) / 2) * _nn[1]
-        _lo, _hi = min(_s0, _s1), max(_s0, _s1)
-        if _hi - _lo < 0.8 or _hi - _lo > 6.0:
-            continue
-        # не дублируем уже существующую стену
-        _dup = False
-        for _w in merged:
-            if abs(_w['u'][0] * _dir[0] + _w['u'][1] * _dir[1]) < 0.995:
+        for _i in range(len(_poly)):
+            _x0, _z0 = _poly[_i]
+            _x1, _z1 = _poly[(_i + 1) % len(_poly)]
+            _L = math.hypot(_x1 - _x0, _z1 - _z0)
+            if _L < 0.80:
                 continue
-            if abs(_w['off'] - _off) > 0.18:
-                continue
-            if min(_w['s1'], _hi) - max(_w['s0'], _lo) > 0.25:
-                _dup = True
-                break
-        if _dup:
-            continue
-        _cx = _dir[0] * ((_lo + _hi) / 2) + _nn[0] * _off
-        _cz = _dir[1] * ((_lo + _hi) / 2) + _nn[1] * _off
-        _m3 = ((np.abs(PT[:, 0] - _cx) <= 0.35) & (np.abs(PT[:, 2] - _cz) <= 0.35) &
-               (PT[:, 1] >= floorY + 0.2) & (PT[:, 1] <= ceilY - 0.2))
-        _col = CL[_m3].mean(axis=0) if _m3.sum() > 5 else np.array([0.55, 0.50, 0.46])
-        # поддержка облаком: сколько точек рядом с линией (на 1 м² стены)
-        _sn2 = (PT[:, 0] - _dir[0] * _lo) * _nn[0] + (PT[:, 2] - _dir[1] * _lo) * _nn[1]
-        _su2 = (PT[:, 0] - _dir[0] * _lo) * _dir[0] + (PT[:, 2] - _dir[1] * _lo) * _dir[1]
-        _mb = (np.abs(_sn2 - (_off - (_lo * 0 + _dir[0] * 0))) <= 0.25) & (_su2 >= 0) & (_su2 <= (_hi - _lo)) & \
-              (PT[:, 1] >= floorY + 0.2) & (PT[:, 1] <= ceilY - 0.2)
-        _dens = (_mb.sum() / max(0.5, (_hi - _lo) * (H - 0.4))) if _mb.size else 0.0
-        _inferred = _dens < 40.0
-        if _inferred:
-            _col = np.array([0.62, 0.61, 0.58])
-        merged.append({'u': np.array(_dir, float), 'n': np.array(_nn, float),
-                       's0': float(_lo), 's1': float(_hi), 'off': float(_off),
-                       'thk': 0.12, 'color': _col, 'inferred': bool(_inferred)})
-        _segs.append((_dir[0] * _lo + _nn[0] * _off, _dir[1] * _lo + _nn[1] * _off,
-                      _dir[0] * _hi + _nn[0] * _off, _dir[1] * _hi + _nn[1] * _off))
-        _added += 1
-print('достроено стен по периметру помещений:', _added, '| всего стен:', len(merged))
+            _n = max(2, int(math.ceil(_L / 0.20)))
+            _flags = []
+            for _k in range(_n):
+                _f = (_k + 0.5) / _n
+                _px = _x0 + (_x1 - _x0) * _f
+                _pz = _z0 + (_z1 - _z0) * _f
+                _d = min(_seg_dist(_px, _pz, *s) for s in _segs) if _segs else 99.0
+                _flags.append(_d > 0.145)
+            _j = 0
+            while _j < _n:
+                if not _flags[_j]:
+                    _j += 1
+                    continue
+                _j0 = _j
+                while _j < _n and _flags[_j]:
+                    _j += 1
+                _j1 = _j
+                _f0 = _j0 / _n
+                _f1 = _j1 / _n
+                _q0x = _x0 + (_x1 - _x0) * _f0
+                _q0z = _z0 + (_z1 - _z0) * _f0
+                _q1x = _x0 + (_x1 - _x0) * _f1
+                _q1z = _z0 + (_z1 - _z0) * _f1
+                _Lr = math.hypot(_q1x - _q0x, _q1z - _q0z)
+                if _Lr < 0.80:
+                    continue
+                _nch = max(1, int(math.ceil(_Lr / 10.0)))
+                for _c in range(_nch):
+                    _t0 = _c / _nch
+                    _t1 = (_c + 1) / _nch
+                    _p0x = _q0x + (_q1x - _q0x) * _t0
+                    _p0z = _q0z + (_q1z - _q0z) * _t0
+                    _p1x = _q0x + (_q1x - _q0x) * _t1
+                    _p1z = _q0z + (_q1z - _q0z) * _t1
+                    _lr = math.hypot(_p1x - _p0x, _p1z - _p0z)
+                    if _lr < 0.80:
+                        continue
+                    _ux = (_p1x - _p0x) / _lr
+                    _uz = (_p1z - _p0z) / _lr
+                    _nx = -_uz
+                    _nz = _ux
+                    _off = ((_p0x + _p1x) / 2) * _nx + ((_p0z + _p1z) / 2) * _nz
+                    _s0 = _p0x * _ux + _p0z * _uz
+                    _s1 = _p1x * _ux + _p1z * _uz
+                    if _s1 < _s0:
+                        _s0, _s1 = _s1, _s0
+                    # участок периметра не покрыт ни одной стеной (проверено выше),
+                    # поэтому дубль здесь невозможен: кладём сегмент точно по ребру.
+                    # Стена синтезирована из топологии помещений, а не выделена из облака,
+                    # поэтому всегда inferred (как и остальные достроенные стены).
+                    merged.append({'u': np.array([_ux, _uz], float), 'n': np.array([_nx, _nz], float),
+                                   's0': float(_s0), 's1': float(_s1), 'off': float(_off),
+                                   'thk': 0.12, 'color': np.array([0.62, 0.61, 0.58]),
+                                   'inferred': True, 'openings': [], 'passages': []})
+                    _segs.append((_p0x, _p0z, _p1x, _p1z))
+                    _added += 1
+                    _added_it += 1
+    _iters.append(_added_it)
+    if _added_it == 0:
+        break
+print('достроено стен по периметру помещений: %d (итерации %s) | всего стен: %d' % (
+    _added, _iters, len(merged)))
 
 # ---------- 8. JSON ----------
 wall_defs = []
@@ -576,10 +701,12 @@ for w in merged:
                       'thickness': round(float(w['thk']), 3), 'length': round(float(w['s1'] - w['s0']), 3),
                       'base': round(floorY, 3), 'height': round(float(H), 3),
                       'openings': w.get('openings', []),
+                      'passages': w.get('passages', []),
                       'color': [round(float(c), 3) for c in w['color']],
                       'material': 'inferred' if w.get('inferred') else ('brick' if w['color'][0] > 0.45 else 'concrete'),
                       'inferred': bool(w.get('inferred')), 'rms': 0.02})
-print('стен итог:', len(wall_defs), '| проёмов:', sum(len(w['openings']) for w in wall_defs))
+print('стен итог:', len(wall_defs), '| проёмов:', sum(len(w['openings']) for w in wall_defs),
+      '| проходов:', sum(len(w.get('passages', [])) for w in wall_defs))
 
 if rooms:
     fl = unary_union([Polygon(r['polygon']) for r in rooms]).buffer(0.02).simplify(0.02)
@@ -620,6 +747,7 @@ model = {
               {'type': 'ceiling', 'level': round(ceilY, 3), 'thickness': 0.10, 'polygon': floorPoly, 'color': _ceil_col}],
     'rooms': rooms, 'pipes': [], 'objects': [], 'beams': [], 'cables': [],
     'stats': {'wallCount': len(wall_defs), 'openingCount': sum(len(w['openings']) for w in wall_defs),
+              'passageCount': sum(len(w.get('passages', [])) for w in wall_defs),
               'roomCount': len(rooms), 'floorArea': round(sum(r['area'] for r in rooms), 1),
               'totalWallLength': round(sum(w['length'] for w in wall_defs), 1),
               'meanWallRms': 0.02, 'pointsIn': int(len(xyz)), 'pointsUsed': int(len(PT)),
