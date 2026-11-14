@@ -64,8 +64,25 @@ for _ in range(2):
     for ax in (0, 1):
         ero = ero & np.roll(dil, 1, axis=ax) & np.roll(dil, -1, axis=ax)
     free = ero
-floor_visible = float(free.sum()) * cell * cell
-print('облако: видимая площадь пола %.1f м²' % floor_visible)
+# площадь пола, доступная помещениям: вычитаем следы стен (половина толщины)
+_nx0, _nz0 = gx.min(), gz.min()
+_gxc = (_nx0 + np.arange(nx) + 0.5) * cell
+_gzc = (_nz0 + np.arange(nz) + 0.5) * cell
+_GX, _GZ = np.meshgrid(_gxc, _gzc)
+_wallfree = np.ones((nz, nx), bool)
+for _w in M['walls']:
+    _ax, _az = _w['a']
+    _ux, _uz = _w['dir']
+    _nxv, _nzv = -_uz, _ux
+    _half = float(_w['thickness']) / 2.0 + 0.02
+    _Lw = float(_w['length'])
+    _suw = (_GX - _ax) * _ux + (_GZ - _az) * _uz
+    _snw = (_GX - _ax) * _nxv + (_GZ - _az) * _nzv
+    _wallfree &= ~((_suw >= -_half) & (_suw <= _Lw + _half) & (np.abs(_snw) <= _half))
+floor_free = free & _wallfree
+floor_visible = float(floor_free.sum()) * cell * cell
+floor_pts_area = float(free.sum()) * cell * cell
+print('облако: точки пола %.1f м², из них без следов стен %.1f м²' % (floor_pts_area, floor_visible))
 
 # ---------- по каждой стене ----------
 rows = []
