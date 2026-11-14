@@ -80,6 +80,25 @@ for _w in M['walls']:
     _snw = (_GX - _ax) * _nxv + (_GZ - _az) * _nzv
     _wallfree &= ~((_suw >= -_half) & (_suw <= _Lw + _half) & (np.abs(_snw) <= _half))
 floor_free = free & _wallfree
+# свободный пол считаем ВНУТРИ габарита стен (вне контура помещений быть не может)
+try:
+    from shapely.geometry import MultiPoint as _MP, Polygon as _Poly2
+    _pts = []
+    for _w in M['walls']:
+        _pts.append(tuple(_w['a'])); _pts.append(tuple(_w['b']))
+    _env = _MP(_pts).convex_hull.buffer(-0.05)
+    _ox = float(np.floor(fp[:, 0].min() / cell)) * cell
+    _oz = float(np.floor(fp[:, 2].min() / cell)) * cell
+    _inside_env = np.zeros((nz, nx), bool)
+    for _zi in range(nz):
+        for _xi in range(nx):
+            _px = _ox + (_xi + 0.5) * cell
+            _pz = _oz + (_zi + 0.5) * cell
+            if _env.contains(_Poly2([(_px, _pz), (_px + 0.01, _pz), (_px + 0.01, _pz + 0.01), (_px, _pz + 0.01)]).centroid):
+                _inside_env[_zi, _xi] = True
+    floor_free = floor_free & _inside_env
+except Exception as _e2:
+    print('габарит стен: пропущено', _e2)
 floor_visible = float(floor_free.sum()) * cell * cell
 floor_pts_area = float(free.sum()) * cell * cell
 print('облако: точки пола %.1f м², из них без следов стен %.1f м²' % (floor_pts_area, floor_visible))
