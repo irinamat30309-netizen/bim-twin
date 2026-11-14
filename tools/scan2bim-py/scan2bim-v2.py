@@ -247,9 +247,9 @@ for _w in sorted(merged, key=lambda q: -(q['s1'] - q['s0'])):
     for _m in _ded:
         if abs(_m['u'][0] * _w['u'][0] + _m['u'][1] * _w['u'][1]) < 0.995:
             continue
-        if abs(_m['off'] - _w['off']) > 0.12:
+        if abs(_m['off'] - _w['off']) > 0.15:
             continue
-        if _ov(_m['s0'], _m['s1'], _w['s0'], _w['s1']) > 0.5:
+        if _ov(_m['s0'], _m['s1'], _w['s0'], _w['s1']) > -2.0:
             _dup = True
             _m['s0'] = min(_m['s0'], _w['s0']); _m['s1'] = max(_m['s1'], _w['s1'])
             break
@@ -452,6 +452,94 @@ for _r in _rr:
 rooms = sorted(_kept, key=lambda r: -r['area'])
 print('помещений итог:', len(rooms), '| площадь', round(sum(r['area'] for r in rooms), 1))
 
+# ---------- 7c. достройка стен по незакрытому периметру помещений ----------
+def _seg_dist(px, pz, ax_, az_, bx_, bz_):
+    vx, vz = bx_ - ax_, bz_ - az_
+    l2 = vx * vx + vz * vz
+    if l2 <= 1e-9:
+        return math.hypot(px - ax_, pz - az_)
+    tt = ((px - ax_) * vx + (pz - az_) * vz) / l2
+    tt = max(0.0, min(1.0, tt))
+    return math.hypot(px - (ax_ + vx * tt), pz - (az_ + vz * tt))
+
+_segs = []
+for _w in merged:
+    _a = (_w['u'][0] * _w['s0'] + _w['n'][0] * _w['off'], _w['u'][1] * _w['s0'] + _w['n'][1] * _w['off'])
+    _b = (_w['u'][0] * _w['s1'] + _w['n'][0] * _w['off'], _w['u'][1] * _w['s1'] + _w['n'][1] * _w['off'])
+    _segs.append((_a[0], _a[1], _b[0], _b[1]))
+_added = 0
+for _rm in rooms:
+    _poly = _rm.get('polygon') or []
+    if len(_poly) < 3:
+        continue
+    for _i in range(len(_poly)):
+        _x0, _z0 = _poly[_i]
+        _x1, _z1 = _poly[(_i + 1) % len(_poly)]
+        _L = math.hypot(_x1 - _x0, _z1 - _z0)
+        if _L < 1.0:
+            continue
+        _n = max(2, int(_L / 0.20))
+        _unc = 0
+        for _k in range(_n):
+            _f = (_k + 0.5) / _n
+            _px = _x0 + (_x1 - _x0) * _f
+            _pz = _z0 + (_z1 - _z0) * _f
+            _d = min(_seg_dist(_px, _pz, *s) for s in _segs) if _segs else 99.0
+            if _d > 0.20:
+                _unc += 1
+        if _unc / _n < 0.6:
+            continue
+        _dx, _dz = _x1 - _x0, _z1 - _z0
+        _dir = None
+        for _k in (0, 1):
+            _ax = axes[_k]
+            _dot = (_dx * _ax[0] + _dz * _ax[1]) / _L
+            if abs(_dot) > 0.85:
+                _dir = (_ax[0], _ax[1]) if _dot >= 0 else (-_ax[0], -_ax[1])
+                break
+        if _dir is None:
+            continue
+        _nn = (-_dir[1], _dir[0])
+        _s0 = _x0 * _dir[0] + _z0 * _dir[1]
+        _s1 = _x1 * _dir[0] + _z1 * _dir[1]
+        _off = ((_x0 + _x1) / 2) * _nn[0] + ((_z0 + _z1) / 2) * _nn[1]
+        _lo, _hi = min(_s0, _s1), max(_s0, _s1)
+        if _hi - _lo < 0.8 or _hi - _lo > 6.0:
+            continue
+        # не дублируем уже существующую стену
+        _dup = False
+        for _w in merged:
+            if abs(_w['u'][0] * _dir[0] + _w['u'][1] * _dir[1]) < 0.995:
+                continue
+            if abs(_w['off'] - _off) > 0.18:
+                continue
+            if min(_w['s1'], _hi) - max(_w['s0'], _lo) > 0.25:
+                _dup = True
+                break
+        if _dup:
+            continue
+        _cx = _dir[0] * ((_lo + _hi) / 2) + _nn[0] * _off
+        _cz = _dir[1] * ((_lo + _hi) / 2) + _nn[1] * _off
+        _m3 = ((np.abs(PT[:, 0] - _cx) <= 0.35) & (np.abs(PT[:, 2] - _cz) <= 0.35) &
+               (PT[:, 1] >= floorY + 0.2) & (PT[:, 1] <= ceilY - 0.2))
+        _col = CL[_m3].mean(axis=0) if _m3.sum() > 5 else np.array([0.55, 0.50, 0.46])
+        # поддержка облаком: сколько точек рядом с линией (на 1 м² стены)
+        _sn2 = (PT[:, 0] - _dir[0] * _lo) * _nn[0] + (PT[:, 2] - _dir[1] * _lo) * _nn[1]
+        _su2 = (PT[:, 0] - _dir[0] * _lo) * _dir[0] + (PT[:, 2] - _dir[1] * _lo) * _dir[1]
+        _mb = (np.abs(_sn2 - (_off - (_lo * 0 + _dir[0] * 0))) <= 0.25) & (_su2 >= 0) & (_su2 <= (_hi - _lo)) & \
+              (PT[:, 1] >= floorY + 0.2) & (PT[:, 1] <= ceilY - 0.2)
+        _dens = (_mb.sum() / max(0.5, (_hi - _lo) * (H - 0.4))) if _mb.size else 0.0
+        _inferred = _dens < 40.0
+        if _inferred:
+            _col = np.array([0.62, 0.61, 0.58])
+        merged.append({'u': np.array(_dir, float), 'n': np.array(_nn, float),
+                       's0': float(_lo), 's1': float(_hi), 'off': float(_off),
+                       'thk': 0.12, 'color': _col, 'inferred': bool(_inferred)})
+        _segs.append((_dir[0] * _lo + _nn[0] * _off, _dir[1] * _lo + _nn[1] * _off,
+                      _dir[0] * _hi + _nn[0] * _off, _dir[1] * _hi + _nn[1] * _off))
+        _added += 1
+print('достроено стен по периметру помещений:', _added, '| всего стен:', len(merged))
+
 # ---------- 8. JSON ----------
 wall_defs = []
 for w in merged:
@@ -465,7 +553,8 @@ for w in merged:
                       'base': round(floorY, 3), 'height': round(float(H), 3),
                       'openings': w.get('openings', []),
                       'color': [round(float(c), 3) for c in w['color']],
-                      'material': 'brick' if w['color'][0] > 0.45 else 'concrete', 'rms': 0.02})
+                      'material': 'inferred' if w.get('inferred') else ('brick' if w['color'][0] > 0.45 else 'concrete'),
+                      'inferred': bool(w.get('inferred')), 'rms': 0.02})
 print('стен итог:', len(wall_defs), '| проёмов:', sum(len(w['openings']) for w in wall_defs))
 
 if rooms:

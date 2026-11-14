@@ -69,7 +69,11 @@ print('облако: видимая площадь пола %.1f м²' % floor_v
 
 # ---------- по каждой стене ----------
 rows = []
+_inferred_cnt = sum(1 for w in M['walls'] if w.get('inferred') or w.get('material') == 'inferred')
+print('достроенных стен (без поддержки облаком): %d из %d' % (_inferred_cnt, len(M['walls'])))
 for w in M['walls']:
+    if w.get('inferred') or w.get('material') == 'inferred':
+        continue
     ax, az = w['a']
     ux, uz = w['dir']
     nxv, nzv = -uz, ux
@@ -144,7 +148,7 @@ for r in rows:
         max(r['cloud_beyond_start_m'], r['cloud_beyond_end_m'])))
 
 print('\n=== СВОДКА ===')
-print('стен: модель %d, обмерено %d' % (len(M['walls']), len(rows)))
+print('стен: модель %d (в т.ч. достроенных %d), обмерено облаком %d' % (len(M['walls']), _inferred_cnt, len(rows)))
 print('покрытие стен облаком: медиана %.0f %%, минимум %.0f %%' % (np.median(cov), min(cov)))
 print('толщина: медиана ошибки %.0f мм, максимум %.0f мм' % (np.median(terr) if terr else -1, max(terr) if terr else -1))
 print('высота: модель %.3f, облако %.3f, ошибка %.0f мм' % (H_model, H_cloud, (H_model - H_cloud) * 1000))
@@ -152,6 +156,41 @@ print('площадь помещений: модель %.1f м², видимый
     model_area, floor_visible, model_area - floor_visible))
 print('стены, у которых облако продолжается за торец: %d из %d (медиана %.2f м)' % (
     sum(1 for b in beyond if b > 0.25), len(beyond), np.median(beyond) if beyond else 0))
+
+# ---------- полнота модели: доля периметра помещений, закрытая стенами ----------
+def _pt_seg_dist(px, pz, ax, az, bx, bz):
+    vx, vz = bx - ax, bz - az
+    L2 = vx * vx + vz * vz
+    if L2 <= 1e-9:
+        return math.hypot(px - ax, pz - az)
+    tt = ((px - ax) * vx + (pz - az) * vz) / L2
+    tt = max(0.0, min(1.0, tt))
+    return math.hypot(px - (ax + vx * tt), pz - (az + vz * tt))
+
+_per_tot = 0.0
+_per_hit = 0.0
+_walls_ab = [(w['a'][0], w['a'][1], w['b'][0], w['b'][1]) for w in M['walls']]
+for rm in M.get('rooms', []):
+    poly = rm.get('polygon') or []
+    if len(poly) < 3:
+        continue
+    for i2 in range(len(poly)):
+        x0, z0 = poly[i2]
+        x1, z1 = poly[(i2 + 1) % len(poly)]
+        seg = math.hypot(x1 - x0, z1 - z0)
+        if seg < 1e-6:
+            continue
+        n2 = max(1, int(seg / 0.2))
+        for k2 in range(n2):
+            f2 = (k2 + 0.5) / n2
+            px = x0 + (x1 - x0) * f2
+            pz = z0 + (z1 - z0) * f2
+            dmin = min(_pt_seg_dist(px, pz, *wa) for wa in _walls_ab) if _walls_ab else 99
+            _per_tot += seg / n2
+            if dmin <= 0.15:
+                _per_hit += seg / n2
+perim_cov = 100.0 * _per_hit / max(1e-9, _per_tot)
+print('периметр помещений, закрытый стенами: %.0f %% (%.1f из %.1f м)' % (perim_cov, _per_hit, _per_tot))
 
 json.dump({'cloud': {'floorY': round(floorY, 3), 'ceilY': round(ceilY, 3), 'height': round(H_cloud, 3),
                      'floor_visible_m2': round(floor_visible, 1)},
@@ -165,6 +204,7 @@ json.dump({'cloud': {'floorY': round(floorY, 3), 'ceilY': round(ceilY, 3), 'heig
                        'max_T_err_mm': float(max(terr)) if terr else None,
                        'height_err_mm': (H_model - H_cloud) * 1000,
                        'area_diff_m2': model_area - floor_visible,
-                       'walls_cloud_beyond': int(sum(1 for b in beyond if b > 0.25))}},
+                       'walls_cloud_beyond': int(sum(1 for b in beyond if b > 0.25)),
+                       'room_perimeter_covered_pct': round(perim_cov, 1), 'room_perimeter_m': round(_per_tot, 1)}},
           open(out_json, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
 print('JSON:', out_json)

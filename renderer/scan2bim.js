@@ -2313,7 +2313,7 @@
       var shp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + solidRefs.join(',') + '))');
       var pds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + shp + '))');
       var wLP = add('IFCLOCALPLACEMENT(' + lpFor(w.storeyIndex || 0) + ',' + wcs + ')');
-      var wall = add('IFCWALLSTANDARDCASE(' + G() + ',$,\'Стена ' + (i + 1) + '\',$,$,' + wLP + ',' + pds + ',$,$)');
+      var wall = add('IFCWALLSTANDARDCASE(' + G() + ',$,\'Стена ' + (i + 1) + (w.material === 'inferred' ? ' (достроена)' : '') + '\',$,$,' + wLP + ',' + pds + ',$,$)');
       styleItem(solidRefs[0], w.color, w.material ? ('Wall ' + w.material) : 'Wall');   // v1266
       pushProduct(wall, w.storeyIndex || 0);
       // v1231: сохраняем каждый распознанный проём отдельным IFC feature и
