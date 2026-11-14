@@ -84,13 +84,20 @@ for w in M['walls']:
     band = (np.abs(sn) <= max(0.10, T / 2 + 0.10)) & (PT[:, 1] >= floorY + 0.25) & (PT[:, 1] <= ceilY - 0.25)
     m = band & (su >= -0.6) & (su <= L + 0.6)
     # покрытие длины: шаг 0.1 м
+    # покрытие считаем только по сплошным участкам: проёмы модели исключаем
+    _ops = [(float(o.get('along', 0)), float(o.get('along', 0)) + float(o.get('width', 0)))
+            for o in w.get('openings', [])]
     steps = np.arange(0.0, L + 1e-6, 0.10)
     hit = 0
+    total = 0
     for s in steps:
+        if any(s0o - 0.10 <= s <= s1o + 0.10 for (s0o, s1o) in _ops):
+            continue
+        total += 1
         mm = band & (np.abs(su - s) <= 0.07)
         if mm.sum() >= 2:
             hit += 1
-    coverage = hit / max(1, len(steps))
+    coverage = hit / max(1, total)
     # выступы облака за торцы
     s_sup = su[m]
     if s_sup.size:
