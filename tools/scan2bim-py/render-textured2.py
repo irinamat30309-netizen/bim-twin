@@ -505,5 +505,7 @@ dr.text((24, 20), 'BIM-модель: материал и цвет взяты и�
 dr.text((24, 52), f'стен {len(J["walls"])} · проёмов {sum(len(w.get("openings", [])) for w in J["walls"])} · '
         f'помещений {len(J.get("rooms", []))} · высота {Hh:.2f} м · цвет ячеек — медиана облака',
         fill=(110, 106, 100), font=fs)
+from PIL import ImageFilter
+img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=140, threshold=2))
 img.save(out)
 print('saved', out, img.size, 'полигонов', len(items))
