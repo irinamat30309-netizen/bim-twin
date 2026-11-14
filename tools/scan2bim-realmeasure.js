@@ -232,6 +232,10 @@ for (const b of byRow) console.log(`  ряд ${b.row.toFixed(2)} м: окон ${
 if (jsonOut) {
   fs.writeFileSync(jsonOut, JSON.stringify({
     file: path.basename(file), plane: { angleDeg, rms, band, offset: planeOff, dir, nrm },
+    // v2-facade: кадр облака (Y-up) и центр, относительно которого посчитаны u/v — нужно,
+    // чтобы внешний движок мог перевести свои мировые координаты в развёртку фасада 1:1.
+    center: { sx, sz }, frame: { origin: (cloud.meta && cloud.meta.offset) || null, axis: 'yup' },
+    sampled: pts.length, total: n,
     bbox: { uMin, uMax, vMin, vMax }, cell, holes, rows: rows.map(r => ({ v0: r.v0, count: r.items.length })),
     levels,
     model: { walls: model.stats.wallCount, openings: model.stats.openingCount, storeys: model.storeys ? model.storeys.length : 1, rooms: model.stats.roomCount, openingsList: modelOpenings },

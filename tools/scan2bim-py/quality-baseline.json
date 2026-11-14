@@ -1,0 +1,99 @@
+{
+ "_meta": {
+  "created_at": "2026-11-14T23:25:27+02:00",
+  "tool": "run-quality-all.py",
+  "note": "эталон для проверки регрессии; обновлять осознанно"
+ },
+ "entries": {
+  "koridor/baseline-r107": {
+   "metrics": {
+    "n_walls_measured": 22,
+    "median_coverage_pct": 94.0,
+    "min_coverage_pct": 20.0,
+    "median_T_err_mm": 10.0,
+    "p90_T_err_mm": 92.99999999999997,
+    "max_T_err_mm": 195.0,
+    "cloud_height_m": 3.276,
+    "model_height_m": 3.296,
+    "height_err_mm": 19.999828100204287,
+    "model_rooms_area_m2": 117.5,
+    "cloud_floor_visible_m2": 128.5,
+    "room_perimeter_covered_pct": 96.5,
+    "room_perimeter_m": 222.9,
+    "walls_cloud_beyond": 2,
+    "model_walls": 45,
+    "model_openings": 11,
+    "model_rooms": 23,
+    "area_ratio_pct": 91.43968871595331,
+    "openings_recall_pct": 90.9090909090909,
+    "openings_precision_pct": 90.9090909090909,
+    "openings_width_median_err_mm": 0.0,
+    "openings_tp": 10,
+    "openings_fn": 1,
+    "openings_fp": 1,
+    "openings_cloud": 11,
+    "openings_model": 11,
+    "openings_stdout": {
+     "recall": 91,
+     "precision": 91,
+     "width_median_err_mm": 0
+    },
+    "rooms_outside_pct": 0.9,
+    "rooms_overlap_m2": 0.5,
+    "walls_summary": {
+     "walls": 45,
+     "inferred": 23,
+     "measured": 22
+    }
+   },
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-model.json",
+   "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
+   "created_at": "2026-11-14T23:25:27+02:00"
+  },
+  "koridor/p1-final": {
+   "metrics": {
+    "n_walls_measured": 21,
+    "median_coverage_pct": 95.0,
+    "min_coverage_pct": 25.0,
+    "median_T_err_mm": 10.0,
+    "p90_T_err_mm": 96.50000000000003,
+    "max_T_err_mm": 195.0,
+    "cloud_height_m": 3.276,
+    "model_height_m": 3.278,
+    "height_err_mm": 1.9998281002044926,
+    "model_rooms_area_m2": 122.7,
+    "cloud_floor_visible_m2": 127.9,
+    "room_perimeter_covered_pct": 97.5,
+    "room_perimeter_m": 237.7,
+    "walls_cloud_beyond": 2,
+    "model_walls": 57,
+    "model_openings": 11,
+    "model_rooms": 23,
+    "area_ratio_pct": 95.93432369038311,
+    "openings_recall_pct": 100.0,
+    "openings_precision_pct": 100.0,
+    "openings_width_median_err_mm": 0.0,
+    "openings_tp": 11,
+    "openings_fn": 0,
+    "openings_fp": 0,
+    "openings_cloud": 11,
+    "openings_model": 11,
+    "openings_stdout": {
+     "recall": 100,
+     "precision": 100,
+     "width_median_err_mm": 0
+    },
+    "rooms_outside_pct": 0.9,
+    "rooms_overlap_m2": 0.4,
+    "walls_summary": {
+     "walls": 57,
+     "inferred": 36,
+     "measured": 21
+    }
+   },
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-p1.json",
+   "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
+   "created_at": "2026-11-14T23:25:27+02:00"
+  }
+ }
+}

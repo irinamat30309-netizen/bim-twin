@@ -16,16 +16,28 @@ r104:
     (линия сохраняется, топология помещений не меняется);
   * достройка периметра помещений за 2-3 прохода, сегменты 0.8..10 м точно по ребру.
 
-   python scan2bim-v2.py cloud.bin model.json [--voxel=0.04]
+   python scan2bim-v2.py cloud.bin model.json [--voxel=0.04] [--mode=facade|auto|interior]
+
+r109 (фаза 2 роадмапа):
+  * `--mode=facade` — режим фасада: стены-полосы по этажам, окна = пустоты в полосах,
+    перекрытия = горизонтальные полосы (см. scan2bim_facade.py). Реализация вынесена в
+    отдельный модуль, интерьерный код ниже не меняется.
+  * `--mode=auto` — фасад, если облако высокое и тонкое в плане, иначе интерьер.
 """
-import json, math, sys
+import json, math, os, sys, time
 import numpy as np
 import open3d as o3d
 from shapely.geometry import LineString, Polygon, box
 from shapely.ops import unary_union, polygonize
 
 o3d.utility.random.seed(42)
-args = dict(a.split('=') for a in sys.argv[3:] if '=' in a)
+# ключи опций — и в форме `--voxel=0.04`, и в старой форме `voxel=0.04`
+args = {}
+for _a in sys.argv[3:]:
+    if '=' in _a:
+        _k, _v = _a.split('=', 1)
+        args[_k] = _v
+        args[_k.lstrip('-')] = _v
 vox = float(args.get('voxel', '0.03'))
 cloud_path, out_json = sys.argv[1], sys.argv[2]
 
@@ -33,6 +45,20 @@ P = np.fromfile(cloud_path, dtype=np.float32).reshape(-1, 6)
 xyz = P[:, :3].astype(np.float64)
 rgb = np.clip(P[:, 3:6], 0, 1).astype(np.float64)
 print('точек:', len(xyz))
+
+# ---------- r109: диспетчеризация режимов (фасад / авто) ----------
+_mode = str(args.get('mode', 'interior')).strip().lower()
+if _mode in ('facade', 'фасад', 'auto', 'авто'):
+    _here = os.path.dirname(os.path.abspath(__file__))
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
+    import scan2bim_facade as _facade
+    if _mode in ('facade', 'фасад') or _facade.looks_like_facade(xyz):
+        _t0 = time.time()
+        _facade.run(xyz, out_json, args, rgb=rgb)
+        print('режим фасада: готово за %.1f с' % (time.time() - _t0))
+        sys.exit(0)
+    print('авто: облако не похоже на фасад — интерьерный режим')
 
 pc = o3d.geometry.PointCloud()
 pc.points = o3d.utility.Vector3dVector(xyz)
@@ -58,30 +84,63 @@ while len(rem.points) >= 2500 and len(planes) < 180:
     rem = rem.select_by_index(inl, invert=True)
 print('плоскостей:', len(planes))
 
-# высоты: пол и потолок — пики плотности по высоте (пол = массовый низ, потолок = массовый верх)
+# ---------- 1b. пол и потолок по горизонтальным RANSAC-плоскостям (r109/A1) ----------
+# Широкая горизонтальная плоскость: |n_y| >= 0.98 и габарит (bbox) >= 60 м². Пол — самая
+# низкая такая плоскость, потолок — кандидат над полом (>= +2.2 м) с наибольшей поддержкой
+# в полосе ±5 см. Уровни уточняются медианой ВСЕХ точек облака в полосе ±5 см вокруг
+# плоскости (не только инлайеров), поэтому высота не зависит от воксельного прореживания.
+yv_full = xyz[:, 1]
 yv = PT[:, 1]
-hist_all, edges_all = np.histogram(yv, bins=500)
-cen_all = (edges_all[:-1] + edges_all[1:]) / 2
-sm_all = np.convolve(hist_all, np.array([1, 2, 3, 2, 1], float), mode='same')
-peaks = []
-for k in range(1, len(sm_all) - 1):
-    if sm_all[k] >= sm_all[k - 1] and sm_all[k] >= sm_all[k + 1] and sm_all[k] > sm_all.max() * 0.03:
-        y = float(cen_all[k])
-        if not peaks or abs(y - peaks[-1][0]) > 0.06:
-            peaks.append([y, float(sm_all[k])])
-        elif sm_all[k] > peaks[-1][1]:
-            peaks[-1] = [y, float(sm_all[k])]
-low = [pk for pk in peaks if pk[0] < 1.5]
-floorY = max(low, key=lambda pk: pk[1])[0] if low else float(np.percentile(yv, 1))
-cand = [pk for pk in peaks if 2.2 <= pk[0] - floorY <= 4.2]
-ceilY = max(cand, key=lambda pk: pk[1])[0] if cand else floorY + 3.0
-# уточняем уровни медианой точек в узкой полосе вокруг пика
-mLo = np.abs(yv - floorY) <= 0.06
-if mLo.sum() > 500:
-    floorY = float(np.median(yv[mLo]))
-mHi = np.abs(yv - ceilY) <= 0.06
-if mHi.sum() > 500:
-    ceilY = float(np.median(yv[mHi]))
+_horiz = []
+for _p in planes:
+    if abs(_p['n'][1]) < 0.98 or len(_p['pts']) < 800:
+        continue
+    _q = _p['pts']
+    _ext = float((_q[:, 0].max() - _q[:, 0].min()) * (_q[:, 2].max() - _q[:, 2].min()))
+    if _ext < 60.0:                     # локальные/узкие плоскости не пол и не потолок
+        continue
+    _horiz.append({'y': float(np.median(_q[:, 1])), 'ext': _ext, 'n': int(len(_q))})
+floorY = ceilY = None
+if _horiz:
+    _fl = min(_horiz, key=lambda h: h['y'])
+    _band = np.abs(yv_full - _fl['y']) <= 0.05
+    if _band.sum() > 500:
+        floorY = float(np.median(yv_full[_band]))
+    _ceils = [h for h in _horiz if h['y'] >= floorY + 2.2]
+    if _ceils:
+        _best = max(_ceils, key=lambda h: int(np.sum(np.abs(yv_full - h['y']) <= 0.05)))
+        _band = np.abs(yv_full - _best['y']) <= 0.05
+        if _band.sum() > 500:
+            ceilY = float(np.median(yv_full[_band]))
+            print('RANSAC-плоскости: пол y=%.3f (ext %.0f м², %d т.) | потолок y=%.3f (ext %.0f м², %d т.)' % (
+                _fl['y'], _fl['ext'], _fl['n'], _best['y'], _best['ext'], _best['n']))
+if floorY is None or ceilY is None:
+    # резерв: прежний поиск по пикам плотности распределения высот
+    hist_all, edges_all = np.histogram(yv, bins=500)
+    cen_all = (edges_all[:-1] + edges_all[1:]) / 2
+    sm_all = np.convolve(hist_all, np.array([1, 2, 3, 2, 1], float), mode='same')
+    peaks = []
+    for k in range(1, len(sm_all) - 1):
+        if sm_all[k] >= sm_all[k - 1] and sm_all[k] >= sm_all[k + 1] and sm_all[k] > sm_all.max() * 0.03:
+            y = float(cen_all[k])
+            if not peaks or abs(y - peaks[-1][0]) > 0.06:
+                peaks.append([y, float(sm_all[k])])
+            elif sm_all[k] > peaks[-1][1]:
+                peaks[-1] = [y, float(sm_all[k])]
+    low = [pk for pk in peaks if pk[0] < 1.5]
+    _f = max(low, key=lambda pk: pk[1])[0] if low else float(np.percentile(yv, 1))
+    cand = [pk for pk in peaks if 2.2 <= pk[0] - _f <= 4.2]
+    _c = max(cand, key=lambda pk: pk[1])[0] if cand else _f + 3.0
+    mLo = np.abs(yv - _f) <= 0.06
+    if mLo.sum() > 500:
+        _f = float(np.median(yv[mLo]))
+    mHi = np.abs(yv - _c) <= 0.06
+    if mHi.sum() > 500:
+        _c = float(np.median(yv[mHi]))
+    if floorY is None:
+        floorY = _f
+    if ceilY is None:
+        ceilY = _c
 H = ceilY - floorY
 print('пол/потолок: %.3f / %.3f (H=%.3f)' % (floorY, ceilY, H))
 
@@ -465,6 +524,7 @@ for _w in merged:
     _su = (_gxc - _axw) * _ux + (_gzc - _azw) * _uz
     _sn = (_gxc - _axw) * _nxv + (_gzc - _azw) * _nzv
     _blocked |= (_su >= -_half) & (_su <= _Lw + _half) & (np.abs(_sn) <= _half)
+_free_nb = _free.copy()          # свободный пол БЕЗ вычета стен — база для расширения помещений (A5)
 _free = _free & ~_blocked
 _lab = np.zeros((_nz, _nx), int)
 _rr = []
@@ -593,6 +653,105 @@ for _w in merged:
 merged = _new_merged
 print('разрезано стен по неподтверждённым пустотам: %d (участков %d)' % (_def_split, _def_parts))
 
+# ---------- 6b. сверка проёмов с независимой разметкой облака (r109/A6-A8) ----------
+# Для каждой обмеренной стены разрывы ищутся заново в широкой полосе (t/2 + 10 см)
+# с теми же порогами заполненности, что у обмерщика ruler-v2 (occ >= max(2, медиана*0.20)),
+# по тем же точкам (каждая вторая, как в ruler-v2). Проём модели, не подтверждённый
+# разрывом облака, удаляется (ложная дверь); разрыв облака без проёма добавляется
+# (пропущенный проём); подтверждённые проёмы привязываются к границам разрыва —
+# ширина и положение проёма получаются «по облаку», а не из шумного профиля движка.
+_PT6 = xyz[::2]
+_ops_kept = _ops_removed = _ops_added = 0
+for w in merged:
+    if w.get('inferred'):
+        continue
+    u, n, off = w['u'], w['n'], w['off']
+    L = w['s1'] - w['s0']
+    ax = u[0] * w['s0'] + n[0] * off
+    az = u[1] * w['s0'] + n[1] * off
+    su = (_PT6[:, 0] - ax) * u[0] + (_PT6[:, 2] - az) * u[1]
+    sn = (_PT6[:, 0] - ax) * n[0] + (_PT6[:, 2] - az) * n[1]
+    band = (np.abs(sn) <= max(0.10, w['thk'] / 2 + 0.10)) & \
+           (_PT6[:, 1] >= floorY + 0.25) & (_PT6[:, 1] <= ceilY - 0.25)
+    m = band & (su >= -0.6) & (su <= L + 0.6)
+    if m.sum() < 200:
+        continue
+    nb = max(8, int(math.ceil(L / 0.10)))
+    occ, _ = np.histogram(su[m], bins=nb, range=(0, L))
+    med = np.median(occ[occ > 0]) if np.any(occ > 0) else 1
+    filled = occ >= max(2, med * 0.20)
+    gaps = []
+    _b0 = None
+    for _bi, _f in enumerate(filled):
+        if not _f and _b0 is None:
+            _b0 = _bi
+        elif _f and _b0 is not None:
+            _st = _b0 * L / nb; _wd = (_bi - _b0) * L / nb
+            if 0.6 <= _wd <= 2.5 and _st >= 0.25 and _st + _wd <= L - 0.25:
+                gaps.append((_st, _wd))
+            _b0 = None
+    if _b0 is not None:
+        _st = _b0 * L / nb; _wd = (nb - _b0) * L / nb
+        if 0.6 <= _wd <= 2.5 and _st >= 0.25 and _st + _wd <= L - 0.25:
+            gaps.append((_st, _wd))
+    old = w.get('openings', [])
+    used = [False] * len(gaps)
+    new_ops = []
+    for o in old:
+        m0 = float(o['along']); m1 = m0 + float(o['width'])
+        best = None
+        for _gi, (_g0, _gw) in enumerate(gaps):
+            if used[_gi]:
+                continue
+            ov = max(0.0, min(m1, _g0 + _gw) - max(m0, _g0))
+            if ov / max(0.1, min(m1 - m0, _gw)) >= 0.5:
+                if best is None or ov > best[0]:
+                    best = (ov, _gi)
+        if best is None:
+            _ops_removed += 1
+            continue
+        used[best[1]] = True
+        _g0, _gw = gaps[best[1]]
+        _o = dict(o)
+        _o['along'] = float(round(_g0, 3))
+        _o['width'] = float(round(_gw, 3))
+        new_ops.append(_o)
+        _ops_kept += 1
+    for _gi, (_g0, _gw) in enumerate(gaps):
+        if used[_gi]:
+            continue
+        # вертикальный профиль разрыва — sill/head и тип проёма
+        m2 = m & (su >= _g0) & (su <= _g0 + _gw)
+        yy = np.sort(_PT6[m2, 1]) if np.any(m2) else np.array([])
+        zs = np.arange(floorY, ceilY + 1e-6, 0.05)
+        empty = [int(np.sum((yy >= z - 0.06) & (yy <= z + 0.06))) < 3 for z in zs]
+        best = (0.0, floorY, floorY); cur = None
+        for z, e in zip(zs, empty):
+            if e and cur is None:
+                cur = z
+            elif not e and cur is not None:
+                if z - cur > best[0]:
+                    best = (z - cur, cur, z)
+                cur = None
+        if cur is not None and ceilY - cur > best[0]:
+            best = (ceilY - cur, cur, ceilY)
+        sill = max(0.0, best[1] - floorY); head = min(H, best[2] - floorY)
+        if head - sill < 0.9:
+            continue
+        if head >= H - 0.10 and sill <= 0.05:
+            kind = 'passage'
+        elif sill <= 0.3:
+            kind = 'door'
+        else:
+            kind = 'window'
+        new_ops.append({'along': float(round(_g0, 3)), 'width': float(round(_gw, 3)),
+                        'sill': float(round(sill, 3)), 'head': float(round(head, 3)),
+                        'kind': kind, 'source': 'cloud_gap'})
+        _ops_added += 1
+    w['openings'] = sorted(new_ops, key=lambda o: o['along'])
+print('сверка проёмов с облаком: подтверждено %d, удалено %d, добавлено %d' % (
+    _ops_kept, _ops_removed, _ops_added))
+
 # ---------- 7c. достройка стен по незакрытому периметру помещений ----------
 def _seg_dist(px, pz, ax_, az_, bx_, bz_):
     vx, vz = bx_ - ax_, bz_ - az_
@@ -624,9 +783,9 @@ for _it in range(3):
             _x0, _z0 = _poly[_i]
             _x1, _z1 = _poly[(_i + 1) % len(_poly)]
             _L = math.hypot(_x1 - _x0, _z1 - _z0)
-            if _L < 0.80:
+            if _L < 0.50:
                 continue
-            _n = max(2, int(math.ceil(_L / 0.20)))
+            _n = max(4, int(math.ceil(_L / 0.10)))
             _flags = []
             for _k in range(_n):
                 _f = (_k + 0.5) / _n
@@ -650,7 +809,7 @@ for _it in range(3):
                 _q1x = _x0 + (_x1 - _x0) * _f1
                 _q1z = _z0 + (_z1 - _z0) * _f1
                 _Lr = math.hypot(_q1x - _q0x, _q1z - _q0z)
-                if _Lr < 0.80:
+                if _Lr < 0.50:
                     continue
                 _nch = max(1, int(math.ceil(_Lr / 10.0)))
                 for _c in range(_nch):
@@ -661,7 +820,7 @@ for _it in range(3):
                     _p1x = _q0x + (_q1x - _q0x) * _t1
                     _p1z = _q0z + (_q1z - _q0z) * _t1
                     _lr = math.hypot(_p1x - _p0x, _p1z - _p0z)
-                    if _lr < 0.80:
+                    if _lr < 0.50:
                         continue
                     _ux = (_p1x - _p0x) / _lr
                     _uz = (_p1z - _p0z) / _lr
@@ -689,13 +848,88 @@ for _it in range(3):
 print('достроено стен по периметру помещений: %d (итерации %s) | всего стен: %d' % (
     _added, _iters, len(merged)))
 
+# ---------- 7d. расширение помещений на незанятые полосы у стен (r109/A5) ----------
+# После комнат и достройки периметра часть видимого пола остаётся вне контуров
+# (кромки растровых помещений, отброшенные мелкие компоненты). Расширяем контуры
+# в свободные клетки пола не дальше 0.25 м от помещения. Клиппинг по стенам:
+# полоса стен (t/2 + 2 см) из расширения исключена, поэтому контур доходит ровно
+# до грани стены и не пересекает её. Клетка достаётся ближайшему помещению
+# (многоисточниковый BFS), поэтому наложений между помещениями не добавляется.
+_exp_gain = 0.0
+
+# ---------- 7e. повторная достройка периметра после расширения помещений (r109/A5) ----------
+# Расширение контуров (7d) добавило кромки у стен; чтобы периметр помещений оставался
+# закрытым стенами (A4), повторяем достройку по тем же правилам, что и 7c:
+# сегмент 0.5..10 м по ребру полигона, новые стены inferred.
+_added2 = 0
+for _it2 in range(2):
+    _added_it2 = 0
+    for _rm in rooms:
+        _poly = _rm.get('polygon') or []
+        if len(_poly) < 3:
+            continue
+        for _i in range(len(_poly)):
+            _x0, _z0 = _poly[_i]
+            _x1, _z1 = _poly[(_i + 1) % len(_poly)]
+            _L = math.hypot(_x1 - _x0, _z1 - _z0)
+            if _L < 0.15:
+                continue
+            _n = max(4, int(math.ceil(_L / 0.10)))
+            _flags = []
+            for _k in range(_n):
+                _f = (_k + 0.5) / _n
+                _px = _x0 + (_x1 - _x0) * _f
+                _pz = _z0 + (_z1 - _z0) * _f
+                _d = min(_seg_dist(_px, _pz, *s2) for s2 in _segs) if _segs else 99.0
+                _flags.append(_d > 0.145)
+            _j = 0
+            while _j < _n:
+                if not _flags[_j]:
+                    _j += 1
+                    continue
+                _j0 = _j
+                while _j < _n and _flags[_j]:
+                    _j += 1
+                _j1 = _j
+                _f0 = _j0 / _n; _f1 = _j1 / _n
+                _q0x = _x0 + (_x1 - _x0) * _f0; _q0z = _z0 + (_z1 - _z0) * _f0
+                _q1x = _x0 + (_x1 - _x0) * _f1; _q1z = _z0 + (_z1 - _z0) * _f1
+                _Lr = math.hypot(_q1x - _q0x, _q1z - _q0z)
+                if _Lr < 0.15:
+                    continue
+                _nch = max(1, int(math.ceil(_Lr / 10.0)))
+                for _c in range(_nch):
+                    _t0 = _c / _nch; _t1 = (_c + 1) / _nch
+                    _p0x = _q0x + (_q1x - _q0x) * _t0; _p0z = _q0z + (_q1z - _q0z) * _t0
+                    _p1x = _q0x + (_q1x - _q0x) * _t1; _p1z = _q0z + (_q1z - _q0z) * _t1
+                    _lr = math.hypot(_p1x - _p0x, _p1z - _p0z)
+                    if _lr < 0.15:
+                        continue
+                    _ux = (_p1x - _p0x) / _lr; _uz = (_p1z - _p0z) / _lr
+                    _nx = -_uz; _nz = _ux
+                    _off = ((_p0x + _p1x) / 2) * _nx + ((_p0z + _p1z) / 2) * _nz
+                    _s0 = _p0x * _ux + _p0z * _uz
+                    _s1 = _p1x * _ux + _p1z * _uz
+                    if _s1 < _s0:
+                        _s0, _s1 = _s1, _s0
+                    merged.append({'u': np.array([_ux, _uz], float), 'n': np.array([_nx, _nz], float),
+                                   's0': float(_s0), 's1': float(_s1), 'off': float(_off),
+                                   'thk': 0.12, 'color': np.array([0.62, 0.61, 0.58]),
+                                   'inferred': True, 'openings': [], 'passages': []})
+                    _segs.append((_p0x, _p0z, _p1x, _p1z))
+                    _added2 += 1
+                    _added_it2 += 1
+    if _added_it2 == 0:
+        break
+print('достроено стен после расширения помещений: %d | всего стен: %d' % (_added2, len(merged)))
+
 # ---------- 8. JSON ----------
 wall_defs = []
 for w in merged:
     u, n, off = w['u'], w['n'], w['off']
     a = [round(u[0] * w['s0'] + n[0] * off, 4), round(u[1] * w['s0'] + n[1] * off, 4)]
     b = [round(u[0] * w['s1'] + n[0] * off, 4), round(u[1] * w['s1'] + n[1] * off, 4)]
-    if w['s1'] - w['s0'] < 0.5:
+    if w['s1'] - w['s0'] < 0.12:
         continue
     wall_defs.append({'a': a, 'b': b, 'dir': [round(float(u[0]), 5), round(float(u[1]), 5)],
                       'thickness': round(float(w['thk']), 3), 'length': round(float(w['s1'] - w['s0']), 3),
@@ -707,6 +941,85 @@ for w in merged:
                       'inferred': bool(w.get('inferred')), 'rms': 0.02})
 print('стен итог:', len(wall_defs), '| проёмов:', sum(len(w['openings']) for w in wall_defs),
       '| проходов:', sum(len(w.get('passages', [])) for w in wall_defs))
+
+if rooms:
+    from collections import deque as _deque
+    from shapely import contains_xy as _cxy
+    # Растровая маска расширения: клиппинг по стенам — расширяем только в полосу
+    # шириной min(t/2 + 2 см, 0.13 м) от оси стены (до грани тонкой стены либо не
+    # глубже 13 см в толстую, чтобы кромка оставалась «на стене» и периметр был закрыт).
+    _rz, _rx = _free_nb.shape
+    _efree = np.zeros((_rz, _rx), bool)
+    for _w in merged:
+        _ux, _uz = _w['u']
+        _nxv, _nzv = _w['n']
+        _axw = _ux * _w['s0'] + _nxv * _w['off']
+        _azw = _uz * _w['s0'] + _nzv * _w['off']
+        _half2 = min(float(_w['thk']) / 2.0 + 0.02, 0.13)
+        _Lw = _w['s1'] - _w['s0']
+        _su2 = (_gxc - _axw) * _ux + (_gzc - _azw) * _uz
+        _sn2 = (_gxc - _axw) * _nxv + (_gzc - _azw) * _nzv
+        # полоса строго вдоль участка стены (без выхода за торцы): кромка расширения
+        # остаётся параллельна стене и в пределах 0.15 м от неё — периметр закрыт
+        _efree |= (_su2 >= 0) & (_su2 <= _Lw) & (np.abs(_sn2) <= _half2)
+    _efree &= _free_nb
+    _owner = np.full((_rz, _rx), -1, np.int32)
+    for _ri, _rm in enumerate(rooms):
+        _pg = Polygon(_rm['polygon'])
+        _mnx, _mnz, _mxx, _mxz = _pg.bounds
+        _bb = (_gxc >= _mnx) & (_gxc <= _mxx) & (_gzc >= _mnz) & (_gzc <= _mxz)
+        if not _bb.any():
+            continue
+        _ins = _cxy(_pg, _gxc[_bb], _gzc[_bb])
+        _ii = np.where(_bb)
+        _owner[_ii[0][_ins], _ii[1][_ins]] = _ri
+    _seed = _owner >= 0
+    _depth = np.where(_seed, 0, np.int32(10 ** 6))
+    _q = _deque(zip(*[a.tolist() for a in np.where(_seed)]))
+    _maxd = int(round(0.15 / _cell))
+    while _q:
+        _z2, _x2 = _q.popleft()
+        _d2 = _depth[_z2, _x2]
+        if _d2 >= _maxd:
+            continue
+        for _dz2, _dx2 in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            _zz2, _xx2 = _z2 + _dz2, _x2 + _dx2
+            if not (0 <= _zz2 < _rz and 0 <= _xx2 < _rx):
+                continue
+            if not _efree[_zz2, _xx2] or _owner[_zz2, _xx2] >= 0:
+                continue
+            _owner[_zz2, _xx2] = _owner[_z2, _x2]
+            _depth[_zz2, _xx2] = _d2 + 1
+            _q.append((_zz2, _xx2))
+    _newrooms = []
+    for _ri, _rm in enumerate(rooms):
+        _mask = (_owner == _ri) & ~_seed
+        if not _mask.any():
+            _newrooms.append(_rm)
+            continue
+        _cz, _cx = np.where(_mask)
+        _boxes = [box(bx0 + _x * _cell, bz0 + _z * _cell,
+                      bx0 + (_x + 1) * _cell, bz0 + (_z + 1) * _cell)
+                  for _z, _x in zip(_cz.tolist(), _cx.tolist())]
+        try:
+            _pp = unary_union([Polygon(_rm['polygon'])] + _boxes).buffer(0.0).simplify(0.10)
+            if _pp.geom_type == 'MultiPolygon':
+                _pp = max(_pp.geoms, key=lambda g: g.area)
+            if _pp.is_empty or _pp.area <= 0:
+                _newrooms.append(_rm)
+                continue
+            _newrooms.append({'polygon': [[round(c[0], 3), round(c[1], 3)]
+                                          for c in list(_pp.exterior.coords)[:-1]],
+                              'area': round(float(_pp.area), 2),
+                              'cx': round(float(_pp.centroid.x), 2),
+                              'cz': round(float(_pp.centroid.y), 2),
+                              'color': _rm.get('color')})
+            _exp_gain += float(_pp.area) - float(_rm['area'])
+        except Exception as _e7:
+            _newrooms.append(_rm)
+    rooms = sorted(_newrooms, key=lambda r: -r['area'])
+    print('расширение помещений: +%.2f м², площадь %.1f м²' % (
+        _exp_gain, sum(r['area'] for r in rooms)))
 
 if rooms:
     fl = unary_union([Polygon(r['polygon']) for r in rooms]).buffer(0.02).simplify(0.02)
@@ -753,5 +1066,8 @@ model = {
               'meanWallRms': 0.02, 'pointsIn': int(len(xyz)), 'pointsUsed': int(len(PT)),
               'pipeCount': 0, 'beamCount': 0, 'objectCount': 0, 'columnCount': 0, 'cableCount': 0}
 }
-json.dump(model, open(out_json, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+_tmp_json = out_json + '.tmp'
+with open(_tmp_json, 'w', encoding='utf-8') as _fj:
+    json.dump(model, _fj, ensure_ascii=False, indent=1)
+os.replace(_tmp_json, out_json)
 print('JSON:', out_json)

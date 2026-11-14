@@ -2237,16 +2237,25 @@
     var uAng = add('IFCSIUNIT(*,.PLANEANGLEUNIT.,$,.RADIAN.)');
     var uArea = add('IFCSIUNIT(*,.AREAUNIT.,$,.SQUARE_METRE.)');
     var units = add('IFCUNITASSIGNMENT((' + uLen + ',' + uAng + ',' + uArea + '))');
-    // The geometry below is already emitted in source/map coordinates when a
-    // source frame is provided; use an identity map conversion and retain the
-    // CRS label/WKT rather than silently dropping georeferencing.
-    if (sourceTransform && meta.crsWkt) {
-      var wkt = String(meta.crsWkt), epsg = wkt.match(/(?:ID|AUTHORITY)\s*\[\s*["']EPSG["']\s*,\s*["']?(\d+)/i);
-      var crsName = meta.crsName || (epsg ? 'EPSG:' + epsg[1] : 'WKT-defined CRS');
-      var projectedCrs = add('IFCPROJECTEDCRS(' + stepString(crsName) + ',' + stepString(wkt) + ',$,$,$,$,#' + uLen + ')');
+    // Геопривязка. Геометрия ниже уже в исходных/картографических координатах, когда задан
+    // sourceTransform, поэтому карта координат — тождественная (Eastings/Northings = 0):
+    // описываем целевую систему IfcProjectedCRS и связываем её с контекстом IfcMapConversion.
+    // v1267: 1) IFCPROJECTEDCRS.MapUnit ссылается на #uLen напрямую — раньше к '#' + uLen
+    //           (уже '#6') добавлялся ещё один '#' и файл вообще не парсился (##6);
+    //        2) EPSG-код берём ПОСЛЕДНИМ вхождением ID["EPSG",n] в WKT: в полном WKT код
+    //           метода проекции (9807) идёт раньше, а глобальный код CRS (25833) — последний;
+    //        3) CRS экспортируется и без sourceTransform (геометрия локальная, смещение 0).
+    if (meta.crsWkt) {
+      var wkt = String(meta.crsWkt).trim();
+      var epsg = null, epsgRe = /(?:ID|AUTHORITY)\s*\[\s*["']EPSG["']\s*,\s*["']?(\d{3,6})/gi, epsgM;
+      while ((epsgM = epsgRe.exec(wkt))) epsg = epsgM[1];
+      var crsName = meta.crsName || (epsg ? 'EPSG:' + epsg : (wkt.slice(0, 120) || 'WKT-defined CRS'));
+      var projectedCrs = add('IFCPROJECTEDCRS(' + stepString(crsName) + ',' + stepString(wkt) + ',$,$,$,$,' + uLen + ')');
       add('IFCMAPCONVERSION(' + ctx + ',' + projectedCrs + ',0.,0.,0.,1.,0.,1.)');
     }
-    var project = add('IFCPROJECT(' + G() + ',$,\'' + (meta.project || 'Scan2BIM') + '\',$,$,$,$,(' + ctx + '),' + units + ')');
+    // v1267: имя проекта и имя файла экранируем как STEP-строки — раньше апостроф в
+    // названии проекта («O'Brien») ломал весь файл, а не только заголовок.
+    var project = add('IFCPROJECT(' + G() + ',$,' + stepString(meta.project || 'Scan2BIM') + ',$,$,$,$,(' + ctx + '),' + units + ')');
     var siteLP = add('IFCLOCALPLACEMENT($,' + wcs + ')');
     var site = add('IFCSITE(' + G() + ',$,\'Site\',$,$,' + siteLP + ',$,$,.ELEMENT.,$,$,$,$,$)');
     var bLP = add('IFCLOCALPLACEMENT(' + siteLP + ',' + wcs + ')');
@@ -2286,7 +2295,12 @@
       var key = Math.round(r * 255) + '_' + Math.round(g * 255) + '_' + Math.round(b * 255);
       if (styleCache[key]) return styleCache[key];
       var col = add('IFCCOLOURRGB($,' + fnum(r) + ',' + fnum(g) + ',' + fnum(b) + ')');
-      var ren = add('IFCSURFACESTYLERENDERING(' + col + ',0.2,$,$,$,$,$,.NOTDEFINED.)');
+      // v1267: у IfcSurfaceStyleRendering в IFC4 девять атрибутов (SurfaceColour, Transparency,
+      // DiffuseColour, TransmissionColour, DiffuseTransmissionColour, ReflectionColour,
+      // SpecularColour, SpecularHighlight, ReflectanceMethod) — ReflectanceMethod обязателен.
+      // Раньше между Transparency и .NOTDEFINED. было пять '$' вместо шести: валидатор
+      // ifcopenshell видел сдвиг и падал с 44 ошибками "ReflectanceMethod: Attribute not optional".
+      var ren = add('IFCSURFACESTYLERENDERING(' + col + ',0.2,$,$,$,$,$,$,.NOTDEFINED.)');
       var st = add('IFCSURFACESTYLE(' + stepString(name || 'Surface') + ',.BOTH.,(' + ren + '))');
       styleCache[key] = st;
       return st;
@@ -2360,8 +2374,12 @@
           var fillShape = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + fillSolid + '))');
           var fillPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + fillShape + '))');
           var fillLP = add('IFCLOCALPLACEMENT(' + lpFor(w.storeyIndex || 0) + ',' + openingRelativePlacement + ')');
+          // v1267: у IfcWindow в IFC4 тринадцать атрибутов (8 унаследованных + OverallHeight,
+          // OverallWidth, PredefinedType, PartitioningType, UserDefinedPartitioningType).
+          // Раньше в конце стояло четыре '$' вместо трёх — файл читался «на удачу»: строгие
+          // IFC-читатели (IFC.js/Solibri/Bonsai) отвергают такое число аргументов.
           var fillEnt = isWindow
-            ? add('IFCWINDOW(' + G() + ',$,' + stepString('Окно ' + (oi + 1)) + ',$,$,' + fillLP + ',' + fillPds + ',$,' + fnum(vb.head - vb.sill) + ',' + fnum(oe - os) + ',$,$,$,$)')
+            ? add('IFCWINDOW(' + G() + ',$,' + stepString('Окно ' + (oi + 1)) + ',$,$,' + fillLP + ',' + fillPds + ',$,' + fnum(vb.head - vb.sill) + ',' + fnum(oe - os) + ',$,$,$)')
             : add('IFCDOOR(' + G() + ',$,' + stepString('Дверь ' + (oi + 1)) + ',$,$,' + fillLP + ',' + fillPds + ',$,' + fnum(vb.head - vb.sill) + ',' + fnum(oe - os) + ',$,$,$)');
           add('IFCRELFILLSELEMENT(' + G() + ',$,$,$,' + opening + ',' + fillEnt + ')');
           pushProduct(fillEnt, w.storeyIndex || 0);
@@ -2474,7 +2492,7 @@
     var header = [
       'ISO-10303-21;', 'HEADER;',
       "FILE_DESCRIPTION(('ViewDefinition [CoordinationView]'),'2;1');",
-      "FILE_NAME('" + (meta.name || 'scan2bim.ifc') + "','" + now + "',(''),(''),'BIM-Twin Scan2BIM v1164','BIM-Twin','');",
+      'FILE_NAME(' + stepString(meta.name || 'scan2bim.ifc') + ",'" + now + "',(''),(''),'BIM-Twin Scan2BIM v1164','BIM-Twin','');",
       "FILE_SCHEMA(('IFC4'));", 'ENDSEC;', 'DATA;'
     ].join('\n');
     return header + '\n' + L.join('\n') + '\nENDSEC;\nEND-ISO-10303-21;\n';

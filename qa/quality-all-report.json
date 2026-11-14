@@ -1,0 +1,1004 @@
+{
+ "tool": "run-quality-all.py",
+ "created_at": "2026-11-14T23:25:27+02:00",
+ "root": "D:\\BIM-TWIN-TEST",
+ "workdir": "D:\\BIM-TWIN-TEST\\quality",
+ "ruler": "C:\\Users\\bob\\Documents\\deepseek-harness\\default-workspace\\bim-twin\\tools\\scan2bim-py\\ruler-v2.py",
+ "ruler_version_md5": "26E110320D5C7473AC911CAF9D1EF8AC",
+ "ruler_runs": 2,
+ "thresholds": {
+  "A1": {
+   "label": "Высота этажа vs облако",
+   "target": "|Δ| ≤ 10 мм"
+  },
+  "A2": {
+   "label": "Покрытие стен облаком",
+   "target": "медиана ≥ 90 %, мин ≥ 60 %"
+  },
+  "A3": {
+   "label": "Толщина стен vs облако",
+   "target": "медиана ≤ 20 мм, p90 ≤ 40 мм"
+  },
+  "A4": {
+   "label": "Периметр помещений закрыт",
+   "target": "≥ 97 %"
+  },
+  "A5": {
+   "label": "Площадь / видимый свободный пол",
+   "target": "95–102 %"
+  },
+  "A6": {
+   "label": "Помещения вне пола / наложения",
+   "target": "0 / 0"
+  },
+  "A7": {
+   "label": "Проёмы: полнота / точность",
+   "target": "≥ 90 % / ≥ 90 %"
+  },
+  "A8": {
+   "label": "Ширина проёма vs облако",
+   "target": "медиана ≤ 30 мм"
+  }
+ },
+ "summary": {
+  "pass": 22,
+  "fail": 9,
+  "skip": 0,
+  "exit_code": 1
+ },
+ "entries": [
+  {
+   "name": "koridor/baseline-r107",
+   "kind": "interior",
+   "role": "baseline",
+   "note": "стабильная модель r107 (контрольная точка)",
+   "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-model.json",
+   "metrics": {
+    "n_walls_measured": 22,
+    "median_coverage_pct": 94.0,
+    "min_coverage_pct": 20.0,
+    "median_T_err_mm": 10.0,
+    "p90_T_err_mm": 92.99999999999997,
+    "max_T_err_mm": 195.0,
+    "cloud_height_m": 3.276,
+    "model_height_m": 3.296,
+    "height_err_mm": 19.999828100204287,
+    "model_rooms_area_m2": 117.5,
+    "cloud_floor_visible_m2": 128.5,
+    "room_perimeter_covered_pct": 96.5,
+    "room_perimeter_m": 222.9,
+    "walls_cloud_beyond": 2,
+    "model_walls": 45,
+    "model_openings": 11,
+    "model_rooms": 23,
+    "area_ratio_pct": 91.43968871595331,
+    "openings_recall_pct": 90.9090909090909,
+    "openings_precision_pct": 90.9090909090909,
+    "openings_width_median_err_mm": 0.0,
+    "openings_tp": 10,
+    "openings_fn": 1,
+    "openings_fp": 1,
+    "openings_cloud": 11,
+    "openings_model": 11,
+    "openings_stdout": {
+     "recall": 91,
+     "precision": 91,
+     "width_median_err_mm": 0
+    },
+    "rooms_outside_pct": 0.9,
+    "rooms_overlap_m2": 0.5,
+    "walls_summary": {
+     "walls": 45,
+     "inferred": 23,
+     "measured": 22
+    }
+   },
+   "checks": [
+    {
+     "code": "A1",
+     "label": "Высота этажа vs облако",
+     "target": "|Δ| ≤ 10 мм",
+     "status": "FAIL",
+     "detail": "Δ = +20 мм (модель 3.296 / облако 3.276 м)"
+    },
+    {
+     "code": "A2",
+     "label": "Покрытие стен облаком",
+     "target": "медиана ≥ 90 %, мин ≥ 60 %",
+     "status": "FAIL",
+     "detail": "медиана 94 %, мин 20 % (<60)"
+    },
+    {
+     "code": "A3",
+     "label": "Толщина стен vs облако",
+     "target": "медиана ≤ 20 мм, p90 ≤ 40 мм",
+     "status": "FAIL",
+     "detail": "медиана 10 мм, p90 93 мм (>40), макс 195 мм"
+    },
+    {
+     "code": "A4",
+     "label": "Периметр помещений закрыт",
+     "target": "≥ 97 %",
+     "status": "FAIL",
+     "detail": "96.5 % (215.1 из 222.9 м)"
+    },
+    {
+     "code": "A5",
+     "label": "Площадь / видимый свободный пол",
+     "target": "95–102 %",
+     "status": "FAIL",
+     "detail": "91.4 % (117.5 / 128.5 м²)"
+    },
+    {
+     "code": "A6",
+     "label": "Помещения вне пола / наложения",
+     "target": "0 / 0",
+     "status": "FAIL",
+     "detail": "вне пола 0.9 %, наложение 0.5 м²"
+    },
+    {
+     "code": "A7",
+     "label": "Проёмы: полнота / точность",
+     "target": "≥ 90 % / ≥ 90 %",
+     "status": "PASS",
+     "detail": "полнота 91 %, точность 91 % (TP 10, FN 1, FP 1)"
+    },
+    {
+     "code": "A8",
+     "label": "Ширина проёма vs облако",
+     "target": "медиана ≤ 30 мм",
+     "status": "PASS",
+     "detail": "медиана 0 мм"
+    }
+   ],
+   "metrics_file": null,
+   "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_baseline-r107-ruler.json",
+   "ruler_seconds": 13.4,
+   "status": "FAIL",
+   "skip_reason": null,
+   "stand": ""
+  },
+  {
+   "name": "koridor/p1-final",
+   "kind": "interior",
+   "role": "release",
+   "note": "финальная модель Фазы 1 (A1/A5/A6)",
+   "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-p1.json",
+   "metrics": {
+    "n_walls_measured": 21,
+    "median_coverage_pct": 95.0,
+    "min_coverage_pct": 25.0,
+    "median_T_err_mm": 10.0,
+    "p90_T_err_mm": 96.50000000000003,
+    "max_T_err_mm": 195.0,
+    "cloud_height_m": 3.276,
+    "model_height_m": 3.278,
+    "height_err_mm": 1.9998281002044926,
+    "model_rooms_area_m2": 122.7,
+    "cloud_floor_visible_m2": 127.9,
+    "room_perimeter_covered_pct": 97.5,
+    "room_perimeter_m": 237.7,
+    "walls_cloud_beyond": 2,
+    "model_walls": 57,
+    "model_openings": 11,
+    "model_rooms": 23,
+    "area_ratio_pct": 95.93432369038311,
+    "openings_recall_pct": 100.0,
+    "openings_precision_pct": 100.0,
+    "openings_width_median_err_mm": 0.0,
+    "openings_tp": 11,
+    "openings_fn": 0,
+    "openings_fp": 0,
+    "openings_cloud": 11,
+    "openings_model": 11,
+    "openings_stdout": {
+     "recall": 100,
+     "precision": 100,
+     "width_median_err_mm": 0
+    },
+    "rooms_outside_pct": 0.9,
+    "rooms_overlap_m2": 0.4,
+    "walls_summary": {
+     "walls": 57,
+     "inferred": 36,
+     "measured": 21
+    }
+   },
+   "checks": [
+    {
+     "code": "A1",
+     "label": "Высота этажа vs облако",
+     "target": "|Δ| ≤ 10 мм",
+     "status": "PASS",
+     "detail": "Δ = +2 мм (модель 3.278 / облако 3.276 м)"
+    },
+    {
+     "code": "A2",
+     "label": "Покрытие стен облаком",
+     "target": "медиана ≥ 90 %, мин ≥ 60 %",
+     "status": "FAIL",
+     "detail": "медиана 95 %, мин 25 % (<60)"
+    },
+    {
+     "code": "A3",
+     "label": "Толщина стен vs облако",
+     "target": "медиана ≤ 20 мм, p90 ≤ 40 мм",
+     "status": "FAIL",
+     "detail": "медиана 10 мм, p90 97 мм (>40), макс 195 мм"
+    },
+    {
+     "code": "A4",
+     "label": "Периметр помещений закрыт",
+     "target": "≥ 97 %",
+     "status": "PASS",
+     "detail": "97.5 % (231.8 из 237.7 м)"
+    },
+    {
+     "code": "A5",
+     "label": "Площадь / видимый свободный пол",
+     "target": "95–102 %",
+     "status": "PASS",
+     "detail": "95.9 % (122.7 / 127.9 м²)"
+    },
+    {
+     "code": "A6",
+     "label": "Помещения вне пола / наложения",
+     "target": "0 / 0",
+     "status": "FAIL",
+     "detail": "вне пола 0.9 %, наложение 0.4 м²"
+    },
+    {
+     "code": "A7",
+     "label": "Проёмы: полнота / точность",
+     "target": "≥ 90 % / ≥ 90 %",
+     "status": "PASS",
+     "detail": "полнота 100 %, точность 100 % (TP 11, FN 0, FP 0)"
+    },
+    {
+     "code": "A8",
+     "label": "Ширина проёма vs облако",
+     "target": "медиана ≤ 30 мм",
+     "status": "PASS",
+     "detail": "медиана 0 мм"
+    }
+   ],
+   "metrics_file": null,
+   "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_p1-final-ruler.json",
+   "ruler_seconds": 11.1,
+   "status": "FAIL",
+   "skip_reason": null,
+   "stand": ""
+  },
+  {
+   "name": "facade/map-120",
+   "kind": "facade",
+   "role": "facade",
+   "note": "фасад map-120.las (3.08 млн, 20×26×6 м): 5 этажей, шаг 3.70, 25 окон, recall 99.94 %, IoU 95.31 %",
+   "cloud": "D:\\BIM-TWIN-TEST\\interior\\map-120-facade.bin",
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-facade.json",
+   "metrics": null,
+   "checks": [
+    {
+     "code": "B2-эт",
+     "label": "Этажи vs эталон",
+     "target": "5/5",
+     "status": "PASS",
+     "detail": "найдено 5"
+    },
+    {
+     "code": "B2-ок",
+     "label": "Окна vs эталон",
+     "target": "25/25",
+     "status": "PASS",
+     "detail": "25/25"
+    },
+    {
+     "code": "B2-п",
+     "label": "Полосы перекрытий",
+     "target": "4/4",
+     "status": "PASS",
+     "detail": "4/4"
+    },
+    {
+     "code": "B2-r",
+     "label": "Recall окон",
+     "target": "≥ 90 %",
+     "status": "PASS",
+     "detail": "99.9 %"
+    },
+    {
+     "code": "B2-i",
+     "label": "IoU окон",
+     "target": "≥ 70 %",
+     "status": "PASS",
+     "detail": "95.3 %"
+    },
+    {
+     "code": "B2-wr",
+     "label": "Полнота окон (window-recall)",
+     "target": "≥ 90 %",
+     "status": "PASS",
+     "detail": "100.0 %"
+    },
+    {
+     "code": "B2-t",
+     "label": "Время прогона",
+     "target": "—",
+     "status": "INFO",
+     "detail": "3.5 с"
+    },
+    {
+     "code": "B2-p",
+     "label": "Самопроверка коллеги (pass)",
+     "target": "true",
+     "status": "PASS",
+     "detail": "True"
+    }
+   ],
+   "metrics_file": "D:\\BIM-TWIN-TEST\\interior\\metrics-py2-facade.json",
+   "ruler_json": null,
+   "ruler_seconds": null,
+   "status": "PASS",
+   "skip_reason": null,
+   "stand": "B2",
+   "facade_metrics": {
+    "file": "map-120",
+    "mode": "facade",
+    "points": 3082561,
+    "sample": 1,
+    "time_s": 3.52,
+    "analysis_time_s": 0.45,
+    "floors": 5,
+    "floor_pitch": 3.7,
+    "windows_per_floor": [
+     5,
+     6,
+     5,
+     4,
+     5
+    ],
+    "windows": 25,
+    "storeys": [
+     {
+      "floorY": 8.21,
+      "ceilY": 11.91,
+      "height": 3.7,
+      "windows": 5
+     },
+     {
+      "floorY": 11.91,
+      "ceilY": 15.61,
+      "height": 3.7,
+      "windows": 6
+     },
+     {
+      "floorY": 15.61,
+      "ceilY": 19.31,
+      "height": 3.7,
+      "windows": 5
+     },
+     {
+      "floorY": 19.31,
+      "ceilY": 23.01,
+      "height": 3.7,
+      "windows": 4
+     },
+     {
+      "floorY": 23.01,
+      "ceilY": 25.999,
+      "height": 2.989,
+      "windows": 5
+     }
+    ],
+    "rows": [
+     {
+      "v0": 9.11,
+      "count": 3
+     },
+     {
+      "v0": 9.86,
+      "count": 2
+     },
+     {
+      "v0": 12.81,
+      "count": 6
+     },
+     {
+      "v0": 16.51,
+      "count": 5
+     },
+     {
+      "v0": 20.21,
+      "count": 4
+     },
+     {
+      "v0": 23.91,
+      "count": 5
+     }
+    ],
+    "spandrel_confirmed": 4,
+    "spandrel_total": 4,
+    "spandrel": [
+     {
+      "lo": 10.71,
+      "hi": 12.81,
+      "height": 2.1,
+      "coverage": 0.999,
+      "floorsInside": [
+       11.91
+      ]
+     },
+     {
+      "lo": 14.46,
+      "hi": 16.51,
+      "height": 2.05,
+      "coverage": 0.999,
+      "floorsInside": [
+       15.61
+      ]
+     },
+     {
+      "lo": 18.16,
+      "hi": 20.21,
+      "height": 2.05,
+      "coverage": 0.999,
+      "floorsInside": [
+       19.31
+      ]
+     },
+     {
+      "lo": 21.86,
+      "hi": 23.91,
+      "height": 2.05,
+      "coverage": 0.999,
+      "floorsInside": [
+       23.01
+      ]
+     }
+    ],
+    "degenerate": false,
+    "ref": {
+     "file": "map-120.las",
+     "windows": 25,
+     "floors": 5,
+     "floor_pitch": 3.7,
+     "window_area_m2": 87.97,
+     "bbox": {
+      "uMin": -8.06162530306973,
+      "uMax": 12.15856103670942,
+      "vMin": 0.15999934077262878,
+      "vMax": 25.999000549316406
+     },
+     "center": {
+      "sx": -2.013278426451026,
+      "sz": 0.1809969802160116
+     }
+    },
+    "model_window_area_m2": 92.2,
+    "recall": 99.94,
+    "precision": 95.36,
+    "iou": 95.31,
+    "ref_windows": 25,
+    "matched_windows": 25,
+    "window_recall": 100.0,
+    "unmatched_ref_windows": [],
+    "match_by_row": [
+     {
+      "row": 9.11,
+      "windows": 3,
+      "matched": 3
+     },
+     {
+      "row": 9.86,
+      "windows": 2,
+      "matched": 2
+     },
+     {
+      "row": 12.81,
+      "windows": 6,
+      "matched": 6
+     },
+     {
+      "row": 16.51,
+      "windows": 5,
+      "matched": 5
+     },
+     {
+      "row": 20.21,
+      "windows": 4,
+      "matched": 4
+     },
+     {
+      "row": 23.91,
+      "windows": 5,
+      "matched": 5
+     }
+    ],
+    "storey_compare": [
+     {
+      "floorY": 8.21,
+      "ceilY": 11.91,
+      "ref_row_floor": 8.21,
+      "delta": 0.0
+     },
+     {
+      "floorY": 11.91,
+      "ceilY": 15.61,
+      "ref_row_floor": 11.91,
+      "delta": 0.0
+     },
+     {
+      "floorY": 15.61,
+      "ceilY": 19.31,
+      "ref_row_floor": 15.61,
+      "delta": 0.0
+     },
+     {
+      "floorY": 19.31,
+      "ceilY": 23.01,
+      "ref_row_floor": 19.31,
+      "delta": 0.0
+     },
+     {
+      "floorY": 23.01,
+      "ceilY": 25.999,
+      "ref_row_floor": 23.01,
+      "delta": 0.0
+     }
+    ],
+    "ref_row_floors": [
+     8.21,
+     8.96,
+     11.91,
+     15.61,
+     19.31,
+     23.01
+    ],
+    "storey_delta_max": 0.0,
+    "ref_levels": [
+     {
+      "floorY": 8.21,
+      "ceilY": 11.91
+     },
+     {
+      "floorY": 11.91,
+      "ceilY": 15.61
+     },
+     {
+      "floorY": 15.61,
+      "ceilY": 19.31
+     },
+     {
+      "floorY": 19.31,
+      "ceilY": 23.01
+     },
+     {
+      "floorY": 23.01,
+      "ceilY": 26
+     }
+    ],
+    "criteria": {
+     "recall_ge": true,
+     "window_recall_ge": true,
+     "no_crash": true,
+     "time_ok": true,
+     "floors_3_5": true,
+     "pitch_3_60_3_75": true,
+     "storey_matches_ref": true
+    },
+    "pass": true
+   }
+  },
+  {
+   "name": "facade/map-window",
+   "kind": "facade",
+   "role": "facade",
+   "note": "второй срез map-window.las (11.76 млн, подвыборка 1/5): 5 этажей, шаг 3.69, 31 окно, recall 99.39 %, IoU 93.83 %",
+   "cloud": "D:\\BIM-TWIN-TEST\\interior\\map-window-facade.bin",
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-facade-window.json",
+   "metrics": null,
+   "checks": [
+    {
+     "code": "B3-ок",
+     "label": "Окна vs эталон",
+     "target": "31/31",
+     "status": "PASS",
+     "detail": "31/31"
+    },
+    {
+     "code": "B3-r",
+     "label": "Recall окон",
+     "target": "≥ 85 %",
+     "status": "PASS",
+     "detail": "99.4 %"
+    },
+    {
+     "code": "B3-i",
+     "label": "IoU окон",
+     "target": "≥ 65 %",
+     "status": "PASS",
+     "detail": "93.8 %"
+    },
+    {
+     "code": "B3-wr",
+     "label": "Полнота окон (window-recall)",
+     "target": "≥ 85 %",
+     "status": "PASS",
+     "detail": "100.0 %"
+    },
+    {
+     "code": "B3-t",
+     "label": "Время прогона",
+     "target": "—",
+     "status": "INFO",
+     "detail": "7.7 с"
+    },
+    {
+     "code": "B3-p",
+     "label": "Самопроверка коллеги (pass)",
+     "target": "true",
+     "status": "PASS",
+     "detail": "True"
+    }
+   ],
+   "metrics_file": "D:\\BIM-TWIN-TEST\\interior\\metrics-py2-window.json",
+   "ruler_json": null,
+   "ruler_seconds": null,
+   "status": "PASS",
+   "skip_reason": null,
+   "stand": "B3",
+   "facade_metrics": {
+    "file": "map-window",
+    "mode": "facade",
+    "points": 2352535,
+    "sample": 5,
+    "time_s": 7.7,
+    "analysis_time_s": 0.44,
+    "floors": 5,
+    "floor_pitch": 3.69,
+    "windows_per_floor": [
+     3,
+     6,
+     12,
+     5,
+     5
+    ],
+    "windows": 31,
+    "storeys": [
+     {
+      "floorY": 8.225,
+      "ceilY": 11.915,
+      "height": 3.69,
+      "windows": 3
+     },
+     {
+      "floorY": 11.915,
+      "ceilY": 15.605,
+      "height": 3.69,
+      "windows": 6
+     },
+     {
+      "floorY": 15.605,
+      "ceilY": 19.295,
+      "height": 3.69,
+      "windows": 12
+     },
+     {
+      "floorY": 19.295,
+      "ceilY": 22.985,
+      "height": 3.69,
+      "windows": 5
+     },
+     {
+      "floorY": 22.985,
+      "ceilY": 25.999,
+      "height": 3.014,
+      "windows": 5
+     }
+    ],
+    "rows": [
+     {
+      "v0": 9.145,
+      "count": 3
+     },
+     {
+      "v0": 12.795,
+      "count": 6
+     },
+     {
+      "v0": 16.495,
+      "count": 8
+     },
+     {
+      "v0": 17.245,
+      "count": 4
+     },
+     {
+      "v0": 20.195,
+      "count": 4
+     },
+     {
+      "v0": 20.845,
+      "count": 1
+     },
+     {
+      "v0": 23.895,
+      "count": 5
+     }
+    ],
+    "spandrel_confirmed": 4,
+    "spandrel_total": 4,
+    "spandrel": [
+     {
+      "lo": 10.695,
+      "hi": 12.795,
+      "height": 2.1,
+      "coverage": 0.999,
+      "floorsInside": [
+       11.915
+      ]
+     },
+     {
+      "lo": 14.445,
+      "hi": 16.495,
+      "height": 2.05,
+      "coverage": 1.002,
+      "floorsInside": [
+       15.605
+      ]
+     },
+     {
+      "lo": 18.145,
+      "hi": 20.195,
+      "height": 2.05,
+      "coverage": 0.999,
+      "floorsInside": [
+       19.295
+      ]
+     },
+     {
+      "lo": 21.845,
+      "hi": 23.895,
+      "height": 2.05,
+      "coverage": 0.999,
+      "floorsInside": [
+       22.985
+      ]
+     }
+    ],
+    "degenerate": false,
+    "ref": {
+     "file": "map-window.las",
+     "windows": 31,
+     "floors": 3,
+     "floor_pitch": 3.675,
+     "window_area_m2": 74.05,
+     "bbox": {
+      "uMin": -10.33227069486851,
+      "uMax": 9.880119933236445,
+      "vMin": 0.19500085711479187,
+      "vMax": 25.999000549316406
+     },
+     "center": {
+      "sx": 0.24881209574791585,
+      "sz": -0.09420129007472189
+     }
+    },
+    "model_window_area_m2": 77.98,
+    "recall": 99.39,
+    "precision": 94.38,
+    "iou": 93.83,
+    "ref_windows": 31,
+    "matched_windows": 31,
+    "window_recall": 100.0,
+    "unmatched_ref_windows": [],
+    "match_by_row": [
+     {
+      "row": 9.15,
+      "windows": 3,
+      "matched": 3
+     },
+     {
+      "row": 12.8,
+      "windows": 6,
+      "matched": 6
+     },
+     {
+      "row": 16.5,
+      "windows": 8,
+      "matched": 8
+     },
+     {
+      "row": 17.25,
+      "windows": 4,
+      "matched": 4
+     },
+     {
+      "row": 20.2,
+      "windows": 4,
+      "matched": 4
+     },
+     {
+      "row": 20.85,
+      "windows": 1,
+      "matched": 1
+     },
+     {
+      "row": 23.9,
+      "windows": 5,
+      "matched": 5
+     }
+    ],
+    "storey_compare": [
+     {
+      "floorY": 8.225,
+      "ceilY": 11.915,
+      "ref_row_floor": 8.245,
+      "delta": -0.02
+     },
+     {
+      "floorY": 11.915,
+      "ceilY": 15.605,
+      "ref_row_floor": 11.895,
+      "delta": 0.02
+     },
+     {
+      "floorY": 15.605,
+      "ceilY": 19.295,
+      "ref_row_floor": 15.595,
+      "delta": 0.01
+     },
+     {
+      "floorY": 19.295,
+      "ceilY": 22.985,
+      "ref_row_floor": 19.295,
+      "delta": -0.0
+     },
+     {
+      "floorY": 22.985,
+      "ceilY": 25.999,
+      "ref_row_floor": 22.995,
+      "delta": -0.01
+     }
+    ],
+    "ref_row_floors": [
+     8.245,
+     11.895,
+     15.595,
+     16.345,
+     19.295,
+     19.945,
+     22.995
+    ],
+    "storey_delta_max": 0.02,
+    "ref_levels": [
+     {
+      "floorY": 8.25,
+      "ceilY": 11.9
+     },
+     {
+      "floorY": 11.9,
+      "ceilY": 15.6
+     },
+     {
+      "floorY": 15.6,
+      "ceilY": 26
+     }
+    ],
+    "criteria": {
+     "recall_ge": true,
+     "window_recall_ge": true,
+     "no_crash": true,
+     "time_ok": true,
+     "floors_3_5": true,
+     "pitch_3_60_3_75": true,
+     "storey_matches_ref": true
+    },
+    "pass": true
+   }
+  },
+  {
+   "name": "facade/map-crop20",
+   "kind": "facade",
+   "role": "facade",
+   "note": "кроп 20×20×20 м из полной map.las (175.6 млн / 5.97 ГБ): прогон без падений 2.07 с; no_crash/time_ok — приёмка B4",
+   "cloud": "D:\\BIM-TWIN-TEST\\interior\\map-mapcrop-facade.bin",
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-facade-mapcrop.json",
+   "metrics": null,
+   "checks": [
+    {
+     "code": "B4-т",
+     "label": "Время прогона",
+     "target": "≤ 600 с",
+     "status": "PASS",
+     "detail": "2.1 с"
+    },
+    {
+     "code": "B4-у",
+     "label": "Устойчивость (без падений)",
+     "target": "да",
+     "status": "PASS",
+     "detail": "no_crash=True"
+    },
+    {
+     "code": "B4-f",
+     "label": "Fallback-модель (кроп без этажей)",
+     "target": "—",
+     "status": "INFO",
+     "detail": "штатно: регулярного фасада в кропе нет"
+    },
+    {
+     "code": "B4-m",
+     "label": "Найдено на кропе",
+     "target": "—",
+     "status": "INFO",
+     "detail": "этажей 1, окон 2, точек 3295507"
+    },
+    {
+     "code": "B4-p",
+     "label": "Самопроверка коллеги (pass)",
+     "target": "true",
+     "status": "PASS",
+     "detail": "True"
+    }
+   ],
+   "metrics_file": "D:\\BIM-TWIN-TEST\\interior\\metrics-py2-mapcrop.json",
+   "ruler_json": null,
+   "ruler_seconds": null,
+   "status": "PASS",
+   "skip_reason": null,
+   "stand": "B4",
+   "facade_metrics": {
+    "file": "map-crop20",
+    "mode": "facade",
+    "points": 3295507,
+    "sample": null,
+    "time_s": 2.07,
+    "analysis_time_s": 0.33,
+    "floors": 1,
+    "floor_pitch": null,
+    "windows_per_floor": [
+     2
+    ],
+    "windows": 2,
+    "storeys": [
+     {
+      "floorY": 0.005,
+      "ceilY": 6.412,
+      "height": 6.407,
+      "windows": 2
+     }
+    ],
+    "rows": [
+     {
+      "v0": 0.105,
+      "count": 1
+     },
+     {
+      "v0": 0.905,
+      "count": 1
+     },
+     {
+      "v0": 3.655,
+      "count": 1
+     }
+    ],
+    "spandrel_confirmed": 0,
+    "spandrel_total": 0,
+    "spandrel": [],
+    "degenerate": false,
+    "fallback": true,
+    "fallback_note": "ряды окон не дали регулярного шага этажей",
+    "criteria": {
+     "no_crash": true,
+     "time_ok": true
+    },
+    "pass": true
+   }
+  }
+ ],
+ "warnings": [],
+ "errors": []
+}
