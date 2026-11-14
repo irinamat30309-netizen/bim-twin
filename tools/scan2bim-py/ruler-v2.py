@@ -101,16 +101,30 @@ for w in M['walls']:
     else:
         miss0 = miss1 = 0.0
     # толщина по двум модам
-    snm = sn[m]
+    # толщина по облаку — независимо от модели: полоса ±55 см, две самые сильные моды
+    band2 = (np.abs(sn) <= 0.55) & (PT[:, 1] >= floorY + 0.20) & (PT[:, 1] <= ceilY - 0.20) & \
+            (su >= 0) & (su <= L)
     T_cloud = None
-    if snm.size > 300:
-        histn, edgesn = np.histogram(snm, bins=60)
+    if band2.sum() > 300:
+        snm2 = sn[band2]
+        histn, edgesn = np.histogram(snm2, bins=110, range=(-0.55, 0.55))
         cenn = (edgesn[:-1] + edgesn[1:]) / 2
-        idx = [k for k in range(1, len(histn) - 1) if histn[k] >= histn[k - 1] and histn[k] >= histn[k + 1] and histn[k] > histn.max() * 0.20]
+        idx = [k for k in range(1, len(histn) - 1) if histn[k] >= histn[k - 1] and histn[k] >= histn[k + 1] and histn[k] > histn.max() * 0.18]
         idx.sort(key=lambda k: -histn[k])
         if len(idx) >= 2:
-            a2, b2 = sorted(idx[:2])
-            T_cloud = abs(float(cenn[b2] - cenn[a2]))
+            cand = None
+            for _ia in range(len(idx)):
+                for _ib in range(_ia + 1, len(idx)):
+                    _a2, _b2 = sorted((idx[_ia], idx[_ib]))
+                    _th = abs(float(cenn[_b2] - cenn[_a2]))
+                    if not (0.06 <= _th <= 0.60):
+                        continue
+                    _mid = (cenn[_a2] + cenn[_b2]) / 2.0
+                    _score = abs(_mid) * 6.0 - min(histn[_a2], histn[_b2]) / max(1.0, histn.max())
+                    if cand is None or _score < cand[0]:
+                        cand = (_score, _th)
+            if cand:
+                T_cloud = cand[1]
     # проёмы по облаку: пустые интервалы
     nb = max(8, int(math.ceil(L / 0.10)))
     occ, _ = np.histogram(su[m], bins=nb, range=(0, L))
@@ -124,14 +138,92 @@ for w in M['walls']:
         elif f and b0 is not None:
             wdt = (bi - b0) * L / nb
             if 0.5 <= wdt <= 3.5:
-                gaps.append(round(wdt, 2))
+                gaps.append({'start': round(b0 * L / nb, 2), 'width': round(wdt, 2)})
             b0 = None
+    if b0 is not None:
+        wdt = (nb - b0) * L / nb
+        if 0.5 <= wdt <= 3.5:
+            gaps.append({'start': round(b0 * L / nb, 2), 'width': round(wdt, 2)})
     rows.append({'wall': len(rows), 'L': round(L, 3), 'T': round(T, 3),
                  'coverage': round(100 * coverage, 0),
                  'T_cloud': None if T_cloud is None else round(T_cloud, 3),
                  'T_err_mm': None if T_cloud is None else round((T - T_cloud) * 1000, 0),
                  'cloud_beyond_start_m': round(miss0, 2), 'cloud_beyond_end_m': round(miss1, 2),
-                 'openings_model': len(w.get('openings', [])), 'gaps_cloud': gaps})
+                 'openings_model': [{'start': round(float(o.get('along', 0)), 2), 'width': round(float(o.get('width', 0)), 2)} for o in w.get('openings', [])],
+                 'n_openings_model': len(w.get('openings', [])), 'gaps_cloud': gaps})
+
+# --- проёмы: полнота (recall) и точность (precision) ---
+def _ov(a0, a1, b0, b1):
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+op_tp = 0
+op_fn = 0
+op_fp = 0
+op_width_err = []
+for r in rows:
+    mods = r['openings_model']
+    gaps = r['gaps_cloud']
+    used = [False] * len(mods)
+    for g in gaps:
+        g0, g1 = g['start'], g['start'] + g['width']
+        best = None
+        for k, mo in enumerate(mods):
+            if used[k]:
+                continue
+            m0, m1 = mo['start'], mo['start'] + mo['width']
+            ov = _ov(g0, g1, m0, m1)
+            if ov / max(0.1, min(m1 - m0, g1 - g0)) >= 0.5:
+                if best is None or ov > best[0]:
+                    best = (ov, k, mo)
+        if best:
+            used[best[1]] = True
+            op_tp += 1
+            op_width_err.append(abs(best[2]['width'] - g['width']))
+        else:
+            op_fn += 1
+    op_fp += sum(1 for u in used if not u)
+recall = 100.0 * op_tp / max(1, op_tp + op_fn)
+precision = 100.0 * op_tp / max(1, op_tp + op_fp)
+print('проёмы: облако %d, модель %d | совпало %d | полнота %.0f %% | точность %.0f %% | ширина: медиана ошибки %.0f мм' % (
+    op_tp + op_fn, op_tp + op_fp, op_tp, recall, precision,
+    1000 * (np.median(op_width_err) if op_width_err else -1)))
+
+# --- помещения: доля площади вне видимого пола и наложения ---
+try:
+    from shapely.geometry import Polygon as _Poly
+    from shapely.ops import unary_union as _union
+    _floor_cells = set()
+    for _x, _z in fp[:, [0, 2]]:
+        _floor_cells.add((int(round(_x / 0.20)), int(round(_z / 0.20))))
+    _outside = 0
+    _total = 0
+    for _rm in M.get('rooms', []):
+        _poly = _rm.get('polygon') or []
+        if len(_poly) < 3:
+            continue
+        _P = _Poly(_poly)
+        _minx, _minz, _maxx, _maxz = _P.bounds
+        _step = 0.4
+        _xo = _minx
+        while _xo <= _maxx:
+            _zo = _minz
+            while _zo <= _maxz:
+                if _P.contains(_Poly([(_xo, _zo), (_xo + 0.1, _zo), (_xo + 0.1, _zo + 0.1), (_xo, _zo + 0.1)]).centroid):
+                    _total += 1
+                    _ci = int(round(_xo / 0.20)); _cj = int(round(_zo / 0.20))
+                    if not any((_ci + _di, _cj + _dj) in _floor_cells for _di in (-1, 0, 1) for _dj in (-1, 0, 1)):
+                        _outside += 1
+                _zo += _step
+            _xo += _step
+    polies = [_Poly(r['polygon']) for r in M.get('rooms', []) if len(r.get('polygon') or []) >= 3]
+    _inter = 0.0
+    for _i in range(len(polies)):
+        for _j in range(_i + 1, len(polies)):
+            _inter += polies[_i].intersection(polies[_j]).area
+    print('помещения: вне видимого пола %.1f %% | наложение комнат %.1f м²' % (
+        100.0 * _outside / max(1, _total), _inter))
+except Exception as _e:
+    print('помещения: проверка пропущена', _e)
 
 cov = [r['coverage'] for r in rows]
 terr = [abs(r['T_err_mm']) for r in rows if r['T_err_mm'] is not None]
