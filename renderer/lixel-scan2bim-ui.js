@@ -7,7 +7,10 @@
  * v114 (Фаза 5 ROADMAP-IDEAL, D2): кнопка «Качество модели» — панель метрик
  * (renderer/lixel-scan2bim-quality.js): высота/стены/толщина/проёмы/помещения/плиты,
  * покрытие стен облаком и экспорт отчёта JSON.
- * window.__lxScan2BIM = { open, close, build, exportModel, refreshPreview, editor, quality, state }.
+ * v119 (Блок 3 ROADMAP-DOCS-AI): кнопка «Документация» — панель «Документация»
+ * (renderer/lixel-scan2bim-docs.js): загрузка compare.json (проект ↔ модель ↔ облако),
+ * скор соответствия, рекомендации и инструкция, как получить отчёт.
+ * window.__lxScan2BIM = { open, close, build, exportModel, refreshPreview, editor, quality, docs, state }.
  */
 (function () {
   'use strict';
@@ -154,6 +157,37 @@
     try { window.__lxS2BQuality.setModel(state.model); } catch (e) {}
   }
 
+  // ---------- панель «Документация» (Блок 3 ROADMAP-DOCS-AI): отдельный файл, грузим по требованию ----------
+  var docsWaiters = null;
+  function loadDocs(cb) {
+    if (window.__lxS2BDocs) { cb(window.__lxS2BDocs); return; }
+    if (docsWaiters) { docsWaiters.push(cb); return; }
+    docsWaiters = [cb];
+    function finish(ok) {
+      var q = docsWaiters || []; docsWaiters = null;
+      if (!ok || !window.__lxS2BDocs) { toast('Не удалось загрузить панель документации', true); return; }
+      for (var i = 0; i < q.length; i++) { try { q[i](window.__lxS2BDocs); } catch (e) {} }
+    }
+    try {
+      var s = document.createElement('script');
+      s.src = 'lixel-scan2bim-docs.js?v=119'; s.async = true;
+      s.onload = function () { finish(true); };
+      s.onerror = function () { finish(false); };
+      (document.head || document.body).appendChild(s);
+    } catch (e) { finish(false); }
+  }
+  function openDocsModel() {
+    loadDocs(function (D) {
+      if (!D || !D.open) { toast('Панель документации не загружена', true); return; }
+      try { D.open(state.model); }
+      catch (e) { toast('Ошибка панели документации: ' + (e && e.message || e), true); }
+    });
+  }
+  function syncDocsModel() {
+    if (!window.__lxS2BDocs || !window.__lxS2BDocs.setModel) return;
+    try { window.__lxS2BDocs.setModel(state.model); } catch (e) {}
+  }
+
   // --------- построение ---------
   function build() {
     var v = mainV();
@@ -181,6 +215,7 @@
       renderStats(model, dt);
       syncEditorModel();
       syncQualityModel();
+      syncDocsModel();
       toast('BIM построен: стен ' + model.stats.wallCount);
     }, 30);
     return null;
@@ -274,6 +309,10 @@
     var bQuality = actBtn('Качество модели', 'gauge', '', openQualityModel); bQuality.id = 'lxScan2BimQualityBtn';
     bQuality.setAttribute('data-tip', 'Метрики модели и покрытие стен облаком, скор и отчёт JSON');
     body.appendChild(bQuality);
+    // v119 (Блок 3 ROADMAP-DOCS-AI): панель «Документация» — сравнение проекта/модели/облака.
+    var bDocs = actBtn('Документация', 'file-text', '', openDocsModel); bDocs.id = 'lxScan2BimDocsBtn';
+    bDocs.setAttribute('data-tip', 'Загрузить отчёт сравнения документации с моделью и облаком: скор, таблица, рекомендации');
+    body.appendChild(bDocs);
     statusEl = el('div', 'sec-note', ''); statusEl.setAttribute('role', 'status'); statusEl.setAttribute('aria-live', 'polite');
     body.appendChild(statusEl);
     statsEl = el('div', 'lx-stats'); body.appendChild(statsEl);
@@ -318,6 +357,6 @@
 
   window.__lxScan2BIM = {
     open: open, close: close, build: build, exportModel: exportModel,
-    refreshPreview: refreshPreview, editor: openEditorModel, quality: openQualityModel, state: state
+    refreshPreview: refreshPreview, editor: openEditorModel, quality: openQualityModel, docs: openDocsModel, state: state
   };
 })();
