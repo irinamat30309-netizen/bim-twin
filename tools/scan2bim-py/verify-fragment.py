@@ -11,6 +11,7 @@ ap.add_argument('--ref', required=True)
 ap.add_argument('--model', required=True)
 ap.add_argument('--ruler', default=None)
 ap.add_argument('--cloud', default=None)
+ap.add_argument('--cloud-metrics', dest='cloud_metrics', default=None)
 ap.add_argument('--out', default='verify-fragment.json')
 a = ap.parse_args()
 
@@ -38,6 +39,14 @@ for w in m['walls']:
         walls.append({'a': np.array([ax, az]), 'b': np.array([bx, bz]), 'L': L,
                       'T': float(w.get('thickness', .15)),
                       'ang': math.atan2(bz - az, bx - ax)})
+all_walls = []
+for w in m['walls']:
+    ax, az = w['a']; bx, bz = w['b']
+    L = math.hypot(bx - ax, bz - az)
+    if L >= 1.2:
+        all_walls.append({'a': np.array([ax, az]), 'b': np.array([bx, bz]), 'L': L,
+                          'T': float(w.get('thickness', 0.15)),
+                          'ang': math.atan2(bz - az, bx - ax)})
 openings = []
 for w in m['walls']:
     for o in w.get('openings', []):
@@ -46,9 +55,9 @@ for w in m['walls']:
 
 # ---------- коридор ----------
 par_pairs = []
-for i in range(len(walls)):
+for i in range(len(all_walls)):
     for j in range(i + 1, len(walls)):
-        wi, wj = walls[i], walls[j]
+        wi, wj = all_walls[i], all_walls[j]
         d = abs((wi['ang'] - wj['ang'] + math.pi / 2) % math.pi - math.pi / 2)
         if d > math.radians(3):
             continue
@@ -73,6 +82,28 @@ if par_pairs:
     corridor_dir = wi['ang']
 else:
     add('Коридор: ширина в свету', '3,60 м', '—', '—', None, 'UNVERIFIED', 'коридорная пара не найдена', w=2.0)
+
+# ---------- сверка облака с документацией (облако — независимый замер) ----------
+if a.cloud_metrics:
+    cm = json.load(open(a.cloud_metrics, encoding='utf-8-sig'))
+    ref_w = ref['corridor_width_m']
+    cw = float(cm['corridor_width_m'])
+    dw = min(abs(cw - r) for r in ref_w)
+    st = 'PASS' if dw <= 0.10 else ('WARN' if dw <= 0.25 else 'FAIL')
+    add('Коридор: ширина (облако ↔ документация)', ' / '.join('%.2f' % r for r in ref_w) + ' м',
+        '—', '%.2f м' % cw, int(dw * 1000), st,
+        'замер по облаку; эталон — план p21 (существующий подвал)', w=2.0)
+    cells = cm['cells_m']
+    rc = ref['corridor_cells_m']
+    errs = [min(abs(c - r) for r in rc) for c in cells]
+    cov2 = sum(1 for e in errs if e <= ref['cell_tolerance_m']) / max(len(errs), 1)
+    worst = max(errs)
+    st2 = 'PASS' if cov2 >= 0.66 and worst <= ref['cell_tolerance_m'] else ('WARN' if cov2 >= 0.33 else 'FAIL')
+    add('Ячейки по коридору (облако ↔ документация)',
+        ' / '.join('%.2f' % r for r in rc) + ' м',
+        '—', ' / '.join('%.2f' % c for c in cells) + ' м', int(worst * 1000), st2,
+        'совпало %d из %d в допуске %.0f мм' % (sum(1 for e in errs if e <= ref['cell_tolerance_m']),
+                                                len(errs), ref['cell_tolerance_m'] * 1000), w=1.5)
     corridor_dir = None
 
 # ---------- ячейки между поперечными стенами ----------
