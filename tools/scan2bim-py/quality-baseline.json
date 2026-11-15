@@ -1,6 +1,6 @@
 {
  "_meta": {
-  "created_at": "2026-11-15T13:07:24+02:00",
+  "created_at": "2026-11-15T14:13:09+02:00",
   "tool": "run-quality-all.py",
   "note": "эталон для проверки регрессии; обновлять осознанно"
  },
@@ -48,7 +48,7 @@
    },
    "model": "D:\\BIM-TWIN-TEST\\interior\\py2-model.json",
    "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
-   "created_at": "2026-11-15T13:07:24+02:00"
+   "created_at": "2026-11-15T14:13:09+02:00"
   },
   "koridor/p1-final": {
    "metrics": {
@@ -138,7 +138,7 @@
    },
    "model": "D:\\BIM-TWIN-TEST\\interior\\py2-final-v2.json",
    "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
-   "created_at": "2026-11-15T13:07:24+02:00"
+   "created_at": "2026-11-15T14:13:09+02:00"
   }
  }
 }
