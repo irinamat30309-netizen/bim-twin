@@ -50,7 +50,7 @@ SCHEMA_VERSION = 1
 
 SHEET_CODE_RE = re.compile(r'^\d{2,3}\s*[-–—]\s*\d{3}\s*[-–—]\s*[А-ЯІЇЄA-Z]{1,3}\s*/')
 MARK_RE = re.compile(r'([+\-−±])\s*(\d{1,2})\s*[.,]\s*(\d{3})')
-PAIR_RE = re.compile(r'(\d{2,4})\s*[xх×*]\s*(\d{2,4})')
+PAIR_RE = re.compile(r'(\d{2,4}(?:[ \u00a0\u202f]\d{3})?)\s*[xх×*]\s*(\d{2,4}(?:[ \u00a0\u202f]\d{3})?)')
 SPACED_NUM_RE = re.compile(r'(?<![\d.,])(\d{1,3}(?:[ \u00a0\u202f]\d{3})+)(?![\d.,])')
 AREA_M2_RE = re.compile(r'(\d{1,3}(?:[ \u00a0\u202f]\d{3})?[.,]\d{1,2})\s*м\s*[²2]')
 SCALE_RE = re.compile(r'М\s*1\s*[:：]\s*(\d{2,4})')
@@ -181,11 +181,15 @@ def find_marks(text: str):
 
 
 # ------------------------------------------------------------------ экспликации по словам
-def extract_rooms_from_words(page, page_no: int, min_area=0.5, max_area=2000.0):
-    """Восстановление строк экспликации по координатам слов.
+def extract_rooms_from_words(page, page_no: int, min_area=0.5, max_area=3000.0):
+    """Восстановление строк экспликации по координатам слов (column-based).
 
-    Строка = слова с близким y; в строке ищем номер помещения (0xxx) и площадь (дробь).
-    Возвращает (rooms, table_areas).
+    На CAD-листах таблица экспликации — это несколько блоков «№ | название | площадь»,
+    а на плане те же номера/площади стоят вразброс. Поэтому:
+      1) ищем колонки номеров помещений (4 цифры с ведущими нулями) — кластеры x;
+      2) для каждой колонки ищем колонку площадей правее (x + 150…400 pt);
+      3) строка = номер и площадь на одном y (±3 pt), имя — буквенные слова между ними.
+    Возвращает (rooms, candidate_areas).
     """
     rooms = []
     areas = []
@@ -195,43 +199,73 @@ def extract_rooms_from_words(page, page_no: int, min_area=0.5, max_area=2000.0):
         return rooms, areas
     if not words:
         return rooms, areas
-    lines = defaultdict(list)
+    width = page.rect.width
+    num_cols = []       # (x, [(x,y,txt)...])
+    area_tokens = []    # (x,y,value)
+    num_tokens = []
     for w in words:
         x0, y0, x1, y1, txt = w[0], w[1], w[2], w[3], w[4]
-        lines[round(y0 / 2.5)].append((x0, y0, x1, y1, txt))
-    for key in sorted(lines):
-        ws = sorted(lines[key], key=lambda z: z[0])
-        texts = [w[4] for w in ws]
-        for idx, tok in enumerate(texts):
-            if not ROOM_NO_RE.match(tok):
+        if re.fullmatch(r'(0\d{2,3}|1\d{3})(?:\.\d{1,2})?', txt):
+            num_tokens.append((x0, y0, txt))
+        elif re.fullmatch(r'\d{1,3}[.,]\d{2}', txt):
+            try:
+                v = float(txt.replace(',', '.'))
+            except ValueError:
                 continue
-            # номер помещения: 3-4 цифры с ведущими нулями (0xxx) либо 1xxx
-            if not re.match(r'^(0\d{2,3}|1\d{3})', tok):
+            if min_area <= v <= max_area and x0 < width * 0.82:
+                area_tokens.append((x0, y0, v))
+    if not num_tokens or not area_tokens:
+        return rooms, areas
+    # кластеры x для номеров (шаг 8 pt), только кластеры с >=3 номерами
+    num_by_x = defaultdict(list)
+    for x, y, txt in num_tokens:
+        num_by_x[round(x / 8.0) * 8].append((x, y, txt))
+    area_x_hist = Counter(round(x / 8.0) * 8 for x, y, v in area_tokens)
+    used_numbers = set()
+    for nx, items in sorted(num_by_x.items()):
+        if len(items) < 3:
+            continue
+        # колонка площадей справа от номеров (+120…+420 pt)
+        best = None
+        for ax in sorted(area_x_hist):
+            if 120 <= ax - nx <= 420 and area_x_hist[ax] >= 3:
+                d = abs((ax - nx) - 250)
+                if best is None or d < best[0]:
+                    best = (d, ax)
+        if best is None:
+            continue
+        area_x = best[1]
+        # индекс площадей по y для этой колонки
+        by_y = defaultdict(list)
+        for x, y, v in area_tokens:
+            if abs(x - area_x) <= 16:
+                by_y[round(y / 3.0)].append(v)
+        names_by_y = defaultdict(list)
+        for w in words:
+            x, y, txt = w[0], w[1], w[4]
+            if nx < x < area_x - 5 and re.search(r'[А-Яа-яІіЇїЄєA-Za-z]{2,}', txt) and not txt.startswith('('):
+                names_by_y[round(y / 3.0)].append((x, txt))
+        for x, y, txt in items:
+            key_y = round(y / 3.0)
+            cand_areas = []
+            for dy in (0, -1, 1):
+                cand_areas.extend(by_y.get(key_y + dy, []))
+            if not cand_areas:
                 continue
-            # площадь: десятичное число правее номера в диапазоне
-            cand = None
-            for j in range(idx + 1, min(idx + 40, len(texts))):
-                t = texts[j]
-                if DECIMAL_RE.match(t):
-                    v = float(t.replace(',', '.'))
-                    if min_area <= v <= max_area:
-                        cand = (v, j)
-            if cand is None:
+            area = cand_areas[0]
+            name_words = []
+            for dy in (0, -1, 1):
+                name_words.extend(names_by_y.get(key_y + dy, []))
+            name = ' '.join(t for _, t in sorted(name_words))[:120].strip(' .,;:')
+            dedupe = (txt, round(area, 2))
+            if dedupe in used_numbers:
                 continue
-            # имя: нечисловые токены между номером и площадью (без служебных)
-            names = []
-            for j in range(idx + 1, cand[1]):
-                t = texts[j]
-                if re.search(r'[А-Яа-яІіЇїЄєA-Za-z]{3,}', t) and not t.startswith('('):
-                    if t not in ('м²', 'м2', 'Ш', 'В', 'мм'):
-                        names.append(t)
-            name = ' '.join(names).strip(' .,;:')
-            if len(name) > 2:
-                rooms.append({'page': page_no, 'number': tok, 'name': name[:120], 'area_m2': round(cand[0], 2)})
+            used_numbers.add(dedupe)
+            if len(name) >= 3:
+                rooms.append({'page': page_no, 'number': txt, 'name': name, 'area_m2': round(area, 2)})
             else:
-                areas.append(round(cand[0], 2))
+                areas.append(round(area, 2))
     return rooms, areas
-
 
 # ------------------------------------------------------------------ основной разбор
 def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int):
@@ -256,6 +290,7 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
     sheets = []
     all_marks = []
     all_mark_pages = defaultdict(list)
+    floor_title_marks = []
     object_lines = []
     address_lines = []
     explanation_pages = []
@@ -277,21 +312,43 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
         if m:
             scale = '1:%s' % m.group(1)
         title = tb.get('title') or ''
+        # мусорные «заголовки» (даты, числа) отбрасываем
+        if title and not re.search(r'[А-Яа-яІіЇїЄєA-Za-z]{3,}', title):
+            title = ''
         floor_mark = None
-        fm = re.search(r'в[іi]дм\.?\s*([+\-−±]?\s*\d{1,2}\s*[.,]\s*\d{3})', title, re.I)
-        if fm:
-            floor_mark = fm.group(1).replace(' ', '')
-        if tb.get('code') or title:
+        fms = MARK_RE.findall(title) if title else []
+        if fms:
+            fm = MARK_RE.search(title)
+            if fm:
+                sign = fm.group(1)
+                v = int(fm.group(2)) * 1000 + int(fm.group(3))
+                if sign in '-−':
+                    v = -v
+                floor_title_marks.append(v)
+                floor_mark = ('-' if v < 0 else ('±' if v == 0 else '+')) + ('%d,%03d' % (abs(v) // 1000, abs(v) % 1000))
+        if title and tb.get('code'):
             sheets.append({'page': pno, 'sheet_no': tb.get('sheet_no'), 'code': tb.get('code'),
                            'title': title, 'type': styp, 'scale': scale, 'floor_mark': floor_mark})
+        # отметки в примечаниях («на відм. +3,700») — как дополнительный источник этажей
+        for mm in re.finditer(r'в[іi]дм\.?\s*([+\-−±])\s*(\d{1,2})\s*[.,]\s*(\d{3})', t, re.I):
+            sign = mm.group(1)
+            v = int(mm.group(2)) * 1000 + int(mm.group(3))
+            if sign in '-−':
+                v = -v
+            floor_title_marks.append(v)
         low = t.lower()
         if 'експл' in low or 'экспликац' in low:
             explanation_pages.append(pno)
-        if 'двер' in low or 'ворот' in low:
+        if ('двер' in low or 'ворот' in low) and ('розм[іi]р' in low or 'специф[іi]кац' in low
+                                                    or 'в[іi]дом[іi]сть' in low or 'проріз' in low):
             door_pages.append(pno)
-        if 'вікн' in low or 'окон' in low:
+        if ('вікн' in low or 'окон' in low) and ('розм[іi]р' in low or 'специф[іi]кац' in low
+                                                or 'в[іi]дом[іi]сть' in low):
             window_pages.append(pno)
-        if ('муруван' in low or 'мурувальн' in low or 'кладк' in low or 'камен' in low):
+        is_masonry = ('повнот[іi]ла' in low and 'цегл' in low) or 'мурувальн' in low or 'муруван' in low
+        if not is_masonry and title:
+            is_masonry = ('муруван' in title.lower() or 'кладк' in title.lower())
+        if is_masonry:
             masonry_pages.append(pno)
         if styp == 'plan':
             plan_pages.append(pno)
@@ -308,13 +365,25 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
                         address_lines.append(ln)
 
     # ---------- объект / адрес ----------
-    object_name = ''
+    object_cands = []
     for ln in object_lines:
-        mm = re.search(r'«([^»]{15,300})»', ln)
-        if mm and ('будівництв' in mm.group(1).lower() or 'корпус' in mm.group(1).lower()
-                   or 'інститут' in mm.group(1).lower()):
-            object_name = mm.group(1)
-            break
+        for mm in re.finditer(r'«([^»]{15,400})»', ln):
+            txt = mm.group(1)
+            low = txt.lower()
+            score = 0
+            if 'будівництв' in low:
+                score += 3
+            if 'корпус' in low:
+                score += 2
+            if 'інститут' in low:
+                score += 1
+            if 'адрес' in ln.lower() or 'вул.' in ln.lower():
+                score += 2
+            object_cands.append((score, len(txt), txt))
+    object_name = ''
+    if object_cands:
+        object_cands.sort(key=lambda x: (-x[0], -x[1]))
+        object_name = object_cands[0][2]
     if not object_name and object_lines:
         object_name = max(object_lines, key=len)
     address = ''
@@ -331,46 +400,63 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
 
     # ---------- отметки / этажность / высоты ----------
     marks_sorted = sorted(set(all_marks))
-    diffs = [b - a for a, b in zip(marks_sorted, marks_sorted[1:]) if 0 < b - a <= 6000]
-    cnt = Counter(diffs)
-    pitch_cands = [(d, c) for d, c in cnt.items() if 2500 <= d <= 5000]
-    small_cands = [(d, c) for d, c in cnt.items() if 2000 <= d <= 3500]
-    slab_cands = [(d, c) for d, c in cnt.items() if 150 <= d <= 1000]
-    pitch_mm = max(pitch_cands, key=lambda x: x[1])[0] if pitch_cands else None
-    small_mm = max(small_cands, key=lambda x: x[1])[0] if small_cands else None
-    slab_mm = max(slab_cands, key=lambda x: x[1])[0] if slab_cands else None
-    # «чистая» высота: мода малых разностей (пол→низ плиты) либо шаг − плита
-    clean_height_mm = small_mm if small_mm else (pitch_mm - slab_mm if pitch_mm and slab_mm else None)
+    tm = sorted(set(floor_title_marks))
+    # разности между отметками, кратными 100 мм (пол ↔ низ плиты ↔ пол этажа)
+    pair_diffs = Counter()
+    hund = [m for m in marks_sorted if m % 100 == 0]
+    for a in hund:
+        for b in hund:
+            d = b - a
+            if 150 <= d <= 6000:
+                pair_diffs[d] += 1
+
+    def mode_in(counter, lo, hi):
+        cand = [(d, c) for d, c in counter.items() if lo <= d <= hi]
+        if not cand:
+            return None
+        cand.sort(key=lambda x: (-x[1], x[0]))
+        return cand[0][0]
+
+    # шаг этажа: приоритет — отметки из титульных блоков (0 / 3700 / 7400 ...)
+    pitch_mm = None
+    if len(tm) >= 2:
+        td = Counter(b - a for a, b in zip(tm, tm[1:]) if 2500 <= b - a <= 5000)
+        if td:
+            pitch_mm = max(td.items(), key=lambda kv: (kv[1], kv[0]))[0]
+    if pitch_mm is None:
+        pitch_mm = mode_in(pair_diffs, 3500, 4500)
+    slab_mm = mode_in(pair_diffs, 150, 1000)
+    clean_height_mm = mode_in(pair_diffs, 2500, 3500)
+    if clean_height_mm is None and pitch_mm and slab_mm:
+        clean_height_mm = pitch_mm - slab_mm
     floors_mm = [m for m in marks_sorted if -15000 <= m <= 60000]
-    # этажи: положительная цепочка с шагом pitch (0.000 и т.п.)
-    floor_marks_mm = []
-    if pitch_mm:
+    floor_marks_mm = sorted(set(tm)) if len(tm) >= 2 else []
+    if len(floor_marks_mm) < 2 and pitch_mm:
         pos = [m for m in floors_mm if 0 <= m <= 60000]
         chain = [pos[0]] if pos else []
         for v in pos[1:]:
-            if chain and v - chain[-1] == pitch_mm:
+            if chain and abs((v - chain[-1]) - pitch_mm) <= 50:
                 chain.append(v)
-        if len(chain) < 2:
-            # допускаем шаг в пределах ±50 мм
-            chain = [pos[0]] if pos else []
-            for v in pos[1:]:
-                if chain and abs((v - chain[-1]) - pitch_mm) <= 50:
-                    chain.append(v)
         floor_marks_mm = chain
 
     # ---------- толщины стен ----------
     wall_counts = Counter()
     for pno in masonry_pages:
         t = texts[pno - 1]
-        for tok in re.findall(r'(?<![\d.,])(\d{2,4})(?![\d.,])', t):
+        # толщины на мурувальних планах подписаны отдельными числами-строками
+        for ln in t.splitlines():
+            ln = ln.strip()
+            if re.fullmatch(r'\d{2,4}', ln):
+                v = int(ln)
+                if 60 <= v <= 800:
+                    wall_counts[v] += 1
+        for tok in re.findall(r'(?<![\d.,])(\d{2,4})\s*мм', t):
             v = int(tok)
             if 60 <= v <= 800:
                 wall_counts[v] += 1
     wall_thicknesses = [v for v, c in sorted(wall_counts.items()) if c >= 2]
-    # приоритет кирпичному ряду (кратно 10) и значениям, встреченным >2 раз
-    strong = [v for v in wall_thicknesses if wall_counts[v] >= 3]
-    if strong:
-        wall_thicknesses = strong
+    if len(wall_thicknesses) > 12:
+        wall_thicknesses = [v for v in wall_thicknesses if wall_counts[v] >= 3]
 
     # ---------- двери / окна ----------
     door_sizes = Counter()
@@ -595,4 +681,8 @@ def main(argv=None):
 
 if __name__ == '__main__':
     sys.exit(main())
+
+
+
+
 
