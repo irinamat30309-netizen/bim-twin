@@ -147,3 +147,25 @@ test('r24: связка — проверка доступа и поток в mai
   fs.mkdirSync(path.join(d, 'project_data')); fs.writeFileSync(path.join(d, 'project_data', 'poses.csv'), posesCsv(T0, T0 + 2.2));
   const info = XP.inspect(path.join(d, 'q.xbin')); assert.strictEqual(info.xbin.lidarReady, true); assert.strictEqual(info.cloud, null); assert.ok(info.poses && info.poses.n > 5);
 });
+
+test('r24: maxPoints выдерживается — калибровка bpp и доли выживших точек, авто-повтор (ревизия 132)', () => {
+  const d = tmpDir(), x = path.join(d, 'm.xbin');
+  makeXbin(x, { secs: 3 });
+  const S = XL.scan(x);
+  const r = XL.build(x, posesCsv(T0, T0 + 3.2), path.join(d, 'm1.las'), { maxPoints: 150, index: S });
+  // раньше при лимите 150 выходило ~1.6× больше (оценка bpp по одному пакету); теперь калибровка bpp + доля выживших
+  assert.ok(r.points <= 150 * 1.10 + 2, 'точек ' + r.points + ' при лимите 150 (шаг ' + r.step + ', попыток ' + r.attempts + ')');
+  assert.ok(r.estimated > 0 && r.estimatedKept > 0, 'оценки ' + r.estimated + '/' + r.estimatedKept);
+  assert.ok(r.keepFrac > 0.2 && r.keepFrac <= 1, 'keepFrac ' + r.keepFrac);
+  assert.ok(r.bpp > 5 && r.bpp < 120, 'bpp ' + r.bpp);
+  // оценка числа точек, прошедших фильтры, близка к факту (points × step)
+  assert.ok(Math.abs(r.estimatedKept - r.points * r.step) / r.estimatedKept < 0.35,
+    'оценка ' + r.estimatedKept + ' vs факт ' + (r.points * r.step));
+  // явный step уважается, авто-повтор не включается
+  const r2 = XL.build(x, posesCsv(T0, T0 + 3.2), path.join(d, 'm2.las'), { step: 7, maxPoints: 1e9, index: S });
+  assert.strictEqual(r2.step, 7); assert.strictEqual(r2.attempts, 1);
+  // сборка детерминирована и не выходит за лимит при повторном запуске
+  const r3 = XL.build(x, posesCsv(T0, T0 + 3.2), path.join(d, 'm3.las'), { maxPoints: 150, index: S });
+  assert.strictEqual(r3.points, r.points, 'повторный запуск даёт то же число точек');
+  assert.strictEqual(r3.step, r.step);
+});

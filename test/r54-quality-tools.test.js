@@ -100,7 +100,10 @@ test('r54: утончение стен не стирает ступень 1,5 с
   }
   const alive = new Uint8Array(n).fill(1);
   const moved = R.thinSurfaces(X, n, alive, { cell: 0.04, planar: 0.06 });
-  assert.ok(moved > n * 0.9, 'утончение трогает почти все точки: ' + moved);
+  // ревизия 132: moved считает только реально сдвинутые точки (|d|>1 мм) — при шуме 1,5 мм это ~половина,
+  // а не «почти все» (раньше счётчик увеличивался для любой точки в плоской ячейке)
+  assert.ok(moved > n * 0.2, 'утончение сдвигает точки с невязкой >1 мм: ' + moved);
+  assert.ok(moved < n, 'не все точки считаются сдвинутыми: ' + moved);
   const pan = (z0, z1) => { let s = 0, c = 0; for (let i = 0; i < n; i++) { const z = X[i * 3 + 2], y = X[i * 3 + 1]; if (z < z0 || z > z1 || y < 0.05 || y > PY - 0.05) continue; s += X[i * 3]; c++; } return s / c; };
   const a = pan(0.05, PZ / 3 - 0.03), b = pan(PZ / 3 + 0.03, 2 * PZ / 3 - 0.03);
   assert.ok(Math.abs((b - a) - STEP) < 0.001, 'ступень между панелями сохранена: ' + ((b - a) * 1000).toFixed(2) + ' мм');

@@ -4,7 +4,7 @@
 
 Запуск (нужен Python с numpy; IFC-тесты требуют node и ifcopenshell):
 
-    python edit-model-test.py [--data DIR] [--keep]
+    python edit-model-test.py [--data DIR] [--v5 PATH] [--keep]
 
 Проверки (каждая печатает PASS/FAIL; код возврата 1, если есть FAIL):
   * загрузка/инварианты модели (57 стен, 11 проёмов, 23 помещения — на реальных данных);
@@ -20,12 +20,17 @@
   * IFC после правок валиден (validate-ifc.py: 0 ERROR, арность IFC4 OK);
   * snap_wall: 2-модная привязка восстанавливает известный сдвиг/толщину (синтетика),
     на реальном облаке улучшает/не ухудшает RMS и держит сдвиг <= 0.25 м;
+  * snap_wall: поворот по бинам двух граней (синтетика +1.5°) и предел поворота;
   * snap_opening: кромки проёма по разрыву профиля облака (±0.1 м);
   * CLI: --help, пример move_wall --offset --snap --out --json, undo/redo между
     запусками через sidecar, ошибки параметров дают код 2.
+  * модель v5 (100 стен: 18 measured + 82 inferred, 5 проёмов, 9 помещений):
+    операции по measured-стене 11, проёмам, snap (inferred отклоняются, поворот на
+    стене 18), undo/redo, IFC-инвентарь 100/5/9 и 0 ERROR.
 
-Данные по умолчанию: D:\\BIM-TWIN-TEST\\interior\\py2-p1.json + koridor-local-rgb.bin.
-Если их нет — тесты строят синтетическую модель/облако во временной папке.
+Данные по умолчанию: D:\\BIM-TWIN-TEST\\interior\\py2-p1.json + koridor-local-rgb.bin,
+модель v5 — D:\\BIM-TWIN-TEST\\interior\\py2-final-v5.json (если есть; иначе v5-тесты SKIP).
+Если основной модели нет — тесты строят синтетическую модель/облако во временной папке.
 """
 import argparse
 import copy
@@ -85,10 +90,20 @@ class Context:
     synth_model = None
     synth_cloud_path = None
     cloud = None           # Cloud-объект основного облака
+    # модель v5 (100 стен: 18 measured + 82 inferred, 5 проёмов, 9 помещений)
+    v5_path = None
+    v5_model = None
+    # синтетические стенды для поворота: (model, cloud_path) с истинным наклоном deg
+    rot_stand = None       # наклон +1.5°
+    rot_stand_over = None  # наклон +5° (больше предела)
 
     @property
     def has_cloud(self):
         return self.cloud_path is not None
+
+    @property
+    def has_v5(self):
+        return self.v5_model is not None
 
 
 CTX = Context()
@@ -159,6 +174,43 @@ def make_synthetic(tmpdir):
     return model, model_path, cloud_path
 
 
+def make_rotated_stand(tmpdir, deg, tag):
+    """Синтетический стенд для теста поворота: модель — прямая стена 4 м толщиной 0.2 м
+    (dir=(1,0)), облако — та же стена, повёрнутая вокруг центра на deg градусов.
+    Возвращает (model, model_path, cloud_path)."""
+    L, T = 4.0, 0.20
+    model = {'ok': True, 'storey': {'floorY': 0.0, 'ceilY': 3.0, 'height': 3.0},
+             'walls': [{'a': [0.0, 0.0], 'b': [L, 0.0], 'dir': [1.0, 0.0], 'length': L,
+                        'thickness': T, 'base': 0.0, 'height': 3.0, 'openings': [],
+                        'passages': [], 'color': [0.6, 0.5, 0.5], 'material': 'concrete',
+                        'inferred': False, 'rms': 0.01}],
+             'slabs': [], 'rooms': [], 'pipes': [], 'objects': [], 'beams': [], 'cables': []}
+    em.normalize_model(model)
+    em.recount_stats(model)
+    model_path = os.path.join(tmpdir, 'rot-%s-model.json' % tag)
+    with open(model_path, 'w', encoding='utf-8') as f:
+        json.dump(model, f, ensure_ascii=False, indent=1)
+    th = math.radians(deg)
+    d = np.array([math.cos(th), math.sin(th)])
+    n = np.array([-d[1], d[0]])
+    center = np.array([L / 2.0, 0.0])
+    rng = np.random.default_rng(1000 + int(round(deg * 10)))
+    pts = []
+    ys = np.arange(0.20, 2.81, 0.20)
+    for face in (-1.0, 1.0):
+        for s in np.arange(0.02, L, 0.02):
+            base = center + d * (s - L / 2.0) + n * (face * T / 2.0)
+            for y in ys:
+                pts.append((base[0] + rng.normal(0, 0.003),
+                            y + rng.normal(0, 0.003),
+                            base[1] + rng.normal(0, 0.003),
+                            0.6, 0.5, 0.5))
+    arr = np.asarray(pts, dtype=np.float32)
+    cloud_path = os.path.join(tmpdir, 'rot-%s-cloud.bin' % tag)
+    arr.tofile(cloud_path)
+    return model, model_path, cloud_path
+
+
 def setup_context(args):
     CTX.tmpdir = tempfile.mkdtemp(prefix='edit-model-test-')
     print('edit-model-test.py — тесты ядра редактора (Фаза 4 ROADMAP-IDEAL.md)')
@@ -182,16 +234,33 @@ def setup_context(args):
         print('данные:  реальных нет — синтетический стенд')
     # синтетика нужна всегда (строгие проверки привязки)
     CTX.synth_model, CTX.synth_model_path, CTX.synth_cloud_path = make_synthetic(CTX.tmpdir)
+    CTX.rot_stand = make_rotated_stand(CTX.tmpdir, 1.5, 'p15')
+    CTX.rot_stand_over = make_rotated_stand(CTX.tmpdir, 5.0, 'p50')
     if not CTX.real:
         CTX.model_path = CTX.synth_model_path
         CTX.model = copy.deepcopy(CTX.synth_model)
         CTX.cloud_path = CTX.synth_cloud_path
-    print('синтетика: %s (%d точек)' % (CTX.synth_cloud_path,
-                                        os.path.getsize(CTX.synth_cloud_path) // 24))
+    print('синтетика: %s (%d точек); стенды поворота: +1.5°, +5°' % (
+        CTX.synth_cloud_path, os.path.getsize(CTX.synth_cloud_path) // 24))
     if CTX.cloud_path:
         CTX.cloud = em.load_cloud(CTX.cloud_path, CLOUD_STRIDE)
         print('точек в облаке (прорежено): %d из %d' % (CTX.cloud.points_used,
                                                         CTX.cloud.points_total))
+    # модель v5 (если есть) — отдельный набор проверок
+    v5_path = args.v5 if getattr(args, 'v5', None) else os.path.join(
+        os.path.dirname(DEFAULT_MODEL), 'py2-final-v5.json')
+    if v5_path and os.path.isfile(v5_path):
+        try:
+            CTX.v5_model = em.load_model(v5_path)
+            CTX.v5_path = os.path.abspath(v5_path)
+            n_ops = sum(len(w.get('openings') or []) for w in CTX.v5_model['walls'])
+            print('модель v5: %s (%d стен, %d проёмов, %d помещений)' % (
+                CTX.v5_path, len(CTX.v5_model['walls']), n_ops,
+                len(CTX.v5_model.get('rooms') or [])))
+        except em.EditError as exc:
+            print('модель v5 не прочитана: %s' % exc)
+    else:
+        print('модель v5: нет (%s) — проверки v5 будут SKIP' % v5_path)
     print()
 
 
@@ -655,6 +724,7 @@ def test_snap_wall_synthetic():
     assert_true(res['rms_after'] < res['rms_before'] - 1e-4,
                 'RMS улучшился: %.4f -> %.4f' % (res['rms_before'], res['rms_after']))
     assert_close(w['length'], w0['length'], 1e-6, 'длина при привязке не изменилась')
+    assert_true(res.get('rotated') is False, 'параллельная стена не поворачивается')
     assert_true(ed.undo()['changed'], 'snap отменяем')
     assert_true(ed.model['walls'][0]['a'] == w0['a'], 'undo вернул ось')
     return 'shift %+.3f, T %.3f -> %.3f, RMS %.4f -> %.4f' % (
@@ -740,8 +810,328 @@ def test_snap_opening_real():
         res['width_before'], res['width_after'], res.get('gap'))
 
 
+@check('snap_wall (синтетика): поворот +1.5° восстанавливается')
+def test_snap_wall_rotation():
+    model, _mpath, cloud_path = CTX.rot_stand
+    ed = em.Editor(copy.deepcopy(model), cloud=em.load_cloud(cloud_path, CLOUD_STRIDE))
+    w0 = copy.deepcopy(ed.model['walls'][0])
+    res = ed.snap_wall(0, max_rotation_deg=3.0)
+    assert_true(res['accepted'] is True, 'привязка с поворотом принята: %s' % res.get('reason'))
+    assert_true(res['rotated'] is True,
+                'поворот применён: %s' % (res.get('rotation') or {}).get('reason'))
+    assert_close(res['rotation_deg'], 1.5, 0.4, 'наклон восстановлен (+1.5°)')
+    w = ed.model['walls'][0]
+    assert_close(w['thickness'], 0.20, 0.03, 'толщина восстановлена (0.20 м)')
+    assert_true(res['rms_after'] < res['rms_before'] * 0.5,
+                'RMS заметно лучше: %.4f -> %.4f' % (res['rms_before'], res['rms_after']))
+    assert_close(w['length'], 4.0, 1e-6, 'длина при повороте не изменилась')
+    assert_true(abs(w['dir'][0] - w0['dir'][0]) > 1e-3 or abs(w['dir'][1]) > 1e-3,
+                'dir повернулся')
+    assert_true(ed.undo()['changed'], 'поворот отменяем')
+    assert_true(ed.model == model, 'undo вернул исходную модель')
+    return 'поворот %+.2f° (истина +1.5°), T %.3f, RMS %.4f -> %.4f' % (
+        res['rotation_deg'], w['thickness'], res['rms_before'], res['rms_after'])
+
+
+@check('snap_wall: поворот больше предела (5°) не применяется')
+def test_snap_wall_rotation_limit():
+    model, _mpath, cloud_path = CTX.rot_stand_over
+    ed = em.Editor(copy.deepcopy(model), cloud=em.load_cloud(cloud_path, CLOUD_STRIDE))
+    dir0 = list(ed.model['walls'][0]['dir'])
+    res = ed.snap_wall(0, max_rotation_deg=3.0)
+    assert_true(res['rotated'] is False, 'поворот 5° не применён (предел 3°)')
+    rot = res.get('rotation') or {}
+    assert_true(rot.get('deg') is not None, 'наклон оценён: %s' % json.dumps(
+        rot, ensure_ascii=False))
+    assert_true(abs(rot['deg']) > 3.0, 'оценка наклона действительно больше предела')
+    assert_true('предел' in (rot.get('reason') or ''), 'причина — предел поворота')
+    assert_true(ed.model['walls'][0]['dir'] == dir0, 'dir не изменился')
+    return 'наклон %+.1f° > 3.0° → поворот отклонён' % rot['deg']
+
+
+@check('snap_wall: rotate=False отключает поворот')
+def test_snap_wall_rotate_disabled():
+    model, _mpath, cloud_path = CTX.rot_stand
+    ed = em.Editor(copy.deepcopy(model), cloud=em.load_cloud(cloud_path, CLOUD_STRIDE))
+    dir0 = list(ed.model['walls'][0]['dir'])
+    res = ed.snap_wall(0, rotate=False)
+    assert_true(res['rotated'] is False, 'при rotate=False поворота нет')
+    assert_true(ed.model['walls'][0]['dir'] == dir0, 'dir не изменился')
+    assert_true((res.get('rotation') or {}).get('applied') is False, 'rotation.applied=False')
+    return 'rotate=False: dir не изменился (accepted=%s)' % res['accepted']
+
+
 # ======================================================================================
-# 7. CLI
+# 7. модель v5: 100 стен (18 измеренных + 82 достроенных), 5 проёмов, 9 помещений
+# ======================================================================================
+def v5_editor(with_cloud=True):
+    if not CTX.has_v5:
+        raise SkipTest('нет модели v5 (py2-final-v5.json)')
+    mdl = copy.deepcopy(CTX.v5_model)
+    cloud = None
+    if with_cloud:
+        cloud = CTX.cloud
+        if cloud is None:
+            path = em.discover_cloud(CTX.v5_path)
+            if path is None:
+                raise SkipTest('нет облака для v5')
+            cloud = em.load_cloud(path, CLOUD_STRIDE)
+    return em.Editor(mdl, cloud=cloud)
+
+
+def v5_counts(model):
+    walls = model['walls']
+    return {
+        'walls': len(walls),
+        'measured': sum(1 for w in walls if not (w.get('inferred') or w.get('material') == 'inferred')),
+        'inferred': sum(1 for w in walls if (w.get('inferred') or w.get('material') == 'inferred')),
+        'openings': sum(len(w.get('openings') or []) for w in walls),
+        'rooms': len(model.get('rooms') or []),
+        'area': round(sum(float(r.get('area') or 0.0) for r in model.get('rooms') or []), 2),
+    }
+
+
+@check('v5: модель — 100 стен (18 measured + 82 inferred), 5 проёмов, 9 помещений')
+def test_v5_load():
+    m = CTX.v5_model
+    c = v5_counts(m)
+    assert_true(c['walls'] == 100, 'стен 100 (получено %d)' % c['walls'])
+    assert_true(c['measured'] == 18 and c['inferred'] == 82,
+                '18 measured + 82 inferred (получено %d + %d)' % (c['measured'], c['inferred']))
+    assert_true(c['openings'] == 5, 'проёмов 5 (получено %d)' % c['openings'])
+    assert_true(c['rooms'] == 9, 'помещений 9 (получено %d)' % c['rooms'])
+    assert_close(c['area'], 122.9, 0.3, 'площадь помещений 122.9 м²')
+    assert_true(not (m['walls'][11].get('inferred') or m['walls'][11].get('material') == 'inferred'),
+                'стена 11 — измеренная')
+    assert_true('services' in m and 'meta' in m,
+                'доп. ключи v5 (services/meta) не потеряны при загрузке')
+    kinds = {o.get('kind') for w in m['walls'] for o in (w.get('openings') or [])}
+    assert_true(kinds == {'door', 'passage', 'window'}, 'виды проёмов v5: %s' % sorted(kinds))
+    return 'стен 100 (18+82), проёмов 5, помещений 9, %.1f м², kinds=%s' % (
+        c['area'], '/'.join(sorted(kinds)))
+
+
+@check('v5: правка измеренной стены 11 (offset/thickness/extend) + undo/redo')
+def test_v5_edit_measured_wall11():
+    ed = v5_editor()
+    base = copy.deepcopy(ed.model)
+    w0 = copy.deepcopy(ed.model['walls'][11])
+    a0, d0, n0, L0, T0 = em.wall_frame(w0)
+    res = ed.set_wall(11, offset=0.05)
+    assert_true(res['changed'] is True, 'сдвиг применён')
+    res = ed.set_wall(11, thickness=0.20)
+    assert_true(res['thickness']['to'] == 0.20, 'толщина 0.20')
+    res = ed.set_wall(11, extend_start=0.30)
+    w = ed.model['walls'][11]
+    assert_close(w['length'], L0 + 0.30, 1e-4, 'длина +0.30 м')
+    assert_close(w['a'][0], a0[0] - d0[0] * 0.30 + n0[0] * 0.05, 1e-3, 'a: сдвиг+удлинение')
+    assert_true(len(w.get('openings') or []) == len(w0.get('openings') or []),
+                'проёмы стены не потеряны')
+    for _ in range(3):
+        ed.undo()
+    assert_true(ed.model == base, 'undo x3 вернул модель v5 побайтно')
+    for _ in range(3):
+        ed.redo()
+    assert_close(ed.model['walls'][11]['thickness'], 0.20, 1e-6, 'redo вернул толщину 0.20')
+    return 'стена 11: offset +0.05, T %.3f->0.20, L %.2f->%.2f; undo/redo OK' % (
+        T0, L0, L0 + 0.30)
+
+
+@check('v5: проёмы — move/snap_opening/add/remove/passage, undo')
+def test_v5_opening_edit():
+    ed = v5_editor()
+    base = copy.deepcopy(ed.model)
+    w0 = ed.model['walls'][0]
+    assert_true(bool(w0.get('openings')), 'у измеренной стены 0 есть проём')
+    o0 = copy.deepcopy(w0['openings'][0])
+    n_start = sum(len(w.get('openings') or []) for w in ed.model['walls'])
+    res = ed.move_opening(0, 0, along=round(float(o0['along']) + 0.05, 3))
+    assert_true(res['changed'] is True, 'move_opening применён')
+    res = ed.snap_opening(0, 0)
+    assert_true(res['accepted'] is True, 'snap_opening принят: %s' % res.get('reason'))
+    snap_along = res.get('along_after')
+    o = ed.model['walls'][0]['openings'][0]
+    L = float(ed.model['walls'][0]['length'])
+    assert_true(0.0 <= o['along'] and o['along'] + o['width'] <= L + 1e-6,
+                'проём остался внутри стены')
+    res = ed.add_opening(11, along=1.0, width=0.9, kind='door')
+    assert_true(res['changed'] is True and res['openings'] == 1, 'add_opening на стене 11')
+    res = ed.add_opening(11, along=2.5, width=1.0, kind='passage')
+    assert_true(ed.model['walls'][11]['openings'][-1]['kind'] == 'passage',
+                "kind='passage' поддержан (схема v5)")
+    ed.remove_opening(11, 1)
+    ed.remove_opening(11, 0)
+    n_now = sum(len(w.get('openings') or []) for w in ed.model['walls'])
+    assert_true(n_now == n_start, 'add x2 + remove x2 вернули число проёмов (%d)' % n_now)
+    for _ in range(6):
+        ed.undo()
+    assert_true(ed.model == base, 'undo x6 вернул модель v5')
+    try:
+        ed.add_opening(0, along=float(o0['along']), width=0.5)
+        raise AssertionError('наложение проёмов не запрещено')
+    except em.EditError:
+        pass
+    return 'wall0: along %.3f->%s, snap_opening accepted; add/remove/passage OK' % (
+        o0['along'], snap_along)
+
+
+@check('v5: snap_wall — 82 inferred отклоняются, measured не ухудшают RMS')
+def test_v5_snap_inferred_and_measured():
+    ed = v5_editor()
+    inferred = [i for i, w in enumerate(ed.model['walls'])
+                if (w.get('inferred') or w.get('material') == 'inferred')]
+    assert_true(len(inferred) == 82, 'inferred-стен 82')
+    for i in inferred:
+        r = ed.snap_wall(i)
+        assert_true(r['accepted'] is False and not r['changed'],
+                    'inferred стена %d не привязана' % i)
+        assert_true('inferred' in (r.get('reason') or ''), 'причина — inferred (стена %d)' % i)
+    assert_true(ed.model == CTX.v5_model, 'inferred-стены не изменили модель')
+    measured = [i for i, w in enumerate(ed.model['walls'])
+                if not (w.get('inferred') or w.get('material') == 'inferred')]
+    accepted = rejected = 0
+    for i in measured:
+        r = ed.snap_wall(i)
+        if r['accepted']:
+            accepted += 1
+            assert_true(abs(r['offset']) <= 0.25 + 1e-9, 'сдвиг стены %d в пределе' % i)
+            assert_true(0.06 <= r['thickness_after'] <= 0.60,
+                        'толщина стены %d в диапазоне' % i)
+            assert_true(r['rms_after'] <= r['rms_before'] + 1e-6,
+                        'RMS стены %d не хуже' % i)
+            assert_true(r.get('peak_support', 0) >= r.get('min_peak_support', 1),
+                        'моды стены %d достаточно сильные' % i)
+        else:
+            rejected += 1
+            assert_true(bool(r.get('reason')), 'у отказа есть причина (стена %d)' % i)
+    assert_true(accepted >= 1, 'есть хотя бы одна принятая привязка')
+    return 'inferred 82/82 отклонены; measured: принято %d, отклонено %d (без сильных мод)' % (
+        accepted, rejected)
+
+
+@check('v5: snap_wall — поворот на стене 18 (−2°) и отказ на слабых модах (4/17)')
+def test_v5_snap_rotation_and_weak_modes():
+    ed = v5_editor()
+    w0 = copy.deepcopy(ed.model['walls'][18])
+    a0, d0, _n0, L0, T0 = em.wall_frame(w0)
+    r = ed.snap_wall(18)
+    assert_true(r['accepted'] is True, 'стена 18 привязана: %s' % r.get('reason'))
+    assert_true(r['rotated'] is True, 'стена 18 повёрнута (две грани видны по длине)')
+    assert_close(r['rotation_deg'], -2.0, 0.5, 'наклон стены 18 около −2°')
+    assert_close(ed.model['walls'][18]['thickness'], 0.27, 0.02, 'толщина 0.27 м (была 0.257)')
+    assert_true(r['rms_after'] < r['rms_before'] * 0.3,
+                'RMS стены 18 резко лучше: %.4f -> %.4f' % (r['rms_before'], r['rms_after']))
+    assert_close(ed.model['walls'][18]['length'], L0, 1e-6, 'длина не изменилась')
+    assert_true(ed.model['walls'][18]['dir'] != w0['dir'], 'dir повернулся')
+    # на слабых/ложных модах (короткие стены 4 и 17) привязка не должна менять толщину
+    ed2 = v5_editor()
+    for idx in (4, 17):
+        rr = ed2.snap_wall(idx)
+        assert_true(rr['accepted'] is False, 'стена %d не привязана (слабые моды)' % idx)
+        assert_true('слаб' in (rr.get('reason') or '') or 'моды' in (rr.get('reason') or ''),
+                    'причина — слабые моды (стена %d): %s' % (idx, rr.get('reason')))
+    assert_true(ed2.model == CTX.v5_model, 'ложные привязки не изменили модель')
+    return 'стена 18: поворот %+.2f°, T %.3f->%.3f, RMS %.4f->%.4f; стены 4/17 отклонены' % (
+        r['rotation_deg'], T0, ed.model['walls'][18]['thickness'],
+        r['rms_before'], r['rms_after'])
+
+
+@check('v5: snap_all — привязать все измеренные стены за раз (inferred не трогает)')
+def test_v5_snap_all():
+    ed = v5_editor()
+    c0 = v5_counts(ed.model)
+    res = ed.snap_all()
+    assert_true(res['measured'] == 18, 'измеренных стен 18 (получено %s)' % res['measured'])
+    total = res['accepted_count'] + res['unchanged_count'] + res['rejected_count']
+    assert_true(total == 18, 'итог по 18 стенам (получено %s)' % total)
+    assert_true(res['accepted_count'] >= 1, 'есть принятые привязки')
+    assert_true(res['changed'] is True, 'модель изменилась')
+    c1 = v5_counts(ed.model)
+    assert_true(c1 == c0, 'число стен/проёмов/помещений/площадь не поменялись: %s' % c1)
+    steps = 0
+    while ed.can_undo and steps < 40:
+        ed.undo()
+        steps += 1
+    assert_true(ed.model == CTX.v5_model, 'пошаговый undo вернул модель v5')
+    assert_true(steps == res['accepted_count'],
+                'undo-шагов %d == принятых привязок %d' % (steps, res['accepted_count']))
+    return 'snap_all: принято %d, без изменений %d, отклонено %d; undo %d шагов' % (
+        res['accepted_count'], res['unchanged_count'], res['rejected_count'], steps)
+
+
+@check('v5: IFC после правок — 100 стен, 5 проёмов, 9 помещений, 0 ERROR')
+def test_v5_ifc_inventory():
+    ed = v5_editor()
+    ed.set_wall(11, thickness=0.20)
+    ed.move_opening(0, 0, along=1.25)
+    out = os.path.join(CTX.tmpdir, 'v5-edited.ifc')
+    info = ed.export_ifc(out)
+    assert_true(os.path.getsize(out) > 10000, 'IFC создан')
+    val = em.validate_ifc(out)
+    assert_true(val['ok'] is True, 'валидатор: %s' % (val.get('output') or '')[-400:])
+    assert_true(val['errors'] == 0, 'ERROR=0 (получено %s)' % val['errors'])
+    assert_true(not val['arityMismatches'], 'расхождений арности нет')
+    inv = val['inventory']
+    assert_true(inv.get('IfcWallStandardCase') == 100, 'стен в IFC 100 (получено %s)' % inv.get('IfcWallStandardCase'))
+    assert_true(inv.get('IfcOpeningElement') == 5, 'проёмов в IFC 5 (получено %s)' % inv.get('IfcOpeningElement'))
+    assert_true(inv.get('IfcSpace') == 9, 'помещений в IFC 9 (получено %s)' % inv.get('IfcSpace'))
+    assert_true(inv.get('IfcSlab') == 2, 'перекрытий 2 (получено %s)' % inv.get('IfcSlab'))
+    assert_true(inv.get('IfcBuildingStorey') == 1, 'этаж 1')
+    text = read_text(out)
+    assert_true(text.count('IFCWALLSTANDARDCASE(') == 100, 'в STEP 100 IFCWALLSTANDARDCASE')
+    assert_true('IFC4' in text, 'схема IFC4')
+    return 'IFC %.1f КБ, ERROR=0, 100 стен / 5 проёмов / 9 помещений / 2 плиты' % (
+        os.path.getsize(out) / 1024.0)
+
+
+@check('v5: save/load + sidecar истории')
+def test_v5_save_load():
+    ed = v5_editor()
+    base = copy.deepcopy(ed.model)
+    ed.set_wall(11, offset=0.03)
+    path = os.path.join(CTX.tmpdir, 'v5-edit.json')
+    saved = ed.save(path)
+    assert_true(os.path.isfile(path) and saved['bytes'] > 50000,
+                'модель v5 записана: %d байт' % saved['bytes'])
+    loaded = em.Editor.load(path)
+    assert_true(loaded.model == ed.model, 'загруженная модель == записанной')
+    assert_true(loaded.can_undo is True, 'история из sidecar загружена')
+    loaded.undo()
+    assert_true(loaded.model == base, 'undo после перезагрузки вернул модель v5')
+    return 'модель %.1f КБ + история %.1f КБ, undo после load OK' % (
+        saved['bytes'] / 1024.0, os.path.getsize(path + '.history.json') / 1024.0)
+
+
+@check('v5: CLI — правка стены 11 и snap с поворотом (облако ищется само)')
+def test_v5_cli():
+    if not CTX.has_v5:
+        raise SkipTest('нет модели v5')
+    out = os.path.join(CTX.tmpdir, 'v5-cli.json')
+    proc, payload = run_cli_json([
+        '--model', os.path.basename(CTX.v5_path), '--op', 'set_wall', '--index', '11',
+        '--offset', '0.05', '--thickness', '0.20', '--out', out],
+        cwd=os.path.dirname(CTX.v5_path))
+    assert_true(proc.returncode == 0,
+                'код 0: %s' % (proc.stderr or proc.stdout or '')[-300:])
+    assert_true(payload is not None and payload.get('ok') is True, 'JSON ok')
+    m = read_json(out)
+    assert_true(len(m['walls']) == 100, 'в файле 100 стен')
+    assert_close(m['walls'][11]['thickness'], 0.20, 1e-6, 'толщина 0.20 в файле')
+    out2 = os.path.join(CTX.tmpdir, 'v5-cli-snap.json')
+    proc2, payload2 = run_cli_json([
+        '--model', os.path.basename(CTX.v5_path), '--op', 'snap_wall', '--index', '18',
+        '--out', out2], cwd=os.path.dirname(CTX.v5_path))
+    assert_true(proc2.returncode == 0, 'snap_wall через CLI: код 0')
+    snap = (payload2 or {}).get('result') or {}
+    assert_true(snap.get('accepted') is True, 'snap стены 18 через CLI принят')
+    assert_true(snap.get('rotated') is True, 'поворот через CLI применён')
+    return 'CLI: стена 11 T=0.20; snap стены 18 rot %+.2f°, cloud=%s' % (
+        snap.get('rotation_deg') or 0.0,
+        ((payload2 or {}).get('cloud') or {}).get('source'))
+
+
+# ======================================================================================
+# 8. CLI
 # ======================================================================================
 @check('CLI --help: код 0 и список операций')
 def test_cli_help():
@@ -842,6 +1232,8 @@ def test_cli_end_to_end():
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Тесты ядра редактора edit-model.py (Фаза 4)')
     ap.add_argument('--data', help='папка с py2-p1.json и koridor-local-rgb.bin')
+    ap.add_argument('--v5', help='путь к модели v5 (по умолчанию <data>/py2-final-v5.json); '
+                                 'если нет — проверки v5 пропускаются')
     ap.add_argument('--keep', action='store_true', help='не удалять временные файлы')
     args = ap.parse_args(argv)
     t0 = time.time()

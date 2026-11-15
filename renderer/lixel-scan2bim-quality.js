@@ -105,6 +105,26 @@
   }
   function wallBase(w) { return w ? num(w.base) : 0; }
   function openingsOf(w) { return (w && w.openings) || []; }
+  // Ревизия r131: в модели v5 инференс дорисовывает стены (material:'inferred', inferred:true)
+  // с толщиной по умолчанию 0.11–0.12 м. Их нельзя смешивать с 18 реально измеренными
+  // стенами: толщину/покрытие считаем по измеренным, а количество показываем отдельно.
+  function isInferredWall(w) {
+    if (!w) return false;
+    if (w.inferred === true) return true;
+    if (w.inferred === 1) return true;
+    var mat = typeof w.material === 'string' ? w.material.trim().toLowerCase() : '';
+    if (mat === 'inferred' || mat === 'default' || mat === 'fallback') return true;
+    var src = typeof w.source === 'string' ? w.source.trim().toLowerCase() : '';
+    return src === 'inferred' || src === 'default';
+  }
+  function splitWalls(walls) {
+    var measured = [], inferred = 0;
+    for (var i = 0; i < (walls || []).length; i++) {
+      if (isInferredWall(walls[i])) inferred++;
+      else measured.push(walls[i]);
+    }
+    return { measured: measured, measuredCount: measured.length, inferredCount: inferred, totalCount: (walls || []).length, hasInferred: inferred > 0 };
+  }
 
   // ===================== МЕТРИКИ ИЗ МОДЕЛИ =====================
   function thicknessStats(walls) {
@@ -170,10 +190,26 @@
       if (slabs[j] && slabs[j].type === 'ceiling') ceilCount++;
       else floorCount++;
     }
+    var sp = splitWalls(walls);
+    var measuredLen = 0;
+    for (var mi = 0; mi < sp.measured.length; mi++) measuredLen += wallLength(sp.measured[mi]);
+    // толщина — по измеренным стенам, если инференс есть; иначе по всем (обратная совместимость)
+    var thickWalls = sp.hasInferred && sp.measuredCount ? sp.measured : walls;
+    var thickness = thicknessStats(thickWalls);
+    thickness.measured = sp.measuredCount;
+    thickness.total = sp.totalCount;
+    thickness.inferred = sp.inferredCount;
+    thickness.scope = sp.hasInferred && sp.measuredCount ? 'measured' : 'all';
     return {
       storey: { height: h, floorY: isFiniteNum(storey.floorY) ? storey.floorY : 0, ceilY: isFiniteNum(storey.ceilY) ? storey.ceilY : h },
-      walls: { count: walls.length, totalLength: Math.round(totalLen * 1000) / 1000 },
-      thickness: thicknessStats(walls),
+      walls: {
+        count: walls.length,
+        measured: sp.measuredCount,
+        inferred: sp.inferredCount,
+        totalLength: Math.round(totalLen * 1000) / 1000,
+        measuredLength: Math.round(measuredLen * 1000) / 1000
+      },
+      thickness: thickness,
       openings: openingsStats(walls),
       rooms: roomsStats(model),
       slabs: { count: slabs.length, floorCount: floorCount, ceilingCount: ceilCount }
@@ -217,12 +253,17 @@
    */
   function coverageStats(model, cloud) {
     var walls = (model && model.walls) || [];
+    // В модели с инференсом покрытие считаем по измеренным стенам: у дорисованных
+    // (material:'inferred') нет реального обмера, они бы несправедливо занижали процент.
+    var sp = splitWalls(walls);
+    var scanWalls = (sp.hasInferred && sp.measuredCount) ? sp.measured : walls;
+    var measuredOnly = scanWalls !== walls;
     if (!cloud || !cloud.length) {
-      return { available: false, reason: 'облако точек не найдено', walls: [], steps: 0, covered: 0, overall: 0, median: 0, min: 0, points: 0, sampled: 0 };
+      return { available: false, reason: 'облако точек не найдено', walls: [], steps: 0, covered: 0, overall: 0, median: 0, min: 0, points: 0, sampled: 0, measuredOnly: measuredOnly, wallsTotal: walls.length, wallsMeasured: sp.measuredCount };
     }
     var ws = [], i;
-    for (i = 0; i < walls.length; i++) {
-      var w = walls[i];
+    for (i = 0; i < scanWalls.length; i++) {
+      var w = scanWalls[i];
       if (!w || !w.a || !w.b) continue;
       var L = wallLength(w);
       if (!(L > 0.05)) continue;
@@ -242,7 +283,7 @@
       });
     }
     if (!ws.length) {
-      return { available: false, reason: 'в модели нет стен для обмера', walls: [], steps: 0, covered: 0, overall: 0, median: 0, min: 0, points: 0, sampled: 0 };
+      return { available: false, reason: 'в модели нет стен для обмера', walls: [], steps: 0, covered: 0, overall: 0, median: 0, min: 0, points: 0, sampled: 0, measuredOnly: measuredOnly, wallsTotal: walls.length, wallsMeasured: sp.measuredCount };
     }
     var hits = 0;
     var sampled = eachCloudPoint(cloud, function (x, y, z) {      for (var wi = 0; wi < ws.length; wi++) {
@@ -279,7 +320,10 @@
       median: covs.length ? median(covs) : 0,
       min: covs.length ? Math.min.apply(null, covs) : 0,
       points: sampled,   // сколько точек облака реально просмотрено
-      hits: hits         // сколько попаданий «точка × стена» легло в шаги
+      hits: hits,        // сколько попаданий «точка × стена» легло в шаги
+      measuredOnly: measuredOnly,
+      wallsTotal: walls.length,
+      wallsMeasured: sp.measuredCount
     };
   }
 
@@ -305,15 +349,21 @@
       SOURCE.MODEL, srcLabel(SOURCE.MODEL), (!isFiniteNum(h)) ? STATUS.NA : (h >= THRESHOLDS.HEIGHT_MIN && h <= THRESHOLDS.HEIGHT_MAX ? STATUS.PASS : STATUS.FAIL)));
 
     var w = m.walls;
-    rows.push(row('walls', 'Стены', w.count + ' шт · ' + fmt(w.totalLength, 1) + ' м',
+    var wallsDetail = (w.inferred > 0)
+      ? ('измерено ' + w.measured + ' из ' + w.count + ' · дорисовано (inferred) ' + w.inferred + ' · длина измеренных ' + fmt(w.measuredLength, 1) + ' м')
+      : '';
+    rows.push(row('walls', 'Стены', w.count + ' шт · ' + fmt(w.totalLength, 1) + ' м' + (w.inferred > 0 ? ' · измерено ' + w.measured : ''),
       '≥ ' + THRESHOLDS.WALLS_MIN + ' шт, ≥ ' + fmt(THRESHOLDS.WALL_LEN_MIN, 0) + ' м', SOURCE.MODEL, srcLabel(SOURCE.MODEL),
-      (w.count >= THRESHOLDS.WALLS_MIN && w.totalLength >= THRESHOLDS.WALL_LEN_MIN) ? STATUS.PASS : STATUS.FAIL));
+      (w.count >= THRESHOLDS.WALLS_MIN && w.totalLength >= THRESHOLDS.WALL_LEN_MIN) ? STATUS.PASS : STATUS.FAIL, wallsDetail));
 
     var th = m.thickness;
+    var thDetail = (th.scope === 'measured')
+      ? ('измерено ' + th.measured + ' из ' + th.total + '; дорисованные ' + th.inferred + ' не учитываются (толщина по умолчанию)')
+      : '';
     rows.push(row('thickness', 'Толщина стен (медиана/мин/макс)',
       th.count ? (fmt(th.median, 2) + ' / ' + fmt(th.min, 2) + ' / ' + fmt(th.max, 2) + ' м') : '—',
       fmt(THRESHOLDS.THICK_MIN, 2) + '–' + fmt(THRESHOLDS.THICK_MAX, 2) + ' м', SOURCE.MODEL, srcLabel(SOURCE.MODEL),
-      !th.count ? STATUS.NA : (th.median >= THRESHOLDS.THICK_MIN && th.median <= THRESHOLDS.THICK_MAX ? STATUS.PASS : STATUS.FAIL)));
+      !th.count ? STATUS.NA : (th.median >= THRESHOLDS.THICK_MIN && th.median <= THRESHOLDS.THICK_MAX ? STATUS.PASS : STATUS.FAIL), thDetail));
 
     var op = m.openings;
     rows.push(row('openings', 'Проёмы', op.count + ' (двери ' + op.doors + ' · окна ' + op.windows + (op.other ? ' · прочие ' + op.other : '') + ')',
@@ -325,7 +375,8 @@
     var shareOk = isFiniteNum(rm.share) && rm.share >= THRESHOLDS.ROOM_SHARE_MIN && rm.share <= THRESHOLDS.ROOM_SHARE_MAX;
     rows.push(row('rooms', 'Помещения', rm.count + ' · ' + fmt(rm.area, 1) + ' м² · ' + shareTxt,
       '≥ 1, доля ' + pct(THRESHOLDS.ROOM_SHARE_MIN) + '–' + pct(THRESHOLDS.ROOM_SHARE_MAX), SOURCE.MODEL, srcLabel(SOURCE.MODEL),
-      (rm.count >= 1 && shareOk) ? STATUS.PASS : STATUS.FAIL));
+      (rm.count >= 1 && shareOk) ? STATUS.PASS : STATUS.FAIL,
+      'площадь помещений ' + fmt(rm.area, 1) + ' м² / площадь этажа ' + fmt(rm.floorArea, 1) + ' м²'));
 
     var sl = m.slabs;
     rows.push(row('slabs', 'Плиты', sl.count + ' (пол ' + sl.floorCount + ' · потолок ' + sl.ceilingCount + ')',
@@ -338,7 +389,7 @@
       ? pct(cov.overall) + ' · мин ' + pct(cov.min)
       : '—';
     var covDetail = (cov && cov.available)
-      ? ('стен ' + cov.walls.length + ' · шагов ' + cov.steps + ' · точек ' + cov.points + ' · попаданий ' + num(cov.hits))
+      ? ('стен ' + cov.walls.length + (cov.measuredOnly ? ' (измеренные из ' + cov.wallsTotal + ')' : '') + ' · шагов ' + cov.steps + ' · точек ' + cov.points + ' · попаданий ' + num(cov.hits))
       : ((cov && cov.reason) || 'облако точек не найдено');
     rows.push(row('coverage', 'Покрытие стен облаком', covValue,
       '≥ ' + pct(THRESHOLDS.COVERAGE_MIN) + ', мин ≥ ' + pct(THRESHOLDS.COVERAGE_MIN_WALL),
@@ -374,6 +425,18 @@
       source: coverage.available ? 'model+cloud' : 'model',
       model: metrics || null,
       coverage: coverage,
+      // r131: явный объём расчёта для моделей с инференсом (v5: 18 измеренных стен из 100)
+      scope: metrics ? {
+        wallsTotal: metrics.walls.count,
+        wallsMeasured: metrics.walls.measured,
+        wallsInferred: metrics.walls.inferred,
+        thicknessScope: metrics.thickness.scope,
+        rooms: metrics.rooms.count,
+        roomsArea: metrics.rooms.area,
+        floorArea: metrics.rooms.floorArea,
+        roomsShare: metrics.rooms.share,
+        coverageMeasuredOnly: !!(coverage && coverage.measuredOnly)
+      } : null,
       rows: rows,
       score: score,
       thresholds: {
@@ -487,7 +550,7 @@
     '.lx-s2bq-counts .ok { color: var(--ok); }',
     '.lx-s2bq-counts .err { color: var(--err); }',
     '.lx-s2bq-counts .na { color: var(--txt-3); }',
-    '.lx-s2bq-src { overflow: hidden; color: var(--txt-3); font: 11px/1.35 var(--mono); text-overflow: ellipsis; white-space: nowrap; }',
+    '.lx-s2bq-src { color: var(--txt-3); font: 11px/1.35 var(--mono); white-space: normal; overflow-wrap: anywhere; }',
     '.lx-s2bq-score.ok .lx-s2bq-score-v { color: var(--ok); }',
     '.lx-s2bq-score.warn .lx-s2bq-score-v { color: var(--warn); }',
     '.lx-s2bq-score.err .lx-s2bq-score-v { color: var(--err); }',
@@ -497,6 +560,7 @@
     '.lx-s2bq-main { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }',
     '.lx-s2bq-lbl { color: var(--txt); font-size: var(--fs-sm); font-weight: 500; }',
     '.lx-s2bq-sub { overflow: hidden; color: var(--txt-3); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }',
+    '.lx-s2bq-detail { grid-column: 1 / -1; color: var(--txt-3); font: 9.5px/1.35 var(--mono); opacity: .9; white-space: normal; overflow-wrap: anywhere; }',
     '.lx-s2bq-val { color: var(--txt); font: 12px/1.3 var(--mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }',
     '.lx-s2bq-row[data-q-status="na"] .lx-s2bq-val { color: var(--txt-3); }',
     '.lx-s2bq-badge { flex: none; min-width: 44px; padding: 2px 6px; border-radius: 999px; font: 600 10.5px/1.4 var(--font); text-align: center; letter-spacing: .04em; }',
@@ -532,6 +596,7 @@
       '<small class="lx-s2bq-sub" data-q-source-label="' + r.sourceLabel + '">' + r.sourceLabel + ' · цель: ' + r.target + '</small></div>' +
       '<span class="lx-s2bq-val" data-q-value>' + r.value + '</span>' +
       '<span class="lx-s2bq-badge ' + r.status + '" data-q-badge>' + statusLabel(r.status) + '</span>' +
+      (r.detail ? '<small class="lx-s2bq-detail" data-q-detail title="' + r.detail + '">' + r.detail + '</small>' : '') +
       '</div>';
   }
 
@@ -546,8 +611,10 @@
       '<div class="lx-btnrow"><button type="button" class="btn sm" data-act="refresh" data-ico="refresh-cw">Обновить</button></div>';
     var score = rep.score, cov = rep.coverage;
     var tone = score.value >= 80 ? 'ok' : (score.value >= 50 ? 'warn' : 'err');
+    var mw = rep.model && rep.model.walls;
+    var mscope = (mw && mw.inferred > 0) ? ' · стены: измерено ' + mw.measured + ' из ' + mw.count + ' (inferred ' + mw.inferred + ')' : '';
     var srcLine = (cov.available ? 'модель + облако' : 'модель') +
-      (cov.available ? ' · шагов ' + cov.steps + ' · точек ' + cov.points : ' · облако не найдено');
+      (cov.available ? ' · шагов ' + cov.steps + ' · точек ' + cov.points : ' · облако не найдено') + mscope;
     var html = [];
     html.push('<div class="lx-s2bq-score ' + tone + '" data-q-score="' + score.value + '">' +
       '<div class="lx-s2bq-score-v"><b data-q-score-value>' + score.value + '</b><small>/100</small></div>' +
@@ -743,6 +810,8 @@
     openingsStats: openingsStats,
     roomsStats: roomsStats,
     floorAreaOf: floorAreaOf,
+    isInferredWall: isInferredWall,
+    splitWalls: splitWalls,
     modelMetrics: modelMetrics,
     coverageStats: coverageStats,
     buildRows: buildRows,

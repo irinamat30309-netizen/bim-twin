@@ -107,7 +107,10 @@ function eig3(a00, a01, a02, a11, a12, a22, out, vals) {   // наименьше
 
 /** Плоские участки → на локальную плоскость (ячейки cell, окрестность 3×3×3). Возвращает число сдвинутых точек. */
 function thinSurfaces(X, n, alive, o) {
+  // Ревизия 132: maxShift — предел сдвига точки (м), movedMin — порог, ниже которого точка не считается сдвинутой.
+  // Раньше счётчик «moved» увеличивался для любой точки в плоской ячейке (93 % точек), а единичные уходили на 2–3 см.
   const cell = o.cell || 0.04, planar = o.planar || 0.06, minPts = o.minPts || 8;
+  const maxShift = o.maxShift > 0 ? o.maxShift : 0.02, movedMin = o.movedMin > 0 ? o.movedMin : 0.001;
   const G = cellsOf(X, n, cell, alive), m = G.m, A = new Float64Array(m * 10);
   // моменты относительно угла ячейки (без потери точности на больших координатах)
   for (let i = 0; i < n; i++) {
@@ -128,7 +131,9 @@ function thinSurfaces(X, n, alive, o) {
   for (let i = 0; i < n; i++) {
     const j = G.cid[i]; if (j < 0 || !(wt[j] > 0)) continue;
     const ax = nr[j * 3], ay = nr[j * 3 + 1], az = nr[j * 3 + 2];
-    const d = ((X[i * 3] - mu[j * 3]) * ax + (X[i * 3 + 1] - mu[j * 3 + 1]) * ay + (X[i * 3 + 2] - mu[j * 3 + 2]) * az) * wt[j];
+    let d = ((X[i * 3] - mu[j * 3]) * ax + (X[i * 3 + 1] - mu[j * 3 + 1]) * ay + (X[i * 3 + 2] - mu[j * 3 + 2]) * az) * wt[j];
+    if (!(Math.abs(d) >= movedMin)) continue;
+    if (d > maxShift) d = maxShift; else if (d < -maxShift) d = -maxShift;
     X[i * 3] -= d * ax; X[i * 3 + 1] -= d * ay; X[i * 3 + 2] -= d * az; moved++;
   }
   return moved;
@@ -789,6 +794,64 @@ function finishLas(ofd, H, out, bb, wpos) {
   fs.writeSync(ofd, h, 0, h.length, 0); fs.ftruncateSync(ofd, wpos);
 }
 /**
+ * Ревизия 132: убрать из LAS точки, попавшие в заданные воксели (повторный проход детектора движущихся объектов
+ * ПОСЛЕ шумоподавления — остаток «движущегося» падает с ~0.003 % до уровня ниже 0.001 %).
+ * det — результат dynamic-clean-core.detect({voxelsOnly:true}): { sets:[{keys,grid}], keys, grid } или {keys,grid}.
+ * Возвращает { points, removed, dynVoxels, sets }.
+ */
+function filterVoxels(src, dst, det, onProgress) {
+  const prog = typeof onProgress === 'function' ? onProgress : () => {};
+  const raw = det && det.sets && det.sets.length ? det.sets : [det];
+  const sets = [];
+  for (const s of raw) {
+    if (!s || !s.keys || !s.grid) continue;
+    sets.push({ set: new Set(Array.from(s.keys)), g: s.grid });
+  }
+  const fd = fs.openSync(src, 'r');
+  let ofd = null;
+  try {
+    const H = readHeader(fd), rl = H.rl;
+    const hb = Buffer.alloc(H.off); fs.readSync(fd, hb, 0, hb.length, 0);
+    ofd = fs.openSync(dst, 'w+');
+    fs.writeSync(ofd, hb, 0, hb.length, 0);
+    let wpos = H.off, out = 0;
+    const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    const per = 1 << 18, buf = Buffer.allocUnsafe(per * rl);
+    for (let i = 0; i < H.n; i += per) {
+      const c = Math.min(per, H.n - i), bytes = c * rl; let got = 0;
+      while (got < bytes) { const r = fs.readSync(fd, buf, got, bytes - got, H.off + i * rl + got); if (!r) throw new Error('файл LAS обрезан'); got += r; }
+      let w = 0;
+      for (let q = 0, p = 0; q < c; q++, p += rl) {
+        const x = buf.readInt32LE(p) * H.sx + H.ox, y = buf.readInt32LE(p + 4) * H.sy + H.oy, z = buf.readInt32LE(p + 8) * H.sz + H.oz;
+        let kill = false;
+        for (let si = 0; si < sets.length && !kill; si++) {
+          const g = sets[si].g;
+          const ix = Math.floor((x - g.gx) / g.v), iy = Math.floor((y - g.gy) / g.v), iz = Math.floor((z - g.gz) / g.v);
+          if (ix < 0 || iy < 0 || iz < 0 || ix >= g.nx || iy >= g.ny || iz >= g.nz) continue;
+          if (sets[si].set.has(ix + g.nx * (iy + g.ny * iz))) kill = true;
+        }
+        if (kill) continue;
+        if (w !== p) buf.copy(buf, w, p, p + rl);
+        if (x < bb[0]) bb[0] = x; if (y < bb[1]) bb[1] = y; if (z < bb[2]) bb[2] = z;
+        if (x > bb[3]) bb[3] = x; if (y > bb[4]) bb[4] = y; if (z > bb[5]) bb[5] = z;
+        w += rl; out++;
+      }
+      if (w) { fs.writeSync(ofd, buf, 0, w, wpos); wpos += w; }
+      prog((i + c) / H.n, 'Удаление движущихся точек (повторный проход)…');
+    }
+    if (!out) throw new Error('в LAS не осталось точек после повторного удаления движущихся');
+    finishLas(ofd, H, out, bb, wpos);
+    fs.closeSync(ofd); ofd = null;
+    return { points: out, removed: H.n - out, dynVoxels: sets.reduce((a, s) => a + s.set.size, 0), sets: sets.length };
+  } catch (e) {
+    if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} try { fs.rmSync(dst, { force: true }); } catch (_) {} }
+    throw e;
+  } finally {
+    if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
+    fs.closeSync(fd);
+  }
+}
+/**
  * Ревизия 45: одна плитка — точки из временного файла (запись LAS + 1 байт «своя/перекрытие») → движущиеся, сведение,
  * шум, сглаживание, цвет → записи LAS своих живых точек (O, длина w) и итоги. Вынесено из refine без изменений алгоритма,
  * чтобы плитки можно было обрабатывать и в фоновых потоках.
@@ -820,7 +883,7 @@ function processTile(B, T, ctx) {
   if (opt.icicles) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); fixIcicles(X, n, alive, opt.iciclesOpt || {}); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
   // ревизия 55: тонкая плёнка за стеклом (опытное, по умолчанию выключено — опция glass)
   if (opt.glass) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); fixGlass(X, n, alive, opt.glassOpt || {}); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
-  if (opt.thin) { for (let it = 0; it < (opt.thinIters || 1); it++) nMoved += thinSurfaces(X, n, alive, { cell: opt.thinCell, planar: opt.planar }); }
+  if (opt.thin) { for (let it = 0; it < (opt.thinIters || 1); it++) nMoved += thinSurfaces(X, n, alive, { cell: opt.thinCell, planar: opt.planar, maxShift: opt.maxThinShift }); }
   // ревизия 46: цвет для точек без цвета — от соседей (до очистки цвета: чёрные не тянут медианы); после очистки — местное
   // выравнивание проходов (по уже очищенному цвету разброс в ячейке — это перепад проходов, а не шум камеры)
   let peq = null, nNoColorLeft = 0;
@@ -853,7 +916,7 @@ function processTile(B, T, ctx) {
  *   align (true), posesText | poses, alignOpt, colorBalance (true), colorBalanceOpt, colorClamp (true) }; stats.align, stats.colorBalance — итоги ревизии 21
  */
 function refine(src, dst, opt, onProgress) {
-  opt = Object.assign({ noise: true, thin: true, color: true, tileMax: 4000000, halo: 0.2, thinCell: 0.04, planar: 0.06 }, opt || {});
+  opt = Object.assign({ noise: true, thin: true, color: true, tileMax: 4000000, halo: 0.2, thinCell: 0.04, planar: 0.06, maxThinShift: 0.02 }, opt || {});
   const prog = typeof onProgress === 'function' ? onProgress : () => {};
   let fd = fs.openSync(src, 'r'); const H = readHeader(fd), N = H.n, rl = H.rl;
   const tmp = fs.mkdtempSync(path.join(opt.tmpDir || path.dirname(dst), '.refine-'));
@@ -970,4 +1033,4 @@ function refine(src, dst, opt, onProgress) {
   }
 }
 
-module.exports = { processTile, finishLas, structureCells, nbSum, refine, cleanColors, clampColors, offSurface, fixSpeckles, fixFringe, fixIcicles, fixGlass, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3, passEqualize, fillNoColor };
+module.exports = { filterVoxels, processTile, finishLas, structureCells, nbSum, refine, cleanColors, clampColors, offSurface, fixSpeckles, fixFringe, fixIcicles, fixGlass, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3, passEqualize, fillNoColor };

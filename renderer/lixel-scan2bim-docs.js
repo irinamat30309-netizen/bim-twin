@@ -198,13 +198,24 @@
     if (!tol || !isFiniteNum(tol.abs)) return '';
     return 'допуск ±' + fmtNum(tol.abs, 0) + ' ' + unitLabel(tol.unit || 'mm');
   }
-  /** Сводка PASS/WARN/FAIL/— (явная summary отчёта или расчёт по строкам). */
+  /** Сводка PASS/WARN/FAIL/— (явная summary отчёта или расчёт по строкам).
+   *  Поддерживает и нижний регистр (compare-v5), и ВЕРХНИЙ (compare-full-v5: PASS/WARN/FAIL/UNVERIFIED). */
   function summaryOf(input) {
     if (isPlainObject(input) && isPlainObject(input.summary)) {
       var s = input.summary;
+      var pick = function () {
+        for (var i = 0; i < arguments.length; i++) {
+          var v = numOrNull(s[arguments[i]]);
+          if (v !== null) return v;
+        }
+        return null;
+      };
       var out = {
-        checks: numOrNull(s.checks), pass: numOrNull(s.pass), warn: numOrNull(s.warn),
-        fail: numOrNull(s.fail), unverified: numOrNull(s.unverified)
+        checks: pick('checks', 'CHECKS', 'total', 'TOTAL'),
+        pass: pick('pass', 'PASS', 'passed', 'PASSED'),
+        warn: pick('warn', 'WARN', 'warning', 'WARNING', 'warnings'),
+        fail: pick('fail', 'FAIL', 'failed', 'FAILED'),
+        unverified: pick('unverified', 'UNVERIFIED', 'na', 'NA', 'skip', 'SKIP')
       };
       if (out.pass !== null || out.fail !== null || out.warn !== null) {
         var c0 = statusesOfRows(input.rows || []);
@@ -308,13 +319,14 @@
     };
   }
   function normalizeModelInfo(modelRaw) {
+    // в объединённом compare-full-v5.json inputs.model — строка-путь; в compare-v5 — объект
     var m = isPlainObject(modelRaw) ? modelRaw : {};
     var stats = isPlainObject(m.stats) ? m.stats : {};
     var height = numOrNull(m.storey_height_m !== undefined ? m.storey_height_m : (m.height !== undefined ? m.height : stats.height));
     var heightMm = numOrNull(m.storey_height_mm !== undefined ? m.storey_height_mm : m.height_mm);
     if (height === null && heightMm !== null) height = Math.round(heightMm) / 1000;
     return {
-      path: firstString(m.path, m.file, m.json),
+      path: firstString(m.path, m.file, m.json, typeof modelRaw === 'string' ? modelRaw : ''),
       md5: firstString(m.md5, m.hash, m.checksum),
       walls: numOrNull(m.walls !== undefined ? m.walls : stats.wallCount),
       wallsMeasured: numOrNull(m.walls_measured),
@@ -322,7 +334,7 @@
       roomsArea: numOrNull(m.rooms_area_m2 !== undefined ? m.rooms_area_m2 : stats.roomsArea),
       height: height,
       heightMm: heightMm,
-      raw: m
+      raw: modelRaw
     };
   }
   function normalizeCloudInfo(cloudRaw) {
@@ -331,7 +343,7 @@
     var heightMm = numOrNull(c.height_mm);
     if (height === null && heightMm !== null) height = Math.round(heightMm) / 1000;
     return {
-      path: firstString(c.path, c.file),
+      path: firstString(c.path, c.file, typeof cloudRaw === 'string' ? cloudRaw : ''),
       measured: c.measured === true,
       height: height,
       heightMm: heightMm,
@@ -342,7 +354,7 @@
       floorPerimeterOuter: numOrNull(c.floor_perimeter_outer_m),
       floorAreaCells: numOrNull(c.floor_area_cells_m2),
       error: firstString(c.error),
-      raw: c
+      raw: cloudRaw
     };
   }
   function normalizeSeverity(s) {
@@ -405,6 +417,7 @@
       id: id,
       index: i,
       label: label,
+      group: firstString(rawRow.group, rawRow.section),
       category: typeof rawRow.category === 'string' ? rawRow.category : '',
       project: normalizeCell(rawRow.project),
       model: normalizeCell(rawRow.model),
@@ -436,9 +449,10 @@
     var docsRaw = raw.docs !== undefined ? raw.docs : (isPlainObject(raw.inputs) ? raw.inputs.docs : undefined);
     if (docsRaw !== undefined && !isPlainObject(docsRaw)) return fail('docs должен быть объектом (объект/адрес документации)');
     var modelRaw = raw.model !== undefined ? raw.model : (isPlainObject(raw.inputs) ? raw.inputs.model : undefined);
-    if (modelRaw !== undefined && !isPlainObject(modelRaw)) return fail('model должен быть объектом или отсутствовать');
+    // объединённый compare-full-v5.json держит inputs.model строкой-путём — это допустимо
+    if (modelRaw !== undefined && !isPlainObject(modelRaw) && typeof modelRaw !== 'string') return fail('model должен быть объектом/путём или отсутствовать');
     var cloudRaw = raw.cloud !== undefined ? raw.cloud : (isPlainObject(raw.inputs) ? raw.inputs.cloud : undefined);
-    if (cloudRaw !== undefined && !isPlainObject(cloudRaw)) return fail('cloud должен быть объектом или отсутствовать');
+    if (cloudRaw !== undefined && !isPlainObject(cloudRaw) && typeof cloudRaw !== 'string') return fail('cloud должен быть объектом/путём или отсутствовать');
 
     var scoreExplicit = false;
     if (raw.score !== undefined) {
@@ -466,16 +480,36 @@
     if (raw.schema_version !== undefined && numOrNull(raw.schema_version) === null) return fail('schema_version должен быть числом');
 
     var docs = normalizeDocs(docsRaw);
+    // группы строк (compare-full-v5): первая — основное сравнение, остальные — проверка по документации
+    var groupList = [], groupSeen = {};
+    for (var gi = 0; gi < rows.length; gi++) {
+      var g = rows[gi].group;
+      if (g && !groupSeen[g]) { groupSeen[g] = true; groupList.push(g); }
+    }
+    var primaryGroup = groupList.length ? groupList[0] : '';
+    var verifyRows = [];
+    if (groupList.length > 1) {
+      for (var vi = 0; vi < rows.length; vi++) if (rows[vi].group && rows[vi].group !== primaryGroup) verifyRows.push(rows[vi]);
+    }
+    var scoreDocs = numOrNull(raw.score_docs);
+    var scoreDocDims = numOrNull(raw.score_doc_dimensions);
     var report = {
       ok: true,
+      title: firstString(raw.title),
       schema_version: numOrNull(raw.schema_version) !== null ? numOrNull(raw.schema_version) : SCHEMA_VERSION,
       generated_at: firstString(raw.generated_at),
       docs: docs,
       model: normalizeModelInfo(modelRaw),
       cloud: normalizeCloudInfo(cloudRaw),
       rows: rows,
+      groups: groupList,
+      primaryGroup: primaryGroup,
+      verifyRows: verifyRows,
       score: score,
       score_derived: !scoreExplicit,
+      scoreDocs: scoreDocs,
+      scoreDocDimensions: scoreDocDims,
+      hasSubScores: scoreDocs !== null || scoreDocDims !== null,
       grade: grade,
       coverage: coverage,
       summary: summary,
@@ -576,6 +610,7 @@
     fileName: '',
     status: '',
     error: '',
+    verifyOpen: false,
     model: null,
     python: PYTHON_DEFAULT,
     toolsDir: TOOLS_DIR_DEFAULT,
@@ -712,6 +747,31 @@
     '.lx-s2bd-badge.warn { background: var(--warn-soft); color: var(--warn); }',
     '.lx-s2bd-badge.fail { background: var(--err-soft); color: var(--err); }',
     '.lx-s2bd-badge.na { background: var(--bg-4); color: var(--txt-3); }',
+    // группы строк (compare-full-v5: docs-compare / документация ↔ облако/модель)
+    '.lx-s2bd-ghead { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-top: 1px solid var(--line); background: var(--bg-1); color: var(--accent); font: 600 10px/1.3 var(--mono); letter-spacing: .02em; }',
+    '.lx-s2bd-ghead .lx-s2bd-gcount { margin-left: auto; color: var(--txt-3); font-weight: 500; }',
+    '.lx-s2bd-row[data-d-group=""] + .lx-s2bd-row { border-top: 1px solid var(--line); }',
+    // под-скоры объединённого отчёта: документация↔модель и проверка по документации
+    '.lx-s2bd-subscore { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--txt-3); font: 10px/1.4 var(--mono); font-variant-numeric: tabular-nums; }',
+    '.lx-s2bd-subscore b { color: var(--txt-2); font-weight: 600; }',
+    '.lx-s2bd-subscore .ok { color: var(--ok); }',
+    '.lx-s2bd-subscore .warn { color: var(--warn); }',
+    // блок «Проверка по документации» (score_doc_dimensions + строки verify)
+    '.lx-s2bd-verify { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--accent-line); border-radius: var(--r-2); background: var(--accent-soft); }',
+    '.lx-s2bd-vscore { display: flex; align-items: baseline; gap: 8px; }',
+    '.lx-s2bd-vscore b { color: var(--accent); font: 600 22px/1 var(--font); font-variant-numeric: tabular-nums; }',
+    '.lx-s2bd-vscore.ok b { color: var(--ok); }',
+    '.lx-s2bd-vscore.warn b { color: var(--warn); }',
+    '.lx-s2bd-vscore.err b { color: var(--err); }',
+    '.lx-s2bd-vscore small { color: var(--txt-3); font: 10px/1 var(--mono); }',
+    '.lx-s2bd-vhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }',
+    '.lx-s2bd-vhead b { color: var(--txt); font-size: var(--fs-sm); font-weight: 600; }',
+    '.lx-s2bd-explain { margin: 0; color: var(--txt-2); font-size: var(--fs-xs); line-height: 1.45; }',
+    '.lx-s2bd-explain b { color: var(--txt); font-weight: 600; }',
+    '.lx-s2bd-vrow { display: flex; flex-direction: column; gap: 2px; padding: 5px 0; border-top: 1px solid var(--line); }',
+    '.lx-s2bd-vrow-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }',
+    '.lx-s2bd-vrow-h .lx-s2bd-vlabel { min-width: 0; overflow: hidden; color: var(--txt); font-size: 10.5px; font-weight: 500; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }',
+    '.lx-s2bd-vvals { overflow: hidden; color: var(--txt-3); font: 9.5px/1.4 var(--mono); text-overflow: ellipsis; }',
     // рекомендации / ограничения / непроверенное
     '.lx-s2bd-recs { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }',
     '.lx-s2bd-rec { display: flex; gap: 8px; padding: 6px 8px; border-radius: var(--r-1); background: var(--bg-2); color: var(--txt-2); font-size: var(--fs-xs); line-height: 1.4; }',
@@ -772,6 +832,7 @@
     if (r.note) titleParts.push(r.note);
     if (tol) titleParts.push(tol);
     return '<div class="lx-s2bd-row" data-d-row="' + esc(r.id) + '" data-d-index="' + r.index + '" data-d-row-status="' + r.status + '"' +
+      ' data-d-group="' + esc(r.group || '') + '"' +
       (titleParts.length ? ' title="' + esc(titleParts.join(' · ')) + '"' : '') + '>' +
       '<div class="lx-s2bd-param" data-d-cell="param">' +
       '<b title="' + esc(r.label) + '">' + esc(r.label) + '</b>' +
@@ -787,8 +848,25 @@
     var head = '<div class="lx-s2bd-thead" aria-hidden="true"><span>Параметр</span><span>Проект</span>' +
       '<span>Модель</span><span>Облако</span><span></span></div>';
     if (!rep.rows.length) return '<div class="lx-s2bd-table" data-d-table>' + head + '<p class="lx-s2bd-note" style="padding:8px">В отчёте нет строк сравнения.</p></div>';
-    var rows = [];
-    for (var i = 0; i < rep.rows.length; i++) rows.push(statusRowHtml(rep.rows[i]));
+    // объединённый отчёт: строки сгруппированы (group), заголовки групп выводятся в таблице
+    var groupCounts = {};
+    for (var gi = 0; gi < rep.rows.length; gi++) {
+      var gg = rep.rows[gi].group || '';
+      groupCounts[gg] = (groupCounts[gg] || 0) + 1;
+    }
+    var rows = [], lastGroup = null;
+    for (var i = 0; i < rep.rows.length; i++) {
+      var r = rep.rows[i], g = r.group || '';
+      if (g && g !== lastGroup) {
+        rows.push('<div class="lx-s2bd-ghead" data-d-group-row="' + esc(g) + '">' +
+          '<span data-d-group-name>' + esc(g) + '</span>' +
+          '<span class="lx-s2bd-gcount">' + groupCounts[g] + ' строк</span></div>');
+        lastGroup = g;
+      } else if (!g) {
+        lastGroup = null;
+      }
+      rows.push(statusRowHtml(r));
+    }
     return '<div class="lx-s2bd-table" data-d-table>' + head + rows.join('') + '</div>';
   }
   function scoreBlockHtml(rep) {
@@ -798,6 +876,14 @@
       ? '<span class="lx-s2bd-src" data-d-coverage="' + rep.coverage + '">сверено ' + fmtNum(rep.coverage, 0) + ' % проверок' +
         (sum.checks ? ' · проверок ' + sum.checks : '') + '</span>'
       : (sum.checks ? '<span class="lx-s2bd-src" data-d-coverage="">проверок ' + sum.checks + '</span>' : '');
+    var subParts = [];
+    if (rep.scoreDocs !== null && rep.scoreDocs !== undefined) {
+      subParts.push('<span data-d-score-docs="' + rep.scoreDocs + '">документация ↔ модель <b>' + fmtScore(rep.scoreDocs) + '</b></span>');
+    }
+    if (rep.scoreDocDimensions !== null && rep.scoreDocDimensions !== undefined) {
+      subParts.push('<span data-d-score-dims="' + rep.scoreDocDimensions + '">проверка по документации <b>' + fmtScore(rep.scoreDocDimensions) + '</b></span>');
+    }
+    var sub = subParts.length ? '<span class="lx-s2bd-subscore" data-d-subscore>' + subParts.join('') + '</span>' : '';
     return '<div class="lx-s2bd-score ' + tone + '" data-d-score="' + rep.score + '" data-d-grade="' + esc(rep.grade) + '">' +
       '<div class="lx-s2bd-score-v"><b data-d-score-value>' + fmtScore(rep.score) + '</b><small>/100</small></div>' +
       '<div class="lx-s2bd-score-m"><span class="lx-s2bd-score-t">Соответствие документации · ' + esc(rep.grade) + '</span>' +
@@ -806,7 +892,7 @@
       '<span class="warn" data-d-count="warn">WARN ' + sum.warn + '</span>' +
       '<span class="err" data-d-count="fail">FAIL ' + sum.fail + '</span>' +
       '<span class="na" data-d-count="na">— ' + sum.unverified + '</span></span>' +
-      cov + '</div></div>';
+      cov + sub + '</div></div>';
   }
   function modelSummaryHtml(where) {
     var ms = modelSummaryOf(st.model);
@@ -823,12 +909,13 @@
       (where === 'empty' ? ' — эта модель будет сравниваться с документацией.' : '') + '</p>';
   }
   function titleHtml(rep) {
-    var t = rep.docs.object || rep.docs.address || st.fileName || 'Отчёт сравнения документации';
+    var t = rep.docs.object || rep.title || rep.docs.address || st.fileName || 'Отчёт сравнения документации';
     var addr = rep.docs.address && rep.docs.address !== t ? rep.docs.address : '';
     var meta = [];
     if (st.fileName) meta.push(st.fileName);
     if (rep.generated_at) meta.push(dateLabel(rep.generated_at));
     if (rep.docs.pages) meta.push('стр. ' + rep.docs.pages);
+    if (rep.scoreDocs !== null && rep.scoreDocs !== undefined) meta.push('docs↔модель ' + fmtScore(rep.scoreDocs));
     return '<div class="lx-s2bd-title" data-d-title>' +
       '<b data-d-object title="' + esc(t) + '">' + esc(t) + '</b>' +
       '<small class="lx-s2bd-addr" data-d-address' + (addr ? ' title="' + esc(addr) + '"' : '') + '>' + esc(addr) + '</small>' +
@@ -864,6 +951,50 @@
     }
     return '<div data-d-unverified><div class="lx-obj-h">Не проверено (' + rep.unverified.length + ')</div><ul class="lx-s2bd-unv">' + lis.join('') + '</ul></div>';
   }
+  function verifyCounts(rep) {
+    var c = { pass: 0, warn: 0, fail: 0, na: 0 };
+    for (var i = 0; i < rep.verifyRows.length; i++) {
+      var s = rep.verifyRows[i].status;
+      if (s === STATUS.PASS) c.pass++;
+      else if (s === STATUS.WARN) c.warn++;
+      else if (s === STATUS.FAIL) c.fail++;
+      else c.na++;
+    }
+    return c;
+  }
+  // Требование r131: «Проверка по документации» — score_doc_dimensions и 8 строк verify,
+  // с пояснением разницы «документация ↔ модель» и «документация ↔ облако».
+  function verifyBlockHtml(rep) {
+    if (!rep.verifyRows || !rep.verifyRows.length) return '';
+    var c = verifyCounts(rep);
+    var dims = rep.scoreDocDimensions;
+    var scoreTxt = (dims !== null && dims !== undefined) ? fmtNum(dims, 1) : '—';
+    var scoreTone = (dims !== null && dims !== undefined) ? statusOfScore(dims) : 'na';
+    var compareRows = Math.max(0, rep.rows.length - rep.verifyRows.length);
+    var lis = [];
+    for (var i = 0; i < rep.verifyRows.length; i++) {
+      var r = rep.verifyRows[i];
+      var vals = ['проект: ' + r.project.text, 'модель: ' + r.model.text, 'облако: ' + r.cloud.text];
+      lis.push('<div class="lx-s2bd-vrow" data-d-verify-row="' + esc(r.id) + '" data-d-row-status="' + r.status + '">' +
+        '<div class="lx-s2bd-vrow-h"><span class="lx-s2bd-vlabel" title="' + esc(r.label) + '">' + esc(r.label) + '</span>' +
+        '<span class="lx-s2bd-badge ' + r.status + '">' + statusLabel(r.status) + '</span></div>' +
+        '<div class="lx-s2bd-vvals">' + esc(vals.join(' · ')) + '</div></div>');
+    }
+    return '<div class="lx-s2bd-verify" data-d-verify-block>' +
+      '<div class="lx-s2bd-vhead"><b>Проверка по документации</b><span class="lx-s2bd-counts">' +
+      '<span class="ok" data-d-verify-count="pass">PASS ' + c.pass + '</span>' +
+      '<span class="warn" data-d-verify-count="warn">WARN ' + c.warn + '</span>' +
+      '<span class="err" data-d-verify-count="fail">FAIL ' + c.fail + '</span>' +
+      '<span class="na" data-d-verify-count="na">— ' + c.na + '</span></span></div>' +
+      '<div class="lx-s2bd-vscore ' + scoreTone + '"><b data-d-verify-score="' + (dims !== null && dims !== undefined ? dims : '') + '">' + scoreTxt + '</b>' +
+      '<small>/100 · score_doc_dimensions</small></div>' +
+      '<p class="lx-s2bd-explain" data-d-explain="docs-model"><b>Документация ↔ модель</b> — score_docs ' +
+      (rep.scoreDocs !== null && rep.scoreDocs !== undefined ? fmtScore(rep.scoreDocs) : '—') +
+      ': насколько модель совпадает с проектом (строк compare: ' + compareRows + ').</p>' +
+      '<p class="lx-s2bd-explain" data-d-explain="docs-cloud"><b>Документация ↔ облако</b> — ' + scoreTxt +
+      ': насколько облако и модель подтверждают размеры проекта (коридор, ячейки, высота, толщины, двери; строк verify: ' + rep.verifyRows.length + ').</p>' +
+      lis.join('') + '</div>';
+  }
   function stepsHtml() {
     return '<ol class="lx-s2bd-steps" data-d-steps>' +
       '<li data-d-step="1"><b>Загрузите документацию</b><span>PDF/ZIP проекта → docs-extract.py извлекает помещения, площади, толщины стен, двери и отметки этажей.</span></li>' +
@@ -885,7 +1016,19 @@
         '<button type="button" class="btn sm" data-act="show-help" data-ico="clipboard-list" data-tip="Как извлечь документацию и сравнить её с моделью: готовые команды CLI">Как получить отчёт</button>' +
         '</div>';
     }
-    return '<div class="lx-btnrow">' +
+    var verifyBar = '';
+    var rep = st.report;
+    if (rep && rep.verifyRows && rep.verifyRows.length) {
+      var dims = rep.scoreDocDimensions;
+      var vLabel = (st.verifyOpen ? 'Скрыть проверку по документации' : 'Проверка по документации') +
+        ((dims !== null && dims !== undefined) ? ' · ' + fmtScore(dims) : '');
+      verifyBar = '<div class="lx-btnrow" data-d-verify-bar><button type="button" class="btn sm' + (st.verifyOpen ? ' primary' : '') + '"' +
+        ' data-act="toggle-verify" data-ico="clipboard-check" aria-pressed="' + (st.verifyOpen ? 'true' : 'false') + '"' +
+        ' data-tip="score_doc_dimensions и строки verify: коридор, ячейки, высота, толщины, двери; разница «документация ↔ модель» и «документация ↔ облако»">' +
+        vLabel + '</button></div>';
+    }
+    return verifyBar +
+      '<div class="lx-btnrow">' +
       '<button type="button" class="btn sm" data-act="refresh" data-ico="refresh-cw" data-tip="Перечитать файл отчёта и обновить сводку модели">Обновить</button>' +
       '<button type="button" class="btn sm" data-act="save-report" data-ico="download" data-tip="Сохранить отчёт сравнения в JSON">Сохранить отчёт</button>' +
       '</div>' +
@@ -914,6 +1057,7 @@
     html.push(titleHtml(rep));
     html.push(scoreBlockHtml(rep));
     html.push(modelSummaryHtml('report'));
+    if (rep.verifyRows.length && st.verifyOpen) html.push(verifyBlockHtml(rep));
     html.push('<div class="lx-obj-h">Проект ↔ модель ↔ облако</div>');
     html.push(tableHtml(rep));
     html.push(recommendationsHtml(rep));
@@ -1003,7 +1147,10 @@
     if (meta && meta.fileName) st.fileName = String(meta.fileName);
     else if (!st.fileName) st.fileName = 'compare.json';
     st.error = '';
-    st.status = 'Загружено: ' + st.fileName + ' · скор ' + fmtScore(report.score) + '/100 · строк ' + report.rows.length;
+    st.status = 'Загружено: ' + st.fileName + ' · скор ' + fmtScore(report.score) + '/100 · строк ' + report.rows.length +
+      (report.verifyRows.length ? ' · проверка по документации ' + (report.scoreDocDimensions !== null ? fmtScore(report.scoreDocDimensions) : '—') : '');
+    // объединённый отчёт: блок «Проверка по документации» показываем сразу, кнопка может свернуть
+    st.verifyOpen = !!(report.verifyRows && report.verifyRows.length);
     if (meta && meta.keepFile === false) st.file = null;
     render();
     toast('Отчёт сравнения загружен: скор ' + fmtScore(report.score) + '/100, строк ' + report.rows.length);
@@ -1078,6 +1225,11 @@
     if (act === 'refresh') { refresh(); return; }
     if (act === 'save-report') { saveReport(); return; }
     if (act === 'show-help') { showHelp(); return; }
+    if (act === 'toggle-verify') {
+      st.verifyOpen = !st.verifyOpen;
+      render();
+      return;
+    }
     if (act === 'open-build') {
       try { if (typeof window !== 'undefined' && window.__lxScan2BIM && window.__lxScan2BIM.open) window.__lxScan2BIM.open(); } catch (e2) { }
     }
@@ -1249,6 +1401,7 @@
     }
     st.report = res.report; st.raw = res.raw; st.rawText = (typeof input === 'string') ? input : JSON.stringify(res.raw);
     st.error = '';
+    st.verifyOpen = !!(res.report.verifyRows && res.report.verifyRows.length);
     st.status = 'Отчёт загружен · скор ' + fmtScore(res.report.score) + '/100';
     render();
     return res;
@@ -1256,7 +1409,7 @@
   function getReport() { return st.report; }
   function clearReport() {
     st.report = null; st.raw = null; st.rawText = null; st.file = null; st.fileName = '';
-    st.error = ''; st.status = 'Отчёт очищен';
+    st.error = ''; st.status = 'Отчёт очищен'; st.verifyOpen = false;
     render();
     return true;
   }
@@ -1270,9 +1423,14 @@
       fileName: st.fileName,
       score: st.report ? st.report.score : null,
       grade: st.report ? st.report.grade : null,
+      scoreDocs: st.report ? st.report.scoreDocs : null,
+      scoreDocDimensions: st.report ? st.report.scoreDocDimensions : null,
       rows: st.report ? st.report.rows.length : 0,
+      groups: st.report ? st.report.groups.slice() : [],
+      verifyRows: st.report ? st.report.verifyRows.length : 0,
+      verifyOpen: !!st.verifyOpen,
       recommendations: st.report ? st.report.recommendations.length : 0,
-      title: st.report ? (st.report.docs.object || st.report.docs.address || '') : '',
+      title: st.report ? (st.report.docs.object || st.report.title || st.report.docs.address || '') : '',
       error: st.error,
       status: st.status,
       model: modelSummaryOf(st.model),

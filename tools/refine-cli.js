@@ -25,5 +25,19 @@ const densify = async (st) => {
   st.densify = await require('../cloud-densify-core').densifyLas(dst, tmp, { xbinPath: xbin, posesText: fs.readFileSync(poses, 'utf8') }, opt.densifyOpt || {}, log);
   fs.renameSync(tmp, dst); return st;
 };
-if (opt.single) densify(R.refine(src, dst, opt, log)).then((st) => { console.log(JSON.stringify(st)); process.exit(0); }, (e) => { console.error(e && e.stack || e); process.exit(1); });
-else require('../scan-refine-parallel').refineParallel(src, dst, opt, log).then(densify).then((st) => { console.log(JSON.stringify(st)); process.exit(0); }, (e) => { console.error(e && e.stack || e); process.exit(1); });
+// Ревизия 132: повторное удаление движущихся объектов ПОСЛЕ шумоподавления (флаг dynamicRepass, по умолчанию выкл.):
+// первый проход детектора видит облако с шумом, после чистки занятость вокселей меняется — остаток ~0.003 %.
+// Второй проход: detect по очищенному LAS + удаление точек в найденных вокселях (filterVoxels), ~+10 с на 36 млн.
+const repass = async (st) => {
+  if (!opt.dynamicRepass) return st;
+  if (!poses || poses === '-') throw new Error('для dynamicRepass нужна траектория poses.csv');
+  const t0 = Date.now();
+  const det = D.detect(dst, fs.readFileSync(poses, 'utf8'), Object.assign({}, opt.dynRepassOpt || {}, { voxelsOnly: true }), log);
+  const tmp2 = dst + '.nodyn.las';
+  const r = R.filterVoxels(dst, tmp2, det, log);
+  fs.renameSync(tmp2, dst);
+  st.dynamicRepass = { dynVoxels: r.dynVoxels, sets: r.sets, removed: r.removed, points: r.points, ms: Date.now() - t0 };
+  return st;
+};
+if (opt.single) densify(R.refine(src, dst, opt, log)).then(repass).then((st) => { console.log(JSON.stringify(st)); process.exit(0); }, (e) => { console.error(e && e.stack || e); process.exit(1); });
+else require('../scan-refine-parallel').refineParallel(src, dst, opt, log).then(densify).then(repass).then((st) => { console.log(JSON.stringify(st)); process.exit(0); }, (e) => { console.error(e && e.stack || e); process.exit(1); });

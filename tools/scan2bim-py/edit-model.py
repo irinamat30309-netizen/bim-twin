@@ -70,6 +70,12 @@ SNAP_MAX_SHIFT = 0.25        # предел сдвига оси при прив�
 SNAP_MIN_THICK, SNAP_MAX_THICK = 0.06, 0.60
 SNAP_MIN_POINTS = 200.0      # минимум точек в полосе (max(200, 30*L))
 SNAP_TRIM = 0.70             # доля точек с наименьшими невязками для устойчивого RMS
+SNAP_MIN_PEAK = 400          # минимум точек в пике моды: защита от ложной пары в шуме
+SNAP_MIN_PEAK_FRAC = 0.005   # ... или 0.5 % точек полосы (что больше)
+SNAP_ROTATE_MAX_DEG = 3.0    # предел поворота стены при привязке, градусы
+SNAP_ROTATE_MIN_DEG = 0.3    # меньше этого поворот не применяем (это шум)
+SNAP_ROTATE_GAIN = 0.10      # поворот применяем, только если RMS лучше shift-only на 10 %
+SNAP_BIN_LEN = 1.0           # длина бина вдоль стены для оценки наклона, м
 OPENING_MIN_WIDTH = 0.6      # проём по облаку (как в scan2bim-v2.py)
 OPENING_MAX_WIDTH = 2.5
 WALL_MIN_LENGTH = 0.05
@@ -369,9 +375,13 @@ def _two_mode_peaks(sn, lateral=SNAP_LATERAL, binw=SNAP_BIN):
     return hist, cen, peaks
 
 
-def _pick_two_mode(hist, cen, peaks):
+def _pick_two_mode(hist, cen, peaks, th_hint=None, th_tol=None):
     """Две моды → (thickness, offset_shift, peak_info). Оценка как в ruler-v2.py:
-    минимизируем |mid|*6 - min(support)/max(support) с ограничениями по толщине."""
+    минимизируем |mid|*6 - min(support)/max(support) с ограничениями по толщине.
+
+    th_hint/th_tol — необязательный фильтр: брать только пары с толщиной около th_hint
+    (используется в оценке наклона, чтобы в каждом бине отслеживать ТЕ ЖЕ две грани).
+    """
     best = None
     top = min(len(peaks), 8)
     min_sep = int(round(0.08 / SNAP_BIN))
@@ -383,6 +393,8 @@ def _pick_two_mode(hist, cen, peaks):
             c1, c2 = sorted((float(cen[k1]), float(cen[k2])))
             th = abs(c2 - c1)
             if not (SNAP_MIN_THICK <= th <= SNAP_MAX_THICK):
+                continue
+            if th_hint is not None and abs(th - float(th_hint)) > float(th_tol or 0.08):
                 continue
             mid = (c1 + c2) / 2.0
             score = abs(mid) * 6.0 - min(hist[k1], hist[k2]) / max(1.0, float(hist.max()))
@@ -418,6 +430,111 @@ def _trimmed_rms(sn, shift, thickness, keep=SNAP_TRIM):
     k = max(1, int(len(res) * float(keep)))
     part = np.partition(res, k - 1)[:k]
     return float(np.sqrt(np.mean(np.square(part))))
+
+
+def _fit_rotation(su, sn, L, th_hint, lateral=SNAP_LATERAL):
+    """Оценка наклона стены к облаку (поворот в плане).
+
+    Вдоль оси стены берутся бины по SNAP_BIN_LEN м; в каждом бине теми же двумя модами
+    (толщина около th_hint) находится середина пары граней mid_k. Если таких бинов
+    достаточно (>=60 %, минимум 3), через точки (center_k, mid_k) робастно (Тейл-Сен +
+    уточнение по инлайерам) проводится прямая: sn = c0 + b*su. Наклон b — оценки поворота,
+    середина на центре стены — сдвиг. Возвращает dict или None, если наклон не оценивается
+    (например, видна только одна грань — типичный случай для стен у проёмов/в углах).
+    """
+    _require_numpy()
+    nb = max(4, min(40, int(round(L / SNAP_BIN_LEN))))
+    centers, mids, ths, weights = [], [], [], []
+    for k in range(nb):
+        lo, hi = k * L / nb, (k + 1) * L / nb
+        m = (su >= lo) & (su < hi)
+        if int(m.sum()) < 250:
+            continue
+        hist, cen, peaks = _two_mode_peaks(sn[m], lateral=float(lateral))
+        picked = _pick_two_mode(hist, cen, peaks, th_hint=th_hint,
+                                th_tol=max(0.06, 0.35 * float(th_hint)))
+        if picked is None:
+            continue
+        th, mid, info = picked
+        centers.append((lo + hi) / 2.0)
+        mids.append(float(mid))
+        ths.append(float(th))
+        weights.append(float(min(info[0]['count'], info[1]['count'])))
+    need_bins = max(3, int(math.ceil(0.60 * nb)))
+    if len(centers) < need_bins:
+        return None
+    centers = np.asarray(centers, float)
+    mids = np.asarray(mids, float)
+    weights = np.asarray(weights, float)
+    slopes = []
+    for i in range(len(centers)):
+        for j in range(i + 1, len(centers)):
+            ds = centers[j] - centers[i]
+            if abs(ds) > 0.5:
+                slopes.append(float((mids[j] - mids[i]) / ds))
+    if not slopes:
+        return None
+    b = float(np.median(slopes))
+    # страховочный предел ТОЛЬКО от абсурдных наклонов: решение о допустимом угле
+    # принимает вызывающий код (max_rotation_deg), чтобы в отчёте был виден реальный наклон
+    b_safety = math.tan(math.radians(20.0))
+    b = max(-b_safety, min(b_safety, b))
+    for _ in range(2):
+        c0 = float(np.median(mids - b * centers))
+        res = mids - (c0 + b * centers)
+        mad = float(np.median(np.abs(res)))
+        inl = np.abs(res) <= max(0.02, 3.0 * mad + 1e-9)
+        if int(inl.sum()) < 3:
+            break
+        sw = np.sqrt(weights[inl])
+        A = np.vstack([np.ones(int(inl.sum())), centers[inl]]).T
+        coef, *_ = np.linalg.lstsq(A * sw[:, None], mids[inl] * sw, rcond=None)
+        b = float(coef[1])
+        b = max(-b_safety, min(b_safety, b))
+    c0 = float(np.median(mids - b * centers))
+    theta = math.atan(b)
+    # качество прямой: разброс середин вокруг неё и толщина
+    spread = float(np.median(np.abs(mids - (c0 + b * centers))))
+    return {'b': b, 'c0': c0, 'theta': theta, 'th': float(np.median(ths)),
+            'bins': int(len(centers)), 'bins_total': int(nb),
+            'spread': spread, 'mid_center': c0 + b * L / 2.0}
+
+
+def _rotated_residuals(su, sn, b, c0, th):
+    _require_numpy()
+    scale = math.sqrt(1.0 + float(b) * float(b))
+    sn2 = (sn - (float(c0) + float(b) * su)) / scale
+    return np.minimum(np.abs(sn2 - float(th) / 2.0), np.abs(sn2 + float(th) / 2.0))
+
+
+def _rotated_trimmed_rms(su, sn, b, c0, th, keep=SNAP_TRIM):
+    res = _rotated_residuals(su, sn, b, c0, th)
+    if not len(res):
+        return None
+    k = max(1, int(len(res) * float(keep)))
+    part = np.partition(res, k - 1)[:k]
+    return float(np.sqrt(np.mean(np.square(part))))
+
+
+def _coverage_along(su, sn, L, half, openings, step=0.10, tol=0.07):
+    """Покрытие длины стены облаком — та же формула, что в ruler-v2.py: на каждом шаге
+    step вдоль стены (интервалы проёмов ±step пропускаются) нужно >=2 точек в полосе
+    |sn| <= half и |su - s| <= tol. Нужен как защита от сдвига/поворота, который улучшает
+    RMS, но «съедает» покрытие вдоль стены."""
+    _require_numpy()
+    m = np.abs(sn) <= float(half)
+    su_m = su[m]
+    if not len(su_m):
+        return None
+    ops = [(float(s0), float(s1)) for (s0, s1) in (openings or [])]
+    hit = total = 0
+    for s in np.arange(0.0, L + 1e-9, float(step)):
+        if any(s0 - step <= s <= s1 + step for (s0, s1) in ops):
+            continue
+        total += 1
+        if int(np.count_nonzero(np.abs(su_m - s) <= float(tol))) >= 2:
+            hit += 1
+    return float(hit) / max(1, total)
 
 
 # ======================================================================================
@@ -574,7 +691,7 @@ class Editor:
     # ---------- 1) стена: сдвиг/толщина/длина/удлинение ----------
     def set_wall(self, index, offset=None, thickness=None, length=None,
                  extend_start=None, extend_end=None, height=None, base=None, snap=False,
-                 max_shift=SNAP_MAX_SHIFT):
+                 max_shift=SNAP_MAX_SHIFT, rotate=True, max_rotation_deg=SNAP_ROTATE_MAX_DEG):
         """Правка стены.
 
         offset       — сдвиг оси по нормали n=(-dz,dx), м (знак: + в сторону нормали);
@@ -679,7 +796,8 @@ class Editor:
 
         # --- привязка к облаку после правки ---
         if snap:
-            snap_res = self.snap_wall(int(index), max_shift=max_shift)
+            snap_res = self.snap_wall(int(index), max_shift=max_shift, rotate=rotate,
+                                      max_rotation_deg=max_rotation_deg)
             res['snap'] = snap_res
             res['after'] = {'a': list(self.wall(index)['a']), 'b': list(self.wall(index)['b']),
                             'length': self.wall(index)['length'],
@@ -760,8 +878,8 @@ class Editor:
             raise EditError('проём выходит за стену: along=%.3f, width=%.3f, L=%.3f' % (
                 along, width, L))
         kind = (kind or 'door').strip().lower()
-        if kind not in ('door', 'window', 'opening'):
-            raise EditError("kind проёма: 'door', 'window' или 'opening'")
+        if kind not in ('door', 'window', 'opening', 'passage'):
+            raise EditError("kind проёма: 'door', 'window', 'opening' или 'passage'")
         if sill is None:
             sill = 0.0 if kind in ('door', 'opening') else 0.9
         if head is None:
@@ -797,21 +915,33 @@ class Editor:
         return self._commit(before, res)
 
     # ---------- 3) привязка оси стены к облаку ----------
-    def snap_wall(self, index, lateral=SNAP_LATERAL, max_shift=SNAP_MAX_SHIFT, min_points=None):
+    def snap_wall(self, index, lateral=SNAP_LATERAL, max_shift=SNAP_MAX_SHIFT, min_points=None,
+                  rotate=True, max_rotation_deg=SNAP_ROTATE_MAX_DEG):
         """2-модная привязка оси+толщины стены к облаку (как scan2bim-v2.py).
 
         Берём точки в полосе ±lateral м от оси (по длине стены, между полом и потолком),
         строим гистограмму поперечных расстояний sn, находим две самые сильные моды:
-        расстояние между ними — толщина, середина — сдвиг оси. Принимаем правку только если
-        |сдвиг| <= max_shift и устойчивый RMS (по 70 % точек с наименьшей невязкой) не хуже.
+        расстояние между ними — толщина, середина — сдвиг оси. Принимаем правку только если:
+          * обе моды достаточно сильные (защита от ложной пары в шуме);
+          * |сдвиг| <= max_shift;
+          * устойчивый RMS (по 70 % точек с наименьшей невязкой) не хуже.
+
+        rotate=True — дополнительно пробуем оценить наклон стены к облаку по бинам
+        (две грани должны быть видны на большей части длины); поворот применяется, только
+        если он даёт заметно лучший RMS (SNAP_ROTATE_GAIN), не превышает max_rotation_deg
+        и толщина при этом не «уезжает». Если наклон оценить нельзя (видна одна грань),
+        остаётся привязка сдвиг+толщина (как раньше).
         """
         w = self.wall(index)
-        res = {'op': 'snap_wall', 'wall': int(index), 'accepted': False, 'changed': False}
+        res = {'op': 'snap_wall', 'wall': int(index), 'accepted': False, 'changed': False,
+               'rotated': False, 'rotation_deg': 0.0,
+               'rotation': {'applied': False, 'reason': 'не оценивалось'}}
         if w.get('inferred') or w.get('material') == 'inferred':
             res['reason'] = 'стена достроенная (inferred): облако её не подтверждает'
             return res
         a, d, n, L, T = wall_frame(w)
-        res.update({'length': round(L, 3), 'thickness_before': round(T, 4)})
+        res.update({'length': round(L, 3), 'thickness_before': round(T, 4),
+                    'max_rotation_deg': round(float(max_rotation_deg), 3)})
         cloud = self._cloud()
         floorY, ceilY = self._storey_band()
         su, sn = cloud.band(w, lateral=float(lateral), y_lo=floorY + 0.20,
@@ -831,34 +961,215 @@ class Editor:
                             for k in peaks[:5]]
             return res
         th, mid, peak_info = picked
+        # защита от ложной пары: обе моды должны быть представлены заметным числом точек.
+        # Слабые моды не дают права менять сдвиг/толщину, но поворот по бинам всё ещё может
+        # подтвердить позу (у наклонённой стены моды «размазаны» и слабее по построению).
+        min_peak = int(max(SNAP_MIN_PEAK, SNAP_MIN_PEAK_FRAC * npts))
+        support = min(peak_info[0]['count'], peak_info[1]['count'])
+        weak_modes = support < min_peak
+        res.update({'peaks': peak_info, 'peak_support': support,
+                    'min_peak_support': min_peak, 'weak_modes': bool(weak_modes)})
         rms_b = _trimmed_rms(sn, 0.0, T)
         # проверяем ровно ту позу, которую применим (округление как в модели)
         shift = round(float(mid), 4)
         th_new = round(float(th), 3)
-        rms_a = _trimmed_rms(sn, shift, th_new)
+        rms_s = _trimmed_rms(sn, shift, th_new)
         res.update({'offset': shift, 'thickness_after': th_new,
                     'rms_before': round(rms_b, 6) if rms_b is not None else None,
-                    'rms_after': round(rms_a, 6) if rms_a is not None else None,
+                    'rms_shift_only': round(rms_s, 6) if rms_s is not None else None,
                     'rms_raw_before': round(_rms(_residuals(sn, 0.0, T)) or 0.0, 6),
                     'rms_raw_after': round(_rms(_residuals(sn, shift, th_new)) or 0.0, 6),
-                    'peaks': peak_info})
-        if abs(shift) > float(max_shift) + 1e-9:
-            res['reason'] = 'сдвиг %.3f м больше предела %.2f м' % (shift, float(max_shift))
+                    'rotated': False, 'rotation_deg': 0.0,
+                    'rotation': {'applied': False, 'reason': 'не оценивалось'}})
+        # --- выбор позы: shift-only и/или поворот ---
+        shift_ok = (not weak_modes and rms_s is not None and rms_b is not None
+                    and rms_s <= rms_b + 1e-6
+                    and abs(shift) <= float(max_shift) + 1e-9)
+        pose = {'type': 'shift', 'shift': shift, 'th': th_new, 'rms': rms_s} if shift_ok else None
+        pose_shift = pose
+        # с чем сравниваем RMS поворота: со сдвигом, если он допустим, иначе с исходным
+        rms_ref = rms_s if shift_ok else rms_b
+        if rotate:
+            fit = _fit_rotation(su, sn, L, th_new, lateral=float(lateral))
+            rot_info = {'applied': False, 'reason': 'наклон не оценён (видна одна грань '
+                                                    'или мало бинов с двумя гранями)'}
+            if fit is not None:
+                theta_deg = math.degrees(fit['theta'])
+                th_rot = round(float(fit['th']), 3)
+                shift_center = fit['mid_center']
+                rms_r = _rotated_trimmed_rms(su, sn, fit['b'], fit['c0'], th_rot)
+                rot_info = {'applied': False, 'deg': round(theta_deg, 3),
+                            'bins': '%d/%d' % (fit['bins'], fit['bins_total']),
+                            'spread': round(fit['spread'], 4),
+                            'thickness': th_rot,
+                            'shift_center': round(shift_center, 4),
+                            'rms_shift_only': round(rms_s, 6) if rms_s is not None else None,
+                            'rms_rotated': round(rms_r, 6) if rms_r is not None else None}
+                rot_problem = None
+                if abs(theta_deg) < SNAP_ROTATE_MIN_DEG:
+                    rot_problem = 'наклон меньше %.1f° — поворот не нужен' % SNAP_ROTATE_MIN_DEG
+                elif abs(theta_deg) > float(max_rotation_deg) + 1e-9:
+                    rot_problem = 'наклон %.2f° больше предела %.2f°' % (
+                        theta_deg, float(max_rotation_deg))
+                elif not (SNAP_MIN_THICK <= th_rot <= SNAP_MAX_THICK):
+                    rot_problem = 'толщина после поворота %.3f вне диапазона' % th_rot
+                elif abs(th_rot - th_new) > 0.06:
+                    rot_problem = 'толщина при повороте меняется слишком сильно: %.3f -> %.3f' % (
+                        th_new, th_rot)
+                elif abs(shift_center) > float(max_shift) + 1e-9:
+                    rot_problem = 'сдвиг центра %.3f м больше предела' % shift_center
+                elif rms_r is None or rms_ref is None or rms_r > rms_ref * (1.0 - SNAP_ROTATE_GAIN):
+                    rot_problem = 'RMS с поворотом недостаточно лучше: %.4f -> %.4f' % (
+                        rms_ref or 0.0, rms_r or 0.0)
+                elif rms_b is not None and rms_r >= rms_b - 1e-6:
+                    rot_problem = 'RMS с поворотом не лучше исходного: %.4f -> %.4f' % (
+                        rms_b, rms_r)
+                if rot_problem:
+                    rot_info['reason'] = rot_problem
+                else:
+                    pose = {'type': 'rotate', 'b': fit['b'], 'c0': fit['c0'],
+                            'theta': math.radians(round(theta_deg, 3)),
+                            'shift_center': shift_center, 'th': th_rot, 'rms': rms_r}
+                    rot_info['applied'] = True
+                    rot_info['reason'] = 'поворот принят: RMS лучше shift-only на >= %d %%' % (
+                        int(SNAP_ROTATE_GAIN * 100))
+            res['rotation'] = rot_info
+
+        if pose is None:
+            if weak_modes:
+                res['reason'] = (
+                    'моды слабые (поддержка %d < %d точек) — вероятно ложная пара '
+                    'в шуме/мебели; поворот тоже не подтвердил позу' % (support, min_peak))
+            elif abs(shift) > float(max_shift) + 1e-9:
+                res['reason'] = 'сдвиг %.3f м больше предела %.2f м' % (
+                    shift, float(max_shift))
+            elif rms_s is None or rms_b is None or rms_s > rms_b + 1e-6:
+                res['reason'] = 'RMS не улучшается: %.4f -> %.4f' % (
+                    rms_b or 0.0, rms_s or 0.0)
+            else:
+                res['reason'] = 'поза не принята (см. rotation/reason)'
             return res
-        if rms_a is None or rms_b is None or rms_a > rms_b + 1e-6:
-            res['reason'] = 'RMS не улучшается: %.4f -> %.4f' % (rms_b or 0.0, rms_a or 0.0)
-            return res
+
+        # --- защита покрытия вдоль стены: поза не должна «съедать» облако вдоль оси ---
+        openings = [(float(o.get('along', 0.0)),
+                     float(o.get('along', 0.0)) + float(o.get('width', 0.0)))
+                    for o in (w.get('openings') or [])]
+        half_cmp = max(0.10, max(T, float(pose['th'])) / 2.0 + 0.10)
+        cov_before = _coverage_along(su, sn, L, half_cmp, openings)
+
+        def _pose_coverage(p):
+            if p['type'] == 'rotate':
+                b_cov = math.tan(p['theta'])
+                sn_cov = (sn - (p['c0'] + b_cov * su)) / math.sqrt(1.0 + b_cov * b_cov)
+            else:
+                sn_cov = sn - float(p['shift'])
+            return _coverage_along(su, sn_cov, L, half_cmp, openings)
+
+        cov_after = _pose_coverage(pose)
+        if (cov_before is not None and cov_after is not None
+                and cov_after < cov_before - 0.02):
+            # поворот может улучшать RMS, но «съедать» покрытие — тогда откатываемся к
+            # привязке сдвигом (если она допустима), иначе отклоняем позу целиком
+            if pose['type'] == 'rotate' and pose_shift is not None:
+                cov_shift = _pose_coverage(pose_shift)
+                if cov_shift is not None and cov_shift >= cov_before - 0.02:
+                    res['rotation'] = dict(res.get('rotation') or {})
+                    res['rotation']['applied'] = False
+                    res['rotation']['reason'] = (
+                        'поворот отклонён: покрытие %.0f -> %.0f %%' % (
+                            100 * cov_before, 100 * cov_after))
+                    pose = pose_shift
+                    cov_after = cov_shift
+                else:
+                    pose = None
+            else:
+                pose = None
+            if pose is None:
+                res['coverage_before'] = round(cov_before, 4)
+                res['coverage_after'] = round(cov_after, 4) if cov_after is not None else None
+                res['reason'] = ('покрытие облаком вдоль стены падает: %.0f -> %.0f %% — '
+                                 'сдвиг не подтверждён' % (
+                                     100 * cov_before, 100 * (cov_after or 0.0)))
+                return res
+        res['coverage_before'] = round(cov_before, 4) if cov_before is not None else None
+        res['coverage_after'] = round(cov_after, 4) if cov_after is not None else None
+
+        # --- применяем позу ---
         before = self._snapshot()
-        a2 = (a[0] + n[0] * shift, a[1] + n[1] * shift)
-        w['a'] = [round(a2[0], 4), round(a2[1], 4)]
-        w['dir'] = [round(d[0], 5), round(d[1], 5)]
-        w['thickness'] = th_new
+        if pose['type'] == 'rotate':
+            theta = pose['theta']
+            bb = math.tan(theta)
+            d_new = _norm2(d[0] + bb * n[0], d[1] + bb * n[1])
+            p_c = (a[0] + d[0] * L / 2.0 + n[0] * (pose['c0'] + bb * L / 2.0),
+                   a[1] + d[1] * L / 2.0 + n[1] * (pose['c0'] + bb * L / 2.0))
+            a_new = (p_c[0] - d_new[0] * L / 2.0, p_c[1] - d_new[1] * L / 2.0)
+            w['dir'] = [round(d_new[0], 5), round(d_new[1], 5)]
+            res['rotated'] = True
+            res['rotation_deg'] = round(math.degrees(theta), 3)
+            res['offset'] = round(pose['shift_center'], 4)
+            res['thickness_after'] = pose['th']
+        else:
+            a_new = (a[0] + n[0] * pose['shift'], a[1] + n[1] * pose['shift'])
+            w['dir'] = [round(d[0], 5), round(d[1], 5)]
+            res['thickness_after'] = pose['th']
+        w['a'] = [round(a_new[0], 4), round(a_new[1], 4)]
+        w['thickness'] = pose['th']
         _recompute_b(w)
+        # RMS фактически записанной позы считаем на ТОЙ ЖЕ полосе точек, что и до правки
+        # (иначе сдвиг меняет состав полосы ±lateral и сравнение «до/после» некорректно)
+        if pose['type'] == 'rotate':
+            b_app = math.tan(pose['theta'])
+            rms_applied = _rotated_trimmed_rms(su, sn, b_app, pose['c0'], w['thickness'])
+            raw_applied = _rms(_rotated_residuals(su, sn, b_app, pose['c0'], w['thickness']))
+        else:
+            applied_shift = round(pose['shift'], 4)
+            rms_applied = _trimmed_rms(sn, applied_shift, w['thickness'])
+            raw_applied = _rms(_residuals(sn, applied_shift, w['thickness']))
+        res['rms_applied'] = round(rms_applied, 6) if rms_applied is not None else None
+        res['rms_after'] = res['rms_applied']
+        res['rms_raw_after'] = round(raw_applied or 0.0, 6)
         res['accepted'] = True
-        res['reason'] = 'принято: две моды облака, RMS не хуже, сдвиг в пределе'
-        res['after'] = {'a': list(w['a']), 'b': list(w['b']),
+        res['reason'] = ('принято: две моды облака, RMS не хуже, сдвиг в пределе'
+                         + ('; поворот %+.2f°' % res['rotation_deg'] if res['rotated'] else ''))
+        res['after'] = {'a': list(w['a']), 'b': list(w['b']), 'dir': list(w['dir']),
                         'length': w['length'], 'thickness': w['thickness']}
         return self._commit(before, res)
+
+    def snap_all(self, lateral=SNAP_LATERAL, max_shift=SNAP_MAX_SHIFT,
+                 rotate=True, max_rotation_deg=SNAP_ROTATE_MAX_DEG):
+        """Привязать к облаку ВСЕ измеренные (не inferred) стены модели.
+
+        Каждая стена — отдельный шаг undo (как при последовательных snap_wall), поэтому
+        правки можно отменять по одной. Возвращает сводку: accepted/rejected по стенам.
+        """
+        base = self._snapshot()
+        res = {'op': 'snap_all', 'accepted': [], 'rejected': [], 'unchanged': [],
+               'rotated': []}
+        for i, w in enumerate(list(self.model['walls'])):
+            if w.get('inferred') or w.get('material') == 'inferred':
+                continue
+            r = self.snap_wall(i, lateral=lateral, max_shift=max_shift, rotate=rotate,
+                               max_rotation_deg=max_rotation_deg)
+            rec = {'wall': i, 'accepted': bool(r.get('accepted')), 'changed': bool(r.get('changed')),
+                   'reason': r.get('reason'),
+                   'thickness_before': r.get('thickness_before'),
+                   'thickness_after': r.get('thickness_after'),
+                   'offset': r.get('offset'),
+                   'rotation_deg': r.get('rotation_deg') or 0.0}
+            if rec['accepted'] and rec['changed']:
+                res['accepted'].append(rec)
+                if r.get('rotated'):
+                    res['rotated'].append({'wall': i, 'deg': r.get('rotation_deg')})
+            elif rec['accepted']:
+                res['unchanged'].append(rec)
+            else:
+                res['rejected'].append(rec)
+        res['changed'] = (self.model != base)
+        res['measured'] = len(res['accepted']) + len(res['unchanged']) + len(res['rejected'])
+        res['accepted_count'] = len(res['accepted'])
+        res['unchanged_count'] = len(res['unchanged'])
+        res['rejected_count'] = len(res['rejected'])
+        return res
 
     # ---------- 4) привязка проёма к разрыву в облаке ----------
     def snap_opening(self, wall_index, opening_index, lateral=None, max_edge_shift=0.50):
@@ -1219,6 +1530,10 @@ def snap_wall(model, index, cloud, undo_depth=DEFAULT_UNDO_DEPTH, **kwargs):
     return _editor_for(model, cloud, undo_depth).snap_wall(index, **kwargs)
 
 
+def snap_all(model, cloud, undo_depth=DEFAULT_UNDO_DEPTH, **kwargs):
+    return _editor_for(model, cloud, undo_depth).snap_all(**kwargs)
+
+
 def snap_opening(model, wall_index, opening_index, cloud, undo_depth=DEFAULT_UNDO_DEPTH, **kwargs):
     return _editor_for(model, cloud, undo_depth).snap_opening(wall_index, opening_index, **kwargs)
 
@@ -1233,7 +1548,7 @@ def export_ifc(model, path, node_bin=None, name=None):
 # 7. CLI
 # ======================================================================================
 OPS = ['set_wall', 'move_wall', 'move_opening', 'add_opening', 'remove_opening',
-       'snap_wall', 'snap_opening', 'undo', 'redo', 'info']
+       'snap_wall', 'snap_opening', 'snap_all', 'undo', 'redo', 'info']
 
 
 def _build_argparser():
@@ -1247,6 +1562,9 @@ def _build_argparser():
   python edit-model.py --model py2-p1.json --cloud koridor-local-rgb.bin \\
       --op move_wall --index 3 --offset 0.08 --snap --out py2-edit.json \\
       --ifc py2-edit.ifc --validate --json
+
+  # привязать к облаку ВСЕ измеренные стены (inferred пропускаются; каждая стена — шаг undo)
+  python edit-model.py --model M.json --op snap_all --out M-snap.json --json
 
   # исправить толщину стены 11 и проверить IFC
   python edit-model.py --model py2-p1.json --op set_wall --index 11 --thickness 0.17 \\
@@ -1291,9 +1609,16 @@ def _build_argparser():
     ap.add_argument('--width', type=float, help='ширина проёма, м')
     ap.add_argument('--sill', type=float, help='подоконник проёма, м')
     ap.add_argument('--head', type=float, help='перемычка проёма, м')
-    ap.add_argument('--kind', choices=['door', 'window', 'opening'], help='тип проёма')
+    ap.add_argument('--kind', choices=['door', 'window', 'opening', 'passage'],
+                    help='тип проёма (door/window/opening/passage — как в схеме scan2bim)')
     ap.add_argument('--snap', action='store_true',
                     help='после set_wall/move_wall привязать стену к облаку (нужен --cloud)')
+    ap.add_argument('--no-rotate', action='store_true', dest='no_rotate',
+                    help='при привязке к облаку не поворачивать стену (только сдвиг+толщина)')
+    ap.add_argument('--max-rotation', type=float, default=SNAP_ROTATE_MAX_DEG,
+                    dest='max_rotation',
+                    help='предел поворота стены при привязке, градусы (по умолчанию %.1f)'
+                         % SNAP_ROTATE_MAX_DEG)
     ap.add_argument('--ifc', help='экспортировать IFC4 в этот файл (json-to-ifc.js)')
     ap.add_argument('--validate', action='store_true',
                     help='после экспорта проверить IFC (0 ERROR, арность IFC4)')
@@ -1360,6 +1685,8 @@ def _print_human(payload):
                 snap.get('offset') or 0.0, snap.get('thickness_before') or 0.0,
                 snap.get('thickness_after') or 0.0,
                 '' if snap.get('accepted') else ' (' + str(snap.get('reason')) + ')'))
+            if snap.get('rotated'):
+                print('  поворот стены:    %+.2f° (оценён по бинам облака)' % snap['rotation_deg'])
         for wmsg in r.get('warnings') or []:
             print('  ! ' + wmsg)
     elif op == 'snap_wall':
@@ -1369,16 +1696,38 @@ def _print_human(payload):
         if r.get('peaks'):
             print('  моды облака sn:   %s' % ', '.join(
                 '%+.3f (%d т.)' % (p['sn'], p['count']) for p in r['peaks']))
+        if 'peak_support' in r:
+            print('  поддержка мод:    %s (минимум %s)' % (
+                r.get('peak_support'), r.get('min_peak_support')))
         if 'offset' in r:
             print('  толщина:          %.3f -> %.3f м' % (
                 r.get('thickness_before'), r.get('thickness_after')))
             print('  сдвиг оси:        %+.4f м' % r['offset'])
-            print('  RMS (70%% лучших): %.4f -> %.4f м' % (
-                r.get('rms_before') or 0.0, r.get('rms_after') or 0.0))
+            print('  RMS (70%% лучших): %.4f -> %.4f м (shift-only %.4f)' % (
+                r.get('rms_before') or 0.0, r.get('rms_after') or 0.0,
+                r.get('rms_shift_only') or 0.0))
+        rot = r.get('rotation') or {}
+        if rot.get('deg') is not None:
+            print('  поворот:          %+.2f° (%s бинов), применить: %s%s' % (
+                rot['deg'], rot.get('bins'), 'да' if rot.get('applied') else 'нет',
+                '' if rot.get('applied') else ' — ' + str(rot.get('reason'))))
         if not r.get('accepted'):
             print('  причина отказа:   %s' % r.get('reason'))
         elif r.get('after'):
-            print('  a: %s, толщина %.3f м' % (r['after']['a'], r['after']['thickness']))
+            print('  a: %s, dir: %s, толщина %.3f м' % (
+                r['after']['a'], r['after'].get('dir'), r['after']['thickness']))
+    elif op == 'snap_all':
+        print('операция:    snap_all (измеренных стен %s): принято %s, без изменений %s, '
+              'отклонено %s' % (r.get('measured'), r.get('accepted_count'),
+                                r.get('unchanged_count'), r.get('rejected_count')))
+        for a in (r.get('accepted') or []):
+            print('  принята #%d: T %.3f -> %.3f, сдвиг %+.3f%s' % (
+                a['wall'], a.get('thickness_before') or 0.0, a.get('thickness_after') or 0.0,
+                a.get('offset') or 0.0,
+                ', поворот %+.2f°' % a['rotation_deg']
+                if abs(a.get('rotation_deg') or 0) > 1e-6 else ''))
+        for a in (r.get('rejected') or [])[:8]:
+            print('  отклонена #%d: %s' % (a['wall'], a.get('reason')))
     elif op == 'snap_opening':
         print('операция:    snap_opening стена #%d проём #%d: %s' % (
             r.get('wall'), r.get('opening'),
@@ -1438,7 +1787,7 @@ def main(argv=None):
         else:
             history_path = os.path.abspath(args.model) + '.history.json'
         op = args.op
-        needs_cloud = op in ('snap_wall', 'snap_opening') or bool(args.snap)
+        needs_cloud = op in ('snap_wall', 'snap_opening', 'snap_all') or bool(args.snap)
         cloud_path = args.cloud
         cloud_source = 'cli' if cloud_path else None
         if not cloud_path and needs_cloud:
@@ -1468,11 +1817,16 @@ def main(argv=None):
             res = ed.set_wall(wall_index, offset=args.offset, thickness=args.thickness,
                               length=args.length, extend_start=args.extend_start,
                               extend_end=args.extend_end, height=args.height, base=args.base,
-                              snap=args.snap)
+                              snap=args.snap, rotate=not args.no_rotate,
+                              max_rotation_deg=args.max_rotation)
         elif op == 'snap_wall':
             if wall_index is None:
                 raise EditError('нужен --index (или --wall) стены для snap_wall')
-            res = ed.snap_wall(wall_index)
+            res = ed.snap_wall(wall_index, rotate=not args.no_rotate,
+                               max_rotation_deg=args.max_rotation)
+        elif op == 'snap_all':
+            res = ed.snap_all(rotate=not args.no_rotate,
+                              max_rotation_deg=args.max_rotation)
         elif op == 'snap_opening':
             if args.wall is None or args.opening is None:
                 raise EditError('нужны --wall и --opening для snap_opening')

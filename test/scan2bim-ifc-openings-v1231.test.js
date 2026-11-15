@@ -30,6 +30,18 @@ function relationshipRefs(entity) {
   return [m[1], m[2]];
 }
 
+// r132: не-ASCII имена в STEP теперь экранируются (\X2\hhhh…\X0\) — для проверок
+// по смыслу декодируем их обратно (апостроф в STEP удваивается).
+function unescapeStep(s) {
+  return String(s)
+    .replace(/\\X2\\((?:[0-9A-F]{4})+)\\X0\\/g, (_, hex) => {
+      let out = '';
+      for (let i = 0; i < hex.length; i += 4) out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+      return out;
+    })
+    .replace(/''/g, "'");
+}
+
 test('IFC4 emits door opening geometry and links IfcOpeningElement to its wall', () => {
   const step = S.toIFC(modelWithOpenings([
     { along: 1.5, width: 0.9, kind: 'door', uncertain: false }
@@ -51,7 +63,7 @@ test('IFC4 emits door opening geometry and links IfcOpeningElement to its wall',
   const [wallRef, openingRef] = relationshipRefs(voids[0]);
   assert.equal(entities.get(wallRef)?.type, 'IFCWALLSTANDARDCASE');
   assert.equal(entities.get(openingRef)?.type, 'IFCOPENINGELEMENT');
-  assert.match(openings[0][1].body, /'Проём 1 \(дверной\)'/);
+  assert.match(unescapeStep(openings[0][1].body), /'Проём 1 \(дверной\)'/);
 
   // 1.5 m along the wall puts the opening centre at local X=11.95; source
   // Z-up maps the plan to X/Y and elevation to IFC Z.
@@ -79,7 +91,7 @@ test('IFC4 emits a separate void relation for each valid opening and rejects out
   const voids = [...entities.entries()].filter(([, e]) => e.type === 'IFCRELVOIDSELEMENT');
   assert.equal(openings.length, 2);
   assert.equal(voids.length, 2);
-  const labels = openings.map(([, e]) => e.body);
+  const labels = openings.map(([, e]) => unescapeStep(e.body));
   assert.ok(labels.some(s => s.includes('(дверной)')));
   // v1242: «opening» — проход во всю высоту (без заполнения), «window» — окно с подоконником
   assert.ok(labels.some(s => s.includes('(проход)')), 'проход должен быть подписан как проход: ' + labels.join(' | '));

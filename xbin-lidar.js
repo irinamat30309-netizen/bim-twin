@@ -388,11 +388,38 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
   const tmp = outLas + '.part';
   let ofd = null;
   try {
-    // прорежение: ≈ 20,5 байта на точку в пакетах L2 Pro (уточняется по пакету из середины); после фильтра дальности и пустых остаётся ~60 %
+    // Ревизия 132: прорежение — по калибровке bpp на 3–5 пакетах, разнесённых по окну (раньше брался один средний
+    // пакет: его плотность могла отличаться от средней, из-за чего оценка завышалась и точек выходило больше лимита).
+    const packetMsgCount = (r) => {
+      const b = XB.readAt(fd, r.off, r.len); let n = 0;
+      for (const m of messages(b)) for (const x of fieldsOf(b, m.a, m.e)) if (x.f === 2 && x.wt === 2) n++;
+      return { n, bytes: b.length };
+    };
+    const probeIdx = (() => {
+      const K = Math.max(1, Math.min(5, recs.length)), idx = [];
+      for (let j = 0; j < K; j++) idx.push(Math.min(recs.length - 1, Math.floor((j + 0.5) * recs.length / K)));
+      return idx;
+    })();
     let bpp = 20.5;
-    { const r = recs[Math.min(recs.length - 1, recs.length >> 1)]; const b = XB.readAt(fd, r.off, r.len); let n = 0; for (const m of messages(b)) for (const x of fieldsOf(b, m.a, m.e)) if (x.f === 2 && x.wt === 2) n++; if (n > 0) bpp = b.length / n; }
-    const total = recs.reduce((s, r) => s + r.len, 0), est = total / bpp;
-    const step = o.step > 0 ? Math.floor(o.step) : Math.max(1, Math.ceil(est * 0.6 / o.maxPoints));
+    { const vals = []; for (const i of probeIdx) { const q = packetMsgCount(recs[i]); if (q.n > 0) vals.push(q.bytes / q.n); }
+      if (vals.length) { vals.sort((a, b) => a - b); bpp = vals[vals.length >> 1]; } }
+    const total = recs.reduce((s, r) => s + r.len, 0), est = total / bpp;   // оценка всех сообщений точек в окне
+    // Ревизия 132: доля точек, реально проходящих фильтры walk (дальность/самомаска/edge) — измеряется на тех же пакетах.
+    // Раньше предполагалось 0.6, из-за чего при maxPoints получалось на 10–30 % больше точек, чем просили.
+    let keepFrac = 0.6;
+    try {
+      let msgs = 0; for (const i of probeIdx) msgs += packetMsgCount(recs[i]).n;
+      if (msgs > 0) {
+        const recsProbe = probeIdx.map(i => recs[i]);
+        const w0 = Math.min(...recsProbe.map(r => r.t)) - 0.02;
+        const w1 = Math.min(C.T1, Math.max(...recsProbe.map(r => r.t)) + 0.5);
+        let kept = 0;
+        walk(fd, Object.assign({}, C, { recs: recsProbe }), o, w0, w1, 1, () => { kept++; });
+        if (kept > 0) keepFrac = Math.max(0.05, Math.min(1, kept / msgs));
+      }
+    } catch (_) { /* оценка не критична — остаётся консервативные 0.6 */ }
+    const estKept = est * keepFrac;
+    let step = o.step > 0 ? Math.floor(o.step) : Math.max(1, Math.ceil(estKept / o.maxPoints));
     let pw = 0.1, refineInfo = null;
     if (o.refine) {
       const XR = require('./xbin-refine');
@@ -400,30 +427,40 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
       C.TR = XR.correctedTrajectory(C.TR, refineInfo.knots);
       pw = 0.65;
     }
-    ofd = fs.openSync(tmp, 'w');
     const ox = Math.round(P.p[0]), oy = Math.round(P.p[1]), oz = Math.round(P.p[2]);
-    fs.writeSync(ofd, lasHeader({ n: 0, ox, oy, oz, min: [0, 0, 0], max: [0, 0, 0] }), 0, 227, 0);
-    const OB = 34 * 65536, out = Buffer.allocUnsafe(OB); let fill = 0, fpos = 227;
-    const flush = () => { if (fill) { fs.writeSync(ofd, out, 0, fill, fpos); fpos += fill; fill = 0; } };
-    const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
-    let n = 0, done = 0, lastProg = 0;
-    const W = walk(fd, C, o, T0, T1, step, (wx, wy, wz, t, I, R) => {
-      if (wx < mn[0]) mn[0] = wx; if (wx > mx[0]) mx[0] = wx; if (wy < mn[1]) mn[1] = wy; if (wy > mx[1]) mx[1] = wy; if (wz < mn[2]) mn[2] = wz; if (wz > mx[2]) mx[2] = wz;
-      if (fill + 34 > OB) flush();
-      out.writeInt32LE(Math.round((wx - ox) * 1000), fill); out.writeInt32LE(Math.round((wy - oy) * 1000), fill + 4); out.writeInt32LE(Math.round((wz - oz) * 1000), fill + 8);
-      out.writeUInt16LE(I * 257 > 65535 ? 65535 : I * 257, fill + 12); out[fill + 14] = 0x09; out[fill + 15] = 0; out[fill + 16] = 0; out[fill + 17] = R & 255;
-      out.writeUInt16LE(0, fill + 18); out.writeDoubleLE(t, fill + 20);
-      const g = (I > 255 ? 255 : I) * 257; out.writeUInt16LE(g, fill + 28); out.writeUInt16LE(g, fill + 30); out.writeUInt16LE(g, fill + 32);
-      fill += 34; n++;
-    }, (bytes) => { done += bytes; if (done - lastProg > (64 << 20)) { lastProg = done; prog(pw + (1 - pw) * done / total, 'Облако из .xbin: точки лидара…'); } });
-    flush();
-    if (n < 100) throw new Error('из пакетов лидара получилось слишком мало точек');
-    fs.writeSync(ofd, lasHeader({ n, ox, oy, oz, min: mn, max: mx }), 0, 227, 0);
-    fs.closeSync(ofd); ofd = null;
+    let n = 0, mn = [0, 0, 0], mx = [0, 0, 0], W = null, attempts = 0;
+    for (;;) {   // ревизия 132: один авто-повтор с большим step, если точек вышло >10 % сверх maxPoints
+      attempts++;
+      ofd = fs.openSync(tmp, 'w');
+      fs.writeSync(ofd, lasHeader({ n: 0, ox, oy, oz, min: [0, 0, 0], max: [0, 0, 0] }), 0, 227, 0);
+      const OB = 34 * 65536, out = Buffer.allocUnsafe(OB); let fill = 0, fpos = 227;
+      const flush = () => { if (fill) { fs.writeSync(ofd, out, 0, fill, fpos); fpos += fill; fill = 0; } };
+      const lmn = [Infinity, Infinity, Infinity], lmx = [-Infinity, -Infinity, -Infinity];
+      let cnt = 0, done = 0, lastProg = 0;
+      W = walk(fd, C, o, T0, T1, step, (wx, wy, wz, t, I, R) => {
+        if (wx < lmn[0]) lmn[0] = wx; if (wx > lmx[0]) lmx[0] = wx; if (wy < lmn[1]) lmn[1] = wy; if (wy > lmx[1]) lmx[1] = wy; if (wz < lmn[2]) lmn[2] = wz; if (wz > lmx[2]) lmx[2] = wz;
+        if (fill + 34 > OB) flush();
+        out.writeInt32LE(Math.round((wx - ox) * 1000), fill); out.writeInt32LE(Math.round((wy - oy) * 1000), fill + 4); out.writeInt32LE(Math.round((wz - oz) * 1000), fill + 8);
+        out.writeUInt16LE(I * 257 > 65535 ? 65535 : I * 257, fill + 12); out[fill + 14] = 0x09; out[fill + 15] = 0; out[fill + 16] = 0; out[fill + 17] = R & 255;
+        out.writeUInt16LE(0, fill + 18); out.writeDoubleLE(t, fill + 20);
+        const g = (I > 255 ? 255 : I) * 257; out.writeUInt16LE(g, fill + 28); out.writeUInt16LE(g, fill + 30); out.writeUInt16LE(g, fill + 32);
+        fill += 34; cnt++;
+      }, (bytes) => { done += bytes; if (done - lastProg > (64 << 20)) { lastProg = done; prog(pw + (1 - pw) * done / total, 'Облако из .xbin: точки лидара…'); } });
+      flush();
+      if (cnt < 100) throw new Error('из пакетов лидара получилось слишком мало точек');
+      fs.writeSync(ofd, lasHeader({ n: cnt, ox, oy, oz, min: lmn, max: lmx }), 0, 227, 0);
+      fs.closeSync(ofd); ofd = null;
+      n = cnt; mn = lmn; mx = lmx;
+      if (o.step > 0 || attempts > 1 || !(n > o.maxPoints * 1.10)) break;
+      step = Math.max(step + 1, Math.ceil(step * n / (o.maxPoints * 0.95)));
+      prog(0, 'Облако из .xbin: уточнение прорежения (точек больше лимита)…');
+      try { fs.rmSync(tmp, { force: true }); } catch (_) {}
+    }
     fs.renameSync(tmp, outLas);
     prog(1, 'Облако из .xbin: готово');
     const TR = C.TR;
-    return { points: n, step, estimated: Math.round(est), t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, min: mn, max: mx,
+    return { points: n, step, estimated: Math.round(est), estimatedKept: Math.round(estKept), keepFrac: +keepFrac.toFixed(4), bpp: +bpp.toFixed(3), attempts,
+      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, min: mn, max: mx,
       lidarCh: C.S.lidarCh, motorCh: C.S.motorCh, imuCh: C.S.imuCh,
       trajectory: { imu: TR.imu, imuIntervals: TR.imuIntervals, intervals: TR.intervals, gaps: TR.gaps, position: TR.position, corrMedianDeg: TR.corrMedianDeg, refined: !!refineInfo },
       refine: refineInfo ? refineInfo.summary : null };

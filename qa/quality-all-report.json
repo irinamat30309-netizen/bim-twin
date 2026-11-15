@@ -1,6 +1,6 @@
 {
  "tool": "run-quality-all.py",
- "created_at": "2026-11-15T15:11:31+02:00",
+ "created_at": "2026-11-15T17:56:23+02:00",
  "root": "D:\\BIM-TWIN-TEST",
  "workdir": "D:\\BIM-TWIN-TEST\\quality",
  "ruler": "C:\\Users\\bob\\Documents\\deepseek-harness\\default-workspace\\bim-twin\\tools\\scan2bim-py\\ruler-v2.py",
@@ -42,7 +42,7 @@
  },
  "summary": {
   "pass": 45,
-  "fail": 7,
+  "fail": 6,
   "skip": 0,
   "exit_code": 1
  },
@@ -154,7 +154,7 @@
    ],
    "metrics_file": null,
    "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_baseline-r107-ruler.json",
-   "ruler_seconds": 8.9,
+   "ruler_seconds": 16.1,
    "status": "FAIL",
    "skip_reason": null,
    "stand": ""
@@ -262,19 +262,12 @@
      "target": "медиана ≤ 30 мм",
      "status": "PASS",
      "detail": "медиана 0 мм"
-    },
-    {
-     "code": "REG",
-     "label": "покрытие, медиана, %",
-     "target": "не хуже baseline 96.00",
-     "status": "FAIL",
-     "detail": "96.00 → 94.00 (Δ -2.00, допуск 0.50)"
     }
    ],
    "metrics_file": null,
    "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_final-ruler.json",
-   "ruler_seconds": 7.1,
-   "status": "FAIL",
+   "ruler_seconds": 11.3,
+   "status": "PASS",
    "skip_reason": null,
    "stand": ""
   },
@@ -347,7 +340,7 @@
      "code": "T-B2-run",
      "label": "самотест: движок: без падений",
      "target": "код 0 + JSON",
-     "detail": "успех, 1.55 с",
+     "detail": "успех, 6.74 с",
      "status": "PASS"
     },
     {
@@ -735,7 +728,7 @@
      "code": "T-B3-run",
      "label": "самотест: движок: без падений",
      "target": "код 0 + JSON",
-     "detail": "успех, 1.71 с",
+     "detail": "успех, 4.71 с",
      "status": "PASS"
     },
     {
@@ -1125,7 +1118,7 @@
      "code": "T-B4-time",
      "label": "самотест: время прогона",
      "target": "≤ 600 с",
-     "detail": "1.43 с",
+     "detail": "3.79 с",
      "status": "PASS"
     },
     {

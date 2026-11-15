@@ -5660,7 +5660,7 @@
   }
   function showIFCReport(rep) {
     if (!rep) { toast('IFC импортирован'); return; }
-    const li = a => (a && a.length) ? '<ul>' + a.map(x => '<li>' + esc(typeof x === 'string' ? x : (x.name + (x.room ? ' · ' + x.room : ''))) + '</li>').join('') + '</ul>' : '<div class="muted">—</div>';
+    const li = a => (a && a.length) ? '<ul>' + a.map(x => '<li>' + esc(typeof x === 'string' ? x : (x.name || (x.room ? 'Помещение: ' + x.room : '') || x.floor || x.ifcType || JSON.stringify(x))) + '</li>').join('') + '</ul>' : '<div class="muted">—</div>';
     const html = '<div class="ifc-report">' +
       '<div class="kv"><span class="k">Проект</span><span>' + esc(rep.project || '—') + '</span></div>' +
       '<div class="kv"><span class="k">Этажи</span><span>' + esc((rep.storeys || []).join(', ') || '—') + '</span></div>' +

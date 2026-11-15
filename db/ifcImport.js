@@ -4,7 +4,7 @@
  * with their IFC GlobalId. Geometry is intentionally not evaluated (needs web-ifc).
  */
 'use strict';
-const ELEMENT_RE = /^IFC(WALL|DOOR|WINDOW|SLAB|BEAM|COLUMN|MEMBER|PLATE|COVERING|RAILING|STAIR|ROOF|DUCT\w*|PIPE\w*|CABLE\w*|FLOW\w*|AIRTERMINAL\w*|FAN\w*|PUMP\w*|VALVE\w*|SANITARY\w*|FURNISH\w*|BUILDINGELEMENTPROXY)$/;
+const ELEMENT_RE = /^IFC(WALLSTANDARDCASE|WALL|DOOR|WINDOW|SLAB|BEAM|COLUMN|MEMBER|PLATE|COVERING|RAILING|STAIR|ROOF|DUCT\w*|PIPE\w*|CABLE\w*|FLOW\w*|AIRTERMINAL\w*|FAN\w*|PUMP\w*|VALVE\w*|SANITARY\w*|FURNISH\w*|BUILDINGELEMENTPROXY)$/;
 
 // ревизия 39: кодировки STEP для не-ASCII (\X2\…\X0\ — UTF-16, \X\hh — ISO 8859-1, \S\c — верхняя половина)
 function decodeStep(s) { return s.replace(/\\X2\\([0-9A-Fa-f]+)\\X0\\/g, (m, h) => { let o = ''; for (let i = 0; i + 3 < h.length; i += 4) o += String.fromCharCode(parseInt(h.substr(i, 4), 16)); return o; }).replace(/\\X\\([0-9A-Fa-f]{2})/g, (m, h) => String.fromCharCode(parseInt(h, 16))).replace(/\\S\\(.)/g, (m, c) => String.fromCharCode(c.charCodeAt(0) + 128)).replace(/\\\\/g, '\\'); }
@@ -68,6 +68,6 @@ function parseIFC(text) {
   return { project, storeys: [...storeyMap.values()], spaces: [...spaceMap.values()], elements: [...elemMap.values()] };
 }
 
-function mapIfcType(t) { t = (t || '').toUpperCase(); if (t.includes('DUCT') || t.includes('AIRTERMINAL') || t.includes('FAN')) return 'вентшахта'; if (t.includes('PIPE') || t.includes('VALVE') || t.includes('PUMP')) return 'труба'; if (t.includes('DOOR')) return 'дверь'; if (t.includes('CABLE')) return 'кабель-канал'; return 'оборудование'; }
+function mapIfcType(t) { t = (t || '').toUpperCase(); if (t.includes('WALL')) return 'стена'; if (t.includes('SLAB') || t.includes('PLATE') || t.includes('COVERING')) return 'плита'; if (t.includes('COLUMN')) return 'колонна'; if (t.includes('BEAM') || t.includes('MEMBER')) return 'балка'; if (t.includes('WINDOW')) return 'окно'; if (t.includes('DUCT') || t.includes('AIRTERMINAL') || t.includes('FAN')) return 'вентшахта'; if (t.includes('PIPE') || t.includes('VALVE') || t.includes('PUMP')) return 'труба'; if (t.includes('DOOR')) return 'дверь'; if (t.includes('CABLE')) return 'кабель-канал'; return 'оборудование'; }
 
 module.exports = { parseIFC, mapIfcType };

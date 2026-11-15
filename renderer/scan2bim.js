@@ -2185,6 +2185,28 @@
     }
     return s;
   }
+  // r132: STEP-строка по ISO-10303-21: апостроф удваивается, обратный слэш удваивается,
+  // не-ASCII (и управляющие символы) кодируются как \X2\hhhh…\X0\ (UTF-16 code units, по 4 hex).
+  // Раньше кириллица писалась сырым UTF-8: ifcopenshell читал файл без ошибок, но терял
+  // имена (Name=' 1' вместо 'Стена 1'). Логика повторяет renderer/scan2bim-export.js ifcStr.
+  function stepString(s) {
+    if (s == null) return '$';
+    var str = String(s).replace(/[\r\n]+/g, ' ');
+    var out = '', buf = '';
+    function flush() { if (buf) { out += '\\X2\\' + buf + '\\X0\\'; buf = ''; } }
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      if (c >= 32 && c < 127) {
+        flush();
+        var ch = str[i];
+        out += ch === "'" ? "''" : (ch === '\\' ? '\\\\' : ch);
+      } else {
+        buf += ('0000' + c.toString(16).toUpperCase()).slice(-4);
+      }
+    }
+    flush();
+    return "'" + out + "'";
+  }
   function toIFC(model, meta) {
     meta = meta || {}; model = model || {};
     if (typeof window !== 'undefined' && window.__pcTools) {
@@ -2220,7 +2242,6 @@
       if (area < 0) out.reverse();
       return out;
     }
-    function stepString(s) { return "'" + String(s).replace(/'/g, "''").replace(/[\r\n]+/g, ' ') + "'"; }
     var L = [], id = 0, gc = 0;
     function add(body) { id++; L.push('#' + id + '=' + body + ';'); return '#' + id; }
     function G() { return '\'' + ifcGuid(gc++) + '\''; }
@@ -2268,7 +2289,7 @@
         var sl = modelStoreys[si];
         var slp = add('IFCLOCALPLACEMENT(' + bLP + ',' + add('IFCAXIS2PLACEMENT3D(' + pt3(0, 0, vertical(sl.floorY)) + ',' + ZDIR + ',' + XDIR + ')') + ')');
         storeyLPs.push(slp);
-        storeyEnts.push(add('IFCBUILDINGSTOREY(' + G() + ',$,\'Этаж ' + (si + 1) + '\',$,$,' + slp + ',$,$,.ELEMENT.,' + fnum(vertical(sl.floorY)) + ')'));
+        storeyEnts.push(add('IFCBUILDINGSTOREY(' + G() + ',$,' + stepString('Этаж ' + (si + 1)) + ',$,$,' + slp + ',$,$,.ELEMENT.,' + fnum(vertical(sl.floorY)) + ')'));
         storeyProducts.push([]);
       }
     } else {
@@ -2309,6 +2330,30 @@
       if (!item) return;
       add('IFCSTYLEDITEM(' + item + ',(' + colorStyle(color, name) + '),$)');
     }
+    // r132: наборы свойств элемента (IfcPropertySet + IfcPropertySingleValue +
+    // IfcRelDefinesByProperties). Значения типизированные: длины — IfcLengthMeasure,
+    // площади — IfcAreaMeasure, доли — IfcRatioMeasure, флаги — IfcBoolean, строки — IfcLabel.
+    function psetEncode(kind, value) {
+      if (value == null || value === '') return null;
+      if (kind === 'bool') return 'IFCBOOLEAN(' + (value ? '.T.' : '.F.') + ')';
+      if (kind === 'label') return 'IFCLABEL(' + stepString(String(value)) + ')';
+      var num = Number(value);
+      if (!isFinite(num)) return null;
+      if (kind === 'area') return 'IFCAREAMEASURE(' + fnum(num) + ')';
+      if (kind === 'ratio') return 'IFCRATIOMEASURE(' + fnum(num) + ')';
+      return 'IFCLENGTHMEASURE(' + fnum(num) + ')';
+    }
+    function addPset(ref, props) {
+      var values = [];
+      for (var pi = 0; pi < props.length; pi++) {
+        var entry = props[pi], encoded = psetEncode(entry[1], entry[2]);
+        if (encoded == null) continue;
+        values.push(add('IFCPROPERTYSINGLEVALUE(' + stepString(entry[0]) + ',$,' + encoded + ',$)'));
+      }
+      if (!values.length) return;
+      var set = add('IFCPROPERTYSET(' + G() + ',$,' + stepString('PSet_BimTwin') + ',$,(' + values.join(',') + '))');
+      add('IFCRELDEFINESBYPROPERTIES(' + G() + ',$,$,$,(' + ref + '),' + set + ')');
+    }
     // стены (план X,Z → IFC X,Y; высота Y → IFC Z). v1160: одна стена = несколько тел (проёмы).
     for (var i = 0; i < walls.length; i++) {
       var w = walls[i];
@@ -2327,9 +2372,19 @@
       var shp = add('IFCSHAPEREPRESENTATION(' + ctx + ',\'Body\',\'SweptSolid\',(' + solidRefs.join(',') + '))');
       var pds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + shp + '))');
       var wLP = add('IFCLOCALPLACEMENT(' + lpFor(w.storeyIndex || 0) + ',' + wcs + ')');
-      var wall = add('IFCWALLSTANDARDCASE(' + G() + ',$,\'Стена ' + (i + 1) + (w.material === 'inferred' ? ' (достроена)' : '') + '\',$,$,' + wLP + ',' + pds + ',$,$)');
+      var wall = add('IFCWALLSTANDARDCASE(' + G() + ',$,' + stepString('Стена ' + (i + 1) + (w.material === 'inferred' ? ' (достроена)' : '')) + ',$,$,' + wLP + ',' + pds + ',$,$)');
       styleItem(solidRefs[0], w.color, w.material ? ('Wall ' + w.material) : 'Wall');   // v1266
       pushProduct(wall, w.storeyIndex || 0);
+      // r132: PSet_BimTwin — толщина, длина, высота, материал, признак «достроена»,
+      // покрытие облаком (если модель его содержит).
+      addPset(wall, [
+        ['thickness', 'length', w.thickness],
+        ['length', 'length', w.length],
+        ['height', 'length', w.height],
+        ['material', 'label', w.material || 'unknown'],
+        ['inferred', 'bool', !!w.inferred || w.material === 'inferred'],
+        ['coverage', 'ratio', w.coverage != null ? w.coverage : null]
+      ]);
       // v1231: сохраняем каждый распознанный проём отдельным IFC feature и
       // связываем его со стеной через IfcRelVoidsElement. Геометрия стены
       // остаётся разбитой на сегменты вокруг проёма для совместимости readers.
@@ -2404,6 +2459,11 @@
       var rLP = add('IFCLOCALPLACEMENT(' + lpFor(room.storeyIndex || 0) + ',' + wcs + ')');
       var spaceEnt = add('IFCSPACE(' + G() + ',$,' + stepString('Помещение ' + (rm + 1) + ' — ' + room.area.toFixed(1) + ' м²') + ',$,$,' + rLP + ',' + rpds + ',$,.ELEMENT.,.INTERNAL.,$)');
       styleItem(rsolid, room.color, 'Space');
+      var roomStorey = (modelStoreys && modelStoreys[room.storeyIndex || 0]) ? modelStoreys[room.storeyIndex || 0] : st;
+      addPset(spaceEnt, [
+        ['area', 'area', room.area],
+        ['height', 'length', roomStorey.height]
+      ]);
       (spaceRefsByStorey[room.storeyIndex || 0] || spaceRefsByStorey[0]).push(spaceEnt);
     }
     for (var sr = 0; sr < spaceRefsByStorey.length; sr++) {
@@ -2427,8 +2487,13 @@
       var slLP = add('IFCLOCALPLACEMENT(' + lpFor(sl.storeyIndex || 0) + ',' + wcs + ')');
       var predefined = sl.type === 'ceiling' ? '.ROOF.' : '.FLOOR.';
       styleItem(sSolid, (sl && sl.color) ? sl.color : [0.78, 0.76, 0.71], 'Slab ' + (sl.type || ''));
-      var slab = add('IFCSLAB(' + G() + ',$,\'' + (sl.type === 'ceiling' ? 'Потолок' : 'Пол') + '\',$,$,' + slLP + ',' + sPds + ',$,' + predefined + ')');
+      var slab = add('IFCSLAB(' + G() + ',$,' + stepString(sl.type === 'ceiling' ? 'Потолок' : 'Пол') + ',$,$,' + slLP + ',' + sPds + ',$,' + predefined + ')');
       pushProduct(slab, sl.storeyIndex || 0);
+      // r132: PSet_BimTwin для плит — толщина и тип (floor/ceiling).
+      addPset(slab, [
+        ['thickness', 'length', sl.thickness],
+        ['type', 'label', sl.type || 'floor']
+      ]);
     }
     // трубы/MEP (v1160) — круглый профиль, экструзия вдоль оси; IfcPipeSegment.
     for (var pp = 0; pp < pipes.length; pp++) {
@@ -2446,7 +2511,7 @@
       var pLP = add('IFCLOCALPLACEMENT(' + lpFor(pipe.storeyIndex || 0) + ',' + wcs + ')');
       var pipeName = 'Труба ' + (pp + 1) + (pipe.dn ? ' ' + pipe.dn : '') + (pipe.material ? ' (' + pipe.material + ')' : '');
       styleItem(pSolid, pipe.color, pipe.dn ? ('Pipe ' + pipe.dn) : 'Pipe');
-      var pipeProd = add('IFCPIPESEGMENT(' + G() + ',$,\'' + pipeName + '\',$,$,' + pLP + ',' + pPds + ',$,$)');
+      var pipeProd = add('IFCPIPESEGMENT(' + G() + ',$,' + stepString(pipeName) + ',$,$,' + pLP + ',' + pPds + ',$,$)');
       pushProduct(pipeProd, pipe.storeyIndex || 0);
     }
     // балки (v1161) — прямоугольный профиль, экструзия вдоль оси; IfcBeam.
@@ -2463,7 +2528,7 @@
       var bPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + bShp + '))');
       var bLP = add('IFCLOCALPLACEMENT(' + lpFor(bmw.storeyIndex || 0) + ',' + wcs + ')');
       styleItem(bSolid, bmw.color, 'Beam');
-      var beamProd = add('IFCBEAM(' + G() + ',$,\'Балка ' + (bm + 1) + '\',$,$,' + bLP + ',' + bPds + ',$,$)');
+      var beamProd = add('IFCBEAM(' + G() + ',$,' + stepString('Балка ' + (bm + 1)) + ',$,$,' + bLP + ',' + bPds + ',$,$)');
       pushProduct(beamProd, bmw.storeyIndex || 0);
     }
     // объекты/оборудование (v1160) — прокси-параллелепипеды IfcBuildingElementProxy
@@ -2479,8 +2544,8 @@
       var oPds = add('IFCPRODUCTDEFINITIONSHAPE($,$,(' + oShp + '))');
       var oLP = add('IFCLOCALPLACEMENT(' + lpFor(obj.storeyIndex || 0) + ',' + wcs + ')');
       var oprod;
-      if (obj.kind === 'column') oprod = add('IFCCOLUMN(' + G() + ',$,\'Колонна ' + (ob + 1) + '\',$,$,' + oLP + ',' + oPds + ',$,$)');
-      else oprod = add('IFCBUILDINGELEMENTPROXY(' + G() + ',$,\'Объект ' + (ob + 1) + '\',$,$,' + oLP + ',' + oPds + ',$,.NOTDEFINED.)');
+      if (obj.kind === 'column') oprod = add('IFCCOLUMN(' + G() + ',$,' + stepString('Колонна ' + (ob + 1)) + ',$,$,' + oLP + ',' + oPds + ',$,$)');
+      else oprod = add('IFCBUILDINGELEMENTPROXY(' + G() + ',$,' + stepString('Объект ' + (ob + 1)) + ',$,$,' + oLP + ',' + oPds + ',$,.NOTDEFINED.)');
       styleItem(oSolid, obj.color, obj.kind === 'column' ? 'Column' : 'Object');
       pushProduct(oprod, obj.storeyIndex || 0);
     }
@@ -2653,6 +2718,7 @@
     reconstruct: reconstruct, toIFC: toIFC, toOBJ: toOBJ, toDXF: toDXF,
     voxelDownsample: voxelDownsample, detectLevels: detectLevels, hull2d: hull2d, polyArea: polyArea,
     detectRooms: detectRooms, roomOutline: roomOutline, simplifyPoly: simplifyPoly, detectStoreys: detectStoreys, horizontalLevels: horizontalLevels,
+    stepString: stepString,
     version: '1245'
   };
   if (typeof window !== 'undefined') window.Scan2BIM = API;

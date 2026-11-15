@@ -28,6 +28,7 @@ INVENTORY_TYPES = [
     'IfcSlab', 'IfcSpace', 'IfcBuildingStorey', 'IfcBeam', 'IfcColumn', 'IfcPipeSegment',
     'IfcBuildingElementProxy', 'IfcSurfaceStyle', 'IfcSurfaceStyleRendering',
     'IfcStyledItem', 'IfcRelVoidsElement', 'IfcRelFillsElement',
+    'IfcPropertySet', 'IfcPropertySingleValue', 'IfcRelDefinesByProperties',
     'IfcProjectedCRS', 'IfcMapConversion',
 ]
 
@@ -112,11 +113,163 @@ def georef_info(f):
     return info
 
 
+def style_info(f, limit=5):
+    """Стили IfcSurfaceStyle: имя, цвет RGB (0..1 и 0..255), какие элементы используют.
+    Если у поверхности нет рендер-стиля (IfcSurfaceStyleShading) — rgb=None."""
+    out = []
+    for st in f.by_type('IfcSurfaceStyle'):
+        rgb = None
+        for item in st.Styles:
+            if item.is_a('IfcSurfaceStyleRendering') and item.SurfaceColour is not None:
+                c = item.SurfaceColour
+                rgb = [round(c.Red, 3), round(c.Green, 3), round(c.Blue, 3),
+                       int(round(c.Red * 255)), int(round(c.Green * 255)),
+                       int(round(c.Blue * 255))]
+        used = []
+        for rel in f.get_inverse(st):
+            targets = []
+            if rel.is_a('IfcPresentationStyleAssignment'):
+                targets = f.get_inverse(rel)
+            elif rel.is_a('IfcStyledItem'):
+                targets = [rel]
+            for t in targets:
+                if t.is_a('IfcStyledItem') and t.Item is not None:
+                    used.append(t.Item.is_a())
+        out.append({'name': st.Name, 'rgb_norm': rgb[:3] if rgb else None,
+                    'rgb255': rgb[3:] if rgb else None, 'used_by': used[:4]})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def step_unescape(raw):
+    """Декодирует внутренность STEP-строки: \\X2\\hhhh…\\X0\\, '' и \\\\."""
+    out, i, n = [], 0, len(raw)
+    while i < n:
+        if raw.startswith('\\X2\\', i):
+            j = raw.find('\\X0\\', i + 4)
+            if j < 0:
+                out.append(raw[i:])
+                break
+            hexpart = raw[i + 4:j]
+            for k in range(0, len(hexpart) - 3, 4):
+                try:
+                    out.append(chr(int(hexpart[k:k + 4], 16)))
+                except ValueError:
+                    return raw
+            i = j + 4
+            continue
+        if raw.startswith("''", i):
+            out.append("'")
+            i += 2
+            continue
+        if raw.startswith('\\\\', i):
+            out.append('\\')
+            i += 2
+            continue
+        out.append(raw[i])
+        i += 1
+    return ''.join(out)
+
+
+def names_info(f, text):
+    """Имена элементов из сырого STEP-текста + контроль их чтения через ifcopenshell.
+    encodingOk = False, если не-ASCII пишется сырым UTF-8 или имя читается иначе."""
+    wall_re = re.compile(r"=IFCWALL(?:STANDARDCASE)?\('((?:[^']|'')*)',\$,'((?:[^']|'')*)'")
+    space_re = re.compile(r"=IFCSPACE\('((?:[^']|'')*)',\$,'((?:[^']|'')*)'")
+    storey_re = re.compile(r"=IFCBUILDINGSTOREY\('((?:[^']|'')*)',\$,'((?:[^']|'')*)'")
+    slab_re = re.compile(r"=IFCSLAB\('((?:[^']|'')*)',\$,'((?:[^']|'')*)'")
+    wall_raw = [m.group(2) for m in wall_re.finditer(text)]
+    wall_dec = [step_unescape(n) for n in wall_raw]
+    walls = f.by_type('IfcWallStandardCase') or f.by_type('IfcWall')
+    readback = [w.Name for w in walls]
+    pairs = list(zip(wall_dec, readback))
+    bad = [(d, r) for d, r in pairs if d != r]
+    raw_utf8 = [n for n in wall_raw if any(ord(ch) > 127 for ch in n)]
+    escaped = [n for n in wall_raw if '\\X2\\' in n]
+    return {
+        'walls': len(wall_raw),
+        'inferredNames': sum(1 for n in wall_dec if 'достроена' in n),
+        'wallNamesSample': wall_dec[:3],
+        'inferredNamesSample': [n for n in wall_dec if 'достроена' in n][:2],
+        'spaceNames': [step_unescape(m.group(2)) for m in space_re.finditer(text)][:5],
+        'spaces': len(f.by_type('IfcSpace')),
+        'storeyNames': [step_unescape(m.group(2)) for m in storey_re.finditer(text)][:3],
+        'storeys': len(f.by_type('IfcBuildingStorey')),
+        'slabNames': [step_unescape(m.group(2)) for m in slab_re.finditer(text)][:4],
+        'nameReadbackFirstWall': readback[0] if readback else None,
+        'nameRawFirstWall': wall_raw[0] if wall_raw else None,
+        'nonAsciiRawUtf8': len(raw_utf8),
+        'escapedX2Count': len(escaped),
+        'encodingOk': len(raw_utf8) == 0 and not bad,
+        'encodingBad': [{'raw': d, 'readback': r} for d, r in bad[:3]],
+    }
+
+
+def pset_info(f):
+    """IfcPropertySet + IfcPropertySingleValue + IfcRelDefinesByProperties (чтение значений)."""
+    sets = f.by_type('IfcPropertySet')
+    rels = f.by_type('IfcRelDefinesByProperties')
+    props = f.by_type('IfcPropertySingleValue')
+    names = Counter(s.Name for s in sets)
+    samples = []
+    for s in sets[:5]:
+        d = {}
+        for p in s.HasProperties:
+            if p.is_a('IfcPropertySingleValue') and p.NominalValue is not None:
+                v = p.NominalValue
+                d[p.Name] = {'type': v.is_a(), 'value': v.wrappedValue}
+        samples.append({'name': s.Name, 'props': d})
+    return {
+        'count': len(sets),
+        'relations': len(rels),
+        'propertyCount': len(props),
+        'names': dict(names),
+        'samples': samples,
+    }
+
+
+def spatial_info(f):
+    storey_ids = {s.id() for s in f.by_type('IfcBuildingStorey')}
+    contained = 0
+    aggregated = 0
+    for rel in f.by_type('IfcRelContainedInSpatialStructure'):
+        if rel.RelatingStructure.id() in storey_ids:
+            contained += sum(1 for e in rel.RelatedElements if e.is_a('IfcSpace'))
+    for rel in f.by_type('IfcRelAggregates'):
+        if rel.RelatingObject.id() in storey_ids:
+            aggregated += sum(1 for e in rel.RelatedObjects if e.is_a('IfcSpace'))
+    return {
+        'storeys': [{'name': s.Name, 'elevation': s.Elevation}
+                    for s in f.by_type('IfcBuildingStorey')],
+        'spacesContainedInStorey': contained,
+        'spacesAggregatedToStorey': aggregated,
+    }
+
+
+def deep_info(f, text):
+    names = names_info(f, text)
+    return {
+        'styles': style_info(f),
+        'styleCount': len(f.by_type('IfcSurfaceStyle')),
+        'styledItems': len(f.by_type('IfcStyledItem')),
+        'names': names,
+        'spatial': spatial_info(f),
+        'propertySets': len(f.by_type('IfcPropertySet')),
+        'psets': pset_info(f),
+        'encodingOk': names['encodingOk'],
+    }
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Валидация IFC4 из Scan2BIM')
     ap.add_argument('ifc')
     ap.add_argument('--json', dest='json_out', default=None)
     ap.add_argument('--verbose', action='store_true', help='печатать все замечания валидатора')
+    ap.add_argument('--deep', action='store_true',
+                    help='доп.: стили/цвета (первые 5), имена «(достроена)», этажи/помещения, psets')
+    ap.add_argument('--require-psets', action='store_true',
+                    help='FAIL, если в файле нет IfcPropertySet (для интерьерных/фасадных IFC)')
     args = ap.parse_args(argv)
 
     try:
@@ -142,8 +295,13 @@ def main(argv=None):
             inventory[name] = 0
     inventory = {k: v for k, v in inventory.items() if v}
     geo = georef_info(f)
+    deep = deep_info(f, text) if args.deep else None
     errors = counts.get('ERROR', 0)
     ok = errors == 0 and not mismatches
+    if deep is not None and not deep['encodingOk']:
+        ok = False
+    if args.require_psets and not (deep or {}).get('psets', {}).get('count', 0):
+        ok = False
 
     print('файл:        %s' % args.ifc)
     print('schema:      %s | instances: %d | bytes: %d' % (f.schema, len(list(f)), len(text)))
@@ -159,13 +317,44 @@ def main(argv=None):
     print('инвентарь:   %s' % json.dumps(inventory, sort_keys=True))
     if geo['projectedCrs'] or geo['mapConversion']:
         print('геопривязка: %s' % json.dumps(geo, ensure_ascii=False))
+    if deep:
+        print('стили:       %d IfcSurfaceStyle, %d IfcStyledItem; первые %d:' % (
+            deep['styleCount'], deep['styledItems'], len(deep['styles'])))
+        for i, st in enumerate(deep['styles']):
+            print('  %d. %r rgb255=%s used_by=%s' % (
+                i + 1, st['name'], st['rgb255'], st['used_by']))
+        ni = deep['names']
+        print('имена:       стен %d, с «(достроена)» %d; примеры: %s' % (
+            ni['walls'], ni['inferredNames'], ni['wallNamesSample']))
+        print('             помещения: %d %s' % (ni['spaces'], ni['spaceNames']))
+        print('             этажи: %d %s; плиты: %s' % (
+            ni['storeys'], ni['storeyNames'], ni['slabNames']))
+        sp = deep['spatial']
+        print('структура:   помещения в подчинении этажа: contained=%d, aggregated=%d' % (
+            sp['spacesContainedInStorey'], sp['spacesAggregatedToStorey']))
+        ps = deep['psets']
+        print('psets:       IfcPropertySet: %d, IfcPropertySingleValue: %d, '
+              'IfcRelDefinesByProperties: %d' % (
+                  ps['count'], ps['propertyCount'], ps['relations']))
+        for smp in ps['samples'][:3]:
+            short = ', '.join('%s=%r' % (k, v['value']) for k, v in list(smp['props'].items())[:6])
+            print('  pset:      %s [%s]' % (smp['name'], short))
+        if ni['encodingOk']:
+            print('кодировка:   OK — имена читаются ifcopenshell корректно '
+                  '(пример: %r; экранировано \\X2\\: %d)' % (
+                      ni['nameReadbackFirstWall'], ni['escapedX2Count']))
+        else:
+            print('кодировка:   FAIL — не-ASCII сырым UTF-8 (STEP требует \\X2\\…\\X0\\): %d, '
+                  'ошибок чтения: %d; ifcopenshell: %r вместо %r' % (
+                      ni['nonAsciiRawUtf8'], len(ni['encodingBad']),
+                      ni['nameReadbackFirstWall'], ni['nameRawFirstWall']))
 
     if args.json_out:
         with open(args.json_out, 'w', encoding='utf-8') as fh:
             json.dump({'file': args.ifc, 'schema': f.schema, 'instances': len(list(f)),
                        'validator': counts, 'statements': statements,
                        'arityMismatches': mismatches, 'inventory': inventory,
-                       'georef': geo}, fh, ensure_ascii=False, indent=1)
+                       'georef': geo, 'deep': deep}, fh, ensure_ascii=False, indent=1)
 
     print('ИТОГ:        %s (ERROR=%d, WARNING=%d, INFO=%d, арность=%s)' % (
         'OK' if ok else 'ПРОБЛЕМЫ', errors, counts.get('WARNING', 0),
