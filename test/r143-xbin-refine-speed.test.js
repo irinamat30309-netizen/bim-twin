@@ -60,21 +60,28 @@ test('r143: DEF — быстрый профиль и ранний выход; д
   assert.strictEqual(XR.DEF.iterationsLong, 2);
   assert.strictEqual(XR.DEF.regRateLong, 12000);
   assert.strictEqual(XR.DEF.earlyExit, true);
+  assert.strictEqual(XR.DEF.globalMax, 0); assert.strictEqual(XR.DEF.globalMaxLong, 150000);
   const T0 = 9000, T1 = T0 + 12, RATE = 40000;
   const K = roomCase(T0, T1, errOf(T0), RATE);
   // длинный скан (порог 5 с) — 2 итерации и regRate 12000 даже без fast
   const rl = XR.refine(null, K.C, { refineOpt: { longScan: 5, mapRate: RATE } }, null, K.fakeWalk);
   assert.strictEqual(rl.summary.longScan, true); assert.strictEqual(rl.summary.fast, false);
   assert.strictEqual(rl.summary.iterationsPlanned, 2); assert.strictEqual(rl.summary.regRateUsed, 12000);
+  assert.strictEqual(rl.summary.globalCap, 150000);
   // fast=true на коротком — тот же быстрый профиль
   const rf = XR.refine(null, K.C, { refineOpt: { fast: true, mapRate: RATE } }, null, K.fakeWalk);
   assert.strictEqual(rf.summary.fast, true); assert.strictEqual(rf.summary.longScan, false);
   assert.strictEqual(rf.summary.iterationsPlanned, 2); assert.strictEqual(rf.summary.regRateUsed, 12000);
+  assert.strictEqual(rf.summary.globalCap, 150000);
   // явные iterations/regRate важнее профиля
   const re = XR.refine(null, K.C, { refineOpt: { iterations: 1, regRate: 8000, fast: true, mapRate: RATE } }, null, K.fakeWalk);
   assert.strictEqual(re.summary.iterationsPlanned, 1); assert.strictEqual(re.summary.regRateUsed, 8000);
+  assert.strictEqual(re.summary.globalCap, 150000);
   assert.ok(re.summary.iterationsUsed <= re.summary.windows, JSON.stringify(re.summary));
   assert.strictEqual(rl.summary.regRateUsed, 12000);
+  // короткий скан без fast/long — прежнее поведение без ограничения карты
+  const rs = XR.refine(null, K.C, { refineOpt: { iterations: 1, regRate: 20000, mapRate: RATE } }, null, K.fakeWalk);
+  assert.strictEqual(rs.summary.globalCap, 0);
 });
 
 test('r143: ранний выход по MAD — iterations факт 1–2, качество не хуже 10% от полного профиля', () => {
@@ -103,7 +110,7 @@ test('r143: ранний выход по MAD — iterations факт 1–2, ка
 
 test('r143: связка — галочка быстрого уточнения в окне, main/preload/worker, opt.fast в сборке', () => {
   const app = read('renderer/app.js'), main = read('main.js'), pre = read('preload.js'), xl = read('xbin-lidar.js'), wr = read('xbin-lidar-worker.js'), pkg = JSON.parse(read('package.json'));
-  assert.match(app, /key: 'fast', label: 'Быстрое уточнение \(рекомендуется для длинных сканов\)', type: 'checkbox', value: true/);
+  assert.match(app, /key: 'fast', label: 'Быстрое уточнение \(рекомендуется для длинных сканов\)', type: 'checkbox', value: mins >= 10/);
   assert.match(app, /fast = v\.fast !== false/);
   assert.match(app, /API\.xbinBuildCloud\(p, jobId, density, \{ refine, fast, color, edge \}\)/);
   assert.match(pre, /fast: !\(opts && opts\.fast === false\)/);

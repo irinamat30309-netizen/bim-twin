@@ -32,8 +32,9 @@ const DEF = {
   // (иначе малые систематические ошибки дальномера передавались бы от окна к окну и копились)
   global: true, globalVoxel: 0.04, globalNb: 6, globalWeight: 5, globalMinAge: 30,
   // ревизия 143: не тянуть в окно всю общую карту — на длинном скане она растёт до миллионов точек и запрос соседей
-  // становится квадратично дорогим. Берём равномерную выборку по времени (не более globalMax точек на окно).
-  globalMax: 150000,
+  // становится сверхлинейно дорогим. Для длинных/быстрых сканов берём равномерную выборку по времени (не более
+  // globalMaxLong точек на окно); на коротких сканах поведение прежнее (без ограничения), чтобы не менять качество.
+  globalMax: 0, globalMaxLong: 150000,
 };
 
 function grow(a, n) { if (a.length >= n) return a; const b = new a.constructor(Math.max(n, a.length * 2)); b.set(a); return b; }
@@ -141,6 +142,8 @@ function refine(fd, C, opt, prog, walk) {
   const iterPlanned = Math.max(1, Math.round(user.iterations !== undefined ? user.iterations : (fastProfile || longScan ? o.iterationsLong : o.iterations)));
   const regRate = Math.max(100, Math.round(user.regRate !== undefined ? user.regRate : (fastProfile || longScan ? o.regRateLong : o.regRate)));
   const earlyExit = o.earlyExit !== false, earlyExitTol = o.earlyExitTol > 0 ? o.earlyExitTol : 0.01;
+  // ревизия 143: ограничение общей карты включается только для быстрого/длинного профиля (короткие сканы — как раньше).
+  const globalCap = o.globalMax > 0 ? o.globalMax : ((fastProfile || longScan) ? (o.globalMaxLong > 0 ? o.globalMaxLong : 0) : 0);
   const T0 = C.T0, T1 = C.T1, dtK = o.knot, K = Math.ceil((T1 - T0) / dtK) + 2;
   const Xg = new Float64Array(K * 6), solved = new Uint8Array(K);
   // плотность сырых точек: байты пакетов / ~20,5 байта на точку · ~0,6 после фильтров
@@ -184,7 +187,7 @@ function refine(fd, C, opt, prog, walk) {
       let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
       for (let i = 0; i < n; i++) { const X = PX[i], Y = PY[i], Z = PZ[i]; if (X < x0) x0 = X; if (X > x1) x1 = X; if (Y < y0) y0 = Y; if (Y > y1) y1 = Y; if (Z < z0) z0 = Z; if (Z > z1) z1 = Z; }
       const mg = 0.2, dx0 = G0[0] - org[0], dy0 = G0[1] - org[1], dz0 = G0[2] - org[2], tLim = a - T0 - o.globalMinAge;
-      const gstep = o.globalMax > 0 ? Math.max(1, Math.ceil(gn / o.globalMax)) : 1;
+      const gstep = globalCap > 0 ? Math.max(1, Math.ceil(gn / globalCap)) : 1;
       for (let j = 0; j < gn; j += gstep) {
         if (GT[j] >= tLim) continue;
         const X = GX[j] + dx0, Y = GY[j] + dy0, Z = GZ[j] + dz0;
@@ -340,7 +343,7 @@ function refine(fd, C, opt, prog, walk) {
   stats.seconds = (Date.now() - started) / 1000;
   const summary = { windows: stats.windows, knots: K, knotStep: dtK, pairs: stats.pairsLast, residualBeforeMm: med(stats.madFirst) != null ? med(stats.madFirst) * 1000 : null,
     residualAfterMm: med(stats.madLast) != null ? med(stats.madLast) * 1000 : null, maxRotDeg: stats.maxRotDeg, maxShiftMm: stats.maxShiftMm, seconds: stats.seconds, mapStep: stepMap, mapPoints: stats.mapPoints, globalMap: gn, globalUsed: stats.globalUsed, globalPairs: stats.globalPairs || 0, timing: tm,
-    fast: fastProfile, longScan, iterationsPlanned: iterPlanned, regRateUsed: regRate, iterationsUsed: stats.iterationsUsed, earlyExits: stats.earlyExits, earlyExitSaved: stats.earlyExitSaved,
+    fast: fastProfile, longScan, iterationsPlanned: iterPlanned, regRateUsed: regRate, globalCap, iterationsUsed: stats.iterationsUsed, earlyExits: stats.earlyExits, earlyExitSaved: stats.earlyExitSaved,
     avgIterations: stats.windows ? +(stats.iterationsUsed / stats.windows).toFixed(2) : 0 };
   return { knots: { t0: T0, dt: dtK, x: Xg }, summary };
 }
