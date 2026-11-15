@@ -548,8 +548,10 @@ def load_manifest(root: Path, extra_pairs, no_facade: bool):
                     'note': 'стабильная модель r107 (контрольная точка)'})
     # Финальная модель релиза: r111 — py2-final-v2.json (Фаза 4: snap_wall стены 11);
     # если её нет (старые данные) — берём модель Фазы 1 py2-p1.json.
-    final_model = interior / 'py2-final-v2.json'
-    final_note = 'финальная модель r111 (Фаза 1 + snap стены 11 Фазы 4)'
+    final_model = interior / 'py2-final-v4.json'
+    if not final_model.exists():
+        final_model = interior / 'py2-final-v2.json'
+    final_note = 'финальная модель r117 (A 8/8, v4: топология A2/A6)'
     if not final_model.exists():
         final_model = interior / 'py2-p1.json'
         final_note = 'финальная модель Фазы 1 (A1/A5/A6) — r111-модель не найдена'
