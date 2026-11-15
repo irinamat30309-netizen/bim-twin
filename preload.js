@@ -270,7 +270,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   // ревизия 24: облако из сырого лидара .xbin (density: normal ≈ 40 млн, high ≈ 120 млн, all — все точки) с прогрессом и отменой
   // ревизия 25: opts.refine — уточнение траектории по самому облаку (точнее, дольше)
   // ревизия 36: opts.color — 'photo' (настоящий цвет по фото камер сканера) или 'gray' (яркость отражения лидара)
-  xbinBuildCloud: (p, jobId, density, opts) => inv('bim:xbinBuildCloud', { path: p, jobId, density, refine: !!(opts && opts.refine), color: opts && opts.color === 'gray' ? 'gray' : 'photo', edge: !(opts && opts.edge === false) }),
+  xbinBuildCloud: (p, jobId, density, opts) => inv('bim:xbinBuildCloud', { path: p, jobId, density, refine: !!(opts && opts.refine), fast: !(opts && opts.fast === false), color: opts && opts.color === 'gray' ? 'gray' : 'photo', edge: !(opts && opts.edge === false) }),
   onXbinCloudProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };

@@ -22,11 +22,18 @@ const DEF = {
   lambda: 30, prior: 0.3, maxRes: 0.05, anchor: 1000,
   targetSlot: 6,             // соседи — из карты, прореженной до точки на воксель 2,5 см за 6 с (перебор в 6 раз меньше, точность та же)
   maxNb: 40,                 // соседей на опорную точку (случайная выборка из всех в радиусе) — список строится один раз на окно
+  // Ревизия 143 (скорость): ранний выход по сходимости (улучшение MAD <1% за итерацию) и быстрый профиль для длинных
+  // сканов (> longScan секунд): 2 итерации и regRate 12000 вместо 3/20000. fast=true включает быстрый профиль и на коротких;
+  // явные iterations/regRate из refineOpt всегда важнее.
+  fast: false, longScan: 600, iterationsLong: 2, regRateLong: 12000, earlyExit: true, earlyExitTol: 0.01,
   // общая карта всей съёмки (1 точка на воксель 4 см): повторные проходы через минуты тянутся к уже уточнённым;
   // невязка до плоскости по точкам карты считается отдельно (их меньше, чем точек окна) и входит с весом 5
   // берутся только точки старше 30 с: соседние по времени окна связаны перекрытием, а карта нужна для настоящих повторных проходов
   // (иначе малые систематические ошибки дальномера передавались бы от окна к окну и копились)
   global: true, globalVoxel: 0.04, globalNb: 6, globalWeight: 5, globalMinAge: 30,
+  // ревизия 143: не тянуть в окно всю общую карту — на длинном скане она растёт до миллионов точек и запрос соседей
+  // становится квадратично дорогим. Берём равномерную выборку по времени (не более globalMax точек на окно).
+  globalMax: 150000,
 };
 
 function grow(a, n) { if (a.length >= n) return a; const b = new a.constructor(Math.max(n, a.length * 2)); b.set(a); return b; }
@@ -124,7 +131,16 @@ function buildGrid(X, Y, Z, n, cell, ids) {   // ids — необязатель�
  *   C — контекст xbin-lidar.prepare(), walk — xbin-lidar.walk (обход точек окна с позой из C.TR).
  */
 function refine(fd, C, opt, prog, walk) {
-  const o = Object.assign({}, DEF, (opt && opt.refineOpt) || {});
+  const user = (opt && opt.refineOpt) || {};
+  const o = Object.assign({}, DEF, user);
+  // Ревизия 143: длинные сканы (> longScan) идут быстрым профилем по умолчанию (2 итерации, regRate 12000);
+  // fast=true включает тот же профиль на коротких сканах; явные iterations/regRate из refineOpt всегда главнее.
+  const duration = C.T1 - C.T0;
+  const longScan = duration > (o.longScan > 0 ? o.longScan : 600);
+  const fastProfile = o.fast === true;
+  const iterPlanned = Math.max(1, Math.round(user.iterations !== undefined ? user.iterations : (fastProfile || longScan ? o.iterationsLong : o.iterations)));
+  const regRate = Math.max(100, Math.round(user.regRate !== undefined ? user.regRate : (fastProfile || longScan ? o.regRateLong : o.regRate)));
+  const earlyExit = o.earlyExit !== false, earlyExitTol = o.earlyExitTol > 0 ? o.earlyExitTol : 0.01;
   const T0 = C.T0, T1 = C.T1, dtK = o.knot, K = Math.ceil((T1 - T0) / dtK) + 2;
   const Xg = new Float64Array(K * 6), solved = new Uint8Array(K);
   // плотность сырых точек: байты пакетов / ~20,5 байта на точку · ~0,6 после фильтров
@@ -132,7 +148,7 @@ function refine(fd, C, opt, prog, walk) {
   const stepMap = Math.max(1, Math.round(rate / o.mapRate));
   const R2 = o.radius * o.radius;
   const tm = { walk: 0, grid: 0, query: 0, solve: 0 };
-  const stats = { windows: 0, pairsFirst: 0, pairsLast: 0, madFirst: [], madLast: [], maxRotDeg: 0, maxShiftMm: 0, seconds: 0 };
+  const stats = { windows: 0, pairsFirst: 0, pairsLast: 0, madFirst: [], madLast: [], maxRotDeg: 0, maxShiftMm: 0, seconds: 0, iterationsUsed: 0, earlyExits: 0, earlyExitSaved: 0 };
   const started = Date.now();
   let PX = new Float32Array(1 << 20), PY = new Float32Array(1 << 20), PZ = new Float32Array(1 << 20), PT = new Float32Array(1 << 20);
   let CX = new Float32Array(1 << 20), CY = new Float32Array(1 << 20), CZ = new Float32Array(1 << 20);
@@ -168,7 +184,8 @@ function refine(fd, C, opt, prog, walk) {
       let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
       for (let i = 0; i < n; i++) { const X = PX[i], Y = PY[i], Z = PZ[i]; if (X < x0) x0 = X; if (X > x1) x1 = X; if (Y < y0) y0 = Y; if (Y > y1) y1 = Y; if (Z < z0) z0 = Z; if (Z > z1) z1 = Z; }
       const mg = 0.2, dx0 = G0[0] - org[0], dy0 = G0[1] - org[1], dz0 = G0[2] - org[2], tLim = a - T0 - o.globalMinAge;
-      for (let j = 0; j < gn; j++) {
+      const gstep = o.globalMax > 0 ? Math.max(1, Math.ceil(gn / o.globalMax)) : 1;
+      for (let j = 0; j < gn; j += gstep) {
         if (GT[j] >= tLim) continue;
         const X = GX[j] + dx0, Y = GY[j] + dy0, Z = GZ[j] + dz0;
         if (X < x0 - mg || X > x1 + mg || Y < y0 - mg || Y > y1 + mg || Z < z0 - mg || Z > z1 + mg) continue;
@@ -181,10 +198,11 @@ function refine(fd, C, opt, prog, walk) {
     const nAll = n + m;
     const QX = new Float32Array(nAll), QY = new Float32Array(nAll), QZ = new Float32Array(nAll);
     QX.set(PX.subarray(n, nAll), n); QY.set(PY.subarray(n, nAll), n); QZ.set(PZ.subarray(n, nAll), n);
-    const every = Math.max(1, Math.round(n / (o.regRate * (b - a))));
+    const every = Math.max(1, Math.round(n / (regRate * (b - a))));
     const nq = Math.ceil(n / every), CAP = o.maxNb, NB = new Int32Array(nq * CAP), NC = new Uint8Array(nq);
     const CAPO = m ? 24 : 0, NBO = new Int32Array(nq * CAPO), NCO = new Uint8Array(m ? nq : 0);   // соседи из общей карты
-    for (let it = 0; it < o.iterations; it++) {
+    let prevMad = null, lastMad = null, lastPairs = 0;
+    for (let it = 0; it < iterPlanned; it++) {
       // текущие точки: p0 + θ(t)×(p0 − c) + v(t)
       for (let i = 0; i < n; i++) {
         const u = (PT[i] + a - T0) / dtK - ka; let k0 = Math.floor(u); if (k0 < 0) k0 = 0; if (k0 > L - 2) k0 = L - 2; const al = u - k0, be = 1 - al, i0 = k0 * 6, i1 = i0 + 6;
@@ -245,12 +263,19 @@ function refine(fd, C, opt, prog, walk) {
       };
       for (let q = 0, qi = 0; q < n; q += every, qi++) {
         plane(q, NB, qi * CAP, NC[qi], o.minNb, 1);
-        if (CAPO) { const before = res.length; plane(q, NBO, qi * CAPO, NCO[qi], o.globalNb, o.globalWeight); if (res.length > before) stats.globalPairs = (stats.globalPairs || 0) + (it === o.iterations - 1 ? 1 : 0); }
+        if (CAPO) { const before = res.length; plane(q, NBO, qi * CAPO, NCO[qi], o.globalNb, o.globalWeight); if (res.length > before) stats.globalPairs = (stats.globalPairs || 0) + (it === iterPlanned - 1 ? 1 : 0); }
       }
       tm.fit = (tm.fit || 0) + Date.now() - tq0; tq0 = Date.now();
       if (res.length < 200) break;
       const absr = Float64Array.from(res, Math.abs).sort(); const mad = 1.4826 * absr[absr.length >> 1];
-      if (it === 0) { stats.madFirst.push(mad); stats.pairsFirst += res.length; } else if (it === o.iterations - 1) { stats.madLast.push(mad); stats.pairsLast += res.length; }
+      if (it === 0) { stats.madFirst.push(mad); stats.pairsFirst += res.length; }
+      lastMad = mad; lastPairs = res.length; stats.iterationsUsed++;
+      // ревизия 143: ранний выход, если очередная итерация почти не улучшила MAD (< earlyExitTol)
+      if (it > 0 && earlyExit && prevMad != null && (prevMad - mad) / Math.max(1e-12, prevMad) < earlyExitTol) {
+        stats.earlyExits++; stats.earlyExitSaved += iterPlanned - it;
+        break;
+      }
+      prevMad = mad;
       // нормальные уравнения
       const D = new Float64Array(L * 36), U = new Float64Array(L * 36), g = new Float64Array(L * 6), J = new Float64Array(12);
       const cut = 2 * mad;
@@ -286,8 +311,9 @@ function refine(fd, C, opt, prog, walk) {
       const dx = solveBlockTridiag(D, U, g, L);
       for (let i = 0; i < x.length; i++) x[i] += dx[i];
       tm.solve += Date.now() - tq0;
-      if (prog) prog((wi + (it + 1) / o.iterations) / nWin, 'Облако из .xbin: уточнение траектории по облаку (окно ' + (wi + 1) + ' из ' + nWin + ')…');
+      if (prog) prog((wi + (it + 1) / iterPlanned) / nWin, 'Облако из .xbin: уточнение траектории по облаку (окно ' + (wi + 1) + ' из ' + nWin + ')…');
     }
+    if (lastMad != null) { stats.madLast.push(lastMad); stats.pairsLast += lastPairs; }
     if (o.global) {   // в общую карту — точки окна в окончательных положениях до середины перекрытия со следующим окном
       const tEnd = Math.min(b, a + span + o.overlap / 2) - a, gv = o.globalVoxel, ox = org[0] - G0[0], oy = org[1] - G0[1], oz = org[2] - G0[2];
       for (let i = 0; i < n; i++) {
@@ -313,7 +339,9 @@ function refine(fd, C, opt, prog, walk) {
   const med = (v) => { if (!v.length) return null; const s = v.slice().sort((p, q) => p - q); return s[s.length >> 1]; };
   stats.seconds = (Date.now() - started) / 1000;
   const summary = { windows: stats.windows, knots: K, knotStep: dtK, pairs: stats.pairsLast, residualBeforeMm: med(stats.madFirst) != null ? med(stats.madFirst) * 1000 : null,
-    residualAfterMm: med(stats.madLast) != null ? med(stats.madLast) * 1000 : null, maxRotDeg: stats.maxRotDeg, maxShiftMm: stats.maxShiftMm, seconds: stats.seconds, mapStep: stepMap, mapPoints: stats.mapPoints, globalMap: gn, globalUsed: stats.globalUsed, globalPairs: stats.globalPairs || 0, timing: tm };
+    residualAfterMm: med(stats.madLast) != null ? med(stats.madLast) * 1000 : null, maxRotDeg: stats.maxRotDeg, maxShiftMm: stats.maxShiftMm, seconds: stats.seconds, mapStep: stepMap, mapPoints: stats.mapPoints, globalMap: gn, globalUsed: stats.globalUsed, globalPairs: stats.globalPairs || 0, timing: tm,
+    fast: fastProfile, longScan, iterationsPlanned: iterPlanned, regRateUsed: regRate, iterationsUsed: stats.iterationsUsed, earlyExits: stats.earlyExits, earlyExitSaved: stats.earlyExitSaved,
+    avgIterations: stats.windows ? +(stats.iterationsUsed / stats.windows).toFixed(2) : 0 };
   return { knots: { t0: T0, dt: dtK, x: Xg }, summary };
 }
 

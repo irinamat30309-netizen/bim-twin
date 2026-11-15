@@ -487,7 +487,11 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
     let pw = 0.1, refineInfo = null;
     if (o.refine) {
       const XR = require('./xbin-refine');
-      refineInfo = XR.refine(fd, C, o, (f, label) => prog(0.1 + 0.55 * f, label || 'Облако из .xbin: уточнение траектории по облаку…'), walk);
+      // Ревизия 143: fast/iterations/regRate можно задать прямо в opt сборки (галочка «Быстрое уточнение»);
+      // явные значения важнее профиля по длине скана. refineOpt.prog — прогресс.
+      const ro = Object.assign({}, o.refineOpt || {});
+      for (const k of ['fast', 'iterations', 'regRate', 'longScan', 'iterationsLong', 'regRateLong']) if (o[k] !== undefined) ro[k] = o[k];
+      refineInfo = XR.refine(fd, C, Object.assign({}, o, { refineOpt: ro }), (f, label) => prog(0.1 + 0.55 * f, label || 'Облако из .xbin: уточнение траектории по облаку…'), walk);
       C.TR = XR.correctedTrajectory(C.TR, refineInfo.knots);
       pw = 0.65;
     }

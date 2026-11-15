@@ -686,30 +686,32 @@
     if (!info.poses || !info.poses.n) { toast('Рядом с .xbin не найдена траектория project_data/poses.csv — без неё облако не собрать'); return false; }
     const kit = window.__lxKit, mins = Math.max(1, Math.round((info.poses.duration || 0) / 60));
     const allMln = Math.max(1, Math.round((info.poses.duration || 0) * 0.36));   // L2 Pro: ~360 тыс. точек/с после фильтра дальности
-    let density = 'normal', refine = true, color = x.photoReady ? 'photo' : 'gray', edge = true, finish = true;
+    let density = 'normal', refine = true, fast = true, color = x.photoReady ? 'photo' : 'gray', edge = true, finish = true;
     if (kit && kit.form) {
       const v = await kit.form({ title: 'Облако из сырого лидара (.xbin)', okLabel: 'Собрать облако', wide: true,
         message: (lead ? lead + ' ' : '') + 'Точки лидара переводятся в координаты проекта по траектории сканера (' + info.poses.name + ', ' + mins + ' мин) и калибровкам из .xbin. Результат — LAS рядом с .xbin со временем точек: после сборки работают «Движущиеся объекты» и «Автоочистка».' + (x.photoReady ? ' Лидар сам по себе цвета не видит (только яркость отражения — серое облако), поэтому настоящий цвет точкам даётся по кадрам камер сканера из того же .xbin (около 1 минуты на 10–15 млн точек; серое облако можно раскрасить и потом).' : ' Камер в .xbin нет — облако будет серым (яркость отражения лидара).'),
-        hint: 'Поза сканера между точками траектории (5 раз в секунду) дополняется гироскопом IMU из .xbin, а уточнение по облаку подгоняет траекторию так, чтобы стены и пол из разных проходов совпали: поверхности тоньше, чем в map.las со сканера. Отражения от корпуса сканера убираются. Сборка идёт в фоне: без уточнения — около 1 минуты на 5–10 минут съёмки, с уточнением — немного дольше, чем длилась съёмка (15 минут съёмки — около 20 минут).',
+        hint: 'Поза сканера между точками траектории (5 раз в секунду) дополняется гироскопом IMU из .xbin, а уточнение по облаку подгоняет траекторию так, чтобы стены и пол из разных проходов совпали: поверхности тоньше, чем в map.las со сканера. Отражения от корпуса сканера убираются. Сборка идёт в фоне: без уточнения — около 1 минуты на 5–10 минут съёмки, с быстрым уточнением — примерно как длилась съёмка (15 минут съёмки — около 15–20 минут), без него — в 2,5–3,5 раза дольше.',
         fields: [{ key: 'density', label: 'Плотность', type: 'select', value: 'normal', options: [
           { value: 'normal', label: 'Обычная — до 40 млн точек (до 1,4 ГБ)' },
           { value: 'high', label: 'Высокая — до 120 млн точек (до 4 ГБ)' },
           { value: 'all', label: 'Все точки — около ' + allMln + ' млн (' + (allMln * 34 / 1024).toFixed(1).replace('.', ',') + ' ГБ)' + (allMln * 1e6 > gpuPointBudget() ? ', на экране — до ' + fmtMln(gpuPointBudget()) + ' млн' : '') }] },
           { key: 'refine', label: 'Уточнить траекторию по облаку (точнее, дольше)', type: 'checkbox', value: true },
+          // ревизия 143: быстрое уточнение (2 итерации, regRate 12000, ранний выход по сходимости)
+          { key: 'fast', label: 'Быстрое уточнение (рекомендуется для длинных сканов)', type: 'checkbox', value: true, hint: 'Уточнение траектории по облаку идёт по окнам 20 с; на длинных сканах (больше 10 минут) быстрое уточнение по умолчанию: 2 итерации вместо 3, в 1,7 раза меньше опорных точек и ранний выход, когда очередная итерация уже не улучшает совпадение поверхностей. По времени — примерно как длительность съёмки (15 минут съёмки — около 15–20 минут), без него — в 2,5–3,5 раза дольше. Точность стен/пола остаётся в пределах десятых долей миллиметра.' },
           // ревизия 37: чистое облако, как в Lixel Studio — фильтр краёв при сборке и Чистовая обработка сразу после неё
           { key: 'edge', label: 'Убрать «бахрому» у краёв и пыль в воздухе', type: 'checkbox', value: true, hint: 'Смешанные отражения на краях предметов (хвосты точек за рамами, столбами, людьми) и одиночные скачки дальности (пыль, капли, блики) отбрасываются по соседним точкам того же луча лидара. Ровные поверхности, в том числе пол и фасад под острым углом, не страдают.' },
           { key: 'finish', label: 'Сразу Чистовая обработка (шум, движущиеся объекты, тонкие стены)', type: 'checkbox', value: true, hint: 'После сборки откроется Чистовая обработка с настройками, как у экспорта Lixel Studio: шум «Сильно», прохожие и машины, тонкие стены и пол, ровный цвет. Её можно запустить и позже: вкладка «Облако» → «Чистовая обработка».' }]
           .concat(x.photoReady ? [{ key: 'color', label: 'Цвет точек', type: 'select', value: 'photo', options: [
             { value: 'photo', label: 'Настоящий, по фото камер (дольше)' },
             { value: 'gray', label: 'Серый, яркость лидара (быстро)' }] }] : []) });
-      if (!v) return false; density = v.density || 'normal'; refine = v.refine !== false; edge = v.edge !== false; finish = v.finish !== false; if (x.photoReady) color = v.color === 'gray' ? 'gray' : 'photo';
+      if (!v) return false; density = v.density || 'normal'; refine = v.refine !== false; fast = v.fast !== false; edge = v.edge !== false; finish = v.finish !== false; if (x.photoReady) color = v.color === 'gray' ? 'gray' : 'photo';
     }
     const jobId = 'xl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     const PR = window.__lxProgress;
     const stop = PR && PR.begin ? PR.begin('Облако из .xbin', { onCancel: () => { if (API.cancelXbinCloud) API.cancelXbinCloud(jobId); } }) : null;
     const unsub = typeof API.onXbinCloudProgress === 'function' ? API.onXbinCloudProgress(jobId, (f, lab) => { try { if (stop && stop.set) stop.set(Number(f) || 0, lab || 'Облако из .xbin…'); } catch (_) {} }) : null;
     let r = null;
-    try { r = await API.xbinBuildCloud(p, jobId, density, { refine, color, edge }); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
+    try { r = await API.xbinBuildCloud(p, jobId, density, { refine, fast, color, edge }); } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
     finally { try { if (typeof unsub === 'function') unsub(); } catch (_) {} try { if (stop) stop(); } catch (_) {} }
     if (!r || !r.ok) { toast(r && r.cancelled ? 'Сборка облака отменена' : ((r && r.message) || 'Не удалось собрать облако из .xbin')); return false; }
     const rf = r.refine && r.refine.residualAfterMm > 0 ? ', расхождение поверхностей ' + String(r.refine.residualBeforeMm).replace('.', ',') + ' → ' + String(r.refine.residualAfterMm).replace('.', ',') + ' мм' : '';

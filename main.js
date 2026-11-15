@@ -1215,7 +1215,9 @@ function registerIpc() {
       partFile = target + '.part';
       // ревизия 25: refine — уточнение траектории по самому облаку (xbin-refine.js), самомаска корпуса сканера — всегда
       // ревизия 37: edge — фильтр смешанных отражений и пыли по кольцу лидара (xbin-lidar.walk), по умолчанию включён
-      const opt = { maxPoints: XBIN_DENSITY[density] || 0, step: density === 'all' ? 1 : 0, refine: a.refine === true, edge: a.edge !== false };
+      // ревизия 143: fast — быстрое уточнение (2 итерации, regRate 12000, ранний выход); по умолчанию включено,
+      // как рекомендовано для длинных сканов; для коротких явное fast=false даёт прежние 3 итерации/20000
+      const opt = { maxPoints: XBIN_DENSITY[density] || 0, step: density === 'all' ? 1 : 0, refine: a.refine === true, fast: a.fast !== false, edge: a.edge !== false };
       // ревизия 36: цвет точек — по фото камер (настоящий цвет, по умолчанию, если в .xbin есть камеры) или серый (яркость отражения лидара)
       const photo = a.color !== 'gray' && !!(info.xbin && info.xbin.photoReady);
       const W0 = photo ? 0.5 : 1;   // доля прогресса на сборку
@@ -1251,7 +1253,7 @@ function registerIpc() {
       } else activeXbinCloudJobs.delete(key);
       try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
       try { fileGrants.grantExistingFile(sender.id, info.poses.path, { read: true }); const k = path.resolve(target); scanFolderPoses.set(process.platform === 'win32' ? k.toLowerCase() : k, info.poses.path); } catch (_) {}
-      const r1 = v => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null), rf = r.refine ? { residualBeforeMm: r1(r.refine.residualBeforeMm), residualAfterMm: r1(r.refine.residualAfterMm), seconds: Math.round(r.refine.seconds || 0) } : null;
+      const r1 = v => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null), rf = r.refine ? { residualBeforeMm: r1(r.refine.residualBeforeMm), residualAfterMm: r1(r.refine.residualAfterMm), seconds: Math.round(r.refine.seconds || 0), fast: !!r.refine.fast, avgIterations: r.refine.avgIterations, windows: r.refine.windows } : null;
       return { ok: true, path: target, name: path.basename(target), inProjectFolder: !!projectOutputDir(a.projectId), points: r.points, step: r.step, seconds: r.seconds, trajectory: info.poses.name, density, refine: rf, edge: Number(r.edge) || 0,
         color: photoStats ? 'photo' : 'gray', photo: photoStats, photoWarning, photoAvailable: !!(info.xbin && info.xbin.photoReady) };
     } catch (e) {
