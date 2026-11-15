@@ -1,18 +1,22 @@
 # Блок 3 ROADMAP-DOCS-AI — панель «Документация» в приложении
 
 Дата: 2026-11-15. База: коммит `f3e92a2` (r118), ветка `agent/ui-redesign`.
-Изменения **не закоммичены** (рабочее дерево). Задача — панель «Документация» перед/после
-построения BIM: загрузка отчёта сравнения `compare.json` (готовит `docs-compare.py`),
-таблица «проект ↔ модель ↔ облако», скор соответствия 0–100, рекомендации и понятная
-инструкция, как получить отчёт без терминала.
+Работа вошла в коммит Lead `0756cb6` (r119b, «панель „Документация“», 19 тестов) и
+`de98be3` (r120); после этого отчёт обновлён по **реальному** `compare.json` Блока 2
+(адаптация парсера под фактические поля `value`, вложенный `tolerance`, дробный `score`,
++2 теста на реальный формат/файл). Сам я ничего не коммитил, чужие файлы не трогал.
+Задача — панель «Документация» перед/после построения BIM: загрузка отчёта сравнения
+`compare.json` (готовит `docs-compare.py`), таблица «проект ↔ модель ↔ облако»,
+скор соответствия 0–100, рекомендации и понятная инструкция, как получить отчёт
+без терминала.
 
 Файлы этой задачи:
 
 | Файл | Статус |
 |---|---|
-| `renderer/lixel-scan2bim-docs.js` | **новый**, ~1290 строк: панель `#lxS2BDocsPanel`, парсер/валидатор, модалка-инструкция, API |
+| `renderer/lixel-scan2bim-docs.js` | **новый**, ~1350 строк: панель `#lxS2BDocsPanel`, парсер/валидатор (обе схемы + реальные варианты полей), модалка-инструкция, API |
 | `renderer/lixel-scan2bim-ui.js` | минимальные правки: кнопка «Документация» + динамическая загрузка модуля (+41/−2) |
-| `test/r119-docs-panel.test.js` | **новый**, 19 тестов (source-level + Node + jsdom) |
+| `test/r119-docs-panel.test.js` | **новый**, 21 тест (source-level + Node + jsdom; включая разбор реального `compare.json`) |
 | `PHASE6-DOCS-UI.md` | этот отчёт |
 
 `index.html`, `renderer/scan2bim.js`, инструменты Python и прочие файлы **не менялись**:
@@ -23,9 +27,9 @@
 
 | Проверка | До | После |
 |---|---|---|
-| `node --test` (bim-twin) | 1616 тестов / **1612 pass** / 0 fail / 4 skipped | **1635** / **1631 pass** / **0 fail** / 4 skipped |
-| Новые тесты `r119-docs-panel` | — | **19 / 19 pass** (0 fail) |
-| Реальный прогон Electron (Chromium) | — | кнопка → модуль → панель → отчёт 87/100 (7 строк, 3 рекомендации) → модалка-инструкция: **все шаги OK, 0 JS-исключений** |
+| `node --test` (bim-twin) | 1616 тестов / **1612 pass** / 0 fail / 4 skipped | **1637** / **1633 pass** / **0 fail** / 4 skipped |
+| Новые тесты `r119-docs-panel` | — | **21 / 21 pass** (0 fail) |
+| Реальный прогон Electron (Chromium) | — | кнопка → модуль → панель → **реальный compare.json**: скор **92,7/A**, 25 строк (PASS 18 / WARN 3 / FAIL 0 / — 4), 4 рекомендации, 5 ограничений, 5 непроверенных; модалка-инструкция: **0 JS-исключений** |
 | Схемы `compare.json` | — | поддержаны **обе**: реальная `docs-compare.py` (`schema_version=1`, `inputs/rows/score/grade/coverage_pct/summary/recommendations/limitations/unverified`) и упрощённая из постановки (`docs/model/rows[{name, project, model, cloud, delta_mm, delta_pct, status}]/score/recommendations`) |
 | Валидация импорта | — | 16+ кейсов невалидного JSON отклоняются с понятной причиной; уже загруженный отчёт и модель при этом **не меняются** |
 | Палитра | — | только токены `tokens.css`: violet `#a78bfa` / `#6a52cb`, graphite `#1c1b1a` / `#232221`; без синего, чистого белого и градиентов |
@@ -62,7 +66,12 @@
   * `recommendations` — массив строк или `{severity, code, text}`;
   * `limitations` — массив строк; `unverified` — массив `{id, label, reason}`;
     `schema_version` — число;
-  * значения ячеек `project/model/cloud` — число, строка или `{value, unit, source, page}`.
+  * значения ячеек `project/model/cloud` — число, строка или `{value, unit, source, page}`;
+  * **фактический формат docs-compare.py** (проверено на реальном файле): `delta_mp`/`delta_cm` —
+    `{value, unit, pct?}` (парсер принимает и `{abs,...}`), `tolerance` — `{value, unit}` или
+    `{value:{pass_mm, warn_mm, unit}}` для дверей, высоты — `storey_height_mm`/`height_mm`
+    (переводятся в метры), `score` бывает дробным (92.7 → в панели «92,7»), а строки
+    `UNVERIFIED` могут иметь `project/model/cloud = null` — в таблице это «—».
 * **При ошибке** (`битый JSON`, нет `rows`, строка без названия, score не число,
   recommendations не массив и т.п.) — панель показывает «Импорт отклонён: <причина>»
   и тост, а прежний отчёт, скор и таблица **остаются на месте** (проверено тестом).
@@ -74,7 +83,8 @@
 * **Заголовок**: объект и адрес из документации (`docs.object` / `docs.address`),
   файл отчёта, дата генерации, число страниц PDF.
 * **Скор соответствия 0–100** с цветом статуса (ok ≥ 85, warn ≥ 55, иначе err),
-  оценка **A–E**, счётчики `PASS / WARN / FAIL / —`, покрытие проверок
+  дробный score показывается без потери точности («92,7»), оценка **A–E**,
+  счётчики `PASS / WARN / FAIL / —`, покрытие проверок
   (`coverage_pct`, «сверено 66 % проверок»); рядом — **сводка модели приложения**
   (`window.__lxScan2BIM.state.model` / редактора): стены, помещения, площадь, высота.
 * **Таблица «Проект ↔ модель ↔ облако»** (`data-d-table`): строка на проверку —
@@ -136,37 +146,53 @@
 
 ### 2.1. Реальная схема `tools/scan2bim-py/docs-compare.py` (schema_version = 1)
 
+Пример из фактического `D:\BIM-TWIN-TEST\docs\compare.json` (MD5 `57C28FCCBFF1C8876BFF565C62EDFC09`,
+score 92.7, grade A, coverage 90 %) — поля, которые читает панель:
+
 ```json
 {
   "schema_version": 1,
   "generated_at": "2026-11-15T…",
+  "tool": "docs-compare.py",
   "inputs": {
-    "docs":  {"path": "...", "primary_pdf": "...", "pages": 245, "object": "...", "address": "..."},
-    "model": {"path": "...", "md5": "...", "walls": 85, "rooms": 23, "storey_height_m": 3.278},
-    "cloud": {"path": "...", "measured": true, "height_m": 3.276, "floor_visible_m2": 127.9}
+    "docs":  {"path": "...", "md5": "...", "object": "...", "address": "...", "pages": 245},
+    "model": {"path": "...", "md5": "...", "walls": 85, "walls_measured": 23, "rooms": 23,
+              "storey_height_mm": 3278, "rooms_area_m2": 122.81},
+    "cloud": {"path": "...", "measured": true, "height_mm": 3276, "floor_visible_m2": 128,
+              "rooms_perimeter_covered_pct": 98.7, "floor_perimeter_outer_m": 203.8}
   },
-  "score": 87, "grade": "A", "coverage_pct": 66,
-  "summary": {"checks": 12, "pass": 8, "warn": 3, "fail": 1, "unverified": 0},
+  "score": 92.7, "grade": "A", "coverage_pct": 90.0,
+  "summary": {"checks": 25, "pass": 18, "warn": 3, "fail": 0, "unverified": 4},
   "rows": [{
     "id": "floor_height", "category": "floors", "label": "Высота этажа (чистая)",
-    "project": {"value": 3300, "unit": "mm", "source": "docs.json:…", "page": 15},
-    "model":   {"value": 3278, "unit": "mm", "source": "…"},
-    "cloud":   {"value": 3276, "unit": "mm", "source": "…"},
-    "delta_mp": {"abs": -22, "unit": "mm", "pct": -0.67},
-    "delta_cm": {"abs": -2,  "unit": "mm", "pct": -0.06},
-    "tolerance": {"abs": 50, "unit": "mm"},
-    "status": "PASS", "note": "в допуске"
+    "project": {"value": 3300, "unit": "mm", "source": "docs.json: floors.clean_height_mm"},
+    "model":   {"value": 3278, "unit": "mm", "source": "model: storey.height"},
+    "cloud":   {"value": 3276, "unit": "mm", "source": "ruler-v2.py: cloud.height"},
+    "delta_mp": {"value": -22, "unit": "mm", "pct": -0.67},
+    "delta_cm": {"value": -2, "unit": "mm"},
+    "tolerance": {"value": 50, "unit": "mm"},
+    "status": "PASS", "note": "…"
+  }, {
+    "id": "door_model_1993",
+    "tolerance": {"value": {"pass_mm": 80, "warn_mm": 180, "unit": "mm"}, "unit": ""},
+    "delta_mp": {"value": 93, "unit": "mm"}, "status": "WARN"
+  }, {
+    "id": "rooms_area_total", "project": {"value": 3600.13, "unit": "m2"},
+    "model": {"value": 122.81, "unit": "m2"}, "cloud": {"value": 128, "unit": "m2"},
+    "delta_mp": null, "tolerance": null, "status": "UNVERIFIED"
   }],
-  "recommendations": [{"severity": "warn", "code": "A3", "text": "…"}],
+  "recommendations": [{"severity": "warn", "code": "wall_t_600", "text": "…"}],
   "limitations": ["…"],
-  "unverified": [{"id": "bbox_x", "label": "Габарит X", "reason": "нет облака"}]
+  "unverified": [{"id": "rooms_area_match", "label": "…", "reason": "…"}]
 }
 ```
 
 Статусы в отчёте: **PASS | WARN | FAIL | UNVERIFIED**; в UI `UNVERIFIED` показывается
 как **«—»**, `WARN` — отдельным янтарным бейджем (честно показываем предупреждение,
-а не только PASS/FAIL). Если `status` отсутствует, он выводится из `delta_mp.abs`
-и `tolerance.abs` (по умолчанию ±30 мм) или `delta_mp.pct` (±2 %).
+а не только PASS/FAIL). Если `status` отсутствует, он выводится из Δ и допуска
+(`delta_mp.value`/`abs` против `tolerance.value`/`abs`; по умолчанию ±30 мм) или
+`delta_mp.pct` (±2 %). `score` может быть дробным (92.7 → «92,7»), `grade` берётся из
+отчёта (иначе выводится из скора), `coverage_pct` и `summary` — из отчёта.
 
 ### 2.2. Упрощённая схема из постановки (тоже принимается)
 
@@ -203,6 +229,8 @@
   summaryOf(input)            // {checks, pass, warn, fail, unverified}
   rowToStatus(row|status)     // 'pass' | 'warn' | 'fail' | 'na'
   normalizeStatusString(s)  cellText(cell)  statusLabel(s)  deltaText(delta)
+  fmtScore(score)             // 92.7 → '92,7'; 87 → '87'
+  toleranceText(tolerance)    // 'допуск ±80 мм'
   modelSummaryOf(model)       // сводка модели приложения для блока у скора
   instructions()              // шаги + 2 команды + notes
   buildCommand('extract'|'compare', opts)  // готовая PowerShell-команда
@@ -229,7 +257,7 @@ Data-контракт панели: `data-d-panel`, `data-d-body`, `data-d-title
 
 ## 4. Тесты
 
-`node --test test/r119-docs-panel.test.js` — **19/19 pass**:
+`node --test test/r119-docs-panel.test.js` — **21/21 pass**:
 
 * **source-level (5)**: кнопка «Документация» после «Качество модели», динамическая
   загрузка `lixel-scan2bim-docs.js?v=119`, `D.open(state.model)`, `syncDocsModel`,
@@ -239,18 +267,25 @@ Data-контракт панели: `data-d-panel`, `data-d-body`, `data-d-title
   1-2-3 и напоминание про `state.model`; инструкция с `docs-extract.py`,
   `docs-compare.py`, путём Python из DSH, `--docs/--model/--cloud/--out`, `PYTHONUTF8`,
   `--strict`.
-* **Node, чистые функции (7)**: `parseCompareJson` реальной схемы (скор 87, grade A,
+* **Node, чистые функции (9)**: `parseCompareJson` реальной схемы (скор 87, grade A,
   covered 66 %, 4 строки PASS/WARN/FAIL/—, ячейки «3300 мм», Δ −22 мм/−0,67 %,
-  рекомендации, ограничения, непроверенное, входной объект не мутируется); упрощённой
-  схемы (status/score/вывод скора по строкам); 16 кейсов невалидного JSON с понятными
+  рекомендации, ограничения, непроверенное, входной объект не мутируется); **реальные
+  варианты полей docs-compare.py** (`delta_mp.value`, `tolerance.value` простой и
+  вложенный `pass_mm/warn_mm` для дверей, `storey_height_mm`/`height_mm`, дробный
+  `score 92.7`, `UNVERIFIED` с null-ячейками, Δ в %); упрощённой схемы
+  (status/score/вывод скора по строкам); 16 кейсов невалидного JSON с понятными
   причинами + пустой `rows` как валидный «пустой отчёт»; `rowToStatus` (явные статусы,
-  derive из Δ/допуска, явный статус важнее Δ); `scoreOf/gradeOf/statusOfScore/summaryOf`
-  (клампы 0–100, WARN = 0.5, A–E, явная summary); `cellText/modelSummaryOf`;
-  `setReport/reportJson/clearReport` (round-trip, ошибка не сбрасывает отчёт).
+  derive из Δ/допуска — включая `value`/вложенный tolerance, явный статус важнее Δ);
+  `scoreOf/gradeOf/statusOfScore/summaryOf` (клампы 0–100, дробный score сохраняется,
+  `fmtScore` «92,7», WARN = 0.5, A–E, явная summary); `cellText/modelSummaryOf`;
+  `setReport/reportJson/clearReport` (round-trip, ошибка не сбрасывает отчёт);
+  **реальный `D:\BIM-TWIN-TEST\docs\compare.json`** (тест скипается, если файла нет):
+  score 92.7/A, 90 % покрытия, 25 строк (18/3/0/4), объект/адрес/245 стр., Δ высоты
+  −22 мм/−0,67 %, вложенный допуск дверей, null-ячейки UNVERIFIED.
 * **jsdom, реальная панель (7)**: пустое состояние (панель, шаги, input[type=file],
   кнопки, сводка модели приложения, кнопка импорта открывает выбор файла); загрузка
-  `compare.json` через настоящий `FileReader` (заголовок/адрес, скор 87/A и зелёный
-  статус, счётчики, 4 строки с бейджами, ячейки/Δ, рекомендации, ограничения,
+  `compare.json` через настоящий `FileReader` (заголовок/адрес, скор и зелёный
+  статус, счётчики, строки с бейджами, ячейки/Δ, рекомендации, ограничения,
   непроверенное, кнопки, статус); невалидный JSON/схема не ломает загруженный отчёт,
   затем валидный обновляет; «Обновить» перечитывает файл, «Сохранить отчёт» скачивает
   исходный JSON (score/rows/recommendations); модалка-инструкция (3 шага, 2 команды,
@@ -262,25 +297,27 @@ Data-контракт панели: `data-d-panel`, `data-d-body`, `data-d-title
 
 ```
 $ cd bim-twin; node --test
-ℹ tests 1635     ℹ pass 1631     ℹ fail 0     ℹ skipped 4
+ℹ tests 1637     ℹ pass 1633     ℹ fail 0     ℹ skipped 4
 ```
 
-(до задачи было 1616 / 1612 pass / 0 fail / 4 skipped; +19 — новые тесты r119.)
+(до задачи было 1616 / 1612 pass / 0 fail / 4 skipped; +21 — новые тесты r119.)
 
 ## 5. Реальный прогон в Electron
 
-CDP-стенд по образцу `_scratch/ui-*.js` (после проверки удалён), Electron 31, тёмная тема:
+CDP-стенд по образцу `_scratch/ui-*.js` (после проверки удалён), Electron 31, тёмная тема.
+Сначала — синтетический отчёт (пустое состояние/модалка), затем — **реальный
+`D:\BIM-TWIN-TEST\docs\compare.json`** (score 92.7, 25 строк) из Блока 2:
 
 | Шаг | Результат |
 |---|---|
 | «Скан → BIM» → кнопка «Документация» (`#lxScan2BimDocsBtn`) | кнопка есть, подпись «Документация» |
-| динамическая загрузка `lixel-scan2bim-docs.js?v=119` | модуль установлен, панель `#lxS2BDocsPanel` открылась (`display:block`) |
-| пустое состояние (модель 2 стены/1 помещение/79,1 м²/3,28 м) | 3 шага, input[type=file], кнопка-инструкция, сводка «В приложении Стены 2 · Помещения 1 · Площадь 79,1 м² · Высота 3,28 м» |
-| загрузка отчёта (7 строк, score 87, grade A, 3 рекомендации) | таблица 7 строк, скор 87/A, PASS 8 / WARN 3 / FAIL 1, рекомендации, статус «Загружено: compare.json · скор 87/100 · строк 7» |
-| невалидный JSON `{"rows":[{}]}` | `badOk=false`, таблица не изменилась (0 строк до загрузки), ошибка в панели/тосте |
+| динамическая загрузка `lixel-scan2bim-docs.js?v=119` | модуль установлен, панель `#lxS2BDocsPanel` открылась (`display:block`, ширина колонки 328 px) |
+| пустое состояние (модель 2 стены/1 помещение/79,1 м²/3,28 м) | 3 шага, input[type=file], кнопка-инструкция, сводка модели приложения |
+| **реальный compare.json** | скор **92,7/A** (зелёный), `PASS 18 / WARN 3 / FAIL 0 / — 4`, «сверено 90 % проверок · проверок 25», заголовок объекта и адрес из docs (245 стр.), таблица **25 строк** с бейджами PASS/WARN/—, Δ −22 мм · −0,67 %, **4 рекомендации**, 5 ограничений, 5 непроверенных; статус «Загружено: compare.json · скор 92,7/100 · строк 25» |
+| невалидный JSON `{"rows":[{}]}` | `badOk=false`, таблица не изменилась, ошибка в панели/тосте |
 | модалка «Как получить отчёт» | 3 шага, 2 команды, кнопки «Копировать»; в команде `docs-compare.py`, реальный путь Python из DSH, `--out`, PYTHONUTF8 |
 | JS-исключения | **0** |
-| скриншоты | `%TEMP%\bim-docs-panel.png`, `%TEMP%\bim-docs-help.png` |
+| скриншоты (реальный отчёт) | `%TEMP%\bim-docs-real-top.png` (скор/заголовок/таблица), `%TEMP%\bim-docs-real-table.png` (строки таблицы); синтетика/модалка: `%TEMP%\bim-docs-panel.png`, `%TEMP%\bim-docs-help.png` |
 
 ## 6. Как открыть и пользоваться
 
@@ -302,13 +339,14 @@ CDP-стенд по образцу `_scratch/ui-*.js` (после проверк
 
 ## 7. Ограничения
 
-* `compare.json` готовит Python-инструмент Блока 2 (`tools/scan2bim-py/docs-compare.py`);
-  на момент отчёта файлы `docs-extract.py`/`docs-compare.py` ещё пишет phase5-regression —
-  парсер зафиксирован по согласованной схеме (schema_version=1) и проверен на её
-  репрезентативном примере; когда появится реальный `D:\BIM-TWIN-TEST\docs\compare.json`,
-  его достаточно загрузить в панель (кода менять не нужно; при изменении схемы — сообщить).
-* В отчёте встречается статус **WARN** (кроме PASS/FAIL) — панель показывает его янтарным
-  бейджем; **UNVERIFIED** показывается как «—» (как договаривались в постановке).
+* `compare.json` готовит Python-инструмент Блока 2 (`tools/scan2bim-py/docs-compare.py`,
+  `docs-extract.py`); **реальный файл уже прогнан**: `D:\BIM-TWIN-TEST\docs\compare.json`
+  (24 714 Б, MD5 `57C28FCCBFF1C8876BFF565C62EDFC09`, score 92.7/A, 25 строк) — парсер
+  проверен на нём и в тестах (тест с реальным файлом автоматически скипается на машине,
+  где файла нет). При изменении полей в docs-compare.py — сообщить, подправим парсер.
+* `score` в отчёте бывает дробным (92.7) — в панели показывается «92,7», без потери
+  точности; целые score отображаются как есть. `WARN` — отдельный янтарный бейдж,
+  `UNVERIFIED` — «—» (как договаривались в постановке).
 * Путь Python из DSH в инструкции — для этой машины (`C:\Users\bob\.dsh\…`);
   на другой машине его можно заменить в тексте команды или через
   `setPythonPath()/buildCommand({python})`.
@@ -317,8 +355,9 @@ CDP-стенд по образцу `_scratch/ui-*.js` (после проверк
 * Сводка модели у скора берётся из **приложения** (`window.__lxScan2BIM.state.model`
   или редактора); если модель не построена — показывается подсказка, отчёт всё равно
   доступен.
-* Панель живёт в правой колонке приложения (328 px) и скроллится вместе с ней;
-  таблица компактная (Δ под названием параметра), значения при очень длинных подписях
-  сокращаются с многоточием (полный текст — в `title`).
-* Правки не коммитились; чужие файлы (включая `lixel-scan2bim-ui.js` — только кнопка
-  и загрузчик) не менялись.
+* Панель живёт в правой колонке приложения (328 px) и скроллится вместе с ней; при
+  25 строках таблица и рекомендации листаются внутри панели. Таблица компактная
+  (Δ под названием параметра), значения при очень длинных подписях сокращаются
+  с многоточием (полный текст — в `title`).
+* Код панели/тесты вошли в коммиты Lead `0756cb6`/`de98be3`; этот отчёт обновлён
+  по реальному файлу после коммита (не закоммичен). Чужие файлы не менялись.
