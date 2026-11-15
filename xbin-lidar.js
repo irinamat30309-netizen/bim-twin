@@ -245,7 +245,48 @@ function lasHeader(o) {
 }
 
 const DEF = { minRange: 0.5, maxRange: 120, maxPoints: 40e6, step: 0, t0: null, t1: null, maxMotorGap: 0.05, imu: true, imuShift: 0, position: 'hermite', poseStep: 0.005,
-  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003 };
+  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false };
+
+// ---------- ревизия 133: безопасный фильтр неба/далёких бликов (по умолчанию ВЫКЛ) ----------
+// Три критерия (все — только для удаления «неестественных» точек):
+//   height — мировая высота wz > maxHeight (небо, блики, перелётные отражения);
+//   range  — расстояние от сканера r > maxRange, но только выше rangeMinHeight (не трогает землю/стены);
+//   sparse — меньше minNeighbors соседей по кольцу лидара (|Δr| ≤ neighborTol, |Δt| ≤ 1 мс) выше sparseMinHeight
+//            (одиночные точки/«воздух» высоко; тонкие листы/провода у земли сохраняются).
+// opt.sky = false (по умолчанию) | true (параметры по умолчанию) | {maxHeight, maxRange, rangeMinHeight,
+//            minNeighbors, neighborTol, sparseMinHeight, enabled}.
+const DEF_SKY = { maxHeight: 40, maxRange: 120, rangeMinHeight: 25, minNeighbors: 2, neighborTol: 0.6, sparseMinHeight: 30 };
+function normalizeSky(sky) {
+  if (sky === false || sky == null) return null;
+  if (sky === true) sky = {};
+  if (typeof sky !== 'object' || Array.isArray(sky)) throw new Error('opt.sky: ожидается false|true|объект параметров');
+  if (sky.enabled === false) return null;
+  const unknown = Object.keys(sky).filter(k => k !== 'enabled' && !(k in DEF_SKY));
+  if (unknown.length) throw new Error('opt.sky: неизвестные параметры: ' + unknown.join(', '));
+  const out = {};
+  for (const k of Object.keys(DEF_SKY)) {
+    const v = sky[k] === undefined ? DEF_SKY[k] : Number(sky[k]);
+    if (!Number.isFinite(v)) throw new Error('opt.sky.' + k + ': нужно конечное число');
+    out[k] = v;
+  }
+  if (!(out.maxHeight > 0)) throw new Error('opt.sky.maxHeight: должно быть > 0 (м)');
+  if (!(out.maxRange >= 0)) throw new Error('opt.sky.maxRange: должно быть >= 0 (0 — выключить критерий дальности)');
+  if (!(out.rangeMinHeight >= 0)) throw new Error('opt.sky.rangeMinHeight: должно быть >= 0');
+  if (!(out.sparseMinHeight >= 0)) throw new Error('opt.sky.sparseMinHeight: должно быть >= 0');
+  if (!Number.isInteger(out.minNeighbors) || out.minNeighbors < 0 || out.minNeighbors > 4) throw new Error('opt.sky.minNeighbors: целое 0..4 (0 — выключить критерий разреженности)');
+  if (!(out.neighborTol > 0)) throw new Error('opt.sky.neighborTol: должно быть > 0 (м)');
+  return out;
+}
+// чистое решение по точке: reason: 'height' | 'range' | 'sparse' | null; neighbors < 0 — нет данных о соседях
+function skyRejectPoint(SK, wz, range, neighbors) {
+  if (!SK) return null;
+  if (!Number.isFinite(wz) || !Number.isFinite(range)) return null;
+  if (wz > SK.maxHeight) return 'height';
+  if (SK.maxRange > 0 && range > SK.maxRange && wz > SK.rangeMinHeight) return 'range';
+  if (SK.minNeighbors > 0 && neighbors >= 0 && wz > SK.sparseMinHeight && neighbors < SK.minNeighbors) return 'sparse';
+  return null;
+}
+
 
 // подготовка: оглавление, калибровки, траектория, отбор пакетов по времени
 function prepare(xbinPath, posesText, o, prog) {
@@ -283,6 +324,10 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
   // у неё дальность меняется плавно и с обеих сторон. Если соседей нет (разрыв по времени > edgeGap, начало/конец окна) — точка остаётся.
   // Решение по точке откладывается на 2 отражения её кольца; вызовы cb идут в том же порядке внутри кольца.
   const EDGE = o.edge !== false && o.edge !== 0, eMin = o.edgeMin > 0 ? o.edgeMin : 0.15, eRel = o.edgeRel >= 0 ? o.edgeRel : 0.02, eGap = o.edgeGap > 0 ? o.edgeGap : 0.0003;
+  // ревизия 133: фильтр неба/дальних бликов — только при включённом opt.sky (по умолчанию выкл.)
+  const SKY = normalizeSky(o.sky);
+  let skyTotal = 0, skyHeight = 0, skyRange = 0, skySparse = 0;
+  const skyCount = (why) => { skyTotal++; if (why === 'height') skyHeight++; else if (why === 'range') skyRange++; else skySparse++; };
   const NR = 256, Hr = new Float64Array(NR * 5), Ht = new Float64Array(NR * 5).fill(-1e18), Hp = new Uint8Array(NR * 5), Hv = new Float64Array(NR * 5 * 12), Hh = new Uint8Array(NR);
   let edge = 0;
   const isEdge = (b0, h) => {
@@ -303,7 +348,23 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
     if (!Hp[i2]) return;
     Hp[i2] = 0;
     if (isEdge(b0, h)) { edge++; return; }
-    const q = i2 * 12; cb(Hv[q], Hv[q + 1], Hv[q + 2], Hv[q + 3], Hv[q + 4], Hv[q + 5], Hv[q + 6], Hv[q + 7], Hv[q + 8], Hv[q + 9], Hv[q + 10], Hv[q + 11]);
+    const q = i2 * 12;
+    if (SKY) {
+      const rr = Hr[i2], wz = Hv[q + 2];
+      let nb = -1;
+      if (EDGE) {
+        nb = 0;
+        const i0 = b0 + h, i1 = b0 + (h + 1) % 5, i3 = b0 + (h + 3) % 5, i4 = b0 + (h + 4) % 5;
+        for (const ii of [i0, i1, i3, i4]) {
+          const rn = Hr[ii];
+          if (!Number.isFinite(rn)) continue;
+          if (Math.abs(Ht[ii] - Ht[i2]) <= 0.001 && Math.abs(rn - rr) <= SKY.neighborTol) nb++;
+        }
+      }
+      const why = skyRejectPoint(SKY, wz, rr, nb);
+      if (why) { skyCount(why); return; }
+    }
+    cb(Hv[q], Hv[q + 1], Hv[q + 2], Hv[q + 3], Hv[q + 4], Hv[q + 5], Hv[q + 6], Hv[q + 7], Hv[q + 8], Hv[q + 9], Hv[q + 10], Hv[q + 11]);
   };
   for (const r of C.recs) {
     if (r.t < T0 - 1.5 || r.t > T1 + 0.1) continue;
@@ -363,14 +424,17 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
         const wy = (PM[i0 + 4] * a0 + PM[i1 + 4] * a1) * mxx + (PM[i0 + 5] * a0 + PM[i1 + 5] * a1) * myy + (PM[i0 + 6] * a0 + PM[i1 + 6] * a1) * mzz + cy;
         const wz = (PM[i0 + 8] * a0 + PM[i1 + 8] * a1) * mxx + (PM[i0 + 9] * a0 + PM[i1 + 9] * a1) * myy + (PM[i0 + 10] * a0 + PM[i1 + 10] * a1) * mzz + cz;
         if (EDGE) slot(R, t, Math.sqrt(d2), true, wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
-        else cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
+        else if (SKY) {
+          const why = skyRejectPoint(SKY, wz, Math.sqrt(d2), -1);
+          if (why) skyCount(why); else cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
+        } else cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
       }
     }
     if (onBytes) onBytes(r.len);
   }
   // конец окна: отложенные точки — без правых соседей, остаются
   if (EDGE) for (let ring = 0; ring < NR; ring++) { slot(ring, -1e18, Infinity, false); slot(ring, -1e18, Infinity, false); }
-  return { skipped, empty, packets, self, edge };
+  return { skipped, empty, packets, self, edge, sky: SKY ? { total: skyTotal, height: skyHeight, range: skyRange, sparse: skySparse } : null };
 }
 
 /**
@@ -460,7 +524,7 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
     prog(1, 'Облако из .xbin: готово');
     const TR = C.TR;
     return { points: n, step, estimated: Math.round(est), estimatedKept: Math.round(estKept), keepFrac: +keepFrac.toFixed(4), bpp: +bpp.toFixed(3), attempts,
-      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, min: mn, max: mx,
+      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, sky: W.sky, min: mn, max: mx,
       lidarCh: C.S.lidarCh, motorCh: C.S.motorCh, imuCh: C.S.imuCh,
       trajectory: { imu: TR.imu, imuIntervals: TR.imuIntervals, intervals: TR.intervals, gaps: TR.gaps, position: TR.position, corrMedianDeg: TR.corrMedianDeg, refined: !!refineInfo },
       refine: refineInfo ? refineInfo.summary : null };
@@ -470,4 +534,4 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
   }
 }
 
-module.exports = { scan, build, prepare, walk, motorAt, parseMotorMsg, parseImuMsg, looksLidar, lasHeader, makeTrajectory, qexp, qmul, qToMat, DEF };
+module.exports = { scan, build, prepare, walk, motorAt, parseMotorMsg, parseImuMsg, looksLidar, lasHeader, makeTrajectory, qexp, qmul, qToMat, normalizeSky, skyRejectPoint, DEF_SKY, DEF };

@@ -5638,13 +5638,95 @@
     const ifc = $('ifcInput'); if (ifc) ifc.addEventListener('change', e => { if (e.target.files[0]) importIFCFile(e.target.files[0]); e.target.value = ''; });
   }
   function mapIfcType(t) { t = (t || '').toUpperCase(); if (t.includes('DUCT') || t.includes('AIRTERMINAL') || t.includes('FAN')) return 'вентшахта'; if (t.includes('PIPE') || t.includes('VALVE') || t.includes('PUMP')) return 'труба'; if (t.includes('DOOR')) return 'дверь'; if (t.includes('CABLE')) return 'кабель-канал'; return 'оборудование'; }
-  async function importIFCFile(file) {
-    let rep;
+  // ---------- r133: 3D-геометрия импортированного IFC (наши экспорты) ----------
+  // Штатный импорт остаётся семантическим; для наших IFC (IfcWallStandardCase/IfcSlab/
+  // IfcSpace + IfcExtrudedAreaSolid) дополнительно строится меш и показывается в 3D.
+  // Ограничения не дают большим чужим IFC «повесить» окно: лимит размера файла и
+  // maxObjects/maxTriangles внутри парсера.
+  const IFC_GEOM_MAX_BYTES = 40 * 1024 * 1024;
+  const IFC_GEOM_DEFAULT_COLOR = [0.78, 0.76, 0.71];
+  function ifcNormalizeColor(c) {
+    if (!c || c.length < 3) return IFC_GEOM_DEFAULT_COLOR;
+    return [Math.max(0, Math.min(1, +c[0] || 0)), Math.max(0, Math.min(1, +c[1] || 0)), Math.max(0, Math.min(1, +c[2] || 0))];
+  }
+  // Меш → ASCII PLY (vertex colours из IFC-стилей), MeshViewer читает его без зависимостей.
+  function ifcGeometryToPly(geometry) {
+    const objs = (geometry && geometry.objects) || [];
+    let vertexCount = 0, faceCount = 0;
+    for (const o of objs) { const tris = (o.triangles | 0); vertexCount += tris * 3; faceCount += tris; }
+    const lines = ['ply', 'format ascii 1.0', 'comment BIM-Twin r133 IFC geometry',
+      'element vertex ' + vertexCount,
+      'property float x', 'property float y', 'property float z',
+      'property uchar red', 'property uchar green', 'property uchar blue',
+      'element face ' + faceCount, 'property list uchar int vertex_indices', 'end_header'];
+    let vi = 0;
+    for (const o of objs) {
+      const pos = o.pos, nor = o.nor, col = o.col, n = (pos && pos.length) || 0;
+      const c = ifcNormalizeColor(col ? [col[0], col[1], col[2]] : null);
+      const r = Math.round(c[0] * 255), g = Math.round(c[1] * 255), b = Math.round(c[2] * 255);
+      for (let i = 0; i + 2 < n; i += 3) {
+        lines.push([pos[i].toFixed(4), pos[i + 1].toFixed(4), pos[i + 2].toFixed(4), r, g, b].join(' '));
+        vi += 1;
+      }
+    }
+    let idx = 0;
+    for (const o of objs) {
+      const tris = (o.triangles | 0);
+      for (let t = 0; t < tris; t++) { lines.push('3 ' + idx + ' ' + (idx + 1) + ' ' + (idx + 2)); idx += 3; }
+    }
+    return lines.join('\n') + '\n';
+  }
+  function showIfcGeometry3D(geometry) {
+    if (!geometry || !geometry.objects || !geometry.objects.length) return false;
+    if (!window.MeshViewer) { toast('Модуль 3D-просмотра мешей не загружен'); return false; }
     try {
-      if (CAN_PERSIST) { const base64 = await fileToBase64(file); rep = await API.importIFC({ base64, targetRoomId: current && current.id }); await refresh(current && current.id); }
-      else { const text = await file.text(); const parsed = window.IFCImport.parseIFC(text); rep = linkIFCDemo(parsed); renderTree(); if (current) openRoom(current.id); }
+      const host = document.querySelector('.stage');
+      if (host) window.MeshViewer.mount(host);
+      const buf = new TextEncoder().encode(ifcGeometryToPly(geometry));
+      window.MeshViewer.load(buf.buffer, 'ifc-import.ply');
+      return true;
+    } catch (e) { console.warn('ifc geometry', e); toast('Не удалось показать 3D-геометрию IFC'); return false; }
+  }
+  function hideIfcGeometry3D() {
+    try { if (window.MeshViewer && typeof window.MeshViewer.isOpen === 'function' && window.MeshViewer.isOpen()) window.MeshViewer.exit(); } catch (e) { console.warn('ifc geometry exit', e); }
+  }
+  function ifcGeometrySkippedNote(geometry) {
+    const st = (geometry && geometry.stats) || {};
+    if (geometry && geometry.skipped) return 'геометрия не разобрана: ' + geometry.skipped;
+    if (!st.objects) {
+      if (st.skippedReason === 'entities_limit') return 'геометрия пропущена: слишком много сущностей IFC';
+      if (st.skippedReason === 'objects_limit' || st.skippedReason === 'triangles_limit') return 'геометрия ограничена лимитом объектов/треугольников';
+      return 'в IFC нет SweptSolid-геометрии стен/плит/помещений';
+    }
+    let note = 'объектов ' + st.objects + ' (стены ' + st.walls + ', плиты ' + st.slabs + ', помещения ' + st.spaces + '), треугольников ' + st.triangles;
+    if (st.skipped) note += '; пропущено элементов: ' + st.skipped;
+    if (geometry.bbox) {
+      const mn = geometry.bbox.mn, mx = geometry.bbox.mx;
+      note += '. Габарит ' + ((mx[0] - mn[0]).toFixed(2)) + ' × ' + ((mx[1] - mn[1]).toFixed(2)) + ' × ' + ((mx[2] - mn[2]).toFixed(2)) + ' м';
+    }
+    return note;
+  }
+  async function parseIfcGeometryFromFile(file) {
+    try {
+      if (!file || !window.IFCImport || typeof window.IFCImport.parseIFC !== 'function') return null;
+      if (file.size > IFC_GEOM_MAX_BYTES) return { objects: [], bbox: null, stats: { objects: 0, walls: 0, slabs: 0, spaces: 0, triangles: 0, skipped: 0, skippedReason: 'file_limit' }, skipped: 'файл больше ' + Math.round(IFC_GEOM_MAX_BYTES / 1048576) + ' МБ' };
+      const text = await file.text();
+      const parsed = window.IFCImport.parseIFC(text, { geometry: true });
+      return parsed.geometry || null;
+    } catch (e) { console.warn('IFC geometry', e); return null; }
+  }
+  async function importIFCFile(file) {
+    let rep, geometry = null;
+    try {
+      if (CAN_PERSIST) {
+        const base64 = await fileToBase64(file); rep = await API.importIFC({ base64, targetRoomId: current && current.id }); await refresh(current && current.id);
+        geometry = await parseIfcGeometryFromFile(file);
+      } else {
+        const text = await file.text(); const parsed = window.IFCImport.parseIFC(text, { geometry: true });
+        rep = linkIFCDemo(parsed); geometry = parsed.geometry || null; renderTree(); if (current) openRoom(current.id);
+      }
     } catch (e) { console.error(e); toast('Не удалось разобрать IFC'); return; }
-    showIFCReport(rep);
+    showIFCReport(rep, geometry);
   }
   function linkIFCDemo(parsed) {
     const byGuid = new Map();
@@ -5658,18 +5740,38 @@
     }
     return { project: parsed.project, storeys: parsed.storeys.map(s => s.name), spaces: parsed.spaces.map(s => s.name || s.longName || ''), matched, created };
   }
-  function showIFCReport(rep) {
+  function showIFCReport(rep, geometry) {
     if (!rep) { toast('IFC импортирован'); return; }
     const li = a => (a && a.length) ? '<ul>' + a.map(x => '<li>' + esc(typeof x === 'string' ? x : (x.name || (x.room ? 'Помещение: ' + x.room : '') || x.floor || x.ifcType || JSON.stringify(x))) + '</li>').join('') + '</ul>' : '<div class="muted">—</div>';
+    const st = (geometry && geometry.stats) || {};
+    let geomHtml = '';
+    if (geometry && st.objects) {
+      geomHtml = '<h4>3D-геометрия</h4>' +
+        '<div class="kv"><span class="k">Объекты</span><span>' + st.objects + ' · стены ' + st.walls + ' · плиты ' + st.slabs + ' · помещения ' + st.spaces + '</span></div>' +
+        '<div class="kv"><span class="k">Треугольники</span><span>' + Number(st.triangles || 0).toLocaleString('ru-RU') + '</span></div>' +
+        '<label class="row" style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="checkbox" id="ifcGeomToggle" checked> Показать в 3D (меш)</label>' +
+        '<div class="muted" style="margin-bottom:6px">' + esc(ifcGeometrySkippedNote(geometry)) + '</div>';
+    } else if (geometry) {
+      geomHtml = '<h4>3D-геометрия</h4><div class="muted">' + esc(ifcGeometrySkippedNote(geometry)) + '</div>';
+    }
     const html = '<div class="ifc-report">' +
       '<div class="kv"><span class="k">Проект</span><span>' + esc(rep.project || '—') + '</span></div>' +
       '<div class="kv"><span class="k">Этажи</span><span>' + esc((rep.storeys || []).join(', ') || '—') + '</span></div>' +
       '<h4>Пространства (' + (rep.spaces || []).length + ')</h4>' + li(rep.spaces) +
+      geomHtml +
       '<h4>Связано по IFC GUID (' + (rep.matched || []).length + ')</h4>' + li(rep.matched) +
       '<h4>Создано новых элементов (' + (rep.created || []).length + ')</h4>' + li(rep.created) +
       '</div>';
     showInfo('Импорт IFC', html);
-    toast('IFC: связано ' + ((rep.matched || []).length) + ', новых ' + ((rep.created || []).length));
+    let geoToggle = null;
+    try { geoToggle = $('ifcGeomToggle'); } catch (e) { geoToggle = null; }
+    if (geoToggle && geometry && st.objects) {
+      const sync = () => { if (geoToggle.checked) showIfcGeometry3D(geometry); else hideIfcGeometry3D(); };
+      geoToggle.onchange = sync;
+      if (geoToggle.checked) sync();   // после импорта геометрия показывается сразу, но её можно выключить
+    }
+    const geomInfo = (geometry && st.objects) ? (' · 3D: ' + st.objects + ' объектов') : '';
+    toast('IFC: связано ' + ((rep.matched || []).length) + ', новых ' + ((rep.created || []).length) + geomInfo);
   }
   function showInfo(title, html) {
     const bg = $('formModal'); $('formTitle').textContent = title; $('formBody').innerHTML = html;

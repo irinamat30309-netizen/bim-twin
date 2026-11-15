@@ -14,11 +14,37 @@
 'use strict';
 
 // ---- Constants --------------------------------------------------------
-const BYTES_PER_POINT = 16; // 12 (xyz int32) + 1 (intensity) + 3 (rgb)
+// Potree 2.0 «DEFAULT» encoding: атрибуты точек упакованы подряд в порядке
+// metadata.attributes. Стандартный набор (position 12 + intensity 1 + rgb 3) = 16 байт,
+// но проекты с доп. атрибутами (например, XGrids/Lixel: + classification) имеют
+// другой шаг — его нельзя хардкодить, иначе после первой же точки позиции «съезжают».
+// r133: шаг и смещения атрибутов считаются из metadata.attributes.
+const DEFAULT_BYTES_PER_POINT = 16; // fallback, если в metadata нет attributes
 const MAX_NODES_PER_FRAME = 8;
 const DEFAULT_POINT_SIZE = 2.5;
 const EDL_RADIUS = 1.4;
 const EDL_STRENGTH = 0.4;
+
+// Раскладка точки по metadata.attributes: шаг и смещения position/intensity/rgb.
+function pointLayout(meta) {
+  const fallback = { stride: DEFAULT_BYTES_PER_POINT, pos: 0, intensity: 12, rgb: 13 };
+  const attrs = meta && Array.isArray(meta.attributes) ? meta.attributes : null;
+  if (!attrs || !attrs.length) return fallback;
+  let off = 0;
+  const layout = { stride: 0, pos: -1, intensity: -1, rgb: -1 };
+  for (const a of attrs) {
+    if (!a || typeof a.name !== 'string') continue;
+    const size = Number(a.size) | 0;
+    if (!(size > 0)) continue;
+    if (a.name === 'position') layout.pos = off;
+    else if (a.name === 'intensity') layout.intensity = off;
+    else if (a.name === 'rgb') layout.rgb = off;
+    off += size;
+  }
+  layout.stride = off;
+  if (layout.pos < 0 || layout.stride < 12) return fallback;
+  return layout;
+}
 
 // ---- Utility ----------------------------------------------------------
 function decodeHierarchy(buffer) {
@@ -45,29 +71,34 @@ function decodeHierarchy(buffer) {
 }
 
 function decodeChunk(buffer, numPoints, meta) {
-  // Potree 2.0 DEFAULT encoding: attributes packed per-point
-  // position: 3 x int32 (12 bytes), intensity: uint8 (1 byte), rgb: 3 x uint8 (3 bytes)
-  const scale = meta.scale;
-  const off   = meta.offset;
-  const dv    = new DataView(buffer);
-  const pos   = new Float32Array(numPoints * 3);
-  const col   = new Uint8Array(numPoints * 3);
-  let p = 0;
-  for (let i = 0; i < numPoints; i++) {
-    const base = i * BYTES_PER_POINT;
-    const ix = dv.getInt32(base,      true);
-    const iy = dv.getInt32(base + 4,  true);
-    const iz = dv.getInt32(base + 8,  true);
-    pos[p]     = ix * scale[0] + off[0];
-    pos[p + 1] = iy * scale[1] + off[1];
-    pos[p + 2] = iz * scale[2] + off[2];
-    // intensity byte at base+12 (skip)
-    col[p]     = dv.getUint8(base + 13); // R
-    col[p + 1] = dv.getUint8(base + 14); // G
-    col[p + 2] = dv.getUint8(base + 15); // B
-    p += 3;
+  // Potree 2.0 DEFAULT encoding: атрибуты подряд по metadata.attributes.
+  // Раньше шаг был жёстко 16 байт (position+intensity+rgb); у наборов с доп.
+  // атрибутом (XGrids/Lixel: +classification, 17 байт) это давало сдвиг позиций.
+  const layout = pointLayout(meta);
+  const stride = layout.stride;
+  const total = Math.max(0, numPoints | 0);
+  const n = Math.min(total, Math.floor(buffer.byteLength / stride));
+  const scale = meta.scale || [1, 1, 1];
+  const off = meta.offset || [0, 0, 0];
+  const dv = new DataView(buffer);
+  const pos = new Float32Array(n * 3);
+  const col = new Uint8Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const base = i * stride;
+    const p = i * 3;
+    pos[p] = dv.getInt32(base + layout.pos, true) * scale[0] + off[0];
+    pos[p + 1] = dv.getInt32(base + layout.pos + 4, true) * scale[1] + off[1];
+    pos[p + 2] = dv.getInt32(base + layout.pos + 8, true) * scale[2] + off[2];
+    if (layout.rgb >= 0) {
+      col[p] = dv.getUint8(base + layout.rgb); // R
+      col[p + 1] = dv.getUint8(base + layout.rgb + 1); // G
+      col[p + 2] = dv.getUint8(base + layout.rgb + 2); // B
+    } else {
+      const g = layout.intensity >= 0 ? dv.getUint8(base + layout.intensity) : 255;
+      col[p] = g; col[p + 1] = g; col[p + 2] = g;
+    }
   }
-  return { pos, col, numPoints };
+  return { pos, col, numPoints: n };
 }
 
 // ---- WebGL helpers ----------------------------------------------------
@@ -272,7 +303,8 @@ class PotreeLoader {
       const buf = await resp.arrayBuffer();
       const { pos, col, numPoints } = decodeChunk(buf, node.numPoints, {
         scale: this.meta.scale,
-        offset: this.meta.offset
+        offset: this.meta.offset,
+        attributes: this.meta.attributes   // r133: шаг точки из metadata (16/17/…)
       });
       if (this.gl) {
         const gl = this.gl;

@@ -3,6 +3,9 @@
 > **Актуальное состояние (обновление r130):** HEAD `abccbfd` (r130, ветка `agent/ui-redesign`).
 > Ниже сохранены исторические числа r111/r112 (исходный отчёт Фазы 5); актуальные итоги — в разделах
 > «ОБНОВЛЕНИЕ r119/r120» и «ОБНОВЛЕНИЕ r130 (UI/данные) — финальная регрессия» в конце файла.
+> **Обновление r132:** HEAD `c2e3da2` (r132); актуальные итоги — в разделе
+> «ОБНОВЛЕНИЕ r132 (xbin-чистка, IFC UTF-8/PSet, snap с поворотом, панели) + CI r133»
+> в конце файла (история r111/r112/r119/r120/r130 сохранена ниже).
 
 Дата: 2026-11-15, 13:32 (Europe/Kiev). Ветка `agent/ui-redesign`, HEAD **`ebe2434` (r112)**
 (сборка: r108 — Фазы 1–3, r110 — редактор Фазы 4, r111 — финальная модель с привязкой
@@ -739,3 +742,78 @@ xbin-проверка чистки — **PASS** по `XBIN-CLEAN-VERIFY.md` (с�
 Артефакты прогона: логи `D:\BIM-TWIN-TEST\quality\node-test-r130-clean-run{1,2}.log`,
 `r130-clean-*.log`, `run-quality-all-r130.log`, `node-test-r130-run{1,2}.log` (грязное дерево),
 `validate-*.json`, `package-check-r130.json`; чистый срез — `_scratch\r130-clean` (abccbfd).
+
+---
+
+# ОБНОВЛЕНИЕ r132 (xbin-чистка, IFC UTF-8/PSet, snap с поворотом, панели) + CI r133
+
+Дата: 2026-11-15, 18:45 (Europe/Kiev). HEAD **`c2e3da2` (r132)**, ветка `agent/ui-redesign`.
+Предыдущие разделы — исторические (r111/r112, r119/r120, r130). Факты r132 — из коммита и отчётов
+`XBIN-CLEAN-VERIFY.md`, `XBIN-FACADE-CLEAN.md`, `IFC-FINAL-r131/r132.md`,
+`PHASE4-EDITOR-CORE-r131.md`, `PHASE6-DOCS-UI-r131.md`, `START-HERE-r132.txt`; контрольный
+`node --test` — на чистом worktree r132 (`_scratch\r132-clean`).
+
+## 0. Сводка r132
+
+| Блок | Результат | Статус |
+|---|---|---|
+| xbin-чистка, интерьер (реальный `.xbin` 10,9 ГБ, 52,8 млн точек) | пыль **0,47 % против 0,69 % Lixel** (−32 %); «движущееся» — 296 точек / 62 вокселя = **0,00086 %** (цель ≤0,001 %); локальная толщина 19,41 → 8,93/8,47 мм; стены 12,80 → 8,56/8,59 мм; покрытие не падает | PASS |
+| xbin-чистка, фасад (`.xbin` 21,9 ГБ) | edge убирает 609 041 точку (6,01 %), 92,9 % — у границ силуэта; новых дыр нет (покрытие 99,06 %) | PASS |
+| IFC: STEP-UTF-8 + `PSet_BimTwin` | не-ASCII имён в STEP — **0** (кириллица через `\X2\…\X0\`, ifcopenshell читает `'Стена 1'`); `PSet_BimTwin`: **111 наборов / 522 свойства / 111 связей**; `validate-ifc.py --deep --require-psets`: **0 ERROR / 0 WARNING / 0 INFO**, арность IFC4 OK; артефакты `py2-final-v5-utf8.ifc` (180 656 Б) и `py2-final-v5-utf8-georef.ifc` (189 400 Б) | PASS |
+| snap с поворотом | стена 18: **−2,02°**, T 0,257 → 0,270 м, RMS **0,0485 → 0,0044 м (×11)**, покрытие 100 → 100 %; `snap_all` на v5: 7 привязок принято (1 с поворотом), 10 отклонено; исправлено 3 бага (ложная пара мод, отсутствие поворота, падение покрытия) | PASS |
+| Панели docs/quality | «Документация»: `compare-full-v5.json` — 28 строк (PASS 16 / WARN 4 / FAIL 0 / UNVERIFIED 8), скор **80,8/A**; «Качество модели» на v5: 9 помещений, 122,9 м²; тесты `r131-docs-full-report` 9/9, `r131-quality-v5` 7/7 | PASS |
+| Тесты r132 | по коммиту/START-HERE-r132: `node --test` **1708 / 1704 pass / 0 fail / 4 skipped**; Python: docs-extract 21/21, docs-compare 19/19, edit-model **35/35**, facade 20/20 | PASS |
+| Пакет `bim-twin-r55-full.zip` | 55 597 051 Б (53,0 МБ), 1377 записей, пересобран 18:17; **все 766 tracked-файлов HEAD r132 совпадают по размеру и MD5**; внутри `START-HERE-r132.txt` (r132, 1708/1704, python-тесты), r131/r132-отчёты, xbin/IFC — на месте | PASS |
+
+Контрольный прогон на чистом HEAD r132 (worktree, junction node_modules): первый прогон —
+1708 тестов / 1703 pass / 1 fail / 4 skipped; единственный FAIL `r56-refine-tiles`
+(«потоков: 1») — **не дефект кода, а нехватка RAM в момент прогона**: параллельная задача
+держала python-процесс 21,9 ГБ, `os.freemem()` = 0,19 ГБ, а `pickThreads()` по дизайну
+ограничивает число потоков свободной памятью (→ 1 поток). **Повторный прогон** после
+освобождения памяти (freemem 1,56 ГБ): isolated `r56` — PASS (8,1 с), полный набор —
+**1708 / 1704 pass / 0 fail / 4 skipped** (94,5 с). Заявленные в r132 **1708/1704/0
+подтверждены**; рабочее дерево ранее: 1710/1706/0 (+2 — untracked тест параллельной задачи).
+
+## 1. CI r133 (E2): реальные прогоны и локальная эмуляция workflow
+
+Push в GitHub **не выполнялся**; процедура прогнана локально.
+
+| Проверка | Команда/опции | Результат |
+|---|---|---|
+| ci-quality.ps1, strict | `-Root D:\BIM-TWIN-TEST` | **exit 0**; PASS 45 / FAIL 6 / SKIP 0; REG 0; целевых FAIL 0; исторических 6 |
+| ci-quality.ps1, allow-missing | `--allow-missing -Root D:\BIM-TWIN-TEST` | exit 0; те же цифры |
+| ci-quality.ps1, targets | `--targets -Root D:\BIM-TWIN-TEST` | exit 0; печатает 6 `[HISTORY]` (A1–A6 модели r107), **v5 чист**; `[TARGET]`/`[REG]` нет |
+| ci-quality.ps1, без данных | `--allow-missing -Root <пустой каталог>` | exit 0; SKIP 2, FAIL 0 |
+| `.github/workflows/quality.yml` (js-yaml 4.3.2) | `_scratch\validate-workflow-r133.js` | **PASS 26 / FAIL 0**: triggers, `workflow_dispatch.inputs.enforce_targets`, permissions/concurrency, `windows-latest`/timeout 30, actions `checkout@v4`/`setup-python@v5`/`setup-node@v4`/`upload-artifact@v4`, версии Python 3.12/Node 20, deps, data-detect, strict/no-data gate, job summary, пути артефактов |
+| локальная эмуляция шагов workflow | `_scratch\emulate-workflow-r133.ps1` | **PASS 9 / FAIL 0**: Python 3.12.14; Node v24 (адаптация вместо 20); pip deps — exit 0; data present=true; strict gate 47,7 с; no-data SKIP 2; summary 5 записей/13 строк; artifacts — 18 qa-файлов, 9 ruler-json, RELEASE на месте |
+
+Детали и таблица «шаг workflow → локальный результат» — `PHASE5-CI-r133.md`. JSON-артефакты:
+`D:\BIM-TWIN-TEST\quality\workflow-validation-r133.json`, `workflow-emulation-r133.json`;
+логи: `ci-quality-r133-{strict,allow,targets,missing}.log`, `workflow-emulation-r133.log`.
+`qa\quality-runs\` после проверки удалён (артефакт прогона, не коммитится).
+
+## 2. Расхождения r133 (пакет / окружение)
+
+1. `START-HERE-r55.txt` верхнего уровня в архиве устарел (r55, «1532 теста», коммит 68b9e00);
+   актуальный `bim-twin-r55/START-HERE-r132.txt` есть внутри. Имя пакета `r55-full` — тоже
+   о старой ревизии.
+2. Пакет собран **до** этого обновления: `RELEASE-QUALITY-FINAL.md` внутри = HEAD r132
+   (69 676 Б), но без разделов r132/r133 → после сдачи отчёта пакет нужно пересобрать (или
+   заменить в нём отчёт); новые `PHASE5-CI-r133.md` и `PHASE5-FINAL-r133.md` в пакет не входят.
+3. Локально нет Node 20 — эмуляция CI выполнена на Node v24.20.0 (в CI ставится 20);
+   версии `actions/*` проверены по спецификации, но не скачивались (push не выполнялся).
+4. Строгий CI-гейт возможен только на self-hosted runner с `D:\BIM-TWIN-TEST`; GitHub-hosted
+   идёт по ветке `--allow-missing` (SKIP допустим, проверяется целостность скрипта/эталона).
+5. Историческая модель r107 намеренно не гейтится (`[HISTORY]`): `--targets` её печатает,
+   но код 0 — если политика должна ронять сборку и на исторических FAIL, это отдельное
+   осознанное изменение политики гейта (в код не вносилось).
+
+## 3. Итог r132/r133
+
+xbin-чистка — PASS (динамика 0,00086 % ≤ 0,001 %, пыль 0,47 % против 0,69 % Lixel);
+IFC UTF-8 + `PSet_BimTwin` — PASS (0 ERROR, имена читаются, 522 свойства); snap с поворотом —
+PASS (RMS ×11); панели docs/quality — PASS; тесты r132 — 1708/1704/0 (заявленные; наш
+контрольный прогон ограничен RAM-дефицитом среды, не кодом). CI: все четыре сценария
+`ci-quality.ps1` — exit 0 (PASS 45 / FAIL 6 историч., v5 чист), workflow провалидирован
+(26/26) и эмулирован (9/9 шагов PASS). Пакет соответствует HEAD r132 (766/766 tracked),
+но требует пересборки после этого обновления отчёта.
