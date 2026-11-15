@@ -7,7 +7,8 @@
 Что делает:
   1. Берёт список облаков из встроенного манифеста:
        * интерьер `koridor-local-rgb.bin` + модель `py2-model.json` (baseline r107);
-       * интерьер `koridor-local-rgb.bin` + финальная модель `py2-p1.json` (Фаза 1);
+       * интерьер `koridor-local-rgb.bin` + финальная модель релиза (r111: `py2-final-v2.json`;
+ *   запасной вариант — `py2-p1.json` Фазы 1);
        * фасадные модели коллег `py2-facade*.json` — через
          `D:\\BIM-TWIN-TEST\\interior\\py2-facade-manifest.json` (если он есть), иначе
          авто-подхват `py2-facade*.json` + `metrics-*.json`;
@@ -545,9 +546,15 @@ def load_manifest(root: Path, extra_pairs, no_facade: bool):
     entries.append({'name': 'koridor/baseline-r107', 'kind': 'interior', 'role': 'baseline',
                     'cloud': cloud_koridor, 'model': interior / 'py2-model.json',
                     'note': 'стабильная модель r107 (контрольная точка)'})
-    entries.append({'name': 'koridor/p1-final', 'kind': 'interior', 'role': 'release',
-                    'cloud': cloud_koridor, 'model': interior / 'py2-p1.json',
-                    'note': 'финальная модель Фазы 1 (A1/A5/A6)'})
+    # Финальная модель релиза: r111 — py2-final-v2.json (Фаза 4: snap_wall стены 11);
+    # если её нет (старые данные) — берём модель Фазы 1 py2-p1.json.
+    final_model = interior / 'py2-final-v2.json'
+    final_note = 'финальная модель r111 (Фаза 1 + snap стены 11 Фазы 4)'
+    if not final_model.exists():
+        final_model = interior / 'py2-p1.json'
+        final_note = 'финальная модель Фазы 1 (A1/A5/A6) — r111-модель не найдена'
+    entries.append({'name': 'koridor/final', 'kind': 'interior', 'role': 'release',
+                    'cloud': cloud_koridor, 'model': final_model, 'note': final_note})
 
     for cloud, model in extra_pairs:
         entries.append({'name': 'custom/%s' % Path(model).stem, 'kind': 'interior',
@@ -782,7 +789,7 @@ def print_before_after(entries_results):
     """Сравнение baseline-модели и финальной (до/после Фазы 1), если обе посчитаны."""
     by_name = {r['name']: r for r in entries_results if r.get('kind') == 'interior' and r.get('metrics')}
     before = by_name.get('koridor/baseline-r107')
-    after = by_name.get('koridor/p1-final')
+    after = by_name.get('koridor/final') or by_name.get('koridor/p1-final')
     if not before or not after:
         return
     labels = [

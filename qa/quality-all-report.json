@@ -1,6 +1,6 @@
 {
  "tool": "run-quality-all.py",
- "created_at": "2026-11-14T23:25:27+02:00",
+ "created_at": "2026-11-15T13:07:24+02:00",
  "root": "D:\\BIM-TWIN-TEST",
  "workdir": "D:\\BIM-TWIN-TEST\\quality",
  "ruler": "C:\\Users\\bob\\Documents\\deepseek-harness\\default-workspace\\bim-twin\\tools\\scan2bim-py\\ruler-v2.py",
@@ -154,47 +154,47 @@
    ],
    "metrics_file": null,
    "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_baseline-r107-ruler.json",
-   "ruler_seconds": 13.4,
+   "ruler_seconds": 8.6,
    "status": "FAIL",
    "skip_reason": null,
    "stand": ""
   },
   {
-   "name": "koridor/p1-final",
+   "name": "koridor/final",
    "kind": "interior",
    "role": "release",
-   "note": "финальная модель Фазы 1 (A1/A5/A6)",
+   "note": "финальная модель r111 (Фаза 1 + snap стены 11 Фазы 4)",
    "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
-   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-p1.json",
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-final-v2.json",
    "metrics": {
     "n_walls_measured": 21,
-    "median_coverage_pct": 95.0,
+    "median_coverage_pct": 94.0,
     "min_coverage_pct": 25.0,
     "median_T_err_mm": 10.0,
-    "p90_T_err_mm": 96.50000000000003,
-    "max_T_err_mm": 195.0,
+    "p90_T_err_mm": 60.800000000000026,
+    "max_T_err_mm": 121.0,
     "cloud_height_m": 3.276,
     "model_height_m": 3.278,
     "height_err_mm": 1.9998281002044926,
     "model_rooms_area_m2": 122.7,
     "cloud_floor_visible_m2": 127.9,
-    "room_perimeter_covered_pct": 97.5,
+    "room_perimeter_covered_pct": 97.7,
     "room_perimeter_m": 237.7,
     "walls_cloud_beyond": 2,
     "model_walls": 57,
     "model_openings": 11,
     "model_rooms": 23,
     "area_ratio_pct": 95.93432369038311,
-    "openings_recall_pct": 100.0,
+    "openings_recall_pct": 91.66666666666667,
     "openings_precision_pct": 100.0,
     "openings_width_median_err_mm": 0.0,
     "openings_tp": 11,
-    "openings_fn": 0,
+    "openings_fn": 1,
     "openings_fp": 0,
-    "openings_cloud": 11,
+    "openings_cloud": 12,
     "openings_model": 11,
     "openings_stdout": {
-     "recall": 100,
+     "recall": 92,
      "precision": 100,
      "width_median_err_mm": 0
     },
@@ -219,21 +219,21 @@
      "label": "Покрытие стен облаком",
      "target": "медиана ≥ 90 %, мин ≥ 60 %",
      "status": "FAIL",
-     "detail": "медиана 95 %, мин 25 % (<60)"
+     "detail": "медиана 94 %, мин 25 % (<60)"
     },
     {
      "code": "A3",
      "label": "Толщина стен vs облако",
      "target": "медиана ≤ 20 мм, p90 ≤ 40 мм",
      "status": "FAIL",
-     "detail": "медиана 10 мм, p90 97 мм (>40), макс 195 мм"
+     "detail": "медиана 10 мм, p90 61 мм (>40), макс 121 мм"
     },
     {
      "code": "A4",
      "label": "Периметр помещений закрыт",
      "target": "≥ 97 %",
      "status": "PASS",
-     "detail": "97.5 % (231.8 из 237.7 м)"
+     "detail": "97.7 % (232.2 из 237.7 м)"
     },
     {
      "code": "A5",
@@ -254,7 +254,7 @@
      "label": "Проёмы: полнота / точность",
      "target": "≥ 90 % / ≥ 90 %",
      "status": "PASS",
-     "detail": "полнота 100 %, точность 100 % (TP 11, FN 0, FP 0)"
+     "detail": "полнота 92 %, точность 100 % (TP 11, FN 1, FP 0)"
     },
     {
      "code": "A8",
@@ -265,8 +265,8 @@
     }
    ],
    "metrics_file": null,
-   "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_p1-final-ruler.json",
-   "ruler_seconds": 11.1,
+   "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_final-ruler.json",
+   "ruler_seconds": 8.6,
    "status": "FAIL",
    "skip_reason": null,
    "stand": ""

@@ -1,24 +1,37 @@
 /*
- * lixel-scan2bim-editor.js — v1233 · Фаза 4 ROADMAP-IDEAL (D3)
+ * lixel-scan2bim-editor.js — v1245 · Фаза 4 ROADMAP-IDEAL (D3, базовый полноценный редактор)
  * Ручной редактор BIM-модели по облаку точек. Работает ЦЕЛИКОМ В ПАМЯТИ приложения:
  * никакого Python, child_process, fetch и записи на диск до явного «Сохранить JSON» /
- * «Экспорт IFC».
+ * «Экспорт IFC/OBJ/DXF» / «Загрузить JSON».
  *
  * Что умеет:
+ *   • СМОТРЕТЬ: режим «Контур» (как раньше) и «3D-объём» — плотный каркас стен
+ *     (параллелепипеды, вертикальные рёбра, откосы проёмов), контур/сетка пола по
+ *     помещениям, опциональная сетка потолка; если у вьюера есть заливки (_makeObj) —
+ *     стены заливаются треугольниками; бюджет оверлея ≤ 20000 сегментов;
  *   • список стен (L, T, материал) и помещений; выбор → подсветка в 3D-оверлее линиями граней;
  *   • сдвиг выбранной стены по нормали ±0,05 м; толщина ±0,01 м; удлинение торцов ±0,1 м;
  *   • «Привязать к облаку» — медианы по двум модам точек в полосе ±0,4 м от оси
  *     (как refineWallFit в scan2bim.js); смещение применяется только если ≤0,25 м;
  *   • проёмы: along/width/sill/head ±0,05 м, удаление, добавление двери 0,90×2,10;
+ *   • УДАЛЯТЬ: стена (с проёмами), помещение, все проёмы стены, очистка модели;
+ *     кнопки + клавиша Delete, подтверждение (кроме «Очистить»); undo/redo покрывает удаления;
+ *   • ЭКСПОРТ: JSON, IFC (toIFC), OBJ (toOBJ), DXF (toDXF) через window.Scan2BIM + download;
+ *   • ИМПОРТ: «Загрузить JSON» — input[type=file], парсинг и валидация схемы
+ *     (walls/rooms/slabs/storey); при ошибке модель не меняется;
  *   • undo/redo (стек JSON-снимков модели, глубина 30) и «Сбросить» к исходной модели;
- *   • «Сохранить JSON» и «Экспорт IFC» (window.Scan2BIM.toIFC(модель) + download).
+ *   • статус после любой операции: счётчики стены/проёмы/помещения/площадь и подсказка
+ *     «Ctrl+Z / Delete».
  *
  * После каждой правки пересчитываются preview-оверлей и stats (стены/проёмы/площадь).
  *
  * API: window.__lxS2BEditor = { open, close, isOpen, attach, setModel, getModel, getState,
  *   editMoveWall, editThickness, editWallEnd, editOpeningMove, deleteOpening, addDoor,
- *   snapWall, undo, redo, reset, canUndo, canRedo, modelJson, saveJson, exportEditedIfc,
- *   refreshStats, refreshOverlay, historyLimit }.
+ *   snapWall, undo, redo, reset, canUndo, canRedo, modelJson, saveJson,
+ *   exportEditedIfc, exportEditedObj, exportEditedDxf, parseModelJson, importJson,
+ *   deleteWall, deleteRoom, clearOpenings, clearModel, setViewMode, getViewMode, getViewState,
+ *   setCeiling, setSolid, buildOverlay, refreshStats, refreshOverlay, overlayColors,
+ *   MAX_OVERLAY_SEGMENTS, historyLimit }.
  * Для node --test (без DOM) доступны чистые функции через module.exports; панель/оверлей
  * создаются только при вызове open() в окне.
  */
@@ -42,14 +55,34 @@
   var SNAP_MIN_POINTS = 24;     // минимум точек на каждую моду (грань)
   var SNAP_MIN_THICK = 0.03, SNAP_MAX_THICK = 0.70;
   var HISTORY_LIMIT = 30;       // задание: стек снимков ≥ 20
-  var SAVE_VERSION = '1233';
+  var SAVE_VERSION = '1245';
+  // Бюджет 3D-оверлея: «не ломая производительность: не более ~20k сегментов».
+  var MAX_OVERLAY_SEGMENTS = 20000;
+  var MAX_SOLID_TRIS = 20000;   // потолок треугольников заливки стен
+  var ROOM_GRID_STEP = 0.6;     // шаг сетки пола/потолка по помещениям, м
+  var ROOM_GRID_MAX = 420;      // сегментов сетки на одно помещение
+  var CEIL_GRID_STEP = 1.0;
+  var CEIL_GRID_MAX = 180;
+  var WALL_RIB_STEP = 0.9;      // промежуточные вертикали каркаса стены, м
+  var WALL_RIB_MAX = 8;         // не больше рёбер на стену
 
   // Палитра оверлея — мягкая тёплая, в тон tokens.css (фиолетовый акцент, без синего).
   var COL_WALL = [0.62, 0.60, 0.57];   // тёплый графит
   var COL_SEL = [0.72, 0.60, 1.00];    // --accent #b9a2ff, выбранная стена
   var COL_OPEN = [0.91, 0.64, 0.30];   // --warn #e8a34c, проёмы
+  var COL_OPEN_DIM = [0.60, 0.46, 0.28]; // проёмы невыделенных стен в объёме
   var COL_ROOM = [0.24, 0.81, 0.56];   // --ok #3ecf8e, помещение
   var COL_FOOT = [0.80, 0.74, 0.52];   // контур этажа
+  var COL_FLOOR = [0.56, 0.53, 0.47];  // контур пола помещения (3D-объём)
+  var COL_GRID = [0.38, 0.37, 0.34];   // сетка пола
+  var COL_CEIL = [0.47, 0.45, 0.41];   // сетка потолка
+  var COL_SEL_FILL = [0.45, 0.35, 0.68]; // заливка выбранной стены (фиолетовый акцент)
+  // Заливка стен по материалу — тёплые графиты в палитре проекта (violet/graphite, без синего).
+  var MATERIAL_FILL = {
+    brick: [0.44, 0.39, 0.34], block: [0.42, 0.39, 0.35], concrete: [0.38, 0.37, 0.35],
+    metal: [0.36, 0.36, 0.35], other: [0.36, 0.35, 0.34], unknown: [0.35, 0.34, 0.33],
+    inferred: [0.33, 0.32, 0.31]
+  };
 
   var MAT_LABEL = {
     brick: 'кирпич', metal: 'металл', concrete: 'бетон', block: 'блок',
@@ -327,6 +360,317 @@
     return okInfo({ wall: Number(wallIndex), opening: idx, along: start, width: doorW, head: doorH });
   }
 
+  // ===================== УДАЛЕНИЕ ЭЛЕМЕНТОВ =====================
+  /**
+   * Удалить стену вместе с её проёмами; статистика пересчитывается, правка отменяема.
+   * @param {object} model — модель Scan2BIM
+   * @param {number} index — индекс стены
+   * @returns {{ok:boolean, reason?:string, index?:number, openings?:number, remaining?:number}}
+   */
+  function deleteWall(model, index) {
+    var m = model || st.model;
+    if (!isModelOk(m)) return fail('модель не построена');
+    var w = getWall(m, index);
+    if (!w) return fail('стена не найдена');
+    var i = Number(index) | 0;
+    var removedOpenings = openingsOf(w).length;
+    beginEdit(m);
+    m.walls.splice(i, 1);
+    afterEdit(m, 'Стена ' + (i + 1) + ' удалена' + (removedOpenings ? ' вместе с проёмами: ' + removedOpenings : ''));
+    return okInfo({ index: i, openings: removedOpenings, remaining: m.walls.length });
+  }
+
+  /** Удалить помещение (площадь пересчитывается). */
+  function deleteRoom(model, index) {
+    var m = model || st.model;
+    if (!isModelOk(m)) return fail('модель не построена');
+    var rooms = m.rooms || [];
+    var i = Number(index);
+    if (!isFinite(i) || i < 0 || i >= rooms.length) return fail('помещение не найдено');
+    var room = rooms[i | 0];
+    var area = num(room.area, polyArea(room.polygon));
+    beginEdit(m);
+    rooms.splice(i | 0, 1);
+    afterEdit(m, 'Помещение ' + ((i | 0) + 1) + ' удалено (' + fmt(area, 1) + ' м²)');
+    return okInfo({ index: i | 0, area: area, remaining: rooms.length });
+  }
+
+  /** Удалить все проёмы выбранной стены (стена остаётся). */
+  function clearOpenings(model, wallIndex) {
+    var m = model || st.model;
+    if (!isModelOk(m)) return fail('модель не построена');
+    var w = getWall(m, wallIndex);
+    if (!w) return fail('стена не найдена');
+    var removed = openingsOf(w).length;
+    if (!removed) return fail('на выбранной стене нет проёмов');
+    beginEdit(m);
+    w.openings = [];
+    afterEdit(m, 'Стена ' + ((Number(wallIndex) | 0) + 1) + ': удалены все проёмы (' + removed + ')');
+    return okInfo({ wall: Number(wallIndex), removed: removed });
+  }
+
+  /**
+   * Очистить модель: убрать стены/проёмы/помещения/плиты/контур этажа и MEP-кандидатов.
+   * Модель остаётся рабочей (ok:true, storey/units сохраняются), поэтому можно загрузить JSON.
+   */
+  function clearModel(model) {
+    var m = model || st.model;
+    if (!isModelOk(m)) return fail('модель не построена');
+    var removed = {
+      walls: (m.walls || []).length, rooms: (m.rooms || []).length,
+      slabs: (m.slabs || []).length, openings: 0
+    };
+    var i;
+    for (i = 0; i < (m.walls || []).length; i++) removed.openings += openingsOf(m.walls[i]).length;
+    beginEdit(m);
+    m.walls = []; m.rooms = []; m.slabs = []; m.footprint = [];
+    var extra = ['pipes', 'beams', 'objects', 'cables', 'services', 'columns', 'equipment', 'walls3d'];
+    for (i = 0; i < extra.length; i++) if (Array.isArray(m[extra[i]])) m[extra[i]] = [];
+    if (m.stats) {
+      m.stats.floorArea = 0;
+      var extraCounts = ['pipeCount', 'beamCount', 'objectCount', 'cableCount', 'serviceCount', 'columnCount'];
+      for (i = 0; i < extraCounts.length; i++) if (isFiniteNum(m.stats[extraCounts[i]])) m.stats[extraCounts[i]] = 0;
+    }
+    afterEdit(m, 'Модель очищена: удалено стен ' + removed.walls + ', проёмов ' + removed.openings + ', помещений ' + removed.rooms);
+    return okInfo({ removed: removed, remaining: { walls: 0, rooms: 0, slabs: 0 } });
+  }
+
+  // ===================== ИМПОРТ JSON: СХЕМА И ВАЛИДАЦИЯ =====================
+  // Контракт: принимается модель формата Scan2BIM/«Сохранить JSON» (walls/rooms/slabs/storey)
+  // либо совместимый JSON с теми же полями. При ЛЮБОЙ ошибке текущая модель не меняется.
+  function hasOwn(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+  function importFail(reason) { return { ok: false, reason: reason || 'JSON не соответствует модели' }; }
+  function schemaFail(reason) { return importFail('схема модели: ' + (reason || 'JSON не соответствует модели')); }
+  function isPlainObject(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+  function importNum(x) {
+    if (x === null || x === undefined || x === '' || typeof x === 'boolean') return NaN;
+    var v = Number(x);
+    return isFinite(v) ? v : NaN;
+  }
+  function importPoint(p) {
+    if (!Array.isArray(p) || p.length < 2) return null;
+    var x = importNum(p[0]), z = importNum(p[1]);
+    return (isFiniteNum(x) && isFiniteNum(z)) ? [x, z] : null;
+  }
+  function importPolygon(poly, label) {
+    if (!Array.isArray(poly) || poly.length < 3) return { ok: false, reason: label + ': полигон должен быть массивом из ≥ 3 точек [x,z]' };
+    var out = [];
+    for (var i = 0; i < poly.length; i++) {
+      var p = importPoint(poly[i]);
+      if (!p) return { ok: false, reason: label + ': точка ' + (i + 1) + ' должна быть парой чисел [x,z]' };
+      out.push(p);
+    }
+    return { ok: true, polygon: out };
+  }
+  function importWall(raw, i, defaults) {
+    var label = 'стена ' + (i + 1);
+    if (!isPlainObject(raw)) return { ok: false, reason: label + ': ожидался объект' };
+    var a = importPoint(raw.a), b = importPoint(raw.b);
+    if (!a || !b) return { ok: false, reason: label + ': нужны координаты a и b как [x,z]' };
+    var L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (!(L > 1e-6)) return { ok: false, reason: label + ': нулевая длина (a и b совпадают)' };
+    var out = {}, k;
+    for (k in raw) if (hasOwn(raw, k)) out[k] = raw[k];
+    out.a = a; out.b = b;
+    var th = importNum(raw.thickness);
+    out.thickness = isFiniteNum(th) && th > 0 ? clamp(th, 0.01, 5) : 0.15;
+    var base = importNum(raw.base);
+    out.base = isFiniteNum(base) ? base : defaults.floorY;
+    var h = importNum(raw.height);
+    if (!isFiniteNum(h) || h <= 0) {
+      var top = importNum(raw.top);
+      h = isFiniteNum(top) ? top - out.base : defaults.height;
+    }
+    if (!isFiniteNum(h) || h <= 0) h = 3;
+    out.height = clamp(h, 0.3, 50);
+    out.top = out.base + out.height;
+    out.dir = [(b[0] - a[0]) / L, (b[1] - a[1]) / L];
+    out.length = L;
+    out.angleDeg = Math.atan2(out.dir[1], out.dir[0]) * 180 / Math.PI;
+    out.openings = [];
+    if (raw.openings !== undefined) {
+      if (!Array.isArray(raw.openings)) return { ok: false, reason: label + ': openings должен быть массивом' };
+      for (var j = 0; j < raw.openings.length; j++) {
+        var o = raw.openings[j], ol = label + ', проём ' + (j + 1);
+        if (!isPlainObject(o)) return { ok: false, reason: ol + ': ожидался объект' };
+        var along = importNum(o.along), width = importNum(o.width);
+        if (!isFiniteNum(along) || along < -1e-6) return { ok: false, reason: ol + ': along должен быть числом ≥ 0' };
+        if (!isFiniteNum(width) || width <= 0) return { ok: false, reason: ol + ': width должен быть числом > 0' };
+        if (along + width > L + 0.05) return { ok: false, reason: ol + ': проём выходит за длину стены (' + fmt(along + width, 2) + ' > ' + fmt(L, 2) + ' м)' };
+        var no = {};
+        for (k in o) if (hasOwn(o, k)) no[k] = o[k];
+        no.along = along; no.width = width;
+        var sill = importNum(o.sill), head = importNum(o.head);
+        if (isFiniteNum(sill)) no.sill = clamp(sill, 0, out.height);
+        if (isFiniteNum(head)) no.head = clamp(head, isFiniteNum(sill) ? sill : 0, out.height);
+        if (no.kind == null) no.kind = 'opening';
+        out.openings.push(no);
+      }
+    }
+    return { ok: true, wall: out };
+  }
+  function importRoom(raw, i) {
+    var label = 'помещение ' + (i + 1);
+    if (!isPlainObject(raw)) return { ok: false, reason: label + ': ожидался объект' };
+    var poly = importPolygon(raw.polygon, label);
+    if (!poly.ok) return poly;
+    var out = {}, k;
+    for (k in raw) if (hasOwn(raw, k)) out[k] = raw[k];
+    out.polygon = poly.polygon;
+    var area = importNum(raw.area);
+    out.area = isFiniteNum(area) && area >= 0 ? area : polyArea(poly.polygon);
+    return { ok: true, room: out };
+  }
+  function importSlab(raw, i, defaults) {
+    var label = 'плита ' + (i + 1);
+    if (!isPlainObject(raw)) return { ok: false, reason: label + ': ожидался объект' };
+    var poly = importPolygon(raw.polygon, label);
+    if (!poly.ok) return poly;
+    var out = {}, k;
+    for (k in raw) if (hasOwn(raw, k)) out[k] = raw[k];
+    out.polygon = poly.polygon;
+    var level = importNum(raw.level);
+    out.level = isFiniteNum(level) ? level : defaults.floorY;
+    var th = importNum(raw.thickness);
+    out.thickness = isFiniteNum(th) && th > 0 ? th : 0.2;
+    if (out.type == null) out.type = 'floor';
+    return { ok: true, slab: out };
+  }
+
+  /**
+   * Проверить и нормализовать распарсенный JSON модели (без побочных эффектов).
+   * @returns {{ok:boolean, model?:object, reason?:string}}
+   */
+  function normalizeImportedModel(raw) {
+    if (!isPlainObject(raw)) return schemaFail('корень JSON должен быть объектом модели');
+    if (raw.ok === false) return schemaFail('модель помечена как ok:false (не построена)');
+    if (raw.walls === undefined && raw.rooms === undefined && raw.slabs === undefined && raw.storey === undefined) {
+      return schemaFail('нужен хотя бы один раздел: walls, rooms, slabs или storey');
+    }
+    var pre = isPlainObject(raw.storey) ? raw.storey : null;
+    var preFloor = pre ? importNum(pre.floorY) : NaN;
+    var preCeil = pre ? importNum(pre.ceilY) : NaN;
+    var defaults = {
+      floorY: isFiniteNum(preFloor) ? preFloor : 0,
+      height: (isFiniteNum(preFloor) && isFiniteNum(preCeil) && preCeil - preFloor > 0.3) ? preCeil - preFloor : 3
+    };
+    var out = {}, k;
+    for (k in raw) if (hasOwn(raw, k)) out[k] = raw[k];
+    out.ok = true;
+    if (typeof out.units !== 'string' || out.units.length > 8) out.units = 'm';
+
+    var i;
+    out.walls = [];
+    if (raw.walls !== undefined) {
+      if (!Array.isArray(raw.walls)) return schemaFail('walls должен быть массивом');
+      for (i = 0; i < raw.walls.length; i++) {
+        var wr = importWall(raw.walls[i], i, defaults);
+        if (!wr.ok) return schemaFail(wr.reason);
+        out.walls.push(wr.wall);
+      }
+    }
+    out.rooms = [];
+    if (raw.rooms !== undefined) {
+      if (!Array.isArray(raw.rooms)) return schemaFail('rooms должен быть массивом');
+      for (i = 0; i < raw.rooms.length; i++) {
+        var rr = importRoom(raw.rooms[i], i);
+        if (!rr.ok) return schemaFail(rr.reason);
+        out.rooms.push(rr.room);
+      }
+    }
+    // этаж: из storey, иначе выводим из стен (мин. base / макс. top)
+    var floorY = isFiniteNum(preFloor) ? preFloor : null;
+    var ceilY = isFiniteNum(preCeil) ? preCeil : null;
+    if (floorY === null || ceilY === null) {
+      var mn = Infinity, mx = -Infinity;
+      for (i = 0; i < out.walls.length; i++) {
+        var wb = num(out.walls[i].base), wt = wb + num(out.walls[i].height);
+        if (wb < mn) mn = wb;
+        if (wt > mx) mx = wt;
+      }
+      if (floorY === null) floorY = isFinite(mn) ? mn : 0;
+      if (ceilY === null) ceilY = isFinite(mx) ? mx : floorY + 3;
+    }
+    if (!(ceilY - floorY > 0.3)) return schemaFail('этаж: ceilY должен быть больше floorY (пол ' + fmt(floorY, 2) + ', потолок ' + fmt(ceilY, 2) + ' м)');
+    out.storey = { floorY: floorY, ceilY: ceilY, height: ceilY - floorY };
+    out.slabs = [];
+    if (raw.slabs !== undefined) {
+      if (!Array.isArray(raw.slabs)) return schemaFail('slabs должен быть массивом');
+      for (i = 0; i < raw.slabs.length; i++) {
+        var sr = importSlab(raw.slabs[i], i, { floorY: floorY });
+        if (!sr.ok) return schemaFail(sr.reason);
+        out.slabs.push(sr.slab);
+      }
+    }
+    if (raw.footprint !== undefined) {
+      var fp = importPolygon(raw.footprint, 'контур этажа (footprint)');
+      if (!fp.ok) return schemaFail(fp.reason);
+      out.footprint = fp.polygon;
+    } else {
+      out.footprint = [];
+    }
+    if (!out.stats || typeof out.stats !== 'object') out.stats = {};
+    refreshStats(out);
+    return { ok: true, model: out };
+  }
+
+  /**
+   * Разобрать текст/объект JSON модели и провалидировать схему.
+   * @param {string|object} text
+   * @returns {{ok:boolean, model?:object, reason?:string}}
+   */
+  function parseModelJson(text) {
+    if (text === null || text === undefined) return importFail('пустой JSON');
+    var raw;
+    if (typeof text === 'string') {
+      var s = text.replace(/^\uFEFF/, '').trim();
+      if (!s) return importFail('файл пустой');
+      try { raw = JSON.parse(s); }
+      catch (e) { return importFail('синтаксис JSON: ' + ((e && e.message) || e)); }
+    } else if (typeof text === 'object') {
+      try { raw = JSON.parse(JSON.stringify(text)); }
+      catch (e2) { return importFail('JSON не сериализуется: ' + ((e2 && e2.message) || e2)); }
+    } else {
+      return importFail('ожидался текст или объект JSON');
+    }
+    return normalizeImportedModel(raw);
+  }
+
+  /**
+   * Импортировать модель из JSON: валидация → замена модели → сброс истории.
+   * При ошибке модель не меняется, возвращается {ok:false, reason}.
+   */
+  function importJson(text) {
+    var res = parseModelJson(text);
+    if (!res || !res.ok) {
+      var reason = (res && res.reason) || 'неизвестная ошибка схемы';
+      var msg = 'Импорт отклонён: ' + reason + ' — модель не изменена';
+      st.status = msg;
+      toast(msg, true);
+      if (typeof document !== 'undefined') renderAll();
+      return { ok: false, reason: reason };
+    }
+    var imported = res.model;
+    if (isModelOk(st.model)) assignModel(st.model, imported);
+    else st.model = imported;
+    st.initialJson = modelSnapshot(st.model);
+    st.undo.length = 0;
+    st.redo.length = 0;
+    st.wall = 0; st.opening = -1; st.room = -1; st.selKind = 'wall';
+    st.snapStatus = '';
+    ensureSelection();
+    // модель могла быть подменена (редактор открыт без модели) — синхронизируем с «Скан → BIM»
+    try {
+      if (typeof window !== 'undefined' && window.__lxScan2BIM && window.__lxScan2BIM.state &&
+        window.__lxScan2BIM.state.model !== st.model) window.__lxScan2BIM.state.model = st.model;
+    } catch (e) { }
+    var s = refreshStats(st.model);
+    afterEdit(st.model, 'Модель загружена из JSON: стены ' + num(s.wallCount) + ', проёмы ' + num(s.openingCount) +
+      ', помещения ' + num(s.roomCount) + ', площадь ' + fmt(num(s.roomsArea), 1) + ' м²');
+    toast('JSON модели загружен: стен ' + num(s.wallCount) + ', помещений ' + num(s.roomCount));
+    return { ok: true, model: st.model, stats: s };
+  }
+
   // ===================== ПРИВЯЗКА К ОБЛАКУ =====================
   // Одномерные две моды (k-means по перпендикуляру от оси): две грани стены.
   function twoModeMedians(values) {
@@ -447,6 +791,11 @@
     wall: 0,
     opening: -1,
     room: -1,
+    selKind: 'wall',        // 'wall' | 'opening' | 'room' — что удаляет клавиша Delete
+    viewMode: 'contour',    // 'contour' (как раньше) | 'volume' (3D-объём)
+    ceiling: false,         // сетка потолка в режиме «3D-объём»
+    solid: true,            // заливка стен, если вьюер умеет меши (_makeObj)
+    overlayInfo: null,      // {segments, truncated, mode, solid} — для панели/статуса
     status: '',
     snapStatus: '',
     panel: null,
@@ -573,6 +922,34 @@
     try { return JSON.stringify(m, null, 2); } catch (e) { return null; }
   }
 
+  /**
+   * OBJ-текст по текущей (отредактированной) модели — через window.Scan2BIM.toOBJ.
+   * @returns {string}
+   */
+  function exportEditedObj(model) {
+    var m = model || st.model;
+    if (!isModelOk(m)) throw new Error('модель не построена');
+    var S = engineOf();
+    if (!S || typeof S.toOBJ !== 'function') throw new Error('движок Scan2BIM.toOBJ не загружен');
+    return S.toOBJ(m);
+  }
+
+  /**
+   * DXF-текст (план) по текущей модели — через window.Scan2BIM.toDXF.
+   * includeCandidates:false — как в панели «Скан → BIM»: без непроверенных авто-кандидатов.
+   * @returns {string}
+   */
+  function exportEditedDxf(model, options) {
+    var m = model || st.model;
+    if (!isModelOk(m)) throw new Error('модель не построена');
+    var S = engineOf();
+    if (!S || typeof S.toDXF !== 'function') throw new Error('движок Scan2BIM.toDXF не загружен');
+    var opts = { planOnly: false, includeCandidates: false };
+    if (options && typeof options === 'object') for (var k in options) if (hasOwn(options, k)) opts[k] = options[k];
+    opts.includeCandidates = false;
+    return S.toDXF(m, opts);
+  }
+
   function downloadText(text, name, mime) {
     if (typeof document === 'undefined') return false;
     try {
@@ -657,67 +1034,376 @@
     }
   }
   function overlayColors() {
-    return { wall: COL_WALL, sel: COL_SEL, open: COL_OPEN, room: COL_ROOM, foot: COL_FOOT };
+    return {
+      wall: COL_WALL, sel: COL_SEL, open: COL_OPEN, openDim: COL_OPEN_DIM, room: COL_ROOM,
+      foot: COL_FOOT, floor: COL_FLOOR, grid: COL_GRID, ceil: COL_CEIL, selFill: COL_SEL_FILL
+    };
   }
 
-  // Перерисовать 3D-оверлей: все стены каркасом, выбранная — акцентом, проёмы/помещение.
+  // Умеет ли вьюер заливки/меши: webgl-viewer принимает {gkind:'solid', pos, nor};
+  // у остальных вьюеров оверлей только линейный — тогда рисуем исключительно линии.
+  function viewerSupportsSolid(v) {
+    try {
+      if (!v || typeof v._setOverlay !== 'function') return false;
+      if (typeof v._makeObj === 'function') return true;
+      return v.supportsSolid === true || v.overlaySolid === true;
+    } catch (e) { return false; }
+  }
+
+  function storeyYs(model) {
+    var fy = num(model && model.storey && model.storey.floorY, 0);
+    var cy = num(model && model.storey && model.storey.ceilY, fy + 3);
+    if (!(cy > fy)) cy = fy + 3;
+    return { floorY: fy, ceilY: cy };
+  }
+
+  // ---------- бюджет сегментов оверлея (≤ MAX_OVERLAY_SEGMENTS) ----------
+  function makeBudget(maxSegments) {
+    return {
+      segs: 0,
+      maxSegs: Math.max(1, Math.floor(num(maxSegments, MAX_OVERLAY_SEGMENTS))),
+      truncated: false
+    };
+  }
+  function addSeg(out, ax, ay, az, bx, by, bz, budget) {
+    if (budget && budget.segs >= budget.maxSegs) { budget.truncated = true; return false; }
+    out.push(ax, ay, az, bx, by, bz);
+    if (budget) budget.segs++;
+    return true;
+  }
+  function addSegs(out, arr, budget) {
+    if (!arr || !arr.length) return 0;
+    var n = 0;
+    for (var i = 0; i + 5 < arr.length; i += 6) {
+      if (!addSeg(out, arr[i], arr[i + 1], arr[i + 2], arr[i + 3], arr[i + 4], arr[i + 5], budget)) break;
+      n++;
+    }
+    return n;
+  }
+
+  // ---------- 3D-объём: плотный каркас стен и проёмов ----------
+  function pushWallWireVolume(w, out, budget) {
+    var tmp = [];
+    pushWallEdges(w, tmp);
+    addSegs(out, tmp, budget);
+    var d = unitDir(w), L = wallLength(w), H = wallHeight(w), base = wallBase(w);
+    var th = Math.max(0.02, num(w.thickness, 0.15)) / 2;
+    var nx = -d[1], nz = d[0];
+    var ribs = clamp(Math.floor((L - 0.2) / WALL_RIB_STEP), 0, WALL_RIB_MAX);
+    for (var r = 1; r <= ribs; r++) {
+      var s = L * r / (ribs + 1);
+      var cx = num(w.a[0]) + d[0] * s, cz = num(w.a[1]) + d[1] * s;
+      addSeg(out, cx + nx * th, base, cz + nz * th, cx + nx * th, base + H, cz + nz * th, budget);
+      addSeg(out, cx - nx * th, base, cz - nz * th, cx - nx * th, base + H, cz - nz * th, budget);
+    }
+  }
+
+  // Плотные рёбра проёма: рамка в середине стены, рамки на обеих гранях и откосы (20 сегментов).
+  function pushOpeningWireVolume(w, o, out, budget) {
+    var d = unitDir(w), L = wallLength(w), H = wallHeight(w), vert = openingVertical(o, w);
+    var s0 = clamp(num(o.along), 0, L), s1 = clamp(num(o.along) + num(o.width), 0, L);
+    var sill = clamp(vert.sill, 0, H), head = clamp(vert.head, sill, H);
+    var a = w.a, base = wallBase(w), th = Math.max(0.02, num(w.thickness, 0.15)) / 2;
+    var nx = -d[1], nz = d[0];
+    function P(s, y, side) { return [num(a[0]) + d[0] * s + nx * th * side, base + y, num(a[1]) + d[1] * s + nz * th * side]; }
+    var center = [P(s0, sill, 0), P(s1, sill, 0), P(s1, head, 0), P(s0, head, 0)];
+    var i, k;
+    for (i = 0; i < 4; i++) {
+      k = (i + 1) % 4;
+      if (!addSeg(out, center[i][0], center[i][1], center[i][2], center[k][0], center[k][1], center[k][2], budget)) return false;
+    }
+    for (var side = -1; side <= 1; side += 2) {
+      var face = [P(s0, sill, side), P(s1, sill, side), P(s1, head, side), P(s0, head, side)];
+      for (i = 0; i < 4; i++) {
+        k = (i + 1) % 4;
+        if (!addSeg(out, face[i][0], face[i][1], face[i][2], face[k][0], face[k][1], face[k][2], budget)) return false;
+      }
+      for (i = 0; i < 4; i++) {   // откосы: угол в середине стены → угол на грани
+        if (!addSeg(out, center[i][0], center[i][1], center[i][2], face[i][0], face[i][1], face[i][2], budget)) return false;
+      }
+    }
+    return true;
+  }
+
+  // ---------- пол/потолок: контуры и сетка по помещениям ----------
+  function pushPolygonContour(poly, y, out, budget) {
+    if (!poly || poly.length < 3) return 0;
+    var n = 0;
+    for (var i = 0; i < poly.length; i++) {
+      var a = poly[i], b = poly[(i + 1) % poly.length];
+      if (!a || !b) continue;
+      if (!addSeg(out, num(a[0]), y, num(a[1]), num(b[0]), y, num(b[1]), budget)) break;
+      n++;
+    }
+    return n;
+  }
+
+  // Сетка внутри полигона: линии по X и Z с шагом step, отсечение — чётность пересечений рёбер.
+  function pushPolyGrid(poly, y, step, out, budget, maxSegs) {
+    if (!poly || poly.length < 3) return 0;
+    var minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity, i;
+    for (i = 0; i < poly.length; i++) {
+      var p = poly[i];
+      if (!p) return 0;
+      var px = num(p[0]), pz = num(p[1]);
+      if (px < minx) minx = px;
+      if (px > maxx) maxx = px;
+      if (pz < minz) minz = pz;
+      if (pz > maxz) maxz = pz;
+    }
+    if (!(maxx - minx > 1e-6) || !(maxz - minz > 1e-6)) return 0;
+    step = step > 0.05 ? step : ROOM_GRID_STEP;
+    maxSegs = Math.max(1, num(maxSegs, ROOM_GRID_MAX));
+    var stepZ = Math.max(step, (maxz - minz) / 60);
+    var stepX = Math.max(step, (maxx - minx) / 60);
+    var count = 0, xs = [], zs = [], a, b, t;
+    function span(x0, x1, zz) {
+      if (count >= maxSegs) return false;
+      if (Math.abs(x1 - x0) < 1e-3) return true;
+      if (!addSeg(out, x0, y, zz, x1, y, zz, budget)) return false;
+      count++;
+      return true;
+    }
+    function spanZ(xx, z0, z1) {
+      if (count >= maxSegs) return false;
+      if (Math.abs(z1 - z0) < 1e-3) return true;
+      if (!addSeg(out, xx, y, z0, xx, y, z1, budget)) return false;
+      count++;
+      return true;
+    }
+    for (var z = Math.ceil(minz / stepZ) * stepZ; z <= maxz + 1e-9; z += stepZ) {
+      xs.length = 0;
+      for (i = 0; i < poly.length; i++) {
+        a = poly[i]; b = poly[(i + 1) % poly.length];
+        var za = num(a[1]), zb = num(b[1]);
+        if ((za <= z && zb > z) || (zb <= z && za > z)) {
+          t = (z - za) / (zb - za);
+          xs.push(num(a[0]) + t * (num(b[0]) - num(a[0])));
+        }
+      }
+      xs.sort(function (m, n) { return m - n; });
+      for (var k = 0; k + 1 < xs.length; k += 2) {
+        if (!span(xs[k], xs[k + 1], z)) return count;
+      }
+    }
+    for (var x = Math.ceil(minx / stepX) * stepX; x <= maxx + 1e-9; x += stepX) {
+      zs.length = 0;
+      for (i = 0; i < poly.length; i++) {
+        a = poly[i]; b = poly[(i + 1) % poly.length];
+        var xa = num(a[0]), xb = num(b[0]);
+        if ((xa <= x && xb > x) || (xb <= x && xa > x)) {
+          t = (x - xa) / (xb - xa);
+          zs.push(num(a[1]) + t * (num(b[1]) - num(a[1])));
+        }
+      }
+      zs.sort(function (m, n) { return m - n; });
+      for (var k2 = 0; k2 + 1 < zs.length; k2 += 2) {
+        if (!spanZ(x, zs[k2], zs[k2 + 1])) return count;
+      }
+    }
+    return count;
+  }
+
+  // ---------- заливка стен (если вьюер умеет меши): треугольники + нормали ----------
+  function boxSolidXform(cx, cy, cz, ax, ay, hx, hy, hz, pos, nor) {
+    var nx = -ay, nz = ax;
+    function P(sx, sy, sz) { return [cx + ax * sx * hx + nx * sz * hz, cy + sy * hy, cz + ay * sx * hx + nz * sz * hz]; }
+    var c = [P(-1, -1, -1), P(1, -1, -1), P(1, -1, 1), P(-1, -1, 1), P(-1, 1, -1), P(1, 1, -1), P(1, 1, 1), P(-1, 1, 1)];
+    var F = [
+      [[1, 2, 6, 5], [ax, 0, ay]], [[0, 3, 7, 4], [-ax, 0, -ay]], [[4, 5, 6, 7], [0, 1, 0]],
+      [[0, 1, 2, 3], [0, -1, 0]], [[2, 3, 7, 6], [nx, 0, nz]], [[0, 1, 5, 4], [-nx, 0, -nz]]
+    ];
+    for (var f = 0; f < F.length; f++) {
+      var q = F[f][0], n = F[f][1], A = c[q[0]], B = c[q[1]], C = c[q[2]], D = c[q[3]];
+      pos.push(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2], A[0], A[1], A[2], C[0], C[1], C[2], D[0], D[1], D[2]);
+      for (var t = 0; t < 6; t++) nor.push(n[0], n[1], n[2]);
+    }
+  }
+  // Части стены без проёмов: [{s0,s1,y0,y1}] — чтобы заливка не закрашивала двери/окна.
+  function wallSolidParts(w) {
+    var L = wallLength(w), H = wallHeight(w), ops = openingsOf(w).slice().sort(function (a, b) { return num(a.along) - num(b.along); });
+    var out = [], cur = 0;
+    function put(s0, s1, y0, y1) { if (s1 - s0 > 1e-3 && y1 - y0 > 1e-3) out.push({ s0: s0, s1: s1, y0: y0, y1: y1 }); }
+    for (var i = 0; i < ops.length; i++) {
+      var o = ops[i], vert = openingVertical(o, w);
+      var s0 = clamp(num(o.along), 0, L), s1 = clamp(num(o.along) + num(o.width), 0, L);
+      var sill = clamp(vert.sill, 0, H), head = clamp(vert.head, sill, H);
+      if (s0 > cur) put(cur, s0, 0, H);
+      if (s1 > s0) { put(s0, s1, 0, sill); put(s0, s1, head, H); }
+      cur = Math.max(cur, s1);
+    }
+    if (L > cur) put(cur, L, 0, H);
+    return out;
+  }
+  function solidFillColor(w, selected) {
+    if (selected) return COL_SEL_FILL;
+    var c = MATERIAL_FILL[w && w.material];
+    return c || MATERIAL_FILL.unknown;
+  }
+
+  /**
+   * Чистое построение 3D-оверлея (без DOM/вьюера) — исполняется и в node --test.
+   * Режимы: 'contour' — как раньше (контур стен/проёмов/помещений);
+   * 'volume' — плотный каркас параллелепипедов, рёбра проёмов, пол/потолок сеткой.
+   * Если вьюер умеет меши (opts.supportsSolid) — стены дополнительно заливаются
+   * треугольниками (с вырезом проёмов). Бюджет: ≤ opts.maxSegments сегментов.
+   *
+   * @param {object|null} model
+   * @param {object} [opts] {mode, ceiling, solid, supportsSolid, wall, opening, room, maxSegments}
+   * @returns {{mode:string, objs:Array, segments:number, truncated:boolean, solid:boolean, triangles:number}}
+   */
+  function buildOverlay(model, opts) {
+    opts = opts || {};
+    var mode = opts.mode === 'volume' ? 'volume' : 'contour';
+    var budget = makeBudget(opts.maxSegments);
+    var result = { mode: mode, objs: [], segments: 0, truncated: false, solid: false, triangles: 0 };
+    if (!isModelOk(model)) { result.truncated = budget.truncated; return result; }
+    var wallPos = [], selPos = [], openPos = [], openDimPos = [];
+    var roomPos = [], floorPos = [], gridPos = [], ceilPos = [], footPos = [];
+    var walls = model.walls || [], rooms = model.rooms || [];
+    var selWall = getWall(model, opts.wall);
+    var roomIdx = Number(opts.room);
+    var ys = storeyYs(model);
+    var i, j, tmp;
+    var solidsByColor = {};
+    var solidBudget = { tris: 0, maxTris: MAX_SOLID_TRIS, truncated: false };
+
+    if (mode === 'volume') {
+      // 1) стены: выбранная первой — должна попасть в бюджет даже на тяжёлой модели
+      if (selWall) pushWallWireVolume(selWall, selPos, budget);
+      for (i = 0; i < walls.length; i++) if (walls[i] !== selWall) pushWallWireVolume(walls[i], wallPos, budget);
+      // 2) рёбра проёмов у всех стен: выбранная стена — акцентом, остальные приглушённо
+      for (i = 0; i < walls.length; i++) {
+        var opsV = openingsOf(walls[i]);
+        var opTarget = (walls[i] === selWall) ? openPos : openDimPos;
+        for (j = 0; j < opsV.length; j++) pushOpeningWireVolume(walls[i], opsV[j], opTarget, budget);
+      }
+      // 3) пол: контур + сетка по помещениям; выбранное помещение — акцентом
+      for (i = 0; i < rooms.length; i++) {
+        var rpoly = rooms[i] && rooms[i].polygon;
+        if (!rpoly || rpoly.length < 3) continue;
+        var selRoom = (roomIdx === i);
+        pushPolygonContour(rpoly, ys.floorY + 0.01, selRoom ? roomPos : floorPos, budget);
+        pushPolyGrid(rpoly, ys.floorY + 0.02, ROOM_GRID_STEP, selRoom ? roomPos : gridPos, budget, ROOM_GRID_MAX);
+      }
+      // 4) потолок — опционально (кнопка «Потолок»)
+      if (opts.ceiling) {
+        for (i = 0; i < rooms.length; i++) {
+          var cpoly = rooms[i] && rooms[i].polygon;
+          if (!cpoly || cpoly.length < 3) continue;
+          pushPolygonContour(cpoly, ys.ceilY, ceilPos, budget);
+          pushPolyGrid(cpoly, ys.ceilY, CEIL_GRID_STEP, ceilPos, budget, CEIL_GRID_MAX);
+        }
+      }
+      // 5) контур этажа
+      pushPolygonContour(model.footprint, ys.floorY, footPos, budget);
+      // 6) заливка стен треугольниками — только если вьюер умеет меши
+      if (opts.supportsSolid && opts.solid !== false) {
+        var solidObjs = [];
+        for (i = 0; i < walls.length; i++) {
+          var parts = wallSolidParts(walls[i]);
+          var color = solidFillColor(walls[i], walls[i] === selWall);
+          var key = color.join(',');
+          var bucket = solidsByColor[key] || (solidsByColor[key] = { pos: [], nor: [], color: color });
+          var dw = unitDir(walls[i]), th2 = Math.max(0.02, num(walls[i].thickness, 0.15)) / 2;
+          var stop = false;
+          for (j = 0; j < parts.length; j++) {
+            if (solidBudget.tris + 12 > solidBudget.maxTris) { solidBudget.truncated = true; stop = true; break; }
+            var part = parts[j], sMid = (part.s0 + part.s1) / 2, yMid = (part.y0 + part.y1) / 2;
+            var mxw = num(walls[i].a[0]) + dw[0] * sMid, mzw = num(walls[i].a[1]) + dw[1] * sMid;
+            boxSolidXform(mxw, wallBase(walls[i]) + yMid, mzw, dw[0], dw[1],
+              (part.s1 - part.s0) / 2, (part.y1 - part.y0) / 2, th2, bucket.pos, bucket.nor);
+            solidBudget.tris += 12;
+          }
+          if (stop) break;
+        }
+        for (var sk in solidsByColor) {
+          if (!hasOwn(solidsByColor, sk)) continue;
+          var sb = solidsByColor[sk];
+          if (!sb.pos.length) continue;
+          solidObjs.push({ gkind: 'solid', pos: new Float32Array(sb.pos), nor: new Float32Array(sb.nor), color: sb.color });
+        }
+        result.objs = solidObjs;
+        result.solid = solidObjs.length > 0;
+        result.triangles = solidBudget.tris;
+      }
+    } else {
+      // ---- «Контур»: прежняя подсветка, без заливок ----
+      if (selWall) {
+        tmp = [];
+        pushWallEdges(selWall, tmp);
+        addSegs(selPos, tmp, budget);
+        var d = unitDir(selWall), n = wallNormal(selWall);
+        var L = wallLength(selWall), H = wallHeight(selWall), base = wallBase(selWall);
+        var mxc = (num(selWall.a[0]) + num(selWall.b[0])) / 2, mzc = (num(selWall.a[1]) + num(selWall.b[1])) / 2;
+        var cy = base + Math.min(H * 0.35, 1.1);
+        // стрелка нормали: показывает, куда двигают стену кнопки «±0.05»
+        addSeg(selPos, mxc, cy, mzc, mxc + n[0] * 0.6, cy, mzc + n[1] * 0.6, budget);
+        addSeg(selPos, mxc + n[0] * 0.6, cy, mzc + n[1] * 0.6, mxc + n[0] * 0.45 + d[0] * 0.12, cy, mzc + n[1] * 0.45 + d[1] * 0.12, budget);
+        addSeg(selPos, mxc + n[0] * 0.6, cy, mzc + n[1] * 0.6, mxc + n[0] * 0.45 - d[0] * 0.12, cy, mzc + n[1] * 0.45 - d[1] * 0.12, budget);
+        var opsC = openingsOf(selWall);
+        var selOp = getOpening(model, opts.wall, opts.opening);
+        for (j = 0; j < opsC.length; j++) {
+          tmp = [];
+          pushOpeningEdges(selWall, opsC[j], tmp);
+          addSegs(openPos, tmp, budget);
+        }
+        if (selOp) {
+          tmp = [];
+          pushOpeningEdges(selWall, selOp, tmp);
+          addSegs(openPos, tmp, budget);
+        }
+      }
+      for (i = 0; i < walls.length; i++) {
+        if (walls[i] === selWall) continue;
+        tmp = [];
+        pushWallEdges(walls[i], tmp);
+        addSegs(wallPos, tmp, budget);
+      }
+      // выбранное помещение — контур на уровне пола и потолка
+      var room = (roomIdx >= 0 && roomIdx < rooms.length) ? rooms[roomIdx] : null;
+      if (room && room.polygon && room.polygon.length >= 3) {
+        pushPolygonContour(room.polygon, ys.floorY + 0.01, roomPos, budget);
+        pushPolygonContour(room.polygon, ys.ceilY, roomPos, budget);
+      }
+      pushPolygonContour(model.footprint, ys.floorY, footPos, budget);
+    }
+
+    // ---- упаковка линий в объекты оверлея ----
+    var order = (mode === 'volume')
+      ? [[wallPos, COL_WALL], [selPos, COL_SEL], [openDimPos, COL_OPEN_DIM], [openPos, COL_OPEN],
+        [floorPos, COL_FLOOR], [gridPos, COL_GRID], [roomPos, COL_ROOM], [ceilPos, COL_CEIL], [footPos, COL_FOOT]]
+      : [[wallPos, COL_WALL], [openPos, COL_OPEN], [selPos, COL_SEL], [roomPos, COL_ROOM], [footPos, COL_FOOT]];
+    for (i = 0; i < order.length; i++) {
+      if (!order[i][0].length) continue;
+      result.objs.push({ line: true, gkind: 'wire', pos: new Float32Array(order[i][0]), color: order[i][1] });
+    }
+    result.segments = budget.segs;
+    result.truncated = budget.truncated || solidBudget.truncated;
+    return result;
+  }
+
+  // Перерисовать 3D-оверлей по текущему режиму просмотра (контур/3D-объём).
   function refreshOverlay() {
     var v = mainV();
     if (!v || !v._setOverlay) return false;
     var model = isModelOk(st.model) ? st.model : null;
-    var objs = [];
     try {
-      if (model) {
-        var walls = model.walls || [], wallPos = [], selPos = [], openPos = [];
-        var selWall = getWall(model, st.wall);
-        for (var i = 0; i < walls.length; i++) {
-          if (walls[i] === selWall) continue;
-          pushWallEdges(walls[i], wallPos);
-        }
-        if (wallPos.length) objs.push({ line: true, gkind: 'wire', pos: new Float32Array(wallPos), color: overlayColors().wall });
-        if (selWall) {
-          pushWallEdges(selWall, selPos);
-          var d = unitDir(selWall), n = wallNormal(selWall);
-          var L = wallLength(selWall), H = wallHeight(selWall), base = wallBase(selWall);
-          var mx = (num(selWall.a[0]) + num(selWall.b[0])) / 2, mz = (num(selWall.a[1]) + num(selWall.b[1])) / 2;
-          var cy = base + Math.min(H * 0.35, 1.1);
-          // стрелка нормали: показывает, куда двигают стену кнопки «±0.05»
-          selPos.push(mx, cy, mz, mx + n[0] * 0.6, cy, mz + n[1] * 0.6);
-          selPos.push(mx + n[0] * 0.6, cy, mz + n[1] * 0.6, mx + n[0] * 0.45 + d[0] * 0.12, cy, mz + n[1] * 0.45 + d[1] * 0.12);
-          selPos.push(mx + n[0] * 0.6, cy, mz + n[1] * 0.6, mx + n[0] * 0.45 - d[0] * 0.12, cy, mz + n[1] * 0.45 - d[1] * 0.12);
-          var ops = openingsOf(selWall);
-          var selOp = getOpening(model, st.wall, st.opening);
-          for (var j = 0; j < ops.length; j++) {
-            if (ops[j] === selOp) continue;
-            pushOpeningEdges(selWall, ops[j], openPos);
-          }
-          if (selOp) pushOpeningEdges(selWall, selOp, openPos);
-          if (openPos.length) objs.push({ line: true, gkind: 'wire', pos: new Float32Array(openPos), color: overlayColors().open });
-          objs.push({ line: true, gkind: 'wire', pos: new Float32Array(selPos), color: overlayColors().sel });
-        }
-        // выбранное помещение — контур на уровне пола и потолка
-        var room = model.rooms && st.room >= 0 ? model.rooms[st.room] : null;
-        if (room && room.polygon && room.polygon.length >= 3) {
-          var fY = num(model.storey && model.storey.floorY, 0), cY = num(model.storey && model.storey.ceilY, fY + 3);
-          var rp = [];
-          for (var k = 0; k < room.polygon.length; k++) {
-            var p1 = room.polygon[k], p2 = room.polygon[(k + 1) % room.polygon.length];
-            rp.push(p1[0], fY + 0.01, p1[1], p2[0], fY + 0.01, p2[1]);
-            rp.push(p1[0], cY, p1[1], p2[0], cY, p2[1]);
-          }
-          objs.push({ line: true, gkind: 'wire', pos: new Float32Array(rp), color: overlayColors().room });
-        }
-        // контур этажа
-        var foot = model.footprint || [];
-        if (foot.length > 1) {
-          var fp = [], ffY = num(model.storey && model.storey.floorY, 0), fcY = num(model.storey && model.storey.ceilY, ffY + 3);
-          for (var fi = 0; fi < foot.length; fi++) {
-            var fa = foot[fi], fb = foot[(fi + 1) % foot.length];
-            fp.push(fa[0], ffY, fa[1], fb[0], ffY, fb[1]);
-          }
-          objs.push({ line: true, gkind: 'wire', pos: new Float32Array(fp), color: overlayColors().foot });
-        }
-      }
+      var built = buildOverlay(model, {
+        mode: st.viewMode,
+        ceiling: !!st.ceiling,
+        solid: !!st.solid,
+        supportsSolid: viewerSupportsSolid(v),
+        wall: st.wall,
+        opening: st.opening,
+        room: st.room,
+        maxSegments: MAX_OVERLAY_SEGMENTS
+      });
+      st.overlayInfo = {
+        mode: built.mode, segments: built.segments, truncated: built.truncated,
+        solid: built.solid, triangles: built.triangles, objects: built.objs.length
+      };
+      var objs = built.objs;
       v._setOverlay(objs);
       if (v.render) v.render();
       return true;
@@ -763,7 +1449,24 @@
     '.lx-s2be-snap.err { color: var(--warn); }',
     '.lx-s2be-sep { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line); }',
     '.lx-s2be .lx-btnrow { margin-top: 2px; }',
-    '.lx-s2be .lx-btnrow .btn { flex: 1 1 auto; }'
+    '.lx-s2be .lx-btnrow .btn { flex: 1 1 auto; }',
+    // режим просмотра: сегментированный переключатель «Контур / 3D-объём»
+    '.lx-s2be-seg { display: inline-flex; flex: none; border: 1px solid var(--line); border-radius: var(--r-1); background: var(--bg-2); overflow: hidden; }',
+    '.lx-s2be-seg .btn.xs { border: 0; border-radius: 0; background: transparent; color: var(--txt-2); min-width: 0; }',
+    '.lx-s2be-seg .btn.xs + .btn.xs { border-left: 1px solid var(--line); }',
+    '.lx-s2be-seg .btn.xs:hover { background: var(--bg-3); color: var(--txt); }',
+    '.lx-s2be-seg .btn.xs[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent-line); }',
+    '.lx-s2be-seg .btn.xs[aria-pressed="true"]:hover { background: var(--accent-soft); color: var(--accent); }',
+    '.lx-s2be-toggle { min-width: 44px; font-variant-numeric: tabular-nums; }',
+    '.lx-s2be-toggle[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }',
+    // статус-строка: счётчики + подсказки клавиш
+    '.lx-s2be-statusbar { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; padding-top: 4px; border-top: 1px solid var(--line); color: var(--txt-3); font: 11px/1.5 var(--mono); font-variant-numeric: tabular-nums; }',
+    '.lx-s2be-statusbar b { color: var(--accent); font-weight: 600; }',
+    '.lx-s2be-statusbar .lx-s2be-keys { color: var(--txt-2); }',
+    '.lx-s2be-view-note { margin: 2px 0 0; color: var(--txt-3); font: 11px/1.45 var(--mono); font-variant-numeric: tabular-nums; }',
+    '.lx-s2be-view-note .warn { color: var(--warn); }',
+    '.lx-s2be-import { display: flex; flex-direction: column; gap: 2px; }',
+    '.lx-s2be-import input[type="file"] { display: none; }'
   ].join('\n');
 
   function ensureStyles() {
@@ -778,7 +1481,7 @@
   // ---------- состояние выбора ----------
   function ensureSelection() {
     var model = isModelOk(st.model) ? st.model : null;
-    if (!model) { st.wall = 0; st.opening = -1; st.room = -1; return; }
+    if (!model) { st.wall = 0; st.opening = -1; st.room = -1; st.selKind = 'wall'; return; }
     var nWalls = (model.walls || []).length;
     st.wall = nWalls ? clamp(Number(st.wall) | 0, 0, nWalls - 1) : 0;
     var w = getWall(model, st.wall);
@@ -788,6 +1491,9 @@
     if (!nRooms) st.room = -1;
     else if (st.room >= nRooms) st.room = nRooms - 1;
     else if (st.room < -1) st.room = -1;
+    if (st.selKind !== 'wall' && st.selKind !== 'opening' && st.selKind !== 'room') st.selKind = 'wall';
+    if (st.selKind === 'room' && st.room < 0) st.selKind = 'wall';
+    if (st.selKind === 'opening' && st.opening < 0) st.selKind = 'wall';
   }
 
   // ---------- разметка панели ----------
@@ -823,13 +1529,83 @@
       '</button>';
   }
 
+  // ---------- статус: счётчики + подсказки клавиш ----------
+  function modelCounts(model) {
+    var m = model || st.model;
+    var walls = (m && m.walls) || [], rooms = (m && m.rooms) || [];
+    var openings = 0, area = 0;
+    for (var i = 0; i < walls.length; i++) openings += openingsOf(walls[i]).length;
+    for (var r = 0; r < rooms.length; r++) area += num(rooms[r].area, polyArea(rooms[r].polygon));
+    return { walls: walls.length, openings: openings, rooms: rooms.length, area: Math.round(area * 100) / 100 };
+  }
+  // Требование «Статус»: счётчики стены/проёмы/помещения/площадь + подсказка Ctrl+Z / Delete.
+  function statusBarText(model) {
+    var c = modelCounts(model);
+    return 'Стены <b>' + c.walls + '</b> · Проёмы <b>' + c.openings + '</b> · Помещения <b>' + c.rooms + '</b> · ' +
+      'Площадь <b>' + fmt(c.area, 1) + '</b> м² · ' +
+      '<span class="lx-s2be-keys">Ctrl+Z — отменить · Delete — удалить выбранное</span>';
+  }
+  function viewModeBtn(mode, label, ico, tip) {
+    var on = st.viewMode === mode;
+    return '<button type="button" class="btn xs" data-act="view-mode" data-mode="' + mode + '" data-ico="' + ico + '"' +
+      ' data-tip="' + tip + '" aria-pressed="' + (on ? 'true' : 'false') + '">' + label + '</button>';
+  }
+  function toggleBtn(act, on, label, ico, tip) {
+    return '<button type="button" class="btn xs lx-s2be-toggle" data-act="' + act + '" data-ico="' + ico + '"' +
+      ' data-tip="' + tip + '" aria-pressed="' + (on ? 'true' : 'false') + '">' + label + '</button>';
+  }
+  function viewStatusText() {
+    var supports = viewerSupportsSolid(mainV());
+    var info = st.overlayInfo;
+    var parts = [];
+    if (st.viewMode === 'volume') {
+      parts.push('3D-объём: каркас стен + рёбра проёмов' + (st.ceiling ? ' + сетка потолка' : ''));
+      parts.push(supports && st.solid ? 'заливка стен' : 'только линии');
+    } else {
+      parts.push('Контур: рёбра стен, проёмов и помещений');
+    }
+    if (info) {
+      parts.push('сегментов ' + num(info.segments));
+      if (info.truncated) parts.push('<span class="warn">упрощено до лимита ' + MAX_OVERLAY_SEGMENTS + '</span>');
+    }
+    return parts.join(' · ');
+  }
+  function viewBlockHtml() {
+    var supports = viewerSupportsSolid(mainV());
+    return '<div class="lx-s2be-edit" data-lx-edit="view">' +
+      '<div class="lx-s2be-title"><b>Просмотр</b><small>' + (st.viewMode === 'volume' ? '3D-объём · детальный каркас' : 'контур · как раньше') + '</small></div>' +
+      '<div class="lx-s2be-row"><span class="lx-s2be-lbl">Режим</span>' +
+      '<span class="lx-s2be-seg" role="group" aria-label="Режим просмотра">' +
+      viewModeBtn('volume', '3D-объём', 'box', 'Плотный каркас: параллелепипеды стен, вертикальные рёбра, откосы проёмов, пол/потолок') +
+      viewModeBtn('contour', 'Контур', 'grid-3x3', 'Контурный режим: рёбра стен, проёмов и помещений') +
+      '</span></div>' +
+      '<div class="lx-s2be-row"><span class="lx-s2be-lbl">Потолок · заливка</span>' +
+      '<span class="lx-s2be-btns">' +
+      toggleBtn('toggle-ceiling', !!st.ceiling, 'Потолок', 'layers', 'Показать сетку потолка по помещениям (режим 3D-объём)') +
+      (supports ? toggleBtn('toggle-fill', !!st.solid, 'Заливка', 'boxes', 'Залить стены треугольниками — вьюер поддерживает меши') : '') +
+      '</span></div>' +
+      '<p class="lx-s2be-view-note" data-lx-edit="view-status">' + viewStatusText() + '</p>' +
+      '</div>';
+  }
+  function importRowHtml() {
+    return '<div class="lx-s2be-import" data-lx-edit="import">' +
+      '<div class="lx-btnrow">' +
+      '<button type="button" class="btn sm" data-act="import-json" data-ico="upload" data-tip="Загрузить модель из JSON (валидация схемы walls/rooms/slabs/storey)">Загрузить JSON</button>' +
+      '</div>' +
+      '<input type="file" accept=".json,application/json" data-lx-edit="import-input" aria-label="Файл модели JSON" hidden />' +
+      '</div>';
+  }
+
   function modelBodyHtml() {
     var m = st.model;
     if (!isModelOk(m)) {
-      return '<p class="sec-note" data-lx-edit="hint">Модель ещё не построена. Откройте панель «Скан → BIM», нажмите «Построить BIM» — и вернитесь в редактор.</p>' +
+      return '<p class="sec-note" data-lx-edit="hint">Модель ещё не построена. Постройте BIM в панели «Скан → BIM» или загрузите ранее сохранённый JSON модели — редактор продолжит работу с ним.</p>' +
+        importRowHtml() +
         '<div class="lx-btnrow" data-lx-edit="empty-actions">' +
         '<button type="button" class="btn sm" data-act="open-build" data-ico="building">Открыть «Скан → BIM»</button>' +
-        '</div>';
+        '</div>' +
+        '<p class="lx-s2be-note" data-lx-edit="status" role="status" aria-live="polite">' + (st.status || '') + '</p>' +
+        '<p class="lx-s2be-note lx-s2be-statusbar" data-lx-edit="statusbar">' + statusBarText(null) + '</p>';
     }
     ensureSelection();
     var walls = m.walls || [], rooms = m.rooms || [];
@@ -839,7 +1615,7 @@
     var html = [];
 
     // подсказка + статистика
-    html.push('<p class="sec-note" data-lx-edit="hint">Правки хранятся в памяти приложения. Кнопки двигают выбранную стену; «Привязать к облаку» подгоняет ось и толщину по точкам.</p>');
+    html.push('<p class="sec-note" data-lx-edit="hint">Правки хранятся в памяти приложения. «3D-объём» показывает детальный каркас; Delete — удалить выбранное, Ctrl+Z — отменить.</p>');
     var s = refreshStats(m);
     html.push('<div class="lx-stats" data-lx-edit="stats" aria-label="Статистика модели">' +
       '<div class="lx-stat"><span>Стен</span><b>' + num(s.wallCount) + '</b></div>' +
@@ -848,6 +1624,9 @@
       '<div class="lx-stat"><span>Площадь помещений</span><b>' + fmt(num(s.roomsArea), 1) + ' м²</b></div>' +
       '<div class="lx-stat"><span>Сумм. длина стен</span><b>' + fmt(num(s.totalWallLength), 1) + ' м</b></div>' +
       '</div>');
+
+    // просмотр: «Контур» / «3D-объём», потолок и заливка
+    html.push(viewBlockHtml());
 
     // стены
     html.push('<div class="lx-obj-h">Стены</div>');
@@ -884,6 +1663,9 @@
         '</span></div>' +
         '<div class="lx-s2be-row"><span class="lx-s2be-lbl">Привязка к облаку</span>' +
         '<button type="button" class="btn sm" data-act="snap" data-wall-index="' + st.wall + '" data-ico="magnet" data-tip="Подогнать ось и толщину по точкам облака (полоса ±0,4 м)">Привязать к облаку</button>' +
+        '</div>' +
+        '<div class="lx-s2be-row"><span class="lx-s2be-lbl">Удаление</span>' +
+        '<button type="button" class="btn sm danger" data-act="delete-wall" data-wall-index="' + st.wall + '" data-ico="trash-2" data-tip="Удалить выбранную стену вместе с её проёмами (клавиша Delete)">Удалить стену</button>' +
         '</div>' +
         '<p class="lx-s2be-note' + (st.snapStatus && /отклон|мало|вне|не удалось|нет точек/i.test(st.snapStatus) ? ' err' : '') + '" data-lx-edit="snap-status">' + (st.snapStatus || '') + '</p>' +
         '</div>');
@@ -923,6 +1705,7 @@
         '</div>');
     }
     html.push('<div class="lx-btnrow"><button type="button" class="btn sm" data-act="op-add-door" data-wall-index="' + st.wall + '" data-ico="door-open" data-tip="Вставить дверь 0,90×2,10 м в свободное место стены">Добавить дверь 0.9×2.1</button></div>');
+    html.push('<div class="lx-btnrow"><button type="button" class="btn sm danger" data-act="op-clear" data-wall-index="' + st.wall + '" data-ico="eraser" data-tip="Удалить все проёмы выбранной стены (стена остаётся)">Удалить все проёмы</button></div>');
 
     // помещения
     html.push('<div class="lx-obj-h lx-s2be-sep">Помещения</div>');
@@ -931,6 +1714,12 @@
     if (!rooms.length) roomList.push('<div class="lx-s2be-note">В модели нет помещений</div>');
     roomList.push('</div>');
     html.push(roomList.join(''));
+    html.push('<div class="lx-btnrow" data-lx-edit="delete-room-row">' +
+      '<button type="button" class="btn sm danger" data-act="delete-room" data-ico="trash-2"' +
+      (st.room < 0 ? ' disabled aria-disabled="true"' : '') +
+      ' data-tip="Удалить выбранное помещение (сначала выберите строку помещения)">Удалить помещение' +
+      (st.room >= 0 ? ' ' + (st.room + 1) : '') + '</button>' +
+      '</div>');
 
     // файл / история
     html.push('<div class="lx-obj-h lx-s2be-sep">Модель</div>');
@@ -939,7 +1728,14 @@
       '<button type="button" class="btn sm" data-act="save-json" data-ico="save" data-tip="Сохранить отредактированную модель в JSON">Сохранить JSON</button>' +
       '<button type="button" class="btn sm primary" data-act="export-ifc" data-ico="download" data-tip="Экспорт IFC4 по текущей модели">Экспорт IFC</button>' +
       '</div>');
+    html.push('<div class="lx-btnrow" data-lx-edit="export">' +
+      '<button type="button" class="btn sm" data-act="export-obj" data-ico="download" data-tip="Экспорт геометрии в OBJ (просмотр в любом 3D-редакторе)">Экспорт OBJ</button>' +
+      '<button type="button" class="btn sm" data-act="export-dxf" data-ico="download" data-tip="Экспорт плана в DXF (слои WALLS/OPENINGS/FOOTPRINT)">Экспорт DXF</button>' +
+      '</div>');
+    html.push(importRowHtml());
+    html.push('<div class="lx-btnrow" data-lx-edit="danger-actions"><button type="button" class="btn sm danger" data-act="clear-model" data-ico="eraser" data-tip="Удалить все стены, проёмы и помещения модели (без подтверждения, отменяется через Ctrl+Z)">Очистить модель</button></div>');
     html.push('<p class="lx-s2be-note" data-lx-edit="status" role="status" aria-live="polite">' + (st.status || '') + '</p>');
+    html.push('<p class="lx-s2be-note lx-s2be-statusbar" data-lx-edit="statusbar">' + statusBarText(m) + '</p>');
     html.push('<p class="lx-s2be-note">История: ' + st.undo.length + '/' + HISTORY_LIMIT +
       ' · Отменить Ctrl+Z · Повторить Ctrl+Shift+Z</p>');
     return html.join('');
@@ -971,6 +1767,7 @@
     var closeBtn = p.querySelector('#lxS2BEditorClose');
     if (closeBtn) closeBtn.onclick = close;
     p.addEventListener('click', onPanelClick);
+    p.addEventListener('change', onPanelChange);
     hydrate(p);
     st.panel = p;
     return p;
@@ -992,12 +1789,12 @@
   function setStatus(text) { st.status = text || ''; var n = panelNode('[data-lx-edit="status"]'); if (n) n.textContent = st.status; }
   function panelNode(sel) { try { return st.panel ? st.panel.querySelector(sel) : null; } catch (e) { return null; } }
 
-  // После правки: статистика + панель + 3D-оверлей.
+  // После правки: статистика + 3D-оверлей + панель (оверлей первым — панель показывает его счётчики).
   function afterEdit(model, message) {
     if (message) st.status = message;
     if (model) refreshStats(model);
     ensureSelection();
-    if (typeof document !== 'undefined') { renderAll(); refreshOverlay(); }
+    if (typeof document !== 'undefined') { refreshOverlay(); renderAll(); }
   }
 
   // ---------- обработчики ----------
@@ -1015,6 +1812,7 @@
     var w = getWall(model, st.wall);
     st.opening = w && openingsOf(w).length ? 0 : -1;
     st.room = -1;
+    st.selKind = 'wall';
     st.snapStatus = '';
     afterEdit(model);
   }
@@ -1025,6 +1823,7 @@
     var w = getWall(model, st.wall);
     if (!w || i < 0 || i >= openingsOf(w).length) return;
     st.opening = i | 0;
+    st.selKind = 'opening';
     afterEdit(model);
   }
   function selectRoom(index) {
@@ -1032,6 +1831,7 @@
     var i = Number(index);
     if (!isModelOk(model) || !model.rooms || !isFinite(i) || i < 0 || i >= model.rooms.length) return;
     st.room = i | 0;
+    st.selKind = 'room';
     afterEdit(model);
   }
   function flashResult(res, label) {
@@ -1043,6 +1843,8 @@
     var model = st.model;
     if (!isModelOk(model)) {
       if (act === 'open-build') openScanPanel();
+      else if (act === 'import-json') triggerImportInput();
+      else setStatus('Сначала постройте модель или загрузите JSON');
       return;
     }
     ensureSelection();
@@ -1085,6 +1887,14 @@
         if (added.ok) afterEdit(model);
         break;
       }
+      case 'op-clear': doClearOpenings(); break;
+      case 'delete-wall': doDeleteSelected('wall'); break;
+      case 'delete-room': doDeleteSelected('room'); break;
+      case 'clear-model': doClearModel(); break;
+      case 'view-mode': setViewMode(node.getAttribute('data-mode')); break;
+      case 'toggle-ceiling': setCeiling(!st.ceiling); break;
+      case 'toggle-fill': setSolid(!st.solid); break;
+      case 'import-json': triggerImportInput(); break;
       case 'reset':
         if (!reset()) setStatus('Сброс недоступен');
         break;
@@ -1093,8 +1903,212 @@
         else toast('Не удалось сохранить JSON', true);
         break;
       case 'export-ifc': doExportIfc(); break;
+      case 'export-obj': doExportObj(); break;
+      case 'export-dxf': doExportDxf(); break;
       case 'open-build': openScanPanel(); break;
       default: break;
+    }
+  }
+
+  // ---------- подтверждение и удаление ----------
+  // Диалог подтверждения — встроенный (__lxKit.ask), как требуют ui-dialogs.test.js и app.js:
+  // в Electron нативный window.prompt не работает, а window.confirm/alert блокируют окно.
+  // «Очистить модель» — без подтверждения (по заданию), отменяется Ctrl+Z.
+  function askConfirm(message, title) {
+    try {
+      if (typeof window !== 'undefined' && window.__lxKit && typeof window.__lxKit.ask === 'function') {
+        return window.__lxKit.ask({
+          title: title || 'Подтвердите действие',
+          message: message,
+          okLabel: 'Удалить',
+          cancelLabel: 'Отмена',
+          danger: true
+        }).then(function (yes) { return !!yes; }, function () { return false; });
+      }
+    } catch (e) { }
+    // среда без встроенного диалога (node --test / скрипты) — не блокируем операцию
+    return Promise.resolve(true);
+  }
+  function openCountOfWall(model, index) {
+    var w = getWall(model, index);
+    return w ? openingsOf(w).length : 0;
+  }
+  function deleteCancelled(what) {
+    setStatus('Удаление ' + what + ' отменено');
+    return false;
+  }
+  /**
+   * Удалить выбранный элемент. kind: 'wall'|'room'|'opening' (по умолчанию — что выбрано).
+   * Спрашивает подтверждение (встроенный диалог) и возвращает Promise<true, если удалено>.
+   */
+  function doDeleteSelected(kind) {
+    var model = st.model;
+    if (!isModelOk(model)) { setStatus('Сначала постройте модель или загрузите JSON'); return Promise.resolve(false); }
+    ensureSelection();
+    var k = kind || st.selKind || 'wall';
+    if (k === 'opening') {
+      var op = getOpening(model, st.wall, st.opening);
+      if (!op) { setStatus('Проём не выбран'); return Promise.resolve(false); }
+      return askConfirm('Удалить проём ' + (st.opening + 1) + ' на стене ' + (st.wall + 1) + '?').then(function (yes) {
+        if (!yes) return deleteCancelled('проёма');
+        var resOp = deleteOpening(model, st.wall, st.opening);
+        if (resOp.ok) {
+          var wAfter = getWall(model, st.wall);
+          var nOps = wAfter ? openingsOf(wAfter).length : 0;
+          st.opening = nOps ? clamp(st.opening, 0, nOps - 1) : -1;
+          afterEdit(model);
+        }
+        flashResult(resOp, 'Удаление проёма');
+        return !!resOp.ok;
+      });
+    }
+    if (k === 'room') {
+      var room = model.rooms && st.room >= 0 ? model.rooms[st.room] : null;
+      if (!room) { setStatus('Помещение не выбрано — выберите строку помещения'); return Promise.resolve(false); }
+      var area = fmt(num(room.area, polyArea(room.polygon)), 1);
+      return askConfirm('Удалить помещение ' + (st.room + 1) + ' (' + area + ' м²)?').then(function (yes2) {
+        if (!yes2) return deleteCancelled('помещения');
+        var resRoom = deleteRoom(model, st.room);
+        if (resRoom.ok) {
+          var nRooms = (model.rooms || []).length;
+          st.room = nRooms ? clamp(resRoom.index, 0, nRooms - 1) : -1;
+          if (!nRooms) st.selKind = 'wall';
+          afterEdit(model);
+        }
+        flashResult(resRoom, 'Удаление помещения');
+        return !!resRoom.ok;
+      });
+    }
+    // стена (по умолчанию)
+    if (!getWall(model, st.wall)) { setStatus('Стена не выбрана'); return Promise.resolve(false); }
+    var nOpen = openCountOfWall(model, st.wall);
+    return askConfirm('Удалить стену ' + (st.wall + 1) + (nOpen ? ' вместе с проёмами: ' + nOpen : '') + '?').then(function (yes3) {
+      if (!yes3) return deleteCancelled('стены');
+      var resWall = deleteWall(model, st.wall);
+      if (resWall.ok) {
+        var nWalls = (model.walls || []).length;
+        st.wall = nWalls ? clamp(resWall.index, 0, nWalls - 1) : 0;
+        st.opening = -1;
+        st.selKind = 'wall';
+        afterEdit(model);
+      }
+      flashResult(resWall, 'Удаление стены');
+      return !!resWall.ok;
+    });
+  }
+
+  function doClearOpenings() {
+    var model = st.model;
+    if (!isModelOk(model)) { setStatus('Сначала постройте модель'); return Promise.resolve(false); }
+    var n = openCountOfWall(model, st.wall);
+    if (!n) { setStatus('На выбранной стене нет проёмов'); return Promise.resolve(false); }
+    return askConfirm('Удалить все проёмы стены ' + (st.wall + 1) + ' (' + n + ' шт.)?').then(function (yes) {
+      if (!yes) return deleteCancelled('проёмов');
+      flashResult(clearOpenings(model, st.wall), 'Удаление проёмов стены');
+      return true;
+    });
+  }
+
+  // «Очистить модель» — без confirm по заданию; операция отменяема через Ctrl+Z.
+  function doClearModel() {
+    var res = clearModel(st.model);
+    if (res && res.ok) st.snapStatus = '';
+    flashResult(res, 'Очистка модели');
+  }
+
+  // ---------- просмотр: режим, потолок, заливка ----------
+  function refreshView() {
+    if (typeof document !== 'undefined') { refreshOverlay(); renderAll(); }
+    return getViewState();
+  }
+  /** Переключить режим просмотра: 'volume' (3D-объём) | 'contour' (контур). */
+  function setViewMode(mode) {
+    var next = (String(mode) === 'volume') ? 'volume' : 'contour';
+    if (st.viewMode !== next) st.viewMode = next;
+    refreshView();
+    return st.viewMode;
+  }
+  function getViewMode() { return st.viewMode; }
+  /** Показывать сетку потолка в режиме «3D-объём». */
+  function setCeiling(on) { st.ceiling = !!on; refreshView(); return st.ceiling; }
+  /** Заливка стен треугольниками — работает, только если вьюер умеет меши. */
+  function setSolid(on) { st.solid = !!on; refreshView(); return st.solid; }
+  function getViewState() {
+    var supportsSolid = viewerSupportsSolid(mainV());
+    return {
+      mode: st.viewMode, ceiling: !!st.ceiling, solid: !!st.solid && supportsSolid,
+      supportsSolid: supportsSolid,
+      segments: st.overlayInfo ? num(st.overlayInfo.segments) : 0,
+      truncated: !!(st.overlayInfo && st.overlayInfo.truncated),
+      objects: st.overlayInfo ? num(st.overlayInfo.objects) : 0,
+      maxSegments: MAX_OVERLAY_SEGMENTS
+    };
+  }
+
+  // ---------- импорт JSON из файла ----------
+  function triggerImportInput() {
+    var inp = panelNode('[data-lx-edit="import-input"]');
+    if (!inp) {
+      // панель могла быть ещё не отрисована — создаём и пробуем снова
+      if (typeof document !== 'undefined') renderAll();
+      inp = panelNode('[data-lx-edit="import-input"]');
+    }
+    if (!inp) { setStatus('Импорт: поле выбора JSON не найдено'); return false; }
+    try { inp.click(); return true; }
+    catch (e) { setStatus('Импорт: не удалось открыть выбор файла — ' + ((e && e.message) || e)); return false; }
+  }
+  function importSelectedFile(input) {
+    var file = input && input.files && input.files[0];
+    if (!file) return;
+    var name = file.name || 'модель.json';
+    setStatus('Импорт: читаю ' + name + '…');
+    try {
+      if (typeof FileReader === 'undefined') {
+        st.status = 'Импорт: FileReader недоступен в этом окружении';
+        toast(st.status, true);
+        if (typeof document !== 'undefined') renderAll();
+        return;
+      }
+      var fr = new FileReader();
+      fr.onload = function () { importJson(String(fr.result == null ? '' : fr.result)); };
+      fr.onerror = function () {
+        st.status = 'Импорт: не удалось прочитать файл ' + name;
+        toast(st.status, true);
+        if (typeof document !== 'undefined') renderAll();
+      };
+      fr.readAsText(file);
+    } catch (e) {
+      st.status = 'Импорт: ' + ((e && e.message) || e) + ' — модель не изменена';
+      toast(st.status, true);
+      if (typeof document !== 'undefined') renderAll();
+    }
+    try { input.value = ''; } catch (e2) { }
+  }
+  function onPanelChange(e) {
+    var t = e && e.target;
+    if (!t || !t.getAttribute) return;
+    if (t.getAttribute('data-lx-edit') === 'import-input') importSelectedFile(t);
+  }
+
+  // ---------- экспорт OBJ / DXF ----------
+  function doExportObj() {
+    try {
+      var obj = exportEditedObj(st.model);
+      if (!obj) throw new Error('пустой OBJ');
+      downloadText(obj, 'scan2bim-edited.obj', 'text/plain');
+      toast('OBJ по отредактированной модели сохранён: scan2bim-edited.obj');
+    } catch (e) {
+      toast('Экспорт OBJ не удался: ' + ((e && e.message) || e), true);
+    }
+  }
+  function doExportDxf() {
+    try {
+      var dxf = exportEditedDxf(st.model);
+      if (!dxf) throw new Error('пустой DXF');
+      downloadText(dxf, 'scan2bim-edited.dxf', 'application/dxf');
+      toast('DXF (план) по отредактированной модели сохранён: scan2bim-edited.dxf');
+    } catch (e) {
+      toast('Экспорт DXF не удался: ' + ((e && e.message) || e), true);
     }
   }
 
@@ -1150,11 +2164,21 @@
 
   function onKeyDown(e) {
     if (!isOpen()) return;
+    // не мешаем встроенному диалогу подтверждения (ui/kit.js → .modal.lx-ask)
+    try {
+      if (typeof document !== 'undefined' && document.querySelector('.modal.lx-ask')) return;
+    } catch (e0) { }
     var tag = (e.target && e.target.tagName ? e.target.tagName : '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-    var mod = e.ctrlKey || e.metaKey;
-    if (!mod) return;
     var k = (e.key || '').toLowerCase();
+    var mod = e.ctrlKey || e.metaKey;
+    // Delete — удалить выбранный элемент (стена/помещение/проём) с подтверждением
+    if (!mod && (k === 'delete' || e.key === 'Delete')) {
+      e.preventDefault();
+      doDeleteSelected();
+      return;
+    }
+    if (!mod) return;
     if (k === 'z' && !e.shiftKey) { e.preventDefault(); if (!undo()) setStatus('Нечего отменять'); }
     else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); if (!redo()) setStatus('Нечего повторять'); }
   }
@@ -1169,8 +2193,10 @@
       st.wall = 0;
       st.opening = -1;
       st.room = -1;
+      st.selKind = 'wall';
       st.status = '';
       st.snapStatus = '';
+      st.overlayInfo = null;
       ensureSelection();
     }
     return st.model;
@@ -1200,8 +2226,8 @@
       st.keyOn = true;
     }
     ensureSelection();
-    renderAll();
     refreshOverlay();
+    renderAll();
     hydrate(p);
     return p;
   }
@@ -1224,11 +2250,12 @@
 
   function setModel(model) {
     attach(model);
-    if (isOpen()) { renderAll(); refreshOverlay(); }
+    if (isOpen()) { refreshOverlay(); renderAll(); }
     return st.model;
   }
 
   function getState() {
+    var view = getViewState();
     return {
       model: st.model,
       hasModel: isModelOk(st.model),
@@ -1239,14 +2266,24 @@
       wall: st.wall,
       opening: st.opening,
       room: st.room,
+      selKind: st.selKind,
+      viewMode: view.mode,
+      ceiling: view.ceiling,
+      solid: view.solid,
+      supportsSolid: view.supportsSolid,
+      overlaySegments: view.segments,
+      overlayTruncated: view.truncated,
+      counts: modelCounts(st.model),
+      status: st.status,
       version: SAVE_VERSION
     };
   }
 
-  // ===================== ЭКСПОРТ =====================
+  // ===================== ЭКСПОРТ API =====================
   var API = {
     version: SAVE_VERSION,
     historyLimit: HISTORY_LIMIT,
+    MAX_OVERLAY_SEGMENTS: MAX_OVERLAY_SEGMENTS,
     open: open,
     close: close,
     isOpen: isOpen,
@@ -1254,6 +2291,7 @@
     setModel: setModel,
     getModel: function () { return st.model; },
     getState: getState,
+    // правка геометрии
     editMoveWall: editMoveWall,
     editThickness: editThickness,
     editWallEnd: editWallEnd,
@@ -1261,14 +2299,36 @@
     deleteOpening: deleteOpening,
     addDoor: addDoor,
     snapWall: snapWall,
+    // удаление
+    deleteWall: deleteWall,
+    deleteRoom: deleteRoom,
+    clearOpenings: clearOpenings,
+    clearModel: clearModel,
+    deleteSelected: doDeleteSelected,
+    // просмотр
+    setViewMode: setViewMode,
+    getViewMode: getViewMode,
+    getViewState: getViewState,
+    setCeiling: setCeiling,
+    setSolid: setSolid,
+    buildOverlay: buildOverlay,
+    overlayColors: overlayColors,
+    // импорт/экспорт
+    parseModelJson: parseModelJson,
+    importJson: importJson,
+    modelJson: modelJson,
+    saveJson: saveJson,
+    exportEditedIfc: exportEditedIfc,
+    exportEditedObj: exportEditedObj,
+    exportEditedDxf: exportEditedDxf,
+    // история/служебное
     undo: undo,
     redo: redo,
     reset: reset,
     canUndo: canUndo,
     canRedo: canRedo,
-    modelJson: modelJson,
-    saveJson: saveJson,
-    exportEditedIfc: exportEditedIfc,
+    modelCounts: modelCounts,
+    statusBarText: statusBarText,
     refreshStats: refreshStats,
     refreshOverlay: refreshOverlay
   };
