@@ -83,7 +83,7 @@
     b.removeAttribute('style');
     if (hidden) b.style.display = 'none';
     b.textContent = '';
-    b.appendChild(icon(item.ico, size === 'lg' ? 24 : 16));
+    b.appendChild(icon(item.ico, size === 'lg' ? 28 : 16));
     var l = el('span', 'lbl'); l.textContent = short; l.setAttribute('data-full', text); b.appendChild(l);
     if (item.special === 'autosave') b.appendChild(el('span', 'lx-sub'));
     if (item.menu) {   // кнопка открывает меню: стрелка + aria-haspopup (меню, а не действие)

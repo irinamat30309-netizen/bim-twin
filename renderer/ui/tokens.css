@@ -121,10 +121,19 @@ html[data-theme="light"] {
   --t-slow: 280ms;
   --h-title: 38px;
   --h-tabs: 36px;
-  --h-ribbon: 96px;
+  --h-ribbon: 112px;
   --h-status: 26px;
   --w-side: 288px;
   --w-insp: 340px;
+  /* r130: размеры кнопок ленты с подписями (крупнее и читабельнее; 4K — см. media в shell.css) */
+  --rb-ico: 28px;
+  --rb-lbl: 11.5px;
+  --rb-lbl-max: 112px;
+  --rb-pad: 6px;
+  --rb-min: 52px;
+  --rb-glabel: 11px;
+  /* 3D-область всегда на тёмном фоне — даже в светлой теме интерфейса */
+  --viewer-bg: #1c1b1a;
 
   /* слои */
   --z-stage: 20;

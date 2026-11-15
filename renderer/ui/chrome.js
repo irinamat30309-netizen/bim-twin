@@ -52,10 +52,54 @@
     b.addEventListener('click', function () {
       var next = R.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
       if (W.__bimSetTheme) W.__bimSetTheme(next); else R.setAttribute('data-theme', next);
-      paintTheme();
+      paintTheme(); paintViewerTheme();
     });
-    if (W.MutationObserver) new MutationObserver(paintTheme).observe(R, { attributes: true, attributeFilter: ['data-theme'] });
+    if (W.MutationObserver) new MutationObserver(function () { paintTheme(); paintViewerTheme(); }).observe(R, { attributes: true, attributeFilter: ['data-theme'] });
     paintTheme();
+  }
+
+  /* ---------- 3D-вьюер: тёмный фон при любой теме интерфейса (r130) ----------
+   * В светлой теме интерфейс остаётся светлым, а сцена — тёмной. app.js при смене темы
+   * зовёт viewer.setTheme(<тема>), поэтому здесь «оборачиваем» setTheme/_themeColors
+   * вьюера: сам renderer/webgl-viewer.js — чужая зона, его не правим. Фон сцены —
+   * тёплый графит #1c1b1a по палитре проекта (без синего и чистого белого). */
+  var VIEWER_BG = [28 / 255, 27 / 255, 26 / 255];   // #1c1b1a
+  function currentViewer() {
+    var v = null;
+    try { if (W.__pcTools && typeof W.__pcTools.viewer === 'function') v = W.__pcTools.viewer(); } catch (e) { }
+    return v || viewer();
+  }
+  function patchViewerPalette(v) {
+    if (!v || v.__lxWarmViewer) return v;
+    v.__lxWarmViewer = true;
+    var origColors = v._themeColors;
+    if (typeof origColors === 'function') {
+      v._themeColors = function () {
+        var c = origColors.call(this) || {};
+        if (this.theme !== 'light') return { bg: VIEWER_BG.slice(), grid: c.grid, wire: c.wire };
+        return c;
+      };
+    }
+    var origSet = v.setTheme;
+    if (typeof origSet === 'function') {
+      v.setTheme = function (theme) {
+        // светлая тема интерфейса не делает сцену светлой: 3D всегда на тёмном фоне
+        var uiLight = R.getAttribute('data-theme') === 'light';
+        return origSet.call(this, uiLight ? 'dark' : theme);
+      };
+    }
+    return v;
+  }
+  function paintViewerTheme() {
+    var v = patchViewerPalette(currentViewer());
+    if (!v || typeof v.setTheme !== 'function') return false;
+    try { v.setTheme('dark'); return v.theme === 'dark'; } catch (e) { return false; }
+  }
+  function initViewerTheme() {
+    paintViewerTheme();
+    W.addEventListener('lx-viewer-ready', paintViewerTheme);
+    W.addEventListener('lx-pctools-ready', paintViewerTheme);
+    [0, 120, 500, 1500, 3000].forEach(function (ms) { setTimeout(paintViewerTheme, ms); });
   }
 
   /* ---------- Боковые панели ---------- */
@@ -470,10 +514,10 @@
   }
 
   function init() {
-    initTheme(); initPanels(); initPane(); initSkeleton(); initFullscreen(); initStatus(); initPalette(); initCloudFit(); initClose(); initDock(); initFloatPanels(); initPressedMirror(); labelTabs();
+    initTheme(); initViewerTheme(); initPanels(); initPane(); initSkeleton(); initFullscreen(); initStatus(); initPalette(); initCloudFit(); initClose(); initDock(); initFloatPanels(); initPressedMirror(); labelTabs();
     W.addEventListener('bim-language-change', function () { setTimeout(labelTabs, 0); });
     if (K()) K().hydrate(D);
   }
-  W.__lxChrome = { onTab: onTab, showPane: showPane, setSide: setSide, setInspector: setInsp, openPalette: openPalette, closePalette: closePalette, saveState: saveState, updateStatus: updateStatus, fitCloud: fitCloud, ready: ready };
+  W.__lxChrome = { onTab: onTab, showPane: showPane, setSide: setSide, setInspector: setInsp, openPalette: openPalette, closePalette: closePalette, saveState: saveState, updateStatus: updateStatus, fitCloud: fitCloud, ready: ready, paintViewerTheme: paintViewerTheme, initViewerTheme: initViewerTheme };
   if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', init); else init();
 })();

@@ -77,6 +77,26 @@
   /* ---------- Мост к ToolManager ---------- */
   var toolManager = W.__lxToolManager || null, managed = {}, managerCancelling = false, epoch = 0;
   function viewer() { return W.__viewer || W.__lxViewer || null; }
+
+  /* ---------- Привязка (snap) по умолчанию выключена (r130) ----------
+   * webgl-viewer стартует с measureSnap = true; по требованию привязка должна быть
+   * выключена и не включаться сама при открытии проекта/облака. Кнопка #mmSnap при
+   * этом не активна; включает привязку только явный клик пользователя (app.js). */
+  function snapOff() {
+    var v = viewer();
+    if (!v || typeof v.setMeasureSnap !== 'function') return false;
+    try { v.setMeasureSnap(false); } catch (e) { return false; }
+    var b = $('mmSnap');
+    if (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); }
+    return v.measureSnap === false;
+  }
+  function initSnapDefault() {
+    snapOff();
+    ['lx-viewer-ready', 'lx-pctools-ready', 'bim-cloud-loaded', 'bim-app-ready'].forEach(function (ev) {
+      W.addEventListener(ev, function () { setTimeout(snapOff, 0); });
+    });
+    [0, 120, 600, 1500].forEach(function (ms) { setTimeout(snapOff, ms); });
+  }
   function modeButton(target) { var b = target.closest && target.closest('[data-mode-tool]'); return b || null; }
   function pressed(b) { return b.classList.contains('lx-mode-active') || b.classList.contains('on') || b.getAttribute('aria-pressed') === 'true'; }
   function engineActive() {
@@ -180,11 +200,11 @@
   }
   function removeXgrids() { D.querySelectorAll('#tsSplatXgrids,#vtXgrids,[data-tool="xgrids"],.xgrids-button').forEach(function (x) { x.remove(); }); }
   function init() {
-    bridgeProgress(); patchPly(); removeXgrids();
+    bridgeProgress(); patchPly(); removeXgrids(); initSnapDefault();
     var n = 0, t = setInterval(function () { bridgeProgress(); patchPly(); removeXgrids(); if (++n > 40) clearInterval(t); }, 300);
     W.addEventListener('lx-pctools-ready', function () { bridgeProgress(); });
     W.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { var v = W.__viewer; if (v && v._resize) v._resize(); }, 80); });
   }
   if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', init); else init();
-  W.__lxModes = { cancelAll: cancelAll, engineActive: engineActive, release: release, begin: begin };
+  W.__lxModes = { cancelAll: cancelAll, engineActive: engineActive, release: release, begin: begin, snapOff: snapOff };
 })();
