@@ -133,10 +133,16 @@ html.lx-ribbon-collapsed .lx-ribbon { flex-basis: 0; height: 0; border-color: tr
 .lx-rb .lx-ico { display: inline-flex; flex: none; align-items: center; justify-content: center; color: var(--txt); opacity: .88; transition: color var(--t-fast), background var(--t-fast), opacity var(--t-fast), transform var(--t-med) var(--ease); }
 .lx-rb .lx-ico svg.ic { width: 100%; height: 100%; }
 .lx-lg { flex-direction: column; align-items: center; justify-content: center; gap: 0; min-width: 44px; max-width: 104px; height: 100%; padding: 6px; }
-/* Ревизия 61: лента без подписей — только значки, подпись уходит в подсказку (как в Lixel). Чище и воздушнее. */
-.lx-lg .lbl { display: none; }
-.lx-lg .lx-ico { width: 26px; height: 26px; }
-.lx-lg .lbl { display: none; }
+/* Короткие подписи под иконками: видны у всех кнопок ленты (запрос заказчика r129). */
+.lx-lg .lbl {
+  display: block; max-width: 94px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 500 10px/1.1 var(--font); letter-spacing: 0; color: var(--txt-3); opacity: 1;
+  text-align: center; transition: color var(--t-fast);
+}
+.lx-lg:hover .lbl, .lx-rb[aria-pressed="true"] > .lbl { color: var(--txt); }
+.lx-primary.lx-lg .lbl { color: var(--accent); }
+.lx-lg { gap: 2px; padding: 4px 5px; }
+.lx-lg .lx-ico { width: 24px; height: 24px; }
 .lx-sm { flex-direction: row; align-items: center; gap: 8px; height: 100%; min-height: 32px; padding: 0 11px 0 9px; white-space: nowrap; text-align: left; }
 .lx-sm .lx-ico { width: 17px; height: 17px; }
 .lx-rb:hover { background: var(--bg-3); color: var(--txt); }

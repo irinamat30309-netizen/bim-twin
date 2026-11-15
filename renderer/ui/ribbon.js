@@ -71,6 +71,9 @@
     var size = item.size || 'lg';
     var text = item.label == null ? (b.__lxLabel || textOf(b)) : item.label;
     b.__lxLabel = text;
+    var shortLabelFn = W.__lxShortLabel || function (t) { return String(t == null ? '' : t); };
+    var short = item.short || shortLabelFn(text, size === 'lg' ? 16 : 20);
+    b.__lxLabel = text;
     var hadI18n = b.getAttribute('data-i18n');
     var hadI18nTitle = b.getAttribute('data-i18n-title');
     var hidden = b.hasAttribute('data-hidden');
@@ -81,7 +84,7 @@
     if (hidden) b.style.display = 'none';
     b.textContent = '';
     b.appendChild(icon(item.ico, size === 'lg' ? 24 : 16));
-    var l = el('span', 'lbl'); l.textContent = text; b.appendChild(l);
+    var l = el('span', 'lbl'); l.textContent = short; l.setAttribute('data-full', text); b.appendChild(l);
     if (item.special === 'autosave') b.appendChild(el('span', 'lx-sub'));
     if (item.menu) {   // кнопка открывает меню: стрелка + aria-haspopup (меню, а не действие)
       var cv = icon('chevron-down', 10); cv.classList.add('lx-caret'); cv.setAttribute('aria-hidden', 'true'); b.appendChild(cv);
