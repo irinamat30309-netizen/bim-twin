@@ -1,9 +1,10 @@
 # RELEASE-QUALITY-FINAL — регрессионный прогон и релизный отчёт: Фаза 5 ROADMAP-IDEAL
 
-Дата: 2026-11-15, 13:15 (Europe/Kiev). Ветка `agent/ui-redesign`, HEAD **`0c24cae` (r111)**
+Дата: 2026-11-15, 13:32 (Europe/Kiev). Ветка `agent/ui-redesign`, HEAD **`ebe2434` (r112)**
 (сборка: r108 — Фазы 1–3, r110 — редактор Фазы 4, r111 — финальная модель с привязкой
-к облаку; на момент обновления отчёта незакоммичены только правки этого отчёта и
-`run-quality-all.py`/baseline под r111-модель).
+к облаку, r112 — расширенный редактор: 3D-объём/контур, удаление, импорт JSON,
+экспорт IFC/OBJ/DXF). r112 меняет только UI-редактор — движок, рендерер и данные модели
+не затрагивались, поэтому метрики A/B/C сняты на r111 и остаются в силе.
 Среда: Python 3.12.14 (DSH-рантайм), Node v24.20.0, ifcopenshell 0.9.0.post1, Windows.
 Данные: `D:\BIM-TWIN-TEST`; инструменты: `bim-twin\tools\scan2bim-py\`.
 
@@ -14,7 +15,7 @@
 | **A** (Фаза 1, интерьер `koridor-local-rgb.bin`) | A1–A8 | **5 из 8 PASS** (A1, A4, A5, A7, A8). FAIL: **A2** (мин. покрытия 25 % < 60 %), **A3** (p90 толщины 61 мм > 40 мм), **A6** (0,9 % вне пола / 0,4 м² наложения вместо 0/0) |
 | **B** (Фаза 2: фасад и большие облака) | B1–B4 | **PASS** (B4 — с оговоркой: полная 5,97-ГБ карта обработана потоково, прогон движка на кропе 20×20×20 м) |
 | **C** (Фаза 3: IFC) | C1, C2 | **PASS**: финальный IFC4 — 0 ERROR/0 WARNING/0 INFO, арность 100 % по схеме; все сущности и геопривязка на месте |
-| **D** (интеграция) | D1, D2, D3 | **D1 PASS** (CLI-обёртка `python-engine.js`); **D2 PARTIAL** (отдельной панели качества в UI нет — качество показывается в редакторе); **D3 PASS** (ручной редактор: ядро `edit-model.py` 23/23 теста + UI 20/20, привязка стены 11 к облаку: толщина 0,346→0,170 м, p90 61 мм) |
+| **D** (интеграция) | D1, D2, D3 | **D1 PASS** (CLI-обёртка `python-engine.js`); **D2 PARTIAL** (отдельной панели качества в UI нет — stats/счётчики есть в редакторе); **D3 PASS** (редактор: смотреть 3D-объём/контур/потолок/заливку, удалять стены/помещения/проёмы, импорт JSON, экспорт IFC/OBJ/DXF; тесты ядра 23/23, UI 20/20 + 23/23; привязка стены 11: толщина 0,346→0,170 м, p90 61 мм) |
 | **E** (регрессия/автоматизация) | E1, E2 | **E1 PASS** (скрипт `run-quality-all.py`: все облака → JSON + таблицы + пороги); **E2 PARTIAL** (инструмент регрессии с ненулевым кодом и baseline готов, но в `.github/workflows/ci.yml` не подключён) |
 | **F** (релиз) | документация, скриншоты, zip | **PASS по данным Lead**: документация (PHASE1/2/3/4 + этот отчёт), 4 скриншота r111 (изометрия, план-чертёж, план-текстура, изнутри), zip-пакет и папка на рабочем столе собраны Lead (мной проверены доки и скриншоты; сам zip/папку не проверял) |
 
@@ -36,6 +37,8 @@
 `py2-facade-manifest.json` коллег.
 Отсутствующие файлы/метрики скрипт помечает **SKIP** с причиной (не падение); регресс и
 невыполнение порогов дают код возврата 1.
+r112 меняет только UI-редактор (движок/рендерер/данные не менялись) — метрики A/B/C
+сняты на r111 и остаются в силе; для r112 перепрогнаны тесты и CLI (см. §3.1, §4.3).
 
 ## 1. Методика
 
@@ -154,16 +157,18 @@
 
 | Проверка | Результат |
 |---|---|
-| `node --test` (весь репозиторий, дерево r111) | **1572 теста / 1568 pass / 0 fail / 4 skipped**, 59,7 с — PASS (было 1552/1548 на r108: +20 тестов редактора) |
-| `node --test test/r110-scan2bim-editor.test.js` (UI-редактор Фазы 4) | **20/20 PASS**, 0,97 с — PASS |
-| `python tools/scan2bim-py/edit-model-test.py` (ядро редактора Фазы 4) | **23/23 PASS**, 3,5 с — PASS (snap_wall/snap_opening, undo/redo между запусками, CLI e2e `set_wall --thickness --ifc --validate`: IFC 96,8 КБ, ERROR=0) |
-| `node --test test/r74-scan2bim-accuracy.test.js` (отдельно, известная нестабильность r74) | **13/13 PASS**, 3,1 с — PASS (отдельный прогон стабилен) |
+| `node --test` (весь репозиторий, дерево r112) | **1595 тестов / 1591 pass / 0 fail / 4 skipped**, 55,2 с — PASS (r108: 1552/1548 → r111: 1572/1568 → r112: 1595/1591; +23 теста расширенного редактора) |
+| `node --test test/r111-bim-editor-basics.test.js` (расширенный редактор r112) | **23/23 PASS**, 1,53 с — PASS (3D-объём/контур, бюджет оверлея 20 000 сегментов, удаление стены/помещения/проёмов, импорт JSON с откатом при ошибке, экспорт IFC/OBJ/DXF, Delete-диалог) |
+| `node --test test/r110-scan2bim-editor.test.js` (UI-редактор Фазы 4) | **20/20 PASS**, 0,94 с — PASS |
+| `python tools/scan2bim-py/edit-model-test.py` (ядро редактора Фазы 4) | **23/23 PASS**, 3,4 с — PASS (snap_wall/snap_opening, undo/redo между запусками, CLI e2e `set_wall --thickness --ifc --validate`: IFC 96,8 КБ, ERROR=0) |
+| `node --test test/r74-scan2bim-accuracy.test.js` (отдельно, известная нестабильность r74) | **13/13 PASS**, 3,0 с — PASS (отдельный прогон стабилен) |
 | `node tools/scan2bim-bench.js` (6 сцен; прогон 14.11, геометрия JS-движка с тех пор не менялась) | все сцены — PASS по количеству стен/проёмов/этажей и допускам: квартира 5/5 стен, 3/3 проёма, площадь +0,27 %, высота 2,798/2,8; Г-образное 6/6, 2/2; три комнаты 6/6, 5/5, площадь +0,66 %; мебель 5/5, 2/2; два этажа 2/2 этажа, 9/9 стен, 4/4+5/5 стен по этажам, 1/1 проём на этаж; **фасад 20 м: 3/3 этажа, 3/3 стены, 6/6 окон на каждом этаже** |
 
-Логи: `quality\node-test-full-r111.log`, `quality\node-test-r110-editor.log`,
-`quality\edit-model-test.log`, `quality\node-test-r74-r111.log`, `quality\bench-final.log`.
+Логи: `quality\node-test-full-r112.log`, `quality\node-test-r111-basics.log`,
+`quality\node-test-r110-editor-r112.log`, `quality\edit-model-test-r112.log`,
+`quality\node-test-r74-r112.log`, `quality\bench-final.log`.
 Замечание: при одном из промежуточных прогонов во время параллельного редактирования
-репозитория тест r74 `opts.levels` дал единичный сбой; на финальных деревьях r108 и r111
+репозитория тест r74 `opts.levels` дал единичный сбой; на финальных деревьях r108/r111/r112
 полный прогон и отдельный прогон r74 — зелёные (совпадает с известной нестабильностью r74;
 фиксируем как наблюдение, не как дефект кода).
 
@@ -242,8 +247,8 @@ E/N/H = 0/0/0, XAxis 1/0, Scale 1) — readback через ifcopenshell подт
 полный цикл — `ok:true`, 32,8 с (экспорт IFC 6 мс, валидация 0,44 с, PNG-рендер 32,3 с),
 IFC 0 ERROR, PNG 1600×1000; повторный прогон под нагрузкой — 55,6 с (рендер доминирует,
 логи `quality\python-engine-final.log` и `quality\python-engine-r111.log`). На **r111-модели**
-той же командой: `ok:true`, **30,6 с** (экспорт IFC 6 мс, валидация 0,40 с, PNG-рендер
-30,2 с), IFC `py2-final-v2.ifc` 0 ERROR, PNG `py2-final-v2-iso.png` 1600×1000 (§4.1/§6.3).
+той же командой: `ok:true`, **30,1 с** (экспорт IFC 6 мс, валидация 0,39 с, PNG-рендер
+29,7 с), IFC `py2-final-v2.ifc` 0 ERROR, PNG `py2-final-v2-iso.png` 1600×1000 (§4.1/§6.3).
 Проверено phase3 дополнительно: полный цикл на `koridor-local-rgb.bin` — 46,6 с;
 LAS-путь (`crop-B.las`, 800 тыс. точек) — 15,2 с, `--validate` OK;
 `--view=plan/inside`, `--formats=ifc,obj,dxf` работают. **D1 PASS (на уровне CLI).**
@@ -251,21 +256,30 @@ LAS-путь (`crop-B.las`, 800 тыс. точек) — 15,2 с, `--validate` OK
 ### 4.4. D2 — PARTIAL, D3 — PASS
 
 * **D2 (панель качества в UI): PARTIAL.** Отдельной панели «качество» в интерфейсе нет;
-  после каждой правки редактор показывает статистику модели (стены/проёмы/площадь/RMS), а
-  полный набор метрик выдаёт CLI-скрипт. Цель «высота, покрытие, площадь, толщина в UI»
-  закрыта частично — подтверждено по коду/тестам, отдельного окна качества нет (честно).
-* **D3 (ручной редактор стены/проёма с привязкой к облаку, undo/redo): PASS.**
-  Ядро `tools/scan2bim-py/edit-model.py` — **23/23 теста** (прогон Фазы 5: PASS 23, FAIL 0,
-  3,5 с; проверены snap_wall/snap_opening по облаку, запрет привязки inferred-стены,
-  undo/redo между запусками, коды ошибок CLI, e2e `set_wall --thickness --ifc --validate`:
-  IFC 96,8 КБ, ERROR=0). UI `renderer/lixel-scan2bim-editor.js` — **20/20 тестов** (jsdom +
-  проверка в настоящем Chromium, 0,97 с), глубина undo 32 снимка (задание ≥20), модуль
-  работает без Python/сети, пока не нажать «Сохранить JSON»/«Экспорт IFC».
+  после каждой правки редактор показывает статистику модели (стены/проёмы/помещения/площадь/
+  RMS), а полный набор метрик выдаёт CLI-скрипт. Цель «высота, покрытие, площадь, толщина
+  в UI» закрыта частично — счётчики/качество видны, отдельного окна метрик нет (честно).
+* **D3 (ручной редактор модели с привязкой к облаку, undo/redo): PASS.** В r112 редактор
+  расширен до базового полноценного:
+  * **смотреть**: режимы «3D-объём»/«Контур», опционально «Потолок» и «Заливка»,
+    вертикальные рёбра и откосы проёмов, сетка пола по помещениям, бюджет оверлея
+    ≤20 000 сегментов (stress: 3000 стен → ровно 20 000, `truncated:true`);
+  * **править**: сдвиг/толщина/удлинение стены, проёмы (along/width/sill/head, удаление,
+    добавление двери), «Привязать к облаку» (по двум модам точек, ограничение сдвига 0,25 м);
+  * **удалять**: стена (с проёмами), помещение, все проёмы стены, очистка модели — кнопкой и
+    Delete с подтверждением, undo/redo покрывает удаления;
+  * **импорт/экспорт**: «Загрузить JSON» (валидация схемы, при ошибке модель не меняется),
+    экспорт JSON / IFC / OBJ / DXF через `window.Scan2BIM` + download;
+  * undo/redo — 32 снимка (задание ≥20), всё в памяти приложения: без Python, сети и записи
+    на диск до явного экспорта.
+  Тесты: ядро `edit-model.py` — **23/23** (3,4 с), UI — **20/20** (r110, 0,94 с) +
+  **23/23** (r112 basics, 1,53 с), плюс проверка в настоящем Electron/Chromium.
   Практический результат на релизной модели: привязка стены 11 — t 0,346→0,170 м,
   RMS 65→44 мм, детектор «195→0 мм от облака»; p90 толщины 97→61 мм (§2.4).
   Ограничение: массовая привязка всех стен ломает A4/A7 (проверено, откат) — нужна
   точечная работа по парам дублей.
-  Ссылки: `PHASE4-EDITOR-CORE.md`, `PHASE4-EDITOR-UI.md`, `QUALITY-SCORECARD-r111.md`.
+  Ссылки: `PHASE4-EDITOR-CORE.md`, `PHASE4-EDITOR-UI.md`, `PHASE4-EDITOR-BASICS.md`,
+  `QUALITY-SCORECARD-r111.md`.
 
 ## 5. E1–E2, F
 
@@ -285,11 +299,12 @@ LAS-путь (`crop-B.las`, 800 тыс. точек) — 15,2 с, `--validate` OK
   (пороги + регрессия).
 * **F — документация/скриншоты/zip: PASS по данным Lead.** Документация: `PHASE1-FINAL.md`,
   `PHASE2-FACADE.md`, `PHASE3-IFC.md`, `PHASE4-EDITOR-CORE.md`, `PHASE4-EDITOR-UI.md`,
-  `QUALITY-SCORECARD-r111.md`, этот отчёт; исходники релиза закоммичены (r111). Скриншоты
-  r111: `py2-final-v2-iso.png` (изометрия), `py2-final-v2-plan.png` (план-чертёж),
-  `py2-final-v2-texplan.png` (план-текстура), `py2-final-v2-inside.png` (изнутри) —
-  проверены мной (размеры/видимость, §6.3). zip-пакет и папка релиза на рабочем столе
-  собраны Lead (QUALITY-SCORECARD-r111: F ✅); сам архив/папку я не открывал — отмечено честно.
+  `PHASE4-EDITOR-BASICS.md`, `QUALITY-SCORECARD-r111.md`, этот отчёт; исходники релиза
+  закоммичены (r112, HEAD `ebe2434`). Скриншоты r111: `py2-final-v2-iso.png` (изометрия),
+  `py2-final-v2-plan.png` (план-чертёж), `py2-final-v2-texplan.png` (план-текстура),
+  `py2-final-v2-inside.png` (изнутри) — проверены мной (размеры/видимость, §6.3).
+  zip-пакет и папка релиза на рабочем столе собраны Lead (QUALITY-SCORECARD-r111: F ✅);
+  сам архив/папку я не открывал — отмечено честно.
 
 ## 6. Артефакты (JSON / IFC / PNG)
 
@@ -324,7 +339,7 @@ LAS-путь (`crop-B.las`, 800 тыс. точек) — 15,2 с, `--validate` OK
 
 | Файл | Размер, Б | Дата | MD5 | Статус |
 |---|---|---|---|---|
-| `interior\py2-final-v2.ifc` | 99 044 | 2026-11-15 13:11:38 | 4089CF2CB5 | IFC4, 2093 instance, **0 ERROR / арность OK** — итоговый IFC r111 (пересобран CLI) |
+| `interior\py2-final-v2.ifc` | 99 044 | 2026-11-15 13:30:07 | 8D419FD73C | IFC4, 2093 instance, **0 ERROR / арность OK** — итоговый IFC r111 (пересобран CLI на r112) |
 | `interior\py2-final-v2-georef.ifc` | 104 612 | 2026-11-15 13:07:06 | C12861210D | IFC4, 2095 instance, 0 ERROR + EPSG:25833/IfcMapConversion (из r111-модели) |
 | `interior\py2-final.ifc` | 99 042 | 2026-11-15 13:01:55 | 747AC92E11 | IFC4, 2093 instance, 0 ERROR (r108-модель — предыдущий релиз) |
 | `interior\py2-final-georef.ifc` | 104 610 | 2026-11-14 23:25:33 | 79F3675EDC | IFC4, 2095 instance, 0 ERROR + геопривязка (r108) |
@@ -337,7 +352,7 @@ LAS-путь (`crop-B.las`, 800 тыс. точек) — 15,2 с, `--validate` OK
 
 | Файл | Размер, Б | Дата | Что видно |
 |---|---|---|---|
-| `interior\py2-final-v2-iso.png` | 315 606 | 2026-11-15 13:12:09 | изометрия r111 (1600×1000, CLI `python-engine.js`, авто-камера) — фото-текстура стен и пола |
+| `interior\py2-final-v2-iso.png` | 315 606 | 2026-11-15 13:30:37 | изометрия r111 (1600×1000, CLI `python-engine.js`, авто-камера) — фото-текстура стен и пола |
 | `interior\py2-final-v2-plan.png` | 27 811 | 2026-11-15 13:04:26 | план-чертёж r111 (1600×1100, 2D: стены/проёмы/помещения) |
 | `interior\py2-final-v2-texplan.png` | 274 906 | 2026-11-15 13:10:11 | план-текстура r111 (1600×1000, render-textured3, орто, up=z) |
 | `interior\py2-final-v2-inside.png` | 350 399 | 2026-11-15 13:09:21 | вид изнутри r111 (1600×1000, камера −5,8/1,65/−8,8 → −1,5/1,35/−1,0, fov 76) |
@@ -350,19 +365,22 @@ LAS-путь (`crop-B.las`, 800 тыс. точек) — 15,2 с, `--validate` OK
 
 ### 6.4. Логи и отчёты прогона
 
-`D:\BIM-TWIN-TEST\quality\`: `run-quality-all-r111.log` (сводка прогона r111),
+`D:\BIM-TWIN-TEST\quality\`: `run-quality-all-r111.log` (сводка прогона r111; r112 — только UI),
 `koridor_baseline-r107-ruler.json`, `koridor_final-ruler.json`,
 `py2-final-v2-validate.json`, `py2-final-v2-georef-validate.json`,
-`node-test-full-r111.log` (1572/1568/0/4), `node-test-r110-editor.log` (20/20),
-`edit-model-test.log` (23/23), `node-test-r74-r111.log` (13/13), `bench-final.log` (6 сцен),
-`python-engine-final.log` и `python-engine-r111.log` (CLI), `artifacts-inventory-r111.json`.
+`node-test-full-r112.log` (1595/1591/0/4), `node-test-r111-basics.log` (23/23),
+`node-test-r110-editor-r112.log` (20/20), `edit-model-test-r112.log` (23/23),
+`node-test-r74-r112.log` (13/13), `bench-final.log` (6 сцен),
+`python-engine-final.log`, `python-engine-r111.log`, `python-engine-r112.log` (CLI),
+`artifacts-inventory-r111.json`.
 Репозиторий (`bim-twin\`): инструменты Фаз 1–4 (`scan2bim-v2.py`, `scan2bim_facade.py`,
 `edit-model.py`, `edit-model-test.py`, `python-engine.js`, `facade-check.py`, `las-to-bin.js`,
-`las-pick-crop.js`, `json-to-ifc.js`, `renderer/lixel-scan2bim-editor.js`) + инструменты
-Фазы 5 (`run-quality-all.py`, `validate-ifc.py`, `ruler-v2.py`); отчёты `PHASE1-FINAL.md`,
-`PHASE2-FACADE.md`, `PHASE3-IFC.md`, `PHASE4-EDITOR-CORE.md`, `PHASE4-EDITOR-UI.md`,
+`las-pick-crop.js`, `json-to-ifc.js`, `renderer/lixel-scan2bim-editor.js` v1245,
+`test/r111-bim-editor-basics.test.js`) + инструменты Фазы 5 (`run-quality-all.py`,
+`validate-ifc.py`, `ruler-v2.py`); отчёты `PHASE1-FINAL.md`, `PHASE2-FACADE.md`,
+`PHASE3-IFC.md`, `PHASE4-EDITOR-CORE.md`, `PHASE4-EDITOR-UI.md`, `PHASE4-EDITOR-BASICS.md`,
 `QUALITY-SCORECARD-r111.md`, `RELEASE-QUALITY-FINAL.md`; CI/`node --test` — без изменений,
-тесты зелёные (1572/1568/0/4).
+тесты зелёные (1595/1591/0/4 на r112).
 
 ## 7. Воспроизведение
 
@@ -375,7 +393,8 @@ $env:PYTHONIOENCODING = "utf-8"; $env:PYTHONUTF8 = "1"
 
 # 2) Редактор Фазы 4: привязка стены 11 к облаку (как получен r111)
 & $py bim-twin\tools\scan2bim-py\edit-model.py `
-  D:\BIM-TWIN-TEST\interior\py2-p1.json --out D:\BIM-TWIN-TEST\interior\py2-final-v2.json `
+  --model D:\BIM-TWIN-TEST\interior\py2-p1.json `
+  --out D:\BIM-TWIN-TEST\interior\py2-final-v2.json `
   --cloud D:\BIM-TWIN-TEST\interior\koridor-local-rgb.bin `
   --op snap_wall --wall 11 --ifc D:\BIM-TWIN-TEST\interior\py2-final-v2.ifc --validate
 
@@ -401,10 +420,11 @@ node bim-twin\tools\scan2bim-py\python-engine.js `
 & $py bim-twin\tools\scan2bim-py\validate-ifc.py D:\BIM-TWIN-TEST\interior\py2-final-v2.ifc
 & $py bim-twin\tools\scan2bim-py\validate-ifc.py D:\BIM-TWIN-TEST\interior\py2-final-v2-georef.ifc
 
-# 6) Автотесты (полный набор и отдельно r74 + редактор)
+# 6) Автотесты (полный набор и отдельно r74 + редакторы)
 Set-Location bim-twin; node --test
 node --test test\r74-scan2bim-accuracy.test.js
 node --test test\r110-scan2bim-editor.test.js
+node --test test\r111-bim-editor-basics.test.js
 & $py tools\scan2bim-py\edit-model-test.py
 ```
 
@@ -422,13 +442,14 @@ node --test test\r110-scan2bim-editor.test.js
    это отдельная задача (память/время).
 5. **ifcopenshell express_rules (WHERE-правила)** в рантайме недоступны (нет pytest):
    проверены схема, арность, инвентарь и геопривязка; отмечено в `PHASE3-IFC.md`.
-6. **D2** — отдельной панели качества в UI нет (качество видно в редакторе); **zip-пакет и
-   папка на рабочем столе** — по данным Lead собраны, но лично я их не проверял.
+6. **D2** — отдельной панели качества в UI нет (stats/счётчики и подсказки есть в
+   редакторе); **zip-пакет и папка на рабочем столе** — по данным Lead собраны, но лично
+   я их не проверял.
 7. **E2** — скрипт регрессии не подключён к CI (правило «только новые файлы, без коммита»);
    готов к одной строке в workflow.
-8. **Известная нестабильность r74**: полный прогон на финальных деревьях r108/r111 —
-   1552/1548/0/4 и 1572/1568/0/4; отдельный прогон r74 — 13/13; при промежуточном прогоне
-   во время параллельного редактирования репозитория один тест r74 дал сбой — на финальном
-   дереве не повторяется.
+8. **Известная нестабильность r74**: полный прогон на финальных деревьях r108/r111/r112 —
+   1552/1548/0/4, 1572/1568/0/4 и 1595/1591/0/4; отдельный прогон r74 — 13/13; при
+   промежуточном прогоне во время параллельного редактирования репозитория один тест r74
+   дал сбой — на финальных деревьях не повторяется.
 9. **Цвет/текстура r111**: средняя ошибка цвета 0,0433 при пороге 0,06 — PASS (запас ~28 %);
    Δmax 0,3020 на единичных контрастных пикселях (см. §6.3).
