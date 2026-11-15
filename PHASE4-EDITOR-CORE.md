@@ -20,7 +20,7 @@
 
 | Проверка | Результат |
 |---|---|
-| Тесты `edit-model-test.py` на `py2-p1.json` + `koridor-local-rgb.bin` | **23/23 PASS**, 0 FAIL, 0 SKIP, 7,5 с (включая 6 IFC-экспортов и 2 валидации ifcopenshell; 3–10 с в зависимости от загрузки машины) |
+| Тесты `edit-model-test.py` на `py2-p1.json` + `koridor-local-rgb.bin` | **23/23 PASS**, 0 FAIL, 0 SKIP, 3,6 с (включая 5 IFC-экспортов и 2 валидации ifcopenshell; 3–10 с в зависимости от загрузки машины) |
 | IFC после правок (5 файлов: baseline/shift/thickness/snap/CLI-пример) | **0 ERROR**, 0 WARNING, 0 INFO, арность IFC4 OK (2093 instance) |
 | Undo/redo | стек JSON-снимков, глубина по умолчанию **32** (требование ≥20 проверено: 25 правок → 20+ отмен), sidecar между запусками CLI |
 | Ruler-v2 до/после одной автоматической правки (snap стены 11) | max ошибки толщины **195 → 121 мм (−38 %)**, ошибка толщины стены **195 → 0 мм**, периметр помещений **97,5 → 97,7 %**; медиана покрытия 95 → 94 % (артефакт метрики, разбор в §3.3) |
@@ -72,6 +72,12 @@ python edit-model.py --model <model.json> [--out <model-out.json>] [--cloud <clo
 ```
 
 * `--model` обязателен; пути относительные разрешаются от текущего каталога;
+* `--cloud` для `--snap`/`snap_wall`/`snap_opening` **можно не указывать**: облако
+  ищется рядом с моделью (`EDIT_MODEL_CLOUD` → `<модель>.bin`, `koridor-local-rgb.bin`,
+  `koridor-local.bin`, `cloud.bin` → единственный `*.bin` в папке модели); в JSON-ответе
+  поле `cloud.source` = `cli|auto`. Поэтому пример из задания
+  `--model py2-p1.json --op move_wall --index 3 --offset 0.08 --snap --out py2-edit.json`
+  работает «как написано», если рядом с моделью лежит `koridor-local-rgb.bin`;
 * `--out` — атомарная запись модели (tmp + `os.replace`) + sidecar истории
   `<out>.history.json` (по умолчанию; отключается `--no-history`, меняется `--history`);
 * `--ifc` — перегенерация IFC4 через `node tools/scan2bim-py/json-to-ifc.js` (единый
@@ -255,8 +261,12 @@ python edit-model.py --model py2-p1.json --cloud koridor-local-rgb.bin \
 
 ```
 python edit-model.py --model py2-p1.json --op move_wall --index 3 --offset 0.08 --snap \
-    --cloud koridor-local-rgb.bin --out ...\py2-edit.json --ifc ...\py2-edit.ifc --json
+    --out phase4-editor\py2-edit.json --ifc phase4-editor\py2-edit.ifc --json
 ```
+
+`--cloud` в примере задания не указан — облако найдено автоматически рядом с моделью
+(`D:\BIM-TWIN-TEST\interior\koridor-local-rgb.bin`, `cloud.source=auto`), проверено именно
+таким запуском из каталога `D:\BIM-TWIN-TEST\interior`.
 
 * сдвиг +0.08 м: `a` `[2.5013, -8.1708] → [2.4213, -8.1736]`;
 * затем snap: моды `−0.095/+0.065`, сдвиг **−0.015 м**, толщина 0.147 → **0.160 м**,
@@ -349,7 +359,7 @@ python tools/scan2bim-py/edit-model-test.py            # 23 PASS, exit 0;  exit 
 ```
 
 Результат на реальных данных `py2-p1.json` + `koridor-local-rgb.bin`:
-**PASS 23, FAIL 0, SKIP 0, 7,5 с** (полный лог — `phase4-editor\tests.log`; время зависит
+**PASS 23, FAIL 0, SKIP 0, 3,6 с** (полный лог — `phase4-editor\tests.log`; время зависит
 от загрузки машины, наблюдалось 3,4–10,2 с, стабильно PASS).
 Печатается `PASS/FAIL` по каждой проверке, подробности (числа) — в строке после PASS;
 на синтетическом стенде (если реальных данных нет) те же проверки проходят на 4 стенах
@@ -376,7 +386,7 @@ python tools/scan2bim-py/edit-model-test.py            # 23 PASS, exit 0;  exit 
 | 17 | snap_opening (синтетика): кромки ±0.1 м | along 1.500→2.000, width 0.700→0.900 (истина 2.0/0.9) |
 | 18 | snap_opening (реальное облако) | стена 0: along 1.196→1.146, width 1.993→2.093 (разрыв 1.146/2.093) |
 | 19 | CLI `--help` | код 0, все 10 операций в справке |
-| 20 | CLI `move_wall --offset --snap --out --json` | код 0, JSON ok, модель и sidecar записаны, координата изменилась |
+| 20 | CLI `move_wall --offset --snap --out --json` (облако ищется само, без `--cloud`) | код 0, JSON ok, `cloud.source=auto`, модель и sidecar записаны, координата изменилась |
 | 21 | CLI undo/redo между запусками | правка → undo (стены == исходным) → redo (стены == правке) |
 | 22 | CLI: ошибки параметров | 3 некорректных вызова → код 2, JSON `ok:false` |
 | 23 | CLI end-to-end `--ifc --validate` | код 0, IFC 96,8 КБ, ERROR=0 |
@@ -436,6 +446,12 @@ IfcSurfaceStyle 44, IfcStyledItem 82`. Формат и сущности не д�
 `*.history.json` (sidecar истории), `ruler-before/after.{json,log}`,
 `validate-*.log`, `tests.log`, `*.result.json` (JSON-ответы операций).
 
-Git: изменения **не закоммичены**. В `git status` по этой задаче — два новых файла
+Git: сам я **не коммитил**. В `git status` по этой задаче — два файла кода
 (`tools/scan2bim-py/edit-model.py`, `tools/scan2bim-py/edit-model-test.py`) и этот отчёт;
 остальные изменения рабочего дерева относятся к UI-агенту Фазы 4.
+
+Коммит `7ba23f9` (r110) был сделан координатором в процессе работы и содержит предыдущую
+версию этих файлов. После него в рабочем дереве осталась не закоммиченной одна доработка:
+**авто-поиск облака** для `--snap`/`snap_wall`/`snap_opening` (чтобы пример из задания
+`--op move_wall --index 3 --offset 0.08 --snap` работал без явного `--cloud`) + правка
+соответствующего теста и этого отчёта. Итог прогона: 23/23 PASS, IFC 0 ERROR.

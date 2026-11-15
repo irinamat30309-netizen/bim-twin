@@ -24,10 +24,13 @@ renderer/scan2bim.js (node tools/scan2bim-py/json-to-ifc.js).
     ed.export_ifc('model-edit.ifc')
     validate_ifc('model-edit.ifc')       # 0 ERROR через validate-ifc.py
 
-CLI (операция за один запуск, состояние истории — в sidecar <модель>.history.json):
+CLI (операция за один запуск, состояние истории — в sidecar <модель>.history.json).
+Облако для `--snap`/`snap_wall`/`snap_opening` можно не указывать — оно ищется рядом
+с моделью (`<модель>.bin`, `koridor-local-rgb.bin`, …):
 
     python edit-model.py --model M.json --op move_wall --index 3 --offset 0.08 --snap \\
         --cloud C.bin --out M2.json --ifc M2.ifc --validate --json
+    python edit-model.py --model M.json --op move_wall --index 3 --offset 0.08 --snap --out M2.json
     python edit-model.py --model M.json --op undo --out M2.json
     python edit-model.py --model M.json --op info --json
     python edit-model.py --help
@@ -321,6 +324,35 @@ def load_cloud(path, stride=2):
     return _CLOUD_CACHE[key]
 
 
+def discover_cloud(model_path):
+    """Ищет облако рядом с моделью (для `--snap` без явного --cloud).
+
+    Порядок: переменная окружения EDIT_MODEL_CLOUD → файлы рядом с моделью с
+    приоритетными именами (`<модель>-rgb.bin`, `<модель>.bin`, `koridor-local-rgb.bin`,
+    `koridor-local.bin`, `cloud.bin`) → единственный *.bin в папке модели.
+    Возвращает путь или None.
+    """
+    env = os.environ.get('EDIT_MODEL_CLOUD')
+    if env and os.path.isfile(env):
+        return os.path.abspath(env)
+    if not model_path:
+        return None
+    model_dir = os.path.dirname(os.path.abspath(model_path)) or '.'
+    stem = os.path.splitext(os.path.basename(str(model_path)))[0]
+    for name in (stem + '-rgb.bin', stem + '.bin', 'koridor-local-rgb.bin',
+                 'koridor-local.bin', 'cloud.bin'):
+        cand = os.path.join(model_dir, name)
+        if os.path.isfile(cand):
+            return os.path.abspath(cand)
+    try:
+        bins = sorted(glob.glob(os.path.join(model_dir, '*.bin')))
+    except OSError:  # pragma: no cover
+        bins = []
+    if len(bins) == 1:
+        return os.path.abspath(bins[0])
+    return None
+
+
 # ======================================================================================
 # 3. Вспомогательное: 2-модная медиана и устойчивый RMS
 # ======================================================================================
@@ -426,7 +458,9 @@ class Editor:
     # ---------- облако / этаж ----------
     def _cloud(self):
         if self.cloud is None:
-            raise EditError('для этой операции нужно облако точек: укажите --cloud <file.bin>')
+            raise EditError('для этой операции нужно облако точек: укажите --cloud <file.bin> '
+                            '(или положите <модель>.bin / koridor-local-rgb.bin рядом с моделью, '
+                            'либо задайте EDIT_MODEL_CLOUD)')
         if isinstance(self.cloud, str):
             self.cloud = load_cloud(self.cloud)
         return self.cloud
@@ -1205,8 +1239,14 @@ OPS = ['set_wall', 'move_wall', 'move_opening', 'add_opening', 'remove_opening',
 def _build_argparser():
     epilog = """Примеры:
   # сдвинуть стену 3 на 8 см по нормали и сразу привязать её к облаку
+  # (облако не передано — найдётся рядом с моделью: koridor-local-rgb.bin)
+  python edit-model.py --model py2-p1.json --op move_wall --index 3 --offset 0.08 \\
+      --snap --out py2-edit.json --json
+
+  # то же с явным облаком и перегенерацией IFC
   python edit-model.py --model py2-p1.json --cloud koridor-local-rgb.bin \\
-      --op move_wall --index 3 --offset 0.08 --snap --out py2-edit.json --json
+      --op move_wall --index 3 --offset 0.08 --snap --out py2-edit.json \\
+      --ifc py2-edit.ifc --validate --json
 
   # исправить толщину стены 11 и проверить IFC
   python edit-model.py --model py2-p1.json --op set_wall --index 11 --thickness 0.17 \\
@@ -1231,7 +1271,9 @@ def _build_argparser():
     ap.add_argument('--model', required=True, help='входная JSON-модель (scan2bim-v2)')
     ap.add_argument('--out', help='куда сохранить изменённую модель JSON (атомарно)')
     ap.add_argument('--cloud', help='облако точек .bin (float32 x,y,z,r,g,b, Y вверх) '
-                                    'для --snap / snap_wall / snap_opening')
+                                    'для --snap / snap_wall / snap_opening; если не задано, '
+                                    'ищется рядом с моделью: <модель>.bin, koridor-local-rgb.bin, '
+                                    'koridor-local.bin, cloud.bin или единственный *.bin в папке')
     ap.add_argument('--op', choices=OPS, help='операция редактора')
     ap.add_argument('--index', type=int, help='индекс стены для set_wall/move_wall/snap_wall')
     ap.add_argument('--wall', type=int, help='индекс стены (алиас --index; для операций с проёмами)')
@@ -1284,6 +1326,9 @@ def _print_human(payload):
     r = payload.get('result') or {}
     m = payload.get('model') or {}
     print('модель:      %s' % (m.get('model') or '—'))
+    cloud = payload.get('cloud') or {}
+    if cloud.get('source') == 'auto':
+        print('облако:      %s (найдено автоматически рядом с моделью)' % cloud.get('path'))
     print('содержимое:  стен %d (измерено %d, достроено %d), проёмов %d, помещений %d, '
           'площадь %.1f м²' % (m.get('walls', 0), m.get('measuredWalls', 0),
                                m.get('inferredWalls', 0), m.get('openings', 0),
@@ -1392,13 +1437,24 @@ def main(argv=None):
             history_path = args.history
         else:
             history_path = os.path.abspath(args.model) + '.history.json'
+        op = args.op
+        needs_cloud = op in ('snap_wall', 'snap_opening') or bool(args.snap)
+        cloud_path = args.cloud
+        cloud_source = 'cli' if cloud_path else None
+        if not cloud_path and needs_cloud:
+            cloud_path = discover_cloud(args.model)
+            if cloud_path:
+                cloud_source = 'auto'
+        if needs_cloud and not cloud_path:
+            raise EditError('для %s нужно облако точек: укажите --cloud <file.bin>, '
+                            'или EDIT_MODEL_CLOUD, или положите koridor-local-rgb.bin / '
+                            '<модель>.bin рядом с моделью' % (op or '--snap'))
         ed = Editor.load(args.model, cloud=None, undo_depth=args.undo_depth,
                          history_path=history_path if not args.no_history else None,
                          stride=max(1, args.stride), load_history=not args.no_history)
-        if args.cloud:
-            ed.cloud = load_cloud(args.cloud, max(1, args.stride))
+        if cloud_path:
+            ed.cloud = load_cloud(cloud_path, max(1, args.stride))
         res = None
-        op = args.op
         wall_index = args.index if args.index is not None else args.wall
         if op in ('set_wall', 'move_wall'):
             if wall_index is None:
@@ -1462,6 +1518,8 @@ def main(argv=None):
             raise EditError('--validate требует --ifc (что валидировать)')
         payload = _result_payload(ed, res, saved=saved, ifc=result['ifc'],
                                   validate=result['validate'])
+        payload['cloud'] = ({'path': cloud_path, 'source': cloud_source}
+                            if cloud_path else None)
         payload['ok'] = not (result['validate'] and not result['validate'].get('ok'))
         if args.json:
             sys.stdout.write(json.dumps(payload, ensure_ascii=False) + '\n')

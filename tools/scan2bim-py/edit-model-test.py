@@ -259,14 +259,14 @@ def read_json(path):
         return json.load(f)
 
 
-def run_cli(extra, timeout=600):
+def run_cli(extra, timeout=600, cwd=None):
     cmd = [PY, EDITOR_PY] + list(extra)
     return subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
-                          errors='replace', timeout=timeout)
+                          errors='replace', timeout=timeout, cwd=cwd)
 
 
-def run_cli_json(extra):
-    proc = run_cli(list(extra) + ['--json'])
+def run_cli_json(extra, cwd=None):
+    proc = run_cli(list(extra) + ['--json'], cwd=cwd)
     out = (proc.stdout or '').strip().splitlines()
     payload = None
     if out:
@@ -753,20 +753,24 @@ def test_cli_help():
     return '--help OK, операций в справке: %d' % len(em.OPS)
 
 
-@check('CLI: move_wall --offset --snap --out --json')
+@check('CLI: move_wall --offset --snap --out --json (облако ищется само)')
 def test_cli_move_wall_snap():
     if not CTX.has_cloud:
         raise SkipTest('нет облака для --snap')
     out = os.path.join(CTX.tmpdir, 'cli-move.json')
+    # ровно пример из задания: без --cloud, модель задана относительно её каталога
     proc, payload = run_cli_json([
-        '--model', CTX.model_path, '--cloud', CTX.cloud_path,
+        '--model', os.path.basename(CTX.model_path),
         '--op', 'move_wall', '--index', '3' if CTX.real else '0',
-        '--offset', '0.08', '--snap', '--out', out])
+        '--offset', '0.08', '--snap', '--out', out],
+        cwd=os.path.dirname(CTX.model_path))
     assert_true(proc.returncode == 0,
                 'код 0, получено %d: %s' % (proc.returncode, (proc.stderr or '')[-300:]))
     assert_true(payload is not None and payload.get('ok') is True, 'JSON-ответ ok')
     assert_true(os.path.isfile(out), '--out записан')
     assert_true(os.path.isfile(out + '.history.json'), 'sidecar истории записан')
+    cloud = payload.get('cloud') or {}
+    assert_true(cloud.get('source') == 'auto', 'облако найдено автоматически рядом с моделью')
     res = payload['result']
     assert_true(res.get('changed') is True, 'стена сдвинута')
     snap = res.get('snap') or {}
@@ -774,7 +778,7 @@ def test_cli_move_wall_snap():
     w = read_json(out)['walls'][3 if CTX.real else 0]
     assert_true(w['a'] != CTX.model['walls'][3 if CTX.real else 0]['a'],
                 'координата стены в файле изменилась')
-    return 'offset +0.08 + snap: accepted=%s, a %s -> %s' % (
+    return 'offset +0.08 + snap (cloud=auto): accepted=%s, a %s -> %s' % (
         snap.get('accepted'), CTX.model['walls'][3 if CTX.real else 0]['a'],
         [round(v, 4) for v in w['a']])
 
