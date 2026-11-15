@@ -4,7 +4,10 @@
  * предпросмотр стен/плит накладкой в 3D и экспорт IFC/OBJ/DXF.
  * v1233 (Фаза 4 ROADMAP-IDEAL): кнопка «Редактор модели» — ручной редактор
  * (renderer/lixel-scan2bim-editor.js) грузится по требованию и работает в памяти приложения.
- * window.__lxScan2BIM = { open, close, build, exportModel, refreshPreview, editor, state }.
+ * v114 (Фаза 5 ROADMAP-IDEAL, D2): кнопка «Качество модели» — панель метрик
+ * (renderer/lixel-scan2bim-quality.js): высота/стены/толщина/проёмы/помещения/плиты,
+ * покрытие стен облаком и экспорт отчёта JSON.
+ * window.__lxScan2BIM = { open, close, build, exportModel, refreshPreview, editor, quality, state }.
  */
 (function () {
   'use strict';
@@ -120,6 +123,37 @@
     try { window.__lxS2BEditor.setModel(state.model); } catch (e) {}
   }
 
+  // ---------- панель качества модели (Фаза 5, D2): отдельный файл, грузим по требованию ----------
+  var qualityWaiters = null;
+  function loadQuality(cb) {
+    if (window.__lxS2BQuality) { cb(window.__lxS2BQuality); return; }
+    if (qualityWaiters) { qualityWaiters.push(cb); return; }
+    qualityWaiters = [cb];
+    function finish(ok) {
+      var q = qualityWaiters || []; qualityWaiters = null;
+      if (!ok || !window.__lxS2BQuality) { toast('Не удалось загрузить панель качества', true); return; }
+      for (var i = 0; i < q.length; i++) { try { q[i](window.__lxS2BQuality); } catch (e) {} }
+    }
+    try {
+      var s = document.createElement('script');
+      s.src = 'lixel-scan2bim-quality.js?v=114'; s.async = true;
+      s.onload = function () { finish(true); };
+      s.onerror = function () { finish(false); };
+      (document.head || document.body).appendChild(s);
+    } catch (e) { finish(false); }
+  }
+  function openQualityModel() {
+    loadQuality(function (Q) {
+      if (!Q || !Q.open) { toast('Панель качества не загружена', true); return; }
+      try { Q.open(state.model); }
+      catch (e) { toast('Ошибка панели качества: ' + (e && e.message || e), true); }
+    });
+  }
+  function syncQualityModel() {
+    if (!window.__lxS2BQuality || !window.__lxS2BQuality.setModel) return;
+    try { window.__lxS2BQuality.setModel(state.model); } catch (e) {}
+  }
+
   // --------- построение ---------
   function build() {
     var v = mainV();
@@ -146,6 +180,7 @@
       if (state.previewOn) showPreview(v, model);
       renderStats(model, dt);
       syncEditorModel();
+      syncQualityModel();
       toast('BIM построен: стен ' + model.stats.wallCount);
     }, 30);
     return null;
@@ -235,6 +270,10 @@
     var bEdit = actBtn('Редактор модели', 'pencil-ruler', '', openEditorModel); bEdit.id = 'lxScan2BimEditorBtn';
     bEdit.setAttribute('data-tip', 'Ручная правка стен и проёмов с привязкой к облаку: undo/redo, экспорт IFC');
     body.appendChild(bEdit);
+    // v114: панель качества модели (Фаза 5, D2) — рядом с построением и редактором.
+    var bQuality = actBtn('Качество модели', 'gauge', '', openQualityModel); bQuality.id = 'lxScan2BimQualityBtn';
+    bQuality.setAttribute('data-tip', 'Метрики модели и покрытие стен облаком, скор и отчёт JSON');
+    body.appendChild(bQuality);
     statusEl = el('div', 'sec-note', ''); statusEl.setAttribute('role', 'status'); statusEl.setAttribute('aria-live', 'polite');
     body.appendChild(statusEl);
     statsEl = el('div', 'lx-stats'); body.appendChild(statsEl);
@@ -279,6 +318,6 @@
 
   window.__lxScan2BIM = {
     open: open, close: close, build: build, exportModel: exportModel,
-    refreshPreview: refreshPreview, editor: openEditorModel, state: state
+    refreshPreview: refreshPreview, editor: openEditorModel, quality: openQualityModel, state: state
   };
 })();

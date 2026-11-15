@@ -1,0 +1,149 @@
+name: Quality regression (scan-to-BIM)
+
+# E2 (Фаза 5 ROADMAP-IDEAL): регрессия качества scan-to-BIM в CI.
+#
+# Гейт: tools/scan2bim-py/ci-quality.ps1 -> tools/scan2bim-py/run-quality-all.py
+# Эталон: qa/quality-baseline.json (метрики r111; абсолютные пути к данным не хранятся).
+#
+# Что считается FAIL (по умолчанию): ухудшение метрик относительно эталона (REG:
+# покрытие/толщина/высота/площадь/периметр/проёмы/помещения — см. run-quality-all.py).
+# Абсолютные пороги ROADMAP (A1–A8) по умолчанию только печатаются в таблице;
+# включить их как гейт можно через workflow_dispatch input enforce_targets.
+# Строгий режим: если данные доступны, SKIP считается FAIL (нет облака/модели/метрик).
+# Без данных (обычный GitHub-hosted runner) gate идёт с --allow-missing: SKIP допустим,
+# проверяются целостность скрипта/манифеста/эталона и таблица PASS/FAIL.
+#
+# Данные BIM-TWIN-TEST (D:\BIM-TWIN-TEST) в репозиторий не входят. Для настоящего
+# строгого гейта нужен self-hosted runner с этими данными (или BIMTWIN_TEST_ROOT).
+
+on:
+  workflow_dispatch:
+    inputs:
+      enforce_targets:
+        description: 'Также требовать абсолютные пороги ROADMAP (A1–A8) как гейт'
+        type: boolean
+        default: false
+  pull_request:
+  push:
+    paths:
+      - 'tools/scan2bim-py/**'
+      - 'renderer/scan2bim.js'
+      - 'test/**'
+      - 'qa/**'
+      - '.github/workflows/quality.yml'
+  schedule:
+    # nightly (02:30 UTC): строгий режим, если на runner есть данные BIM-TWIN-TEST
+    - cron: '30 2 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: quality (${{ github.event_name }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python deps (quality stack)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ifcopenshell open3d shapely numpy pillow
+          python -c "import numpy, shapely, ifcopenshell; print('numpy/shapely/ifcopenshell OK')"
+
+      - name: Locate BIM-TWIN-TEST data
+        id: data
+        shell: pwsh
+        run: |
+          $root = $env:BIMTWIN_TEST_ROOT
+          if (-not $root -and (Test-Path 'D:\BIM-TWIN-TEST')) { $root = 'D:\BIM-TWIN-TEST' }
+          if ($root -and (Test-Path (Join-Path $root 'interior'))) {
+            "present=true" >> $env:GITHUB_OUTPUT
+            "root=$root" >> $env:GITHUB_OUTPUT
+            Write-Host "Тестовые данные найдены: $root (строгий режим)"
+          } else {
+            "present=false" >> $env:GITHUB_OUTPUT
+            Write-Host "::warning::BIM-TWIN-TEST недоступен на runner — гейт в режиме --allow-missing (без метрик; только целостность скрипта/манифеста/эталона)."
+          }
+
+      - name: Quality regression gate (strict, data present)
+        if: steps.data.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          $arguments = @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', 'tools\scan2bim-py\ci-quality.ps1',
+            '-Root', '${{ steps.data.outputs.root }}'
+          )
+          if ('${{ github.event.inputs.enforce_targets }}' -eq 'true') { $arguments += '--targets' }
+          powershell @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: "Quality regression gate (no data: SKIP allowed)"
+        if: steps.data.outputs.present != 'true'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File tools\scan2bim-py\ci-quality.ps1 --allow-missing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Job summary (quality table)
+        if: always()
+        shell: pwsh
+        run: |
+          $report = 'qa\quality-runs\quality-all-report.json'
+          if (-not (Test-Path $report)) {
+            "## Quality gate: отчёт не создан ($report)" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          $j = Get-Content -Path $report -Raw -Encoding UTF8 | ConvertFrom-Json
+          $md = @('## Quality gate (scan-to-BIM)', '')
+          $md += ('- создан: `{0}`' -f $j.created_at)
+          $md += ('- root: `{0}`; ruler-прогонов: {1}' -f $j.root, $j.ruler_runs)
+          $md += ('- summary: **PASS {0} / FAIL {1} / SKIP {2}**' -f $j.summary.pass, $j.summary.fail, $j.summary.skip)
+          $md += ''
+          $md += '| Проверка | Вид | Статус | PASS | FAIL | SKIP |'
+          $md += '|---|---|---|---|---|---|'
+          foreach ($e in @($j.entries)) {
+            if ($null -eq $e) { continue }
+            $p = 0; $f = 0; $s = 0
+            foreach ($c in @($e.checks)) {
+              if ($null -eq $c) { continue }
+              if ($c.status -eq 'PASS') { $p++ } elseif ($c.status -eq 'FAIL') { $f++ } elseif ($c.status -eq 'SKIP') { $s++ }
+            }
+            $md += ('| `{0}` | {1} | {2} | {3} | {4} | {5} |' -f $e.name, $e.kind, $e.status, $p, $f, $s)
+          }
+          $md += ''
+          $md += 'Эталон: `qa/quality-baseline.json`. Провалом считается регрессия (REG); абсолютные пороги ROADMAP включаются input-ом `enforce_targets`.'
+          $md | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+
+      - name: Upload quality artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-report-${{ github.run_id }}
+          path: |
+            qa/**
+            **/*RULER*.json
+            **/*ruler*.json
+            RELEASE-QUALITY-FINAL.md
+          if-no-files-found: warn
+          retention-days: 30
