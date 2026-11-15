@@ -5,12 +5,12 @@
  "rows": [
   {
    "name": "Коридор: ширина в свету",
-   "project": "3,60 м",
-   "model": "—",
+   "project": "3600/3610 мм",
+   "model": "3473 мм (по осям 3473, T 147/170)",
    "cloud": "—",
-   "delta_mm": null,
-   "status": "UNVERIFIED",
-   "note": "коридорная пара не найдена"
+   "delta_mm": 127,
+   "status": "WARN",
+   "note": "пара стен: 10.6/13.2 м, перекрытие 6.8 м"
   },
   {
    "name": "Коридор: ширина (облако ↔ документация)",
@@ -78,10 +78,10 @@
  ],
  "summary": {
   "PASS": 4,
-  "WARN": 1,
+  "WARN": 2,
   "FAIL": 0,
-  "UNVERIFIED": 3
+  "UNVERIFIED": 2
  },
- "score": 62.0,
+ "score": 70.0,
  "grade": "C"
 }

@@ -67,7 +67,7 @@ for i in range(len(all_walls)):
         ai0 = float(np.dot(wi['a'], u)); ai1 = ai0 + wi['L']
         aj0 = float(np.dot(wj['a'], u)); aj1 = aj0 + wj['L']
         ov = max(0.0, min(max(ai0, ai1), max(aj0, aj1)) - max(min(ai0, ai1), min(aj0, aj1)))
-        if ov >= 8.0 and 3.30 <= sep <= 3.70:
+        if ov >= 4.0 and 3.30 <= sep <= 3.80:
             par_pairs.append((ov, sep, wi, wj))
 if par_pairs:
     par_pairs.sort(key=lambda t: -t[0])
@@ -112,7 +112,7 @@ if corridor_dir is not None:
     u = np.array([math.cos(corridor_dir), math.sin(corridor_dir)])
     n = np.array([-u[1], u[0]])
     cross = []
-    for w in walls:
+    for w in all_walls:
         if abs(float(np.dot(w['b'] - w['a'], u))) < 0.3 * w['L']:  # перпендикулярно оси
             cross.append((float(np.dot(w['a'], u)), w['L']))
     cross.sort()
