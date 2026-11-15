@@ -1,6 +1,6 @@
 {
  "tool": "run-quality-all.py",
- "created_at": "2026-11-15T14:13:09+02:00",
+ "created_at": "2026-11-15T14:23:59+02:00",
  "root": "D:\\BIM-TWIN-TEST",
  "workdir": "D:\\BIM-TWIN-TEST\\quality",
  "ruler": "C:\\Users\\bob\\Documents\\deepseek-harness\\default-workspace\\bim-twin\\tools\\scan2bim-py\\ruler-v2.py",
@@ -154,7 +154,7 @@
    ],
    "metrics_file": null,
    "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_baseline-r107-ruler.json",
-   "ruler_seconds": 13.5,
+   "ruler_seconds": 9.1,
    "status": "FAIL",
    "skip_reason": null,
    "stand": ""
@@ -266,7 +266,7 @@
    ],
    "metrics_file": null,
    "ruler_json": "D:\\BIM-TWIN-TEST\\quality\\koridor_final-ruler.json",
-   "ruler_seconds": 16.2,
+   "ruler_seconds": 9.0,
    "status": "FAIL",
    "skip_reason": null,
    "stand": ""
