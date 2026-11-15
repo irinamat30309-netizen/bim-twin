@@ -1,8 +1,10 @@
 /*
- * lixel-scan2bim-ui.js — v1155
+ * lixel-scan2bim-ui.js — v1233
  * UI для Scan-to-BIM: кнопка + панель параметров, построение BIM из активного облака,
  * предпросмотр стен/плит накладкой в 3D и экспорт IFC/OBJ/DXF.
- * window.__lxScan2BIM = { open, close, build, exportModel, state }.
+ * v1233 (Фаза 4 ROADMAP-IDEAL): кнопка «Редактор модели» — ручной редактор
+ * (renderer/lixel-scan2bim-editor.js) грузится по требованию и работает в памяти приложения.
+ * window.__lxScan2BIM = { open, close, build, exportModel, refreshPreview, editor, state }.
  */
 (function () {
   'use strict';
@@ -79,6 +81,44 @@
     try { v._setOverlay(objs); v.render && v.render(); } catch (e) {}
   }
   function clearPreview(v) { try { v && v._setOverlay && v._setOverlay([]); v && v.render && v.render(); } catch (e) {} }
+  // v1233: вернуть штатный предпросмотр после закрытия редактора модели.
+  function refreshPreview() {
+    if (state.previewOn && state.model) showPreview(mainV(), state.model);
+    else clearPreview(mainV());
+  }
+
+  // ---------- ручной редактор модели (Фаза 4): отдельный файл, грузим по требованию ----------
+  // index.html не трогаем (чужая зона): скрипт подключается динамически тем же origin —
+  // CSP script-src 'self' это разрешает. Один общий промис ожидания.
+  var editorWaiters = null;
+  function loadEditor(cb) {
+    if (window.__lxS2BEditor) { cb(window.__lxS2BEditor); return; }
+    if (editorWaiters) { editorWaiters.push(cb); return; }
+    editorWaiters = [cb];
+    function finish(ok) {
+      var q = editorWaiters || []; editorWaiters = null;
+      if (!ok || !window.__lxS2BEditor) { toast('Не удалось загрузить редактор модели', true); return; }
+      for (var i = 0; i < q.length; i++) { try { q[i](window.__lxS2BEditor); } catch (e) {} }
+    }
+    try {
+      var s = document.createElement('script');
+      s.src = 'lixel-scan2bim-editor.js?v=1233'; s.async = true;
+      s.onload = function () { finish(true); };
+      s.onerror = function () { finish(false); };
+      (document.head || document.body).appendChild(s);
+    } catch (e) { finish(false); }
+  }
+  function openEditorModel() {
+    loadEditor(function (E) {
+      if (!E || !E.open) { toast('Редактор модели не загружен', true); return; }
+      try { E.open(state.model); }
+      catch (e) { toast('Ошибка редактора: ' + (e && e.message || e), true); }
+    });
+  }
+  function syncEditorModel() {
+    if (!window.__lxS2BEditor || !window.__lxS2BEditor.setModel) return;
+    try { window.__lxS2BEditor.setModel(state.model); } catch (e) {}
+  }
 
   // --------- построение ---------
   function build() {
@@ -105,6 +145,7 @@
       state.model = model;
       if (state.previewOn) showPreview(v, model);
       renderStats(model, dt);
+      syncEditorModel();
       toast('BIM построен: стен ' + model.stats.wallCount);
     }, 30);
     return null;
@@ -190,6 +231,10 @@
 
     var bBuild = actBtn('Построить BIM', 'building', 'primary', build); bBuild.id = 'lxScan2BimBuildBtn';
     body.appendChild(bBuild);
+    // v1233: ручной редактор модели (Фаза 4, D3) — рядом с построением.
+    var bEdit = actBtn('Редактор модели', 'pencil-ruler', '', openEditorModel); bEdit.id = 'lxScan2BimEditorBtn';
+    bEdit.setAttribute('data-tip', 'Ручная правка стен и проёмов с привязкой к облаку: undo/redo, экспорт IFC');
+    body.appendChild(bEdit);
     statusEl = el('div', 'sec-note', ''); statusEl.setAttribute('role', 'status'); statusEl.setAttribute('aria-live', 'polite');
     body.appendChild(statusEl);
     statsEl = el('div', 'lx-stats'); body.appendChild(statsEl);
@@ -208,7 +253,15 @@
   }
   var btn = null;
   function open() { buildPanel().style.display = 'block'; setOn(btn, true); }
-  function close() { if (panel) panel.style.display = 'none'; clearPreview(mainV()); setOn(btn, false); }
+  function close() {
+    if (panel) panel.style.display = 'none';
+    clearPreview(mainV());
+    // v1233: панель «Скан → BIM» не должна гасить оверлей открытого редактора модели
+    if (window.__lxS2BEditor && window.__lxS2BEditor.isOpen && window.__lxS2BEditor.isOpen()) {
+      try { window.__lxS2BEditor.refreshOverlay(); } catch (e) {}
+    }
+    setOn(btn, false);
+  }
 
   function mountButton() {
     if (document.getElementById('lxScan2BimBtn')) return;
@@ -224,5 +277,8 @@
   window.addEventListener('lx-viewer-ready', boot);
   window.addEventListener('lx-pctools-ready', boot);
 
-  window.__lxScan2BIM = { open: open, close: close, build: build, exportModel: exportModel, state: state };
+  window.__lxScan2BIM = {
+    open: open, close: close, build: build, exportModel: exportModel,
+    refreshPreview: refreshPreview, editor: openEditorModel, state: state
+  };
 })();
