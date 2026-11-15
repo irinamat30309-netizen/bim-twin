@@ -1,0 +1,811 @@
+{
+ "schema_version": 1,
+ "title": "Документация ↔ модель ↔ облако (объединённый отчёт)",
+ "inputs": {
+  "compare": "D:\\BIM-TWIN-TEST\\docs\\compare-v5.json",
+  "verify": "D:\\BIM-TWIN-TEST\\docs\\verify-fragment-v5.json",
+  "model": "D:\\BIM-TWIN-TEST\\interior\\py2-final-v5.json"
+ },
+ "score": 80.8,
+ "score_docs": 91.7,
+ "score_doc_dimensions": 70.0,
+ "grade": "A",
+ "coverage_pct": 90,
+ "summary": {
+  "PASS": 16,
+  "WARN": 4,
+  "FAIL": 0,
+  "UNVERIFIED": 8
+ },
+ "rows": [
+  {
+   "id": "floor_height",
+   "label": "Высота этажа (чистая)",
+   "group": "docs-compare",
+   "project": {
+    "value": 3300,
+    "unit": "mm",
+    "source": "docs.json: floors.clean_height_mm"
+   },
+   "model": {
+    "value": 3278.0,
+    "unit": "mm",
+    "source": "model: storey.height"
+   },
+   "cloud": {
+    "value": 3276.0,
+    "unit": "mm",
+    "source": "ruler-v2.py: cloud.height"
+   },
+   "delta_mp": {
+    "value": -22.0,
+    "unit": "mm",
+    "pct": -0.67
+   },
+   "delta_cm": {
+    "value": -2.0,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": "проект: чистая высота = шаг − плита; совпадение в допуске 50 мм"
+  },
+  {
+   "id": "floor_pitch",
+   "label": "Шаг этажа (пол-пол)",
+   "group": "docs-compare",
+   "project": {
+    "value": 3700,
+    "unit": "mm",
+    "source": "docs.json: floors.pitch_mm"
+   },
+   "model": {
+    "value": 3678.0,
+    "unit": "mm",
+    "source": "model: storey.height + плита проекта"
+   },
+   "cloud": {
+    "value": 3676.0,
+    "unit": "mm",
+    "source": "ruler: cloud.height + плита проекта"
+   },
+   "delta_mp": {
+    "value": -22.0,
+    "unit": "mm"
+   },
+   "delta_cm": null,
+   "status": "PASS",
+   "note": "плита проекта 400 мм; чистая высота модели + плита"
+  },
+  {
+   "id": "wall_t_120",
+   "label": "Толщина стены 120 мм (проект)",
+   "group": "docs-compare",
+   "project": {
+    "value": 120,
+    "unit": "mm",
+    "source": "docs.json: walls.thicknesses_mm"
+   },
+   "model": {
+    "value": 120,
+    "unit": "mm",
+    "source": "model: ближайшая измеренная толщина (18 стен)"
+   },
+   "cloud": {
+    "value": 120,
+    "unit": "mm",
+    "source": "ruler-v2.py: T_cloud"
+   },
+   "delta_mp": {
+    "value": 0,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": 0,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": " (сырой Δ +0 мм; с отделкой +40 мм → Δ -40 мм)"
+  },
+  {
+   "id": "wall_t_150",
+   "label": "Толщина стены 150 мм (проект)",
+   "group": "docs-compare",
+   "project": {
+    "value": 150,
+    "unit": "mm",
+    "source": "docs.json: walls.thicknesses_mm"
+   },
+   "model": {
+    "value": 147,
+    "unit": "mm",
+    "source": "model: ближайшая измеренная толщина (18 стен)"
+   },
+   "cloud": {
+    "value": 140,
+    "unit": "mm",
+    "source": "ruler-v2.py: T_cloud"
+   },
+   "delta_mp": {
+    "value": -3,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": -7,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": " (сырой Δ -3 мм; с отделкой +40 мм → Δ -43 мм)"
+  },
+  {
+   "id": "wall_t_250",
+   "label": "Толщина стены 250 мм (проект)",
+   "group": "docs-compare",
+   "project": {
+    "value": 250,
+    "unit": "mm",
+    "source": "docs.json: walls.thicknesses_mm"
+   },
+   "model": {
+    "value": 257,
+    "unit": "mm",
+    "source": "model: ближайшая измеренная толщина (18 стен)"
+   },
+   "cloud": {
+    "value": 260,
+    "unit": "mm",
+    "source": "ruler-v2.py: T_cloud"
+   },
+   "delta_mp": {
+    "value": 7,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": 3,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": " (сырой Δ +7 мм; с отделкой +40 мм → Δ -33 мм)"
+  },
+  {
+   "id": "wall_t_380",
+   "label": "Толщина стены 380 мм (проект)",
+   "group": "docs-compare",
+   "project": {
+    "value": 380,
+    "unit": "mm",
+    "source": "docs.json: walls.thicknesses_mm"
+   },
+   "model": {
+    "value": 260,
+    "unit": "mm",
+    "source": "model: ближайшая измеренная толщина (18 стен)"
+   },
+   "cloud": {
+    "value": 270,
+    "unit": "mm",
+    "source": "ruler-v2.py: T_cloud"
+   },
+   "delta_mp": {
+    "value": -120,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": 10,
+    "unit": "mm"
+   },
+   "status": "UNVERIFIED",
+   "note": " (сырой Δ -120 мм; с отделкой +40 мм → Δ -160 мм); класс отсутствует во фрагменте (модель — часть этажа, а не весь этаж)"
+  },
+  {
+   "id": "wall_t_400",
+   "label": "Толщина стены 400 мм (проект)",
+   "group": "docs-compare",
+   "project": {
+    "value": 400,
+    "unit": "mm",
+    "source": "docs.json: walls.thicknesses_mm"
+   },
+   "model": {
+    "value": 536,
+    "unit": "mm",
+    "source": "model: ближайшая измеренная толщина (18 стен)"
+   },
+   "cloud": {
+    "value": 270,
+    "unit": "mm",
+    "source": "ruler-v2.py: T_cloud"
+   },
+   "delta_mp": {
+    "value": 136,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": -266,
+    "unit": "mm"
+   },
+   "status": "UNVERIFIED",
+   "note": " (сырой Δ +136 мм; с отделкой +40 мм → Δ +96 мм); класс отсутствует во фрагменте (модель — часть этажа, а не весь этаж)"
+  },
+  {
+   "id": "wall_t_500",
+   "label": "Толщина стены 500 мм (проект)",
+   "group": "docs-compare",
+   "project": {
+    "value": 500,
+    "unit": "mm",
+    "source": "docs.json: walls.thicknesses_mm"
+   },
+   "model": {
+    "value": 536,
+    "unit": "mm",
+    "source": "model: ближайшая измеренная толщина (18 стен)"
+   },
+   "cloud": {
+    "value": 270,
+    "unit": "mm",
+    "source": "ruler-v2.py: T_cloud"
+   },
+   "delta_mp": {
+    "value": 36,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": -266,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": " (сырой Δ +36 мм; с отделкой +40 мм → Δ -4 мм)"
+  },
+  {
+   "id": "wall_t_510",
+   "label": "Толщина стены 510 мм (проект)",
+   "group": "docs-compare",
+   "project": {
+    "value": 510,
+    "unit": "mm",
+    "source": "docs.json: walls.thicknesses_mm"
+   },
+   "model": {
+    "value": 536,
+    "unit": "mm",
+    "source": "model: ближайшая измеренная толщина (18 стен)"
+   },
+   "cloud": {
+    "value": 270,
+    "unit": "mm",
+    "source": "ruler-v2.py: T_cloud"
+   },
+   "delta_mp": {
+    "value": 26,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": -266,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": " (сырой Δ +26 мм; с отделкой +40 мм → Δ -14 мм)"
+  },
+  {
+   "id": "wall_t_600",
+   "label": "Толщина стены 600 мм (проект)",
+   "group": "docs-compare",
+   "project": {
+    "value": 600,
+    "unit": "mm",
+    "source": "docs.json: walls.thicknesses_mm"
+   },
+   "model": {
+    "value": 536,
+    "unit": "mm",
+    "source": "model: ближайшая измеренная толщина (18 стен)"
+   },
+   "cloud": {
+    "value": 270,
+    "unit": "mm",
+    "source": "ruler-v2.py: T_cloud"
+   },
+   "delta_mp": {
+    "value": -64,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": -266,
+    "unit": "mm"
+   },
+   "status": "WARN",
+   "note": " (сырой Δ -64 мм; с отделкой +40 мм → Δ -104 мм)"
+  },
+  {
+   "id": "door_model_1093",
+   "label": "Проём модели 1093 мм",
+   "group": "docs-compare",
+   "project": {
+    "value": 1010,
+    "unit": "mm",
+    "source": "docs.json: doors.widths_mm (сортамент)"
+   },
+   "model": {
+    "value": 1093,
+    "unit": "mm",
+    "source": "model: ширина проёма"
+   },
+   "cloud": {
+    "value": 1090,
+    "unit": "mm",
+    "source": "ruler-v2.py: разрыв облака"
+   },
+   "delta_mp": {
+    "value": -17.0,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": -3,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": "проект: полотно 1010 мм → проём ~1110 мм (или проём 1010 мм как есть); Δ -17 мм"
+  },
+  {
+   "id": "door_model_1484",
+   "label": "Проём модели 1484 мм",
+   "group": "docs-compare",
+   "project": {
+    "value": 1500,
+    "unit": "mm",
+    "source": "docs.json: doors.widths_mm (сортамент)"
+   },
+   "model": {
+    "value": 1484,
+    "unit": "mm",
+    "source": "model: ширина проёма"
+   },
+   "cloud": {
+    "value": 1480,
+    "unit": "mm",
+    "source": "ruler-v2.py: разрыв облака"
+   },
+   "delta_mp": {
+    "value": -16,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": -4,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": "проект: полотно 1500 мм → проём ~1600 мм (или проём 1500 мм как есть); Δ -16 мм"
+  },
+  {
+   "id": "door_model_1500",
+   "label": "Проём модели 1500 мм",
+   "group": "docs-compare",
+   "project": {
+    "value": 1500,
+    "unit": "mm",
+    "source": "docs.json: doors.widths_mm (сортамент)"
+   },
+   "model": {
+    "value": 1500,
+    "unit": "mm",
+    "source": "model: ширина проёма"
+   },
+   "cloud": {
+    "value": 1500,
+    "unit": "mm",
+    "source": "ruler-v2.py: разрыв облака"
+   },
+   "delta_mp": {
+    "value": 0,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": 0,
+    "unit": "mm"
+   },
+   "status": "PASS",
+   "note": "проект: полотно 1500 мм → проём ~1600 мм (или проём 1500 мм как есть); Δ +0 мм"
+  },
+  {
+   "id": "door_model_1993",
+   "label": "Проём модели 1993 мм",
+   "group": "docs-compare",
+   "project": {
+    "value": 1800,
+    "unit": "mm",
+    "source": "docs.json: doors.widths_mm (сортамент)"
+   },
+   "model": {
+    "value": 1993,
+    "unit": "mm",
+    "source": "model: ширина проёма"
+   },
+   "cloud": {
+    "value": 1990,
+    "unit": "mm",
+    "source": "ruler-v2.py: разрыв облака"
+   },
+   "delta_mp": {
+    "value": 93.0,
+    "unit": "mm"
+   },
+   "delta_cm": {
+    "value": -3,
+    "unit": "mm"
+   },
+   "status": "WARN",
+   "note": "проект: полотно 1800 мм → проём ~1900 мм (или проём 1800 мм как есть); Δ +93 мм"
+  },
+  {
+   "id": "rooms_area_median",
+   "label": "Площади помещений (медиана по ближайшим)",
+   "group": "docs-compare",
+   "project": {
+    "value": 12.66,
+    "unit": "m2",
+    "source": "docs.json: rooms.areas_m2"
+   },
+   "model": {
+    "value": 11.83,
+    "unit": "m2",
+    "source": "model: rooms[].area"
+   },
+   "cloud": {
+    "value": 128.5,
+    "unit": "m2",
+    "source": "ruler-v2.py: floor_visible_m2"
+   },
+   "delta_mp": {
+    "value": 0.5,
+    "unit": "%"
+   },
+   "delta_cm": null,
+   "status": "UNVERIFIED",
+   "note": "модель — фрагмент 122.9 м², проектные площади этажа 3600.1 м²: сопоставление по ближайшим неприменимо без привязки к плану"
+  },
+  {
+   "id": "rooms_area_total",
+   "label": "Площадь помещений / видимый пол",
+   "group": "docs-compare",
+   "project": {
+    "value": 3600.13,
+    "unit": "m2",
+    "source": "docs.json: rooms.explication_totals"
+   },
+   "model": {
+    "value": 122.92,
+    "unit": "m2",
+    "source": "model: сумма rooms[].area"
+   },
+   "cloud": {
+    "value": 128.5,
+    "unit": "m2",
+    "source": "ruler-v2.py: floor_visible_m2"
+   },
+   "delta_mp": null,
+   "delta_cm": null,
+   "status": "UNVERIFIED",
+   "note": "проектная площадь — этаж целиком, модель — фрагмент; сравнение только информативное"
+  },
+  {
+   "id": "room_perimeter",
+   "label": "Периметр: внешний контур модели / внешняя граница пола",
+   "group": "docs-compare",
+   "project": null,
+   "model": {
+    "value": 150.55,
+    "unit": "m",
+    "source": "model: периметр объединения комнат"
+   },
+   "cloud": {
+    "value": 203.8,
+    "unit": "m",
+    "source": "облако: внешняя граница пола (растр 10 см, дырки заполнены)"
+   },
+   "delta_mp": null,
+   "delta_cm": {
+    "value": 35.4,
+    "unit": "%"
+   },
+   "status": "UNVERIFIED",
+   "note": "в проекте нет однозначного периметра фрагмента — колонка проекта UNVERIFIED"
+  },
+  {
+   "id": "bbox_x",
+   "label": "Габарит X, м",
+   "group": "docs-compare",
+   "project": null,
+   "model": {
+    "value": 12.12,
+    "unit": "m",
+    "source": "model: bbox"
+   },
+   "cloud": {
+    "value": 12.0,
+    "unit": "m",
+    "source": "облако: bbox точек пола"
+   },
+   "delta_mp": null,
+   "delta_cm": {
+    "value": -1.0,
+    "unit": "%"
+   },
+   "status": "PASS",
+   "note": "проектные габариты — всё здание, модель — фрагмент: проект UNVERIFIED"
+  },
+  {
+   "id": "bbox_z",
+   "label": "Габарит Z, м",
+   "group": "docs-compare",
+   "project": null,
+   "model": {
+    "value": 18.05,
+    "unit": "m",
+    "source": "model: bbox"
+   },
+   "cloud": {
+    "value": 18.0,
+    "unit": "m",
+    "source": "облако: bbox точек пола"
+   },
+   "delta_mp": null,
+   "delta_cm": {
+    "value": -0.3,
+    "unit": "%"
+   },
+   "status": "PASS",
+   "note": "проектные габариты — всё здание, модель — фрагмент: проект UNVERIFIED"
+  },
+  {
+   "id": "axis_pitch",
+   "label": "Шаг осей проекта, м",
+   "group": "docs-compare",
+   "project": {
+    "value": 7200,
+    "unit": "mm",
+    "source": "docs.json: axes.pitch_mm"
+   },
+   "model": null,
+   "cloud": null,
+   "delta_mp": null,
+   "delta_cm": null,
+   "status": "UNVERIFIED",
+   "note": "в модели/облаке нет привязки к осям проекта — проверка вручную"
+  },
+  {
+   "id": "doc_коридор_ширина_в_свету",
+   "label": "Коридор: ширина в свету",
+   "group": "документация ↔ облако/модель",
+   "project": {
+    "value": "3600/3610 мм",
+    "unit": ""
+   },
+   "model": {
+    "value": "3473 мм (по осям 3473, T 147/170)",
+    "unit": ""
+   },
+   "cloud": {
+    "value": "—",
+    "unit": ""
+   },
+   "delta_mp": {
+    "value": 127,
+    "unit": "mm"
+   },
+   "delta_cm": null,
+   "status": "WARN",
+   "note": "пара стен: 10.6/13.2 м, перекрытие 6.8 м"
+  },
+  {
+   "id": "doc_коридор_ширина_(облако___документация)",
+   "label": "Коридор: ширина (облако ↔ документация)",
+   "group": "документация ↔ облако/модель",
+   "project": {
+    "value": "3.60 / 3.61 м",
+    "unit": ""
+   },
+   "model": {
+    "value": "—",
+    "unit": ""
+   },
+   "cloud": {
+    "value": "3.60 м",
+    "unit": ""
+   },
+   "delta_mp": {
+    "value": 0,
+    "unit": "mm"
+   },
+   "delta_cm": null,
+   "status": "PASS",
+   "note": "замер по облаку; эталон — план p21 (существующий подвал)"
+  },
+  {
+   "id": "doc_ячейки_по_коридору_(облако___документация)",
+   "label": "Ячейки по коридору (облако ↔ документация)",
+   "group": "документация ↔ облако/модель",
+   "project": {
+    "value": "3.84 / 6.28 / 6.76 / 3.59 / 2.93 м",
+    "unit": ""
+   },
+   "model": {
+    "value": "—",
+    "unit": ""
+   },
+   "cloud": {
+    "value": "3.45 / 6.38 / 3.48 м",
+    "unit": ""
+   },
+   "delta_mp": {
+    "value": 139,
+    "unit": "mm"
+   },
+   "delta_cm": null,
+   "status": "PASS",
+   "note": "совпало 3 из 3 в допуске 200 мм"
+  },
+  {
+   "id": "doc_ячейки_по_коридору",
+   "label": "Ячейки по коридору",
+   "group": "документация ↔ облако/модель",
+   "project": {
+    "value": "3.84 / 6.28 / 6.76 / 3.59 / 2.93",
+    "unit": ""
+   },
+   "model": {
+    "value": "—",
+    "unit": ""
+   },
+   "cloud": {
+    "value": "—",
+    "unit": ""
+   },
+   "delta_mp": null,
+   "delta_cm": null,
+   "status": "UNVERIFIED",
+   "note": "поперечные стены не выделены"
+  },
+  {
+   "id": "doc_высота_существующего_подвала",
+   "label": "Высота существующего подвала",
+   "group": "документация ↔ облако/модель",
+   "project": {
+    "value": "3280 мм",
+    "unit": ""
+   },
+   "model": {
+    "value": "3278 мм",
+    "unit": ""
+   },
+   "cloud": {
+    "value": "3276 мм",
+    "unit": ""
+   },
+   "delta_mp": {
+    "value": 1,
+    "unit": "mm"
+   },
+   "delta_cm": null,
+   "status": "PASS",
+   "note": "эталон — существующий потолок по документации; новый проектный подвал 4,10 м не применим"
+  },
+  {
+   "id": "doc_двери/проёмы_ширины",
+   "label": "Двери/проёмы: ширины",
+   "group": "документация ↔ облако/модель",
+   "project": {
+    "value": "690,750,1000,1080,1392,1400,1500 мм + рама 100",
+    "unit": ""
+   },
+   "model": {
+    "value": "1993, 1392, 1093, 1500, 1484",
+    "unit": ""
+   },
+   "cloud": {
+    "value": "—",
+    "unit": ""
+   },
+   "delta_mp": {
+    "value": 393,
+    "unit": "mm"
+   },
+   "delta_cm": null,
+   "status": "WARN",
+   "note": "в допуске 4 из 5"
+  },
+  {
+   "id": "doc_толщины_стен_классы",
+   "label": "Толщины стен: классы",
+   "group": "документация ↔ облако/модель",
+   "project": {
+    "value": "100,110,150,200,250,380,580 мм (+отделка)",
+    "unit": ""
+   },
+   "model": {
+    "value": "60, 70, 80, 94, 110, 120, 128, 147, 170, 220, 257, 260, 536 мм",
+    "unit": ""
+   },
+   "cloud": {
+    "value": "—",
+    "unit": ""
+   },
+   "delta_mp": {
+    "value": 44,
+    "unit": "mm"
+   },
+   "delta_cm": null,
+   "status": "PASS",
+   "note": "распознано 12 из 13 классов; нет во фрагменте: [380]"
+  },
+  {
+   "id": "doc_площадь_фрагмента",
+   "label": "Площадь фрагмента",
+   "group": "документация ↔ облако/модель",
+   "project": {
+    "value": "этаж 3600,13 / 1699,34 м² (экспликации)",
+    "unit": ""
+   },
+   "model": {
+    "value": "122.9 м² (96 % видимого пола)",
+    "unit": ""
+   },
+   "cloud": {
+    "value": "128,5 м² видимого пола",
+    "unit": ""
+   },
+   "delta_mp": null,
+   "delta_cm": null,
+   "status": "UNVERIFIED",
+   "note": "фрагмент без привязки к плану; сравнение только информативное"
+  }
+ ],
+ "recommendations": [
+  {
+   "severity": "fail",
+   "code": "wall_t_380",
+   "text": "Толщина стены: проект 380 мм (с отделкой ~420 мм), модель 260 мм (сырой Δ -120 мм; с отделкой +40 мм → Δ -160 мм) — проверить"
+  },
+  {
+   "severity": "fail",
+   "code": "wall_t_400",
+   "text": "Толщина стены: проект 400 мм (с отделкой ~440 мм), модель 536 мм (сырой Δ +136 мм; с отделкой +40 мм → Δ +96 мм) — проверить"
+  },
+  {
+   "severity": "warn",
+   "code": "wall_t_600",
+   "text": "Толщина стены: проект 600 мм, модель 536 мм (сырой Δ -64 мм; с отделкой +40 мм → Δ -104 мм) — уточнить тип стены (кирпич/перегородка/отделка)"
+  },
+  {
+   "severity": "warn",
+   "code": "door_model_1993",
+   "text": "Проём модели 1993 мм: проект 1800 мм (panel+frame) — уточнить по облаку/чертежу"
+  },
+  {
+   "severity": "info",
+   "code": "perimeter",
+   "text": "Периметр: внешний контур модели 150.6 м, внешняя граница пола облака 203.8 м (Δ +35.4 %); семантика разная — сравнение информативное (A4 меряет ruler-v2)"
+  },
+  {
+   "severity": "info",
+   "code": "doc_verify",
+   "text": "Проверка размеров по документации (reference-fragment.json): PASS 16 / WARN 4 / FAIL 0 / UNVERIFIED 8"
+  }
+ ],
+ "limitations": [
+  "площади помещений и ширины коридоров из планов без экспликаций требуют ручной разметки",
+  "модель измеряет локальный фрагмент интерьера; точная привязка к осям/плану этажа отсутствует — часть проверок (площади, габариты, оси) даёт UNVERIFIED",
+  "ширины коридоров по плану автоматически не измеряются (нужна ручная разметка растров)",
+  "дверные полотна сопоставляются с проёмами через условную раму ~100 мм",
+  "площади/оси/габариты проекта относятся к зданию целиком, модель — фрагмент: эти строки UNVERIFIED"
+ ],
+ "unverified": [
+  "wall_t_380",
+  "wall_t_400",
+  "rooms_area_median",
+  "rooms_area_total",
+  "room_perimeter",
+  "axis_pitch",
+  "doc_ячейки_по_коридору",
+  "doc_площадь_фрагмента"
+ ]
+}
