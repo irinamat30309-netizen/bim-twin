@@ -132,9 +132,16 @@
     var explicit = normalizeStatusString(row.status);
     if (explicit) return explicit;
     var delta = isPlainObject(row.delta_mp) ? row.delta_mp : (isPlainObject(row.delta) ? row.delta : null);
-    var abs = delta ? numOrNull(delta.abs) : numOrNull(row.delta_mm);
+    var abs = delta ? numOrNull(delta.abs !== undefined ? delta.abs : delta.value) : numOrNull(row.delta_mm);
     var pct = delta ? numOrNull(delta.pct) : numOrNull(row.delta_pct);
-    var tol = isPlainObject(row.tolerance) ? numOrNull(row.tolerance.abs) : numOrNull(row.tolerance);
+    var tol = null;
+    if (isPlainObject(row.tolerance)) {
+      var tv = row.tolerance.value;
+      tol = numOrNull(row.tolerance.abs !== undefined ? row.tolerance.abs :
+        (isPlainObject(tv) ? (tv.pass_mm !== undefined ? tv.pass_mm : tv.abs) : tv));
+    } else {
+      tol = numOrNull(row.tolerance);
+    }
     if (abs !== null) return Math.abs(abs) <= (tol !== null ? Math.abs(tol) : DEFAULT_TOL_MM) ? STATUS.PASS : STATUS.FAIL;
     if (pct !== null) return Math.abs(pct) <= DEFAULT_TOL_PCT ? STATUS.PASS : STATUS.FAIL;
     return STATUS.NA;
@@ -165,13 +172,14 @@
     return c;
   }
   /**
-   * Скор соответствия 0–100: явный score отчёта (число или {value}), иначе — по строкам
-   * (PASS = 1, WARN = 0.5, FAIL = 0; «—» не учитывается). Округление до целого.
+   * Скор соответствия 0–100: явный score отчёта (число или {value}, дробный score
+   * сохраняем — docs-compare.py выдаёт 92.7), иначе — по строкам
+   * (PASS = 1, WARN = 0.5, FAIL = 0; «—» не учитывается, округление до целого).
    */
   function scoreOf(input) {
     if (isPlainObject(input)) {
-      if (isFiniteNum(input.score)) return clamp(Math.round(input.score), 0, 100);
-      if (isPlainObject(input.score) && isFiniteNum(input.score.value)) return clamp(Math.round(input.score.value), 0, 100);
+      if (isFiniteNum(input.score)) return clamp(Math.round(input.score * 10) / 10, 0, 100);
+      if (isPlainObject(input.score) && isFiniteNum(input.score.value)) return clamp(Math.round(input.score.value * 10) / 10, 0, 100);
     }
     var rows = Array.isArray(input) ? input : (isPlainObject(input) && Array.isArray(input.rows) ? input.rows : null);
     if (!rows) return 0;
@@ -179,6 +187,16 @@
     var total = c.pass + c.warn + c.fail;
     if (!total) return 0;
     return clamp(Math.round(100 * (c.pass + 0.5 * c.warn) / total), 0, 100);
+  }
+  /** Скор в интерфейсе: целое — без дробей, дробное — с одним знаком (92,7). */
+  function fmtScore(s) {
+    if (!isFiniteNum(s)) return '—';
+    return s === Math.round(s) ? String(s) : fmtNum(s, 1);
+  }
+  /** Подпись допуска для title/подстрочника строки. */
+  function toleranceText(tol) {
+    if (!tol || !isFiniteNum(tol.abs)) return '';
+    return 'допуск ±' + fmtNum(tol.abs, 0) + ' ' + unitLabel(tol.unit || 'mm');
   }
   /** Сводка PASS/WARN/FAIL/— (явная summary отчёта или расчёт по строкам). */
   function summaryOf(input) {
@@ -235,9 +253,10 @@
     var src = isPlainObject(row.delta_mp) ? row.delta_mp : (isPlainObject(row.delta) ? row.delta : null);
     var abs = null, pct = null, unit = 'mm';
     if (src) {
-      abs = numOrNull(src.abs);
+      // docs-compare.py: {value, unit, pct}; в раннем описании было {abs, unit, pct} — принимаем оба
+      abs = numOrNull(src.abs !== undefined ? src.abs : src.value);
       pct = numOrNull(src.pct);
-      unit = typeof src.unit === 'string' ? src.unit : 'mm';
+      unit = (typeof src.unit === 'string' && src.unit) ? src.unit : 'mm';
     } else {
       abs = numOrNull(row.delta_mm);
       pct = numOrNull(row.delta_pct);
@@ -247,9 +266,25 @@
   }
   function normalizeTolerance(tol) {
     if (tol === null || tol === undefined) return null;
-    var abs = isPlainObject(tol) ? numOrNull(tol.abs) : numOrNull(tol);
-    if (abs === null) return null;
-    return { abs: abs, unit: isPlainObject(tol) && typeof tol.unit === 'string' ? tol.unit : 'mm' };
+    if (isPlainObject(tol)) {
+      var unit = (typeof tol.unit === 'string' && tol.unit) ? tol.unit : 'mm';
+      var v = tol.value;
+      if (isPlainObject(v)) {
+        // допуск дверей: {value:{pass_mm, warn_mm, unit}, unit:''}
+        var pass = numOrNull(v.pass_mm !== undefined ? v.pass_mm : v.abs);
+        var warn = numOrNull(v.warn_mm);
+        if (pass === null && warn === null) return null;
+        return {
+          abs: pass !== null ? pass : warn,
+          warn: warn,
+          unit: (typeof v.unit === 'string' && v.unit) ? v.unit : unit
+        };
+      }
+      var a = numOrNull(v !== undefined ? v : tol.abs);
+      return a === null ? null : { abs: a, unit: unit };
+    }
+    var n = numOrNull(tol);
+    return n === null ? null : { abs: n, unit: 'mm' };
   }
   function deltaText(delta) {
     if (!delta) return '—';
@@ -275,24 +310,38 @@
   function normalizeModelInfo(modelRaw) {
     var m = isPlainObject(modelRaw) ? modelRaw : {};
     var stats = isPlainObject(m.stats) ? m.stats : {};
+    var height = numOrNull(m.storey_height_m !== undefined ? m.storey_height_m : (m.height !== undefined ? m.height : stats.height));
+    var heightMm = numOrNull(m.storey_height_mm !== undefined ? m.storey_height_mm : m.height_mm);
+    if (height === null && heightMm !== null) height = Math.round(heightMm) / 1000;
     return {
       path: firstString(m.path, m.file, m.json),
       md5: firstString(m.md5, m.hash, m.checksum),
       walls: numOrNull(m.walls !== undefined ? m.walls : stats.wallCount),
+      wallsMeasured: numOrNull(m.walls_measured),
       rooms: numOrNull(m.rooms !== undefined ? m.rooms : stats.roomCount),
-      height: numOrNull(m.storey_height_m !== undefined ? m.storey_height_m : (m.height !== undefined ? m.height : stats.height)),
+      roomsArea: numOrNull(m.rooms_area_m2 !== undefined ? m.rooms_area_m2 : stats.roomsArea),
+      height: height,
+      heightMm: heightMm,
       raw: m
     };
   }
   function normalizeCloudInfo(cloudRaw) {
     var c = isPlainObject(cloudRaw) ? cloudRaw : {};
+    var height = numOrNull(c.height_m !== undefined ? c.height_m : c.height);
+    var heightMm = numOrNull(c.height_mm);
+    if (height === null && heightMm !== null) height = Math.round(heightMm) / 1000;
     return {
       path: firstString(c.path, c.file),
       measured: c.measured === true,
-      height: numOrNull(c.height_m !== undefined ? c.height_m : c.height),
+      height: height,
+      heightMm: heightMm,
       floorVisible: numOrNull(c.floor_visible_m2 !== undefined ? c.floor_visible_m2 : c.floor_visible),
       floorY: numOrNull(c.floor_y),
       ceilY: numOrNull(c.ceil_y),
+      perimeterCoveredPct: numOrNull(c.rooms_perimeter_covered_pct),
+      floorPerimeterOuter: numOrNull(c.floor_perimeter_outer_m),
+      floorAreaCells: numOrNull(c.floor_area_cells_m2),
+      error: firstString(c.error),
       raw: c
     };
   }
@@ -614,8 +663,9 @@
     '.lx-s2bd .lx-stats-h { color: var(--accent); }',
     // заголовок объекта/адреса
     '.lx-s2bd-title { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-3); background: var(--bg-2); }',
-    '.lx-s2bd-title b { color: var(--txt); font-size: var(--fs-sm); font-weight: 600; line-height: 1.3; }',
+    '.lx-s2bd-title b { color: var(--txt); font-size: var(--fs-sm); font-weight: 600; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }',
     '.lx-s2bd-title small { overflow: hidden; color: var(--txt-3); font-size: var(--fs-xs); line-height: 1.35; text-overflow: ellipsis; }',
+    '.lx-s2bd-title .lx-s2bd-addr { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }',
     '.lx-s2bd-title .lx-s2bd-meta { font: 10.5px/1.35 var(--mono); color: var(--txt-3); font-variant-numeric: tabular-nums; }',
     // скор
     '.lx-s2bd-score { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-3); background: var(--bg-2); }',
@@ -716,9 +766,13 @@
       ' title="Δ модель − проект">' + esc(text) + '</span>';
   }
   function statusRowHtml(r) {
-    var sub = r.category || (r.tolerance && isFiniteNum(r.tolerance.abs) ? '±' + fmtNum(r.tolerance.abs, 0) + ' мм' : '');
+    var tol = toleranceText(r.tolerance);
+    var sub = r.category || tol || '';
+    var titleParts = [];
+    if (r.note) titleParts.push(r.note);
+    if (tol) titleParts.push(tol);
     return '<div class="lx-s2bd-row" data-d-row="' + esc(r.id) + '" data-d-index="' + r.index + '" data-d-row-status="' + r.status + '"' +
-      (r.note ? ' title="' + esc(r.note) + '"' : '') + '>' +
+      (titleParts.length ? ' title="' + esc(titleParts.join(' · ')) + '"' : '') + '>' +
       '<div class="lx-s2bd-param" data-d-cell="param">' +
       '<b title="' + esc(r.label) + '">' + esc(r.label) + '</b>' +
       '<span class="lx-s2bd-sub"><span class="lx-s2bd-cat" data-d-category>' + esc(sub) + '</span>' + deltaCellHtml(r) + '</span>' +
@@ -745,7 +799,7 @@
         (sum.checks ? ' · проверок ' + sum.checks : '') + '</span>'
       : (sum.checks ? '<span class="lx-s2bd-src" data-d-coverage="">проверок ' + sum.checks + '</span>' : '');
     return '<div class="lx-s2bd-score ' + tone + '" data-d-score="' + rep.score + '" data-d-grade="' + esc(rep.grade) + '">' +
-      '<div class="lx-s2bd-score-v"><b data-d-score-value>' + rep.score + '</b><small>/100</small></div>' +
+      '<div class="lx-s2bd-score-v"><b data-d-score-value>' + fmtScore(rep.score) + '</b><small>/100</small></div>' +
       '<div class="lx-s2bd-score-m"><span class="lx-s2bd-score-t">Соответствие документации · ' + esc(rep.grade) + '</span>' +
       '<span class="lx-s2bd-counts">' +
       '<span class="ok" data-d-count="pass">PASS ' + sum.pass + '</span>' +
@@ -776,8 +830,8 @@
     if (rep.generated_at) meta.push(dateLabel(rep.generated_at));
     if (rep.docs.pages) meta.push('стр. ' + rep.docs.pages);
     return '<div class="lx-s2bd-title" data-d-title>' +
-      '<b data-d-object>' + esc(t) + '</b>' +
-      '<small data-d-address>' + esc(addr) + '</small>' +
+      '<b data-d-object title="' + esc(t) + '">' + esc(t) + '</b>' +
+      '<small class="lx-s2bd-addr" data-d-address' + (addr ? ' title="' + esc(addr) + '"' : '') + '>' + esc(addr) + '</small>' +
       '<small class="lx-s2bd-meta" data-d-file>' + esc(meta.join(' · ')) + '</small></div>';
   }
   function recommendationsHtml(rep) {
@@ -949,10 +1003,10 @@
     if (meta && meta.fileName) st.fileName = String(meta.fileName);
     else if (!st.fileName) st.fileName = 'compare.json';
     st.error = '';
-    st.status = 'Загружено: ' + st.fileName + ' · скор ' + report.score + '/100 · строк ' + report.rows.length;
+    st.status = 'Загружено: ' + st.fileName + ' · скор ' + fmtScore(report.score) + '/100 · строк ' + report.rows.length;
     if (meta && meta.keepFile === false) st.file = null;
     render();
-    toast('Отчёт сравнения загружен: скор ' + report.score + '/100, строк ' + report.rows.length);
+    toast('Отчёт сравнения загружен: скор ' + fmtScore(report.score) + '/100, строк ' + report.rows.length);
     return { ok: true, report: report };
   }
   /** Загрузить отчёт из File (input[type=file]); возвращает Promise. */
@@ -1195,7 +1249,7 @@
     }
     st.report = res.report; st.raw = res.raw; st.rawText = (typeof input === 'string') ? input : JSON.stringify(res.raw);
     st.error = '';
-    st.status = 'Отчёт загружен · скор ' + res.report.score + '/100';
+    st.status = 'Отчёт загружен · скор ' + fmtScore(res.report.score) + '/100';
     render();
     return res;
   }
@@ -1255,6 +1309,8 @@
     cellText: cellText,
     statusLabel: statusLabel,
     deltaText: deltaText,
+    fmtScore: fmtScore,
+    toleranceText: toleranceText,
     modelSummaryOf: modelSummaryOf,
     instructions: instructions,
     buildCommand: buildCommand,

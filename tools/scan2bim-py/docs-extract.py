@@ -50,7 +50,7 @@ SCHEMA_VERSION = 1
 
 SHEET_CODE_RE = re.compile(r'^\d{2,3}\s*[-–—]\s*\d{3}\s*[-–—]\s*[А-ЯІЇЄA-Z]{1,3}\s*/')
 MARK_RE = re.compile(r'([+\-−±])\s*(\d{1,2})\s*[.,]\s*(\d{3})')
-PAIR_RE = re.compile(r'(\d{2,4}(?:[ \u00a0\u202f]\d{3})?)\s*[xх×*]\s*(\d{2,4}(?:[ \u00a0\u202f]\d{3})?)')
+PAIR_RE = re.compile(r'(\d{1,4}(?:[ \u00a0\u202f]\d{3})?)\s*[xх×*]\s*(\d{1,4}(?:[ \u00a0\u202f]\d{3})?)')
 SPACED_NUM_RE = re.compile(r'(?<![\d.,])(\d{1,3}(?:[ \u00a0\u202f]\d{3})+)(?![\d.,])')
 AREA_M2_RE = re.compile(r'(\d{1,3}(?:[ \u00a0\u202f]\d{3})?[.,]\d{1,2})\s*м\s*[²2]')
 SCALE_RE = re.compile(r'М\s*1\s*[:：]\s*(\d{2,4})')
@@ -76,6 +76,13 @@ def log(msg: str) -> None:
         print(msg, flush=True)
     except UnicodeEncodeError:
         print(msg.encode('ascii', 'replace').decode('ascii'), flush=True)
+
+
+def normalize_text(text: str) -> str:
+    """Нормализация текста PDF: мягкие переносы, неразрывные пробелы, табы."""
+    if not text:
+        return ''
+    return (text.replace('\u00ad', '-').replace('\u00a0', ' ').replace('\u202f', ' ').replace('\t', ' '))
 
 
 def m2mm_str(s: str) -> float:
@@ -280,7 +287,7 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
     texts = []
     for i in range(scan_pages):
         try:
-            texts.append(doc[i].get_text('text') or '')
+            texts.append(normalize_text(doc[i].get_text('text') or ''))
         except Exception as exc:  # noqa: BLE001
             texts.append('')
             log('[docs-extract] ПРЕДУПРЕЖДЕНИЕ: страница %d не прочитана: %s' % (i + 1, exc))
@@ -291,12 +298,14 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
     all_marks = []
     all_mark_pages = defaultdict(list)
     floor_title_marks = []
+    section_marks_ordered = []
     object_lines = []
     address_lines = []
     explanation_pages = []
     door_pages = []
     window_pages = []
     masonry_pages = []
+    masonry_titles = []
     plan_pages = []
     for i, t in enumerate(texts):
         pno = i + 1
@@ -329,29 +338,28 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
         if title and tb.get('code'):
             sheets.append({'page': pno, 'sheet_no': tb.get('sheet_no'), 'code': tb.get('code'),
                            'title': title, 'type': styp, 'scale': scale, 'floor_mark': floor_mark})
-        # отметки в примечаниях («на відм. +3,700») — как дополнительный источник этажей
-        for mm in re.finditer(r'в[іi]дм\.?\s*([+\-−±])\s*(\d{1,2})\s*[.,]\s*(\d{3})', t, re.I):
-            sign = mm.group(1)
-            v = int(mm.group(2)) * 1000 + int(mm.group(3))
-            if sign in '-−':
-                v = -v
-            floor_title_marks.append(v)
         low = t.lower()
         if 'експл' in low or 'экспликац' in low:
             explanation_pages.append(pno)
-        if ('двер' in low or 'ворот' in low) and ('розм[іi]р' in low or 'специф[іi]кац' in low
-                                                    or 'в[іi]дом[іi]сть' in low or 'проріз' in low):
+        # страницы спецификаций дверей/окон: много размеров «Ш×В» в дверном/оконном диапазоне
+        page_pairs = [(num(a), num(b)) for a, b in PAIR_RE.findall(t)]
+        door_like = [(w, h) for w, h in page_pairs if 400 <= w <= 2600 and 1700 <= h <= 2600]
+        win_like = [(w, h) for w, h in page_pairs if 300 <= w <= 3200 and 500 <= h <= 1800]
+        if len(door_like) >= 3 and ('двер' in low or 'ворот' in low or 'проріз' in low or 'полотно' in low):
             door_pages.append(pno)
-        if ('вікн' in low or 'окон' in low) and ('розм[іi]р' in low or 'специф[іi]кац' in low
-                                                or 'в[іi]дом[іi]сть' in low):
+        if len(win_like) >= 3 and ('вікн' in low or 'окон' in low or 'вітраж' in low):
             window_pages.append(pno)
-        is_masonry = ('повнот[іi]ла' in low and 'цегл' in low) or 'мурувальн' in low or 'муруван' in low
-        if not is_masonry and title:
-            is_masonry = ('муруван' in title.lower() or 'кладк' in title.lower())
+        norm_page = ' '.join(t.split())
+        fmason = re.search(r'Мурувальний\s+план', norm_page, re.I)
+        is_masonry = bool(fmason)
         if is_masonry:
             masonry_pages.append(pno)
+            masonry_titles.append(fmason.group(0))
         if styp == 'plan':
             plan_pages.append(pno)
+        if styp == 'section' or ('розріз' in low and 'фасад' not in low):
+            # разрез: отметки идут в порядке сверху вниз/снизу вверх; разности дают плиту
+            section_marks_ordered.extend(find_marks(t))
         if i < 12:
             for ln in t.splitlines():
                 ln = ln.strip()
@@ -365,38 +373,46 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
                         address_lines.append(ln)
 
     # ---------- объект / адрес ----------
-    object_cands = []
-    for ln in object_lines:
-        for mm in re.finditer(r'«([^»]{15,400})»', ln):
-            txt = mm.group(1)
-            low = txt.lower()
-            score = 0
-            if 'будівництв' in low:
-                score += 3
-            if 'корпус' in low:
-                score += 2
-            if 'інститут' in low:
-                score += 1
-            if 'адрес' in ln.lower() or 'вул.' in ln.lower():
-                score += 2
-            object_cands.append((score, len(txt), txt))
+    # титул в CAD-документе разбит на строки, поэтому ищем по нормализованному тексту
+    early_norm = ' '.join(' '.join(t.split()) for t in texts[:12])
     object_name = ''
-    if object_cands:
-        object_cands.sort(key=lambda x: (-x[0], -x[1]))
-        object_name = object_cands[0][2]
+    mm = re.search(r'(«?Будівництво.{15,400}?(?:»\s*за\s+адресою|Н?АМН\s+України))', early_norm)
+    if mm:
+        object_name = mm.group(1).strip('«» ')
+        object_name = re.sub(r'»\s*за\s+адресою$', '', object_name).strip('«» ')
+        object_name = re.sub(r'\s*-\s+', '-', object_name)
+        object_name = re.sub(r'\s+', ' ', object_name)
+    if not object_name:
+        object_cands = []
+        for ln in object_lines:
+            for mm2 in re.finditer(r'«([^»]{15,400})»', ln):
+                txt = mm2.group(1)
+                score = (3 if 'будівництв' in txt.lower() else 0) + (2 if 'корпус' in txt.lower() else 0)
+                object_cands.append((score, len(txt), txt))
+        if object_cands:
+            object_cands.sort(key=lambda x: (-x[0], -x[1]))
+            object_name = object_cands[0][2]
     if not object_name and object_lines:
         object_name = max(object_lines, key=len)
     address = ''
-    for ln in address_lines:
-        mm = re.search(r'(?:за\s+адресою\s*:?\s*)?(вул\.[^\n]{5,160})', ln)
-        if mm:
-            address = re.sub(r'\s+', ' ', mm.group(1)).strip(' .,;')
-            break
+    ma = re.search(r'за\s+адресою\s*:?\s*(.{10,250}?)(?:\(|$)', early_norm)
+    if ma:
+        address = re.sub(r'\s+', ' ', ma.group(1)).strip(' .,;»')
+    if not address:
+        for ln in address_lines:
+            mm3 = re.search(r'(?:за\s+адресою\s*:?\s*)?(вул\.[^\n]{5,160})', ln)
+            if mm3:
+                address = re.sub(r'\s+', ' ', mm3.group(1)).strip(' .,;')
+                break
     stage = ''
-    for ln in object_lines:
-        if 'черг' in ln.lower():
-            stage = ln
-            break
+    ms = re.search(r'(І+\s*черга[^.]{0,140})', early_norm)
+    if ms:
+        stage = ms.group(1).strip()
+    if not stage:
+        for ln in object_lines:
+            if 'черг' in ln.lower():
+                stage = ln
+                break
 
     # ---------- отметки / этажность / высоты ----------
     marks_sorted = sorted(set(all_marks))
@@ -425,9 +441,37 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
             pitch_mm = max(td.items(), key=lambda kv: (kv[1], kv[0]))[0]
     if pitch_mm is None:
         pitch_mm = mode_in(pair_diffs, 3500, 4500)
-    slab_mm = mode_in(pair_diffs, 150, 1000)
+    # плита/пол: для каждой пары «пол этажа → следующий пол» ищем отметку низа плиты
+    # ровно на d ниже верхнего пола (d = 150..1000); голосуем за d.
+    marks_set = set(marks_sorted)
+    slab_votes = Counter()
+    for a, b in zip(tm, tm[1:]):
+        if not (pitch_mm and abs((b - a) - pitch_mm) <= 30):
+            continue
+        for d in range(150, 1001, 10):
+            if (b - d) in marks_set:
+                slab_votes[d] += 1
+    slab_mm = None
+    # 1) приоритет: разности соседних отметок на разрезах (пол → низ плиты → пол этажа)
+    if section_marks_ordered:
+        sd = [b - a for a, b in zip(section_marks_ordered, section_marks_ordered[1:])
+              if 150 <= b - a <= 1000]
+        if sd:
+            sd_cnt = Counter(sd)
+            cand, cnt = max(sd_cnt.items(), key=lambda kv: (kv[1], -kv[0]))
+            if cnt >= 2:
+                slab_mm = cand
+    # 2) запасной вариант: голосование по парам «пол этажа → следующий пол»
+    if slab_mm is None and slab_votes:
+        good = [(d, c) for d, c in slab_votes.items() if 250 <= d <= 550]
+        if good:
+            slab_mm = max(good, key=lambda x: (x[1], -x[0]))[0]
+        else:
+            slab_mm = slab_votes.most_common(1)[0][0]
+    if slab_mm is None:
+        slab_mm = mode_in(pair_diffs, 150, 1000)
     clean_height_mm = mode_in(pair_diffs, 2500, 3500)
-    if clean_height_mm is None and pitch_mm and slab_mm:
+    if pitch_mm and slab_mm:
         clean_height_mm = pitch_mm - slab_mm
     floors_mm = [m for m in marks_sorted if -15000 <= m <= 60000]
     floor_marks_mm = sorted(set(tm)) if len(tm) >= 2 else []
@@ -440,37 +484,46 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
         floor_marks_mm = chain
 
     # ---------- толщины стен ----------
+    # На мурувальних планах толщина подписана отдельным числом у каждого участка стены.
+    # Отбираем частые значения (толщина повторяется у многих стен) + числа из легенды
+    # (условные обозначения в начале листа), отсекая размерные цепочки по частоте.
     wall_counts = Counter()
+    legend_nums = Counter()
     for pno in masonry_pages:
         t = texts[pno - 1]
-        # толщины на мурувальних планах подписаны отдельными числами-строками
+        nline = 0
         for ln in t.splitlines():
             ln = ln.strip()
+            if not ln:
+                continue
+            nline += 1
             if re.fullmatch(r'\d{2,4}', ln):
                 v = int(ln)
                 if 60 <= v <= 800:
                     wall_counts[v] += 1
-        for tok in re.findall(r'(?<![\d.,])(\d{2,4})\s*мм', t):
-            v = int(tok)
-            if 60 <= v <= 800:
-                wall_counts[v] += 1
-    wall_thicknesses = [v for v, c in sorted(wall_counts.items()) if c >= 2]
-    if len(wall_thicknesses) > 12:
-        wall_thicknesses = [v for v in wall_thicknesses if wall_counts[v] >= 3]
+                    if nline <= 240 and v % 5 == 0 and 90 <= v <= 620:
+                        legend_nums[v] += 1
+    top_count = max(wall_counts.values()) if wall_counts else 0
+    # порог по частоте отсекает размерные цепочки: толщина стены подписана у многих участков
+    thr = max(3, int(top_count * 0.03))
+    high = sorted(v for v, c in wall_counts.items()
+                  if c >= thr and v % 10 == 0 and 100 <= v <= 600)
+    legend = sorted(v for v, c in legend_nums.items() if c >= 4 and v % 10 == 0 and 100 <= v <= 600)
+    wall_thicknesses = high
 
     # ---------- двери / окна ----------
     door_sizes = Counter()
     for pno in door_pages:
         t = texts[pno - 1]
         for m in PAIR_RE.finditer(t):
-            w, h = int(m.group(1)), int(m.group(2))
+            w, h = num(m.group(1)), num(m.group(2))
             if 400 <= w <= 3200 and 1500 <= h <= 3200:
                 door_sizes[(w, h)] += 1
     window_sizes = Counter()
     for pno in window_pages:
         t = texts[pno - 1]
         for m in PAIR_RE.finditer(t):
-            w, h = int(m.group(1)), int(m.group(2))
+            w, h = num(m.group(1)), num(m.group(2))
             if 300 <= w <= 3200 and 500 <= h <= 3200 and h < 1500:
                 window_sizes[(w, h)] += 1
     door_widths = sorted({w for (w, h) in door_sizes if 500 <= w <= 2600})
@@ -491,7 +544,8 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
                 dim_counts[v] += 1
     axis_pitch_cands = [(v, c) for v, c in dim_counts.items() if 3000 <= v <= 12000]
     axis_pitch_mm = max(axis_pitch_cands, key=lambda x: x[1])[0] if axis_pitch_cands else None
-    overall_cands = [(v, c) for v, c in dim_counts.items() if 20000 <= v <= 200000]
+    overall_cands = [(v, c) for v, c in dim_counts.items()
+                     if 20000 <= v <= 120000 and v % 100 == 0 and c >= 3]
     overall_dims = [v for v, c in sorted(overall_cands, key=lambda x: -x[1])[:6]]
     typical_dims = [{'mm': v, 'count': c} for v, c in sorted(dim_counts.items(), key=lambda x: -x[1])[:20]]
 
@@ -582,6 +636,9 @@ def analyze(primary: Path, max_pages: int, quiet: bool, arg_max_rooms_pages: int
             'thicknesses_mm': wall_thicknesses,
             'evidence_pages': masonry_pages[:20],
             'counts': {str(k): v for k, v in sorted(wall_counts.items())},
+            'legend_numbers_mm': legend,
+            'note': 'толщины — кандидаты по частоте на мурувальних планах (порог 3%% от максимума); '
+                    'размерные цепочки отсеяны по частоте; требуют выборочной проверки по листам',
         },
         'doors': {
             'widths_mm': door_widths,
@@ -681,6 +738,8 @@ def main(argv=None):
 
 if __name__ == '__main__':
     sys.exit(main())
+
+
 
 
 

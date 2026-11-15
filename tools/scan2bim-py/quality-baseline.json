@@ -1,6 +1,6 @@
 {
  "_meta": {
-  "created_at": "2026-11-15T14:24:39+02:00",
+  "created_at": "2026-11-15T15:11:31+02:00",
   "tool": "run-quality-all.py",
   "note": "эталон для проверки регрессии; обновлять осознанно"
  },
@@ -48,7 +48,7 @@
    },
    "model": "D:\\BIM-TWIN-TEST\\interior\\py2-model.json",
    "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
-   "created_at": "2026-11-15T14:24:39+02:00"
+   "created_at": "2026-11-15T15:11:31+02:00"
   },
   "koridor/p1-final": {
    "metrics": {
@@ -97,32 +97,32 @@
   },
   "koridor/final": {
    "metrics": {
-    "n_walls_measured": 23,
-    "median_coverage_pct": 96.0,
+    "n_walls_measured": 18,
+    "median_coverage_pct": 94.0,
     "min_coverage_pct": 62.0,
-    "median_T_err_mm": 3.5,
-    "p90_T_err_mm": 21.000000000000014,
+    "median_T_err_mm": 3.0,
+    "p90_T_err_mm": 16.5,
     "max_T_err_mm": 30.0,
     "cloud_height_m": 3.276,
     "model_height_m": 3.278,
     "height_err_mm": 1.9998281002044926,
-    "model_rooms_area_m2": 122.8,
-    "cloud_floor_visible_m2": 128.0,
-    "room_perimeter_covered_pct": 98.7,
-    "room_perimeter_m": 236.0,
+    "model_rooms_area_m2": 122.9,
+    "cloud_floor_visible_m2": 128.5,
+    "room_perimeter_covered_pct": 99.8,
+    "room_perimeter_m": 156.5,
     "walls_cloud_beyond": 2,
-    "model_walls": 85,
-    "model_openings": 12,
-    "model_rooms": 23,
-    "area_ratio_pct": 95.9375,
+    "model_walls": 100,
+    "model_openings": 5,
+    "model_rooms": 9,
+    "area_ratio_pct": 95.6420233463035,
     "openings_recall_pct": 100.0,
     "openings_precision_pct": 100.0,
     "openings_width_median_err_mm": 0.0,
-    "openings_tp": 12,
+    "openings_tp": 5,
     "openings_fn": 0,
     "openings_fp": 0,
-    "openings_cloud": 12,
-    "openings_model": 12,
+    "openings_cloud": 5,
+    "openings_model": 5,
     "openings_stdout": {
      "recall": 100,
      "precision": 100,
@@ -131,14 +131,14 @@
     "rooms_outside_pct": 0.0,
     "rooms_overlap_m2": 0.0,
     "walls_summary": {
-     "walls": 85,
-     "inferred": 62,
-     "measured": 23
+     "walls": 100,
+     "inferred": 82,
+     "measured": 18
     }
    },
-   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-final-v4.json",
+   "model": "D:\\BIM-TWIN-TEST\\interior\\py2-final-v5.json",
    "cloud": "D:\\BIM-TWIN-TEST\\interior\\koridor-local-rgb.bin",
-   "created_at": "2026-11-15T14:24:39+02:00"
+   "created_at": "2026-11-15T15:11:31+02:00"
   }
  }
 }

@@ -254,6 +254,106 @@ test('r119: parseCompareJson — реальная схема docs-compare.py (in
   assert.strictEqual(r.summary.fail, 1);
 });
 
+// Реальный отчёт Блока 2 (появляется после прогона docs-compare.py); тест ниже скипается, если файла нет.
+const REAL_COMPARE = 'D:\\BIM-TWIN-TEST\\docs\\compare.json';
+
+test('r119: parseCompareJson — реальные варианты полей docs-compare.py (value/tolerance/дробный score)', () => {
+  const rep = {
+    schema_version: 1,
+    score: 92.7,
+    coverage_pct: 90.0,
+    summary: { checks: 4, pass: 1, warn: 1, fail: 0, unverified: 2 },
+    inputs: {
+      docs: { object: 'Корпус', address: 'вул. Амосова, 6', pages: 245 },
+      model: { path: 'v4.json', walls: 85, walls_measured: 23, rooms: 23, storey_height_mm: 3278, rooms_area_m2: 122.81 },
+      cloud: { path: 'cloud.bin', measured: true, height_mm: 3276, floor_visible_m2: 128 }
+    },
+    rows: [
+      { id: 'floor_height', category: 'floors', label: 'Высота этажа',
+        project: { value: 3300, unit: 'mm' }, model: { value: 3278, unit: 'mm' }, cloud: { value: 3276, unit: 'mm' },
+        delta_mp: { value: -22, unit: 'mm', pct: -0.67 }, tolerance: { value: 50, unit: 'mm' }, status: 'PASS' },
+      { id: 'wall_t_600', category: 'walls', label: 'Толщина 600',
+        project: { value: 600, unit: 'mm' }, model: { value: 536, unit: 'mm' }, cloud: { value: 430, unit: 'mm' },
+        delta_mp: { value: -64, unit: 'mm' }, tolerance: { value: 30, unit: 'mm' }, status: 'WARN' },
+      { id: 'door_model_1993', category: 'doors', label: 'Дверь 1800',
+        project: { value: 1800, unit: 'mm' }, model: { value: 1993, unit: 'mm' }, cloud: { value: 1990, unit: 'mm' },
+        delta_mp: { value: 93, unit: 'mm' }, tolerance: { value: { pass_mm: 80, warn_mm: 180, unit: 'mm' }, unit: '' }, status: 'WARN' },
+      { id: 'rooms_area_median', category: 'areas', label: 'Площади (медиана)',
+        project: { value: 12.66, unit: 'm2' }, model: { value: 3.39, unit: 'm2' }, cloud: { value: 128, unit: 'm2' },
+        delta_mp: { value: 0.9, unit: '%' }, delta_cm: null, tolerance: { value: 15, unit: '%' }, status: 'UNVERIFIED' },
+      { id: 'bbox_x', category: 'dims', label: 'Габарит X',
+        project: null, model: { value: 12.12, unit: 'm' }, cloud: { value: 12, unit: 'm' },
+        delta_mp: null, tolerance: { value: 10, unit: '%' }, status: 'PASS' }
+    ],
+    recommendations: [{ severity: 'warn', code: 'wall_t_600', text: 'Уточнить тип стены' }],
+    limitations: [],
+    unverified: [{ id: 'rooms_area_median', label: 'Площади', reason: 'нет привязки к плану' }]
+  };
+  const res = D.parseCompareJson(JSON.stringify(rep));
+  assert.ok(res.ok, 'реальная схема отклонена: ' + res.reason);
+  const r = res.report;
+  assert.strictEqual(r.score, 92.7, 'дробный score должен сохраняться, а не округляться');
+  assert.strictEqual(D.fmtScore(r.score), '92,7');
+  assert.strictEqual(r.grade, 'A', 'grade выводится из 92.7');
+  assert.strictEqual(r.coverage, 90);
+  assert.ok(Math.abs(r.model.height - 3.278) < 1e-9, 'storey_height_mm не переведён в метры: ' + r.model.height);
+  assert.strictEqual(r.model.wallsMeasured, 23);
+  assert.strictEqual(r.model.roomsArea, 122.81);
+  assert.ok(Math.abs(r.cloud.height - 3.276) < 1e-9, 'height_mm облака не переведён в метры');
+  assert.strictEqual(r.cloud.floorVisible, 128);
+  assert.strictEqual(r.rows.length, 5);
+  // delta_mp.value → Δ, tolerance.value → допуск
+  assert.strictEqual(r.rows[0].delta.abs, -22);
+  assert.match(D.deltaText(r.rows[0].delta), /−22 мм/);
+  assert.strictEqual(r.rows[0].tolerance.abs, 50);
+  // вложенный допуск дверей: pass_mm/warn_mm
+  assert.strictEqual(r.rows[2].tolerance.abs, 80);
+  assert.strictEqual(r.rows[2].tolerance.warn, 180);
+  // UNVERIFIED-строка с Δ в % и null-ячейкой проекта
+  assert.strictEqual(r.rows[3].status, 'na');
+  assert.match(D.deltaText(r.rows[3].delta), /\+0,9 %/);
+  assert.strictEqual(r.rows[4].project.text, '—', 'null-ячейка проекта должна быть «—»');
+  assert.strictEqual(r.rows[4].delta, null);
+  assert.deepStrictEqual([r.summary.pass, r.summary.warn, r.summary.fail, r.summary.unverified], [1, 1, 0, 2]);
+  assert.strictEqual(r.recommendations[0].code, 'wall_t_600');
+  assert.strictEqual(r.unverified[0].reason, 'нет привязки к плану');
+});
+
+test('r119: parseCompareJson — реальный compare.json Блока 2 (если файл есть)', {
+  skip: !fs.existsSync(REAL_COMPARE) && 'реального compare.json пока нет'
+}, () => {
+  const text = fs.readFileSync(REAL_COMPARE, 'utf8');
+  const res = D.parseCompareJson(text);
+  assert.ok(res.ok, 'реальный compare.json отклонён: ' + res.reason);
+  const r = res.report;
+  assert.strictEqual(r.schema_version, 1);
+  assert.strictEqual(r.score, 92.7);
+  assert.strictEqual(r.grade, 'A');
+  assert.strictEqual(r.coverage, 90);
+  assert.strictEqual(r.rows.length, 25);
+  assert.deepStrictEqual([r.summary.checks, r.summary.pass, r.summary.warn, r.summary.fail, r.summary.unverified], [25, 18, 3, 0, 4]);
+  const counts = { pass: 0, warn: 0, fail: 0, na: 0 };
+  for (const x of r.rows) counts[x.status]++;
+  assert.deepStrictEqual(counts, { pass: 18, warn: 3, fail: 0, na: 4 });
+  assert.match(r.docs.object, /корпусу/i, 'в заголовке нет объекта из документации');
+  assert.ok(r.docs.pages === 245 && r.docs.address.length > 5);
+  const floor = r.rows.find((x) => x.id === 'floor_height');
+  assert.strictEqual(floor.status, 'pass');
+  assert.strictEqual(floor.project.text, '3300 мм');
+  assert.strictEqual(floor.delta.abs, -22);
+  assert.match(D.deltaText(floor.delta), /−0,67 %/);
+  // UNVERIFIED-строки: null-поля терпятся
+  const perim = r.rows.find((x) => x.id === 'room_perimeter');
+  assert.strictEqual(perim.status, 'na');
+  assert.strictEqual(perim.project.text, '—');
+  const warnRow = r.rows.find((x) => x.id === 'door_model_1993');
+  assert.strictEqual(warnRow.status, 'warn');
+  assert.strictEqual(warnRow.tolerance.abs, 80, 'вложенный допуск дверей не разобран');
+  assert.strictEqual(r.recommendations.length, 4);
+  assert.ok(r.limitations.length >= 3);
+  assert.ok(r.unverified.length >= 3);
+});
+
 test('r119: parseCompareJson — упрощённая схема постановки (docs/model/rows name/status)', () => {
   const res = D.parseCompareJson(simpleReport());
   assert.ok(res.ok, 'упрощённая схема отклонена: ' + res.reason);
@@ -334,6 +434,11 @@ test('r119: rowToStatus — явный статус и вычисление из
   assert.strictEqual(D.rowToStatus({}), 'na');
   // явный статус важнее Δ
   assert.strictEqual(D.rowToStatus({ delta_mm: -100, status: 'PASS' }), 'pass');
+  // docs-compare.py: Δ в поле value, допуск {value:30} / {value:{pass_mm,warn_mm}}
+  assert.strictEqual(D.rowToStatus({ delta_mp: { value: -10, unit: 'mm' }, tolerance: { value: 30 } }), 'pass');
+  assert.strictEqual(D.rowToStatus({ delta_mp: { value: -64, unit: 'mm' }, tolerance: { value: 30 } }), 'fail');
+  assert.strictEqual(D.rowToStatus({ delta_mp: { value: 93, unit: 'mm' }, tolerance: { value: { pass_mm: 80, warn_mm: 180 } } }), 'fail');
+  assert.strictEqual(D.rowToStatus({ delta_mp: { value: 20, unit: 'mm' }, tolerance: { value: { pass_mm: 80, warn_mm: 180 } } }), 'pass');
 });
 
 test('r119: scoreOf / gradeOf / statusOfScore / summaryOf', () => {
@@ -341,6 +446,11 @@ test('r119: scoreOf / gradeOf / statusOfScore / summaryOf', () => {
   assert.strictEqual(D.scoreOf({ score: { value: 42 } }), 42);
   assert.strictEqual(D.scoreOf({ score: 120 }), 100, 'скор клампится к 100');
   assert.strictEqual(D.scoreOf({ score: -5 }), 0, 'скор клампится к 0');
+  // docs-compare.py выдаёт дробный score (92.7) — сохраняем точность, в UI «92,7»
+  assert.strictEqual(D.scoreOf({ score: 92.7 }), 92.7);
+  assert.strictEqual(D.fmtScore(92.7), '92,7');
+  assert.strictEqual(D.fmtScore(87), '87');
+  assert.strictEqual(D.fmtScore(100), '100');
   assert.strictEqual(D.scoreOf([{ status: 'PASS' }, { status: 'PASS' }, { status: 'FAIL' }]), 67);
   assert.strictEqual(D.scoreOf([{ status: 'PASS' }, { status: 'WARN' }, { status: 'FAIL' }]), 50, 'WARN весит 0.5');
   assert.strictEqual(D.scoreOf([{ status: 'UNVERIFIED' }]), 0, 'только непроверенное — 0');
