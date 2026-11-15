@@ -254,8 +254,9 @@ test('r119: parseCompareJson — реальная схема docs-compare.py (in
   assert.strictEqual(r.summary.fail, 1);
 });
 
-// Реальный отчёт Блока 2 (появляется после прогона docs-compare.py); тест ниже скипается, если файла нет.
+// Реальные отчёты Блока 2 (появляются после прогона docs-compare.py); тесты ниже скипаются, если файлов нет.
 const REAL_COMPARE = 'D:\\BIM-TWIN-TEST\\docs\\compare.json';
+const REAL_COMPARE_V5 = 'D:\\BIM-TWIN-TEST\\docs\\compare-v5.json';
 
 test('r119: parseCompareJson — реальные варианты полей docs-compare.py (value/tolerance/дробный score)', () => {
   const rep = {
@@ -354,6 +355,36 @@ test('r119: parseCompareJson — реальный compare.json Блока 2 (е�
   assert.ok(r.unverified.length >= 3);
 });
 
+test('r119: parseCompareJson — реальный compare-v5.json (FAIL-ветка, если файл есть)', {
+  skip: !fs.existsSync(REAL_COMPARE_V5) && 'реального compare-v5.json пока нет'
+}, () => {
+  const text = fs.readFileSync(REAL_COMPARE_V5, 'utf8');
+  const res = D.parseCompareJson(text);
+  assert.ok(res.ok, 'реальный compare-v5.json отклонён: ' + res.reason);
+  const r = res.report;
+  assert.strictEqual(r.score, 91.7, 'дробный score v5 не сохранён');
+  assert.strictEqual(D.fmtScore(r.score), '91,7');
+  assert.strictEqual(r.grade, 'A');
+  assert.strictEqual(r.rows.length, 20);
+  assert.deepStrictEqual([r.summary.checks, r.summary.pass, r.summary.warn, r.summary.fail, r.summary.unverified], [20, 12, 2, 2, 4]);
+  const counts = { pass: 0, warn: 0, fail: 0, na: 0 };
+  for (const x of r.rows) counts[x.status]++;
+  assert.deepStrictEqual(counts, { pass: 12, warn: 2, fail: 2, na: 4 }, 'FAIL-ветка на реальных данных не воспроизвелась');
+  // сырые строки v5 используют delta_mp/delta_cm; в нормализованной UI-модели это row.delta
+  const failRow = r.rows.find((x) => x.id === 'wall_t_380');
+  assert.strictEqual(failRow.status, 'fail');
+  assert.strictEqual(failRow.project.text, '380 мм');
+  assert.strictEqual(failRow.model.text, '260 мм');
+  assert.strictEqual(failRow.cloud.text, '270 мм');
+  assert.strictEqual(failRow.delta.abs, -120, 'delta_mp (→ row.delta) не разобран');
+  assert.match(D.deltaText(failRow.delta), /−120 мм/);
+  assert.strictEqual(failRow.tolerance.abs, 30);
+  assert.strictEqual(r.recommendations.length, 5);
+  assert.deepStrictEqual(r.recommendations.slice(0, 2).map((x) => x.severity), ['fail', 'fail']);
+  assert.strictEqual(r.recommendations[0].code, 'wall_t_380');
+  assert.ok(r.model.walls === 100 && r.model.wallsMeasured === 18);
+});
+
 test('r119: parseCompareJson — упрощённая схема постановки (docs/model/rows name/status)', () => {
   const res = D.parseCompareJson(simpleReport());
   assert.ok(res.ok, 'упрощённая схема отклонена: ' + res.reason);
@@ -439,6 +470,9 @@ test('r119: rowToStatus — явный статус и вычисление из
   assert.strictEqual(D.rowToStatus({ delta_mp: { value: -64, unit: 'mm' }, tolerance: { value: 30 } }), 'fail');
   assert.strictEqual(D.rowToStatus({ delta_mp: { value: 93, unit: 'mm' }, tolerance: { value: { pass_mm: 80, warn_mm: 180 } } }), 'fail');
   assert.strictEqual(D.rowToStatus({ delta_mp: { value: 20, unit: 'mm' }, tolerance: { value: { pass_mm: 80, warn_mm: 180 } } }), 'pass');
+  // legacy-поле delta: в реальных отчётах его нет (только delta_mp/delta_cm), но fallback поддержан
+  assert.deepStrictEqual(D.normalizeDelta({ delta: { value: -5, unit: 'mm' } }), { abs: -5, pct: null, unit: 'mm' });
+  assert.strictEqual(D.rowToStatus({ delta: { value: -64, unit: 'mm' }, tolerance: { value: 30 } }), 'fail');
 });
 
 test('r119: scoreOf / gradeOf / statusOfScore / summaryOf', () => {
