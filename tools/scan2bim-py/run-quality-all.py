@@ -12,6 +12,8 @@
        * фасадные модели коллег `py2-facade*.json` — через
          `D:\\BIM-TWIN-TEST\\interior\\py2-facade-manifest.json` (если он есть), иначе
          авто-подхват `py2-facade*.json` + `metrics-*.json`;
+       * фасадные самотесты `facade-test.py` (Блок 1 ROADMAP-DOCS-AI.md) — дополнительный
+         источник проверок B2/B3/B4 из `facade-tests-report.json` (`--facade-tests=auto|run|off`);
        * пара «облако + модель» может быть добавлена вручную: --cloud/--model/--pair.
   2. Для каждой пары «интерьер» запускает `ruler-v2.py` (НЕ меняет его) и складывает
      JSON-обмер в workdir.
@@ -68,6 +70,8 @@ DEFAULT_ROOT = Path(r'D:\BIM-TWIN-TEST')
 DEFAULT_WORKDIR = DEFAULT_ROOT / 'quality'
 DEFAULT_JSON = REPO_DIR / 'qa' / 'quality-all-report.json'
 DEFAULT_BASELINE = SCRIPT_DIR / 'quality-baseline.json'
+# Блок 1 ROADMAP-DOCS-AI.md: самотесты фасада (facade-test.py) — дополнительный источник B2/B3/B4
+FACADE_TESTS = 'facade-tests-report.json'
 
 # ---------------------------------------------------------------- пороги ROADMAP
 # ROADMAP-IDEAL.md, таблица критериев; для A2/A3/A7 условиях два.
@@ -535,6 +539,56 @@ def eval_facade(rec: dict, kind: str):
     return checks
 
 
+# ---------------------------------------------------------------- фасадные самотесты (Блок 1 ROADMAP-DOCS-AI.md)
+def load_facade_tests_report(root: Path):
+    """Прочитать facade-tests-report.json от facade-test.py.
+
+    Возвращает (report|None, path). None — файла нет; {'_error': ...} — не разобран.
+    """
+    path = root / 'interior' / FACADE_TESTS
+    if not path.exists():
+        return None, path
+    try:
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
+    except Exception as exc:  # noqa: BLE001
+        return {'_error': str(exc)}, path
+    if not isinstance(data, dict):
+        return {'_error': 'ожидался объект, получено %s' % type(data).__name__}, path
+    return data, path
+
+
+def facade_test_checks(report, stand: str):
+    """Проверки facade-test.py для стенда B2/B3/B4 в формате checks run-quality-all.
+
+    Возвращает (checks, warning|None). Самотесты — дополнительный источник: их PASS/FAIL
+    добавляются к проверкам соответствующего фасадного стенда; отсутствие отчёта — не провал.
+    """
+    if not report:
+        return [], 'нет %s (самотесты фасада не проверены; запустить: --facade-tests=run)' % FACADE_TESTS
+    if report.get('_error'):
+        return [], '%s не разобран: %s' % (FACADE_TESTS, report['_error'])
+    cases = [c for c in (report.get('cases') or [])
+             if isinstance(c, dict) and str(c.get('stand') or '').upper() == str(stand or '').upper()]
+    if not cases:
+        return [], None
+    out = []
+    for case in cases:
+        for ch in (case.get('checks') or []):
+            if not isinstance(ch, dict):
+                continue
+            status = str(ch.get('status') or 'INFO').upper()
+            if status not in ('PASS', 'FAIL', 'SKIP', 'INFO'):
+                status = 'INFO'
+            out.append({
+                'code': 'T-' + str(ch.get('code') or '?'),
+                'label': 'самотест: ' + str(ch.get('label') or ''),
+                'target': str(ch.get('expected') or '—'),
+                'detail': str(ch.get('actual') or ''),
+                'status': status,
+            })
+    return out, None
+
+
 # ---------------------------------------------------------------- манифест
 def load_manifest(root: Path, extra_pairs, no_facade: bool):
     """Собрать список проверок. Возвращает (entries, warnings)."""
@@ -845,6 +899,9 @@ def main(argv=None):
     ap.add_argument('--no-targets', action='store_true', help='не валить по порогам целей (только регрессия)')
     ap.add_argument('--no-regression', action='store_true', help='не валить по регрессии')
     ap.add_argument('--no-facade', action='store_true', help='не искать фасадные модели')
+    ap.add_argument('--facade-tests', choices=['auto', 'run', 'off'], default='auto',
+                    help='самотесты facade-test.py: auto — читать готовый facade-tests-report.json, '
+                         'run — сначала запустить facade-test.py, off — не использовать (по умолчанию auto)')
     ap.add_argument('--pair', action='append', default=[], metavar='CLOUD|MODEL',
                     help='дополнительная пара облако|модель (можно несколько раз)')
     ap.add_argument('--entry', action='append', default=[], metavar='KIND|CLOUD|MODEL',
@@ -878,6 +935,29 @@ def main(argv=None):
     entries, warnings = load_manifest(root, pairs, args.no_facade)
     entries += extra_entries
 
+    # --- фасадные самотесты facade-test.py (Блок 1 ROADMAP-DOCS-AI.md) — дополнительный источник
+    facade_tests_report, facade_tests_path = None, None
+    if args.facade_tests != 'off':
+        if args.facade_tests == 'run' and not (args.list or args.dry_run):
+            ft_script = SCRIPT_DIR / 'facade-test.py'
+            if ft_script.exists():
+                print('\n[самотесты] запуск facade-test.py …')
+                try:
+                    ft_proc = subprocess.run(
+                        [sys.executable, str(ft_script), '--root', str(root / 'interior'),
+                         '--out', str(root / 'interior' / FACADE_TESTS)],
+                        capture_output=True, text=True, timeout=1800)
+                    print('  facade-test.py: код %d' % ft_proc.returncode)
+                    for _ln in (ft_proc.stdout or '').strip().splitlines()[-2:]:
+                        print('  ' + _ln)
+                    if ft_proc.returncode != 0:
+                        warnings.append('facade-test.py: FAIL (код %d)' % ft_proc.returncode)
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append('facade-test.py не запустился: %s' % exc)
+            else:
+                warnings.append('нет %s — фасадные самотесты пропущены' % ft_script.name)
+        facade_tests_report, facade_tests_path = load_facade_tests_report(root)
+
     print('run-quality-all.py — регрессионный прогон scan-to-BIM (Фаза 5 ROADMAP-IDEAL)')
     print('дата: %s | python: %s' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), sys.version.split()[0]))
     print('корень данных: %s | workdir: %s' % (root, workdir))
@@ -898,6 +978,11 @@ def main(argv=None):
             print('  [%s] %-24s облако: %s | модель: %s%s' % (
                 e['kind'], e['name'], mark(e.get('cloud')), mark(e.get('model')),
                 '' if e.get('metrics') is None else ' | метрики: %s' % mark(e['metrics'])))
+        if args.facade_tests != 'off':
+            ft_ok = bool(facade_tests_report) and not (facade_tests_report or {}).get('_error')
+            print('  фасадные самотесты: %s%s' % (
+                facade_tests_path if facade_tests_path else '—',
+                '  (есть)' if ft_ok else '  (НЕТ; запустить: --facade-tests=run)'))
         if args.dry_run and not args.list:
             print('dry-run: ruler не запускался.')
         return 0
@@ -1050,6 +1135,16 @@ def main(argv=None):
             rec['stand'] = stand
             rec['cloud'] = str(cloud) if cloud else None
             checks = eval_facade(fac_rec, stand)
+            # Блок 1 ROADMAP-DOCS-AI.md: самотесты facade-test.py — отдельные проверки B2/B3/B4
+            if args.facade_tests != 'off':
+                tchecks, terr = facade_test_checks(facade_tests_report, stand)
+                if terr:
+                    warnings.append('самотесты фасада (%s): %s' % (stand, terr))
+                if tchecks:
+                    rec['facade_tests'] = {'report': str(facade_tests_path),
+                                           'checks_pass': sum(1 for c in tchecks if c['status'] == 'PASS'),
+                                           'checks_fail': sum(1 for c in tchecks if c['status'] == 'FAIL')}
+                checks = checks + tchecks
             rec['checks'] = checks
             rec['facade_metrics'] = fac_rec
             cloud_exists = bool(cloud and cloud.exists())
