@@ -29,7 +29,15 @@ const T_OFF = { 1: 20, 3: 20, 4: 20, 5: 20, 6: 22, 7: 22, 8: 22, 9: 22, 10: 22 }
 
 const DEF = { window: 2.5, bucket: 2, K: 4, cell: 8, thetaMax: 1.35, thetaSharp: 0.95, dMin: 0.45, dMax: 35, depthRel: 0.04, depthRel3: 0.25, depthAbs: 0.05,
   pilotFrames: 160, minCorr: 0.3, agree: 75, maskGrid: [40, 30], prefetch: 3, minPoints: 1000,
-  align: true, alignPts: 8000, alignMax: 1.5, alignMin: 300 };
+  align: true, alignPts: 8000, alignMax: 1.5, alignMin: 300,
+  // r145: улучшение цвета «как в Lixel» — выключено по умолчанию (прежнее поведение для тестов);
+  // в приложении (main.js) и CLI (tools/recolor-cli.js) включается opt.improve = true.
+  improve: false,
+  bestView: true, sharp: true, sharpW: 0.55, lapScale: 12, expoFix: true,
+  frameNorm: true, normClip: [0.05, 0.95], normGainMin: 0.8, normGainMax: 1.25, wb: true,
+  grade: true, gradeGain: 1.36, gradeKnee: 170, gradeDark: 25, gradeSat: 1.29,
+  fill: true, fillCell: 0.07, fillRadius: 0.20, fillIters: 3, fillMaxPts: 25000000,
+  dither: true };
 
 // ---- траектория с ориентацией: t,x,y,z,qx,qy,qz,qw (poses.csv Lixel) ----
 function parsePoses(text) {
@@ -119,11 +127,14 @@ function scanLas(fd, H, cb, per) {
 function sampleRGB(img, u, v, out) {
   const w = img.w, h = img.h; if (u < 0 || v < 0 || u > w - 1.001 || v > h - 1.001) return false;
   const x0 = u | 0, y0 = v | 0, fx = u - x0, fy = v - y0, Y = img.Y, sY = img.sY, p = y0 * sY + x0;
-  const yy = (Y[p] * (1 - fx) + Y[p + 1] * fx) * (1 - fy) + (Y[p + sY] * (1 - fx) + Y[p + sY + 1] * fx) * fy;
+  const yy0 = (Y[p] * (1 - fx) + Y[p + 1] * fx) * (1 - fy) + (Y[p + sY] * (1 - fx) + Y[p + sY + 1] * fx) * fy;
+  let yy = yy0;
+  if (img.norm) { yy = (yy - img.norm.off) * img.norm.scale; if (yy < 0) yy = 0; else if (yy > 255) yy = 255; }
   const q = (v >> 1) * img.sU + (u >> 1) * (img.uvStep || 1), cb = img.U[q] - 128, cr = img.V[q] - 128;
   let r, g, b;
   if (img.fullRange) { r = yy + 1.402 * cr; g = yy - 0.344136 * cb - 0.714136 * cr; b = yy + 1.772 * cb; }
   else { const c = 1.164383 * (yy - 16); r = c + 1.596027 * cr; g = c - 0.391762 * cb - 0.812968 * cr; b = c + 2.017232 * cb; }
+  if (img.wb) { r *= img.wb[0]; g *= img.wb[1]; b *= img.wb[2]; }
   out[0] = r < 0 ? 0 : (r > 255 ? 255 : r); out[1] = g < 0 ? 0 : (g > 255 ? 255 : g); out[2] = b < 0 ? 0 : (b > 255 ? 255 : b);
   return true;
 }
@@ -184,6 +195,97 @@ function resolveColor(qK, cK, base, K, agree, out) {
     if (dd >= agree) continue; const w = qb * qb; sw += w; r += w * (cb & 255); g += w * ((cb >>> 8) & 255); b2 += w * ((cb >>> 16) & 255); }
   out[0] = r / sw; out[1] = g / sw; out[2] = b2 / sw; return true;
 }
+
+// ======================= r145: улучшение цвета (opt.improve) =======================
+// 1) Статистика кадра: перцентили яркости 5–95 % и средние R/G/B (для нормализации экспозиции
+//    и баланса белого ПО КАДРАМ, как в Lixel Studio; без выбросов — по гистограмме).
+function frameStats(img, step) {
+  const st = step || 8, Y = img.Y, sY = img.sY, w = img.w, h = img.h;
+  const U = img.U, V = img.V, sU = img.sU, uvs = img.uvStep || 1, full = img.fullRange;
+  const hist = new Uint32Array(256);
+  let n = 0, mr = 0, mg = 0, mb = 0, my = 0;
+  for (let y = 0; y < h; y += st) {
+    const row = y * sY;
+    for (let x = 0; x < w; x += st) {
+      const yy = Y[row + x]; hist[yy]++; my += yy;
+      const q = (y >> 1) * sU + (x >> 1) * uvs, cb = U[q] - 128, cr = V[q] - 128;
+      let r, g, b;
+      if (full) { r = yy + 1.402 * cr; g = yy - 0.344136 * cb - 0.714136 * cr; b = yy + 1.772 * cb; }
+      else { const c = 1.164383 * (yy - 16); r = c + 1.596027 * cr; g = c - 0.391762 * cb - 0.812968 * cr; b = c + 2.017232 * cb; }
+      mr += r < 0 ? 0 : (r > 255 ? 255 : r); mg += g < 0 ? 0 : (g > 255 ? 255 : g); mb += b < 0 ? 0 : (b > 255 ? 255 : b);
+      n++;
+    }
+  }
+  if (!n) return null;
+  const lo = Math.floor(n * 0.05), hi = Math.ceil(n * 0.95);
+  let acc = 0, p5 = 0, p95 = 255, got5 = false;
+  for (let k = 0; k < 256; k++) { acc += hist[k]; if (!got5 && acc >= lo) { p5 = k; got5 = true; } if (acc >= hi) { p95 = k; break; } }
+  if (!(p95 > p5 + 8)) { p5 = Math.max(0, p5 - 8); p95 = Math.min(255, p95 + 8); }
+  return { p5, p95, meanY: my / n, meanR: mr / n, meanG: mg / n, meanB: mb / n };
+}
+// 2) Подготовка кадра к основной проекции: растяжка контраста по 5–95 %, экспозиция и WB к общим
+//    целевым средним (по пробным кадрам), с ограничением усиления — без «пересвета»/«недосвета».
+function prepareFrame(img, st, target, o) {
+  if (!st) return;
+  const lim = (v, a, b) => v < a ? a : (v > b ? b : v);
+  const sc = 255 / Math.max(8, st.p95 - st.p5);
+  const meanAfter = Math.max(1, (st.meanY - st.p5) * sc);
+  const exp = target ? lim(target.meanY / meanAfter, o.normGainMin, o.normGainMax) : 1;
+  const gr = target && o.wb ? lim(target.meanR / Math.max(1, st.meanR), o.normGainMin, o.normGainMax) : 1;
+  const gg = target && o.wb ? lim(target.meanG / Math.max(1, st.meanG), o.normGainMin, o.normGainMax) : 1;
+  const gb = target && o.wb ? lim(target.meanB / Math.max(1, st.meanB), o.normGainMin, o.normGainMax) : 1;
+  img.norm = { off: st.p5, scale: sc };
+  img.wb = [gr * exp, gg * exp, gb * exp];
+}
+// 3) Локальная резкость (|лапласиан| яркости) — вес кадра на точку: резкие кадры выигрывают.
+function sharpAt(img, u, v) {
+  const x = u | 0, y = v | 0;
+  if (x < 1 || y < 1 || x >= img.w - 1 || y >= img.h - 1) return 0;
+  const Y = img.Y, sY = img.sY, p = y * sY + x, c = Y[p];
+  return Math.abs(4 * c - Y[p - 1] - Y[p + 1] - Y[p - sY] - Y[p + sY]);
+}
+function yAt(img, u, v) {
+  const x = u | 0, y = v | 0;
+  if (x < 0 || y < 0 || x >= img.w || y >= img.h) return 128;
+  return img.Y[y * img.sY + x];
+}
+// 4) Глобальная цветокоррекция «как в Lixel»: тоновая кривая по яркости (не просто умножение)
+//    + насыщенность. Кривая = gain·v до knee, с защитой теней/светов от выгорания.
+function gradeLUT(o) {
+  const N = 1024, raw = new Float64Array(N), g = o.gradeGain, d = o.gradeDark, K = o.gradeKnee;
+  const vk = d + (K - d) / g;
+  for (let k = 0; k < N; k++) {
+    const v = k * 255 / (N - 1);
+    raw[k] = v <= d ? v : (v <= vk ? d + g * (v - d) : K + (255 - K) * (v - vk) / Math.max(1e-6, 256 - vk));
+  }
+  const L = new Float32Array(N);
+  for (let k = 0; k < N; k++) L[k] = Math.max(0, Math.min(255, raw[k]));
+  L[0] = 0; for (let k = 1; k < N; k++) if (L[k] < L[k - 1]) L[k] = L[k - 1];
+  return L;
+}
+const _lutAt = (LUT, v) => { const N1 = LUT.length - 1; if (!(v > 0)) return 0; if (v >= 255) return LUT[N1]; const q = v * N1 / 255, i = Math.floor(q), t = q - i; return LUT[i] + (LUT[Math.min(N1, i + 1)] - LUT[i]) * t; };
+function gradeRGB(rgb, k, LUT, sat) {
+  let r = rgb[k], g = rgb[k + 1], b = rgb[k + 2];
+  const L = 0.299 * r + 0.587 * g + 0.114 * b;
+  if (LUT && L > 0.5) {
+    const f = _lutAt(LUT, L) / L;
+    r *= f; g *= f; b *= f;
+    // каналы не должны «выгорать» выше собственной кривой
+    if (r > L) { const c = _lutAt(LUT, r); if (r > c) r = c; }
+    if (g > L) { const c = _lutAt(LUT, g); if (g > c) g = c; }
+    if (b > L) { const c = _lutAt(LUT, b); if (b > c) b = c; }
+  }
+  if (sat && sat !== 1) {
+    const L2 = 0.299 * r + 0.587 * g + 0.114 * b;
+    r = L2 + sat * (r - L2); g = L2 + sat * (g - L2); b = L2 + sat * (b - L2);
+  }
+  rgb[k] = r < 0 ? 0 : (r > 255 ? 255 : r);
+  rgb[k + 1] = g < 0 ? 0 : (g > 255 ? 255 : g);
+  rgb[k + 2] = b < 0 ? 0 : (b > 255 ? 255 : b);
+}
+// 5) 8-битное округление с упорядоченным дизерингом (без полос на градиентах)
+const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const dithOff = (i) => (BAYER4[((i & 3) << 2) | ((i >> 2) & 3)] / 16) - 0.5;
 
 /**
  * recolor(src, dst, { index, posesText, decode, onProgress, tmpDir, opt }) → Promise<stats>
@@ -328,9 +430,31 @@ async function recolor(src, dst, a) {
       const A = Float64Array.from(Tcw); A[3] += Tcw[0] * ox + Tcw[1] * oy + Tcw[2] * oz; A[7] += Tcw[4] * ox + Tcw[5] * oy + Tcw[6] * oz; A[11] += Tcw[8] * ox + Tcw[9] * oy + Tcw[10] * oz; return A; };
     const windowBuckets = (tl, cache) => { const out = []; const b0 = Math.max(0, Math.floor((tl - o.window) / BS)), b1 = Math.min(NB - 1, Math.floor((tl + o.window) / BS)); for (let b = b0; b <= b1; b++) { let B = cache.get(b); if (B === undefined) { B = loadBucket(b); cache.set(b, B); } if (B) out.push(B); } return out; };
     const MG = o.maskGrid, mgw = MG[0], mgh = MG[1];
+    // ---- r145: динамическая маска (если передана) — «люди» не получают цвет
+    let dynSet = null, dynGrid = null;
+    if (o.improve && (a.dyn || o.dyn)) {
+      const D = a.dyn || o.dyn, sets = D.sets || (D.keys ? [D] : []);
+      dynSet = new Set(); dynGrid = [];
+      for (const s of sets) {
+        const g = s.grid || {}, keys = s.keys || [];
+        const nx = Number(g.nx) || 1, ny = Number(g.ny) || 1;
+        dynGrid.push({ gx: Number(g.gx) || 0, gy: Number(g.gy) || 0, gz: Number(g.gz) || 0, v: Number(g.v) || 0.1, nx, ny });
+        for (let k = 0; k < keys.length; k++) dynSet.add(Math.round(Number(keys[k]) * 1e6));
+      }
+      if (!dynSet.size) dynSet = null;
+    }
+    const inDyn = dynSet ? (wx, wy, wz) => {
+      for (const g of dynGrid) {
+        const ix = Math.floor((wx - g.gx) / g.v), iy = Math.floor((wy - g.gy) / g.v), iz = Math.floor((wz - g.gz) / g.v);
+        const key = Math.round((ix + g.nx * (iy + g.ny * iz)) * 1e6);
+        if (dynSet.has(key)) return true;
+      }
+      return false;
+    } : null;
     // ---- 2: проба — маска кадра (оператор, корпус) и проверка совпадения фото с облаком
     const nPilot = Math.min(o.pilotFrames, frames.length);
     const mSum = RG.map(() => new Float64Array(mgw * mgh)), mCnt = RG.map(() => new Float64Array(mgw * mgh));
+    const pilotStats = [];
     let corrS = 0, corrN = 0;
     {
       const cache = new Map(); const rgb = new Float64Array(3);
@@ -340,6 +464,7 @@ async function recolor(src, dst, a) {
         for (const key of cache.keys()) if (key * BS + BS < tl - o.window - BS || key * BS > tl + o.window + BS) cache.delete(key);
         const pts = windowBuckets(tl, cache); if (!pts.length) continue;
         const img = await a.decode(readBytes(f), f);
+        if (o.improve && o.frameNorm) { const fst = frameStats(img); if (fst) pilotStats.push(fst); }
         const Ls = [], Ps = [], cells = [];
         const ri = RG.indexOf(f.R);
         projs.get(f.R)(pts, toLocal(camPose(f)), tl, o.window, (B, i, u, v) => {
@@ -359,6 +484,13 @@ async function recolor(src, dst, a) {
       }
     }
     const corr = corrN ? corrS / corrN : 0;
+    // r145: общие целевые средние (медианы по пробным кадрам) — к ним нормализуются все кадры
+    let normTarget = null;
+    if (o.improve && o.frameNorm && pilotStats.length) {
+      const med = (arr) => { const a = arr.slice().sort((x, y) => x - y); return a[a.length >> 1]; };
+      normTarget = { meanY: med(pilotStats.map(s => s.meanY)), meanR: med(pilotStats.map(s => s.meanR)),
+        meanG: med(pilotStats.map(s => s.meanG)), meanB: med(pilotStats.map(s => s.meanB)) };
+    }
     // ревизия 24: облако, собранное из лидара этого же .xbin по этой же траектории (xbin-lidar.js), совпадает с кадрами по построению,
     // а его серый цвет — отражательная способность лидара, а не яркость: корреляция с фото у него низкая (0,1–0,3) и проверкой не служит
     const fromXbinLidar = /^BIM Twin xbin-lidar/.test(H.soft || '');
@@ -380,12 +512,31 @@ async function recolor(src, dst, a) {
     const cfile = (b) => path.join(tmp, b + '.c');
     const ensure = (b) => { let B = live.get(b); if (B !== undefined) return B; B = loadBucket(b); if (B) { B.q = new Float32Array(B.n * K); B.c = new Uint32Array(B.n * K); if (!doAlign) B.L = null; } live.set(b, B); return B; };
     const out3 = new Float64Array(3);
+    const gradeL = o.improve && o.grade ? gradeLUT(o) : null;
+    const gradeSat = o.improve && o.grade ? o.gradeSat : 1;
     const finalize = (b) => {
       const B = live.get(b); live.delete(b);
       if (!B) return;
       const C = Buffer.alloc(B.n * 4);
-      for (let i = 0; i < B.n; i++) if (resolveColor(B.q, B.c, i * K, K, o.agree, out3)) { C[i * 4] = Math.round(out3[0]); C[i * 4 + 1] = Math.round(out3[1]); C[i * 4 + 2] = Math.round(out3[2]); C[i * 4 + 3] = 1; colored++; }
-      fs.writeFileSync(cfile(b), C); try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {}
+      const best = o.improve && o.bestView;
+      for (let i = 0; i < B.n; i++) {
+        let ok = false;
+        if (best) {
+          // r145: НЕ усредняем кадры — берём лучший по q (резкость/угол/дистанция/подтверждение маской)
+          const base = i * K; let mi = -1, mq = 0;
+          for (let k = 0; k < K; k++) { const q = B.q[base + k]; if (q > mq) { mq = q; mi = k; } }
+          if (mi >= 0) { const c = B.c[base + mi]; out3[0] = c & 255; out3[1] = (c >>> 8) & 255; out3[2] = (c >>> 16) & 255; ok = true; }
+        } else ok = resolveColor(B.q, B.c, i * K, K, o.agree, out3);
+        if (!ok) continue;
+        if (gradeL || gradeSat !== 1) gradeRGB(out3, 0, gradeL, gradeSat);
+        const off = o.improve && o.dither ? dithOff(i) : 0;
+        C[i * 4] = Math.max(0, Math.min(255, Math.round(out3[0] + off)));
+        C[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(out3[1] + off)));
+        C[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(out3[2] + off)));
+        C[i * 4 + 3] = 1; colored++;
+      }
+      fs.writeFileSync(cfile(b), C);
+      if (!(o.improve && o.fill)) { try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {} }
     };
     const rgb = new Float64Array(3), cosS = o.thetaSharp, thM = o.thetaMax;
     const queue = []; let qi = 0;
@@ -398,6 +549,7 @@ async function recolor(src, dst, a) {
       while (doneB + 1 < bLo) { doneB++; if (live.has(doneB)) finalize(doneB); }
       const pts = []; for (let b = bLo, b1 = Math.min(NB - 1, Math.floor((tl + o.window) / BS)); b <= b1; b++) { const B = ensure(b); if (B) pts.push(B); }
       const img = await p;
+      if (o.improve && o.frameNorm) { const fst = frameStats(img); if (fst) prepareFrame(img, fst, normTarget, o); }
       if (!pts.length) { if (img.close) img.close(); continue; }
       const M = masks[RG.indexOf(f.R)].M, iw = img.w, ih = img.h;
       let Acw = toLocal(camPose(f));
@@ -406,7 +558,10 @@ async function recolor(src, dst, a) {
         const mk = M[Math.min(mgh - 1, (v / ih * mgh) | 0) * mgw + Math.min(mgw - 1, (u / iw * mgw) | 0)]; if (mk <= 0) return;
         const dt = (B.T[i] - tl) / o.window;
         const fth = th <= cosS ? 1 : Math.max(0, (thM - th) / (thM - cosS));
-        const q = mk * fth * Math.exp(-dt * dt) / Math.max(d, 0.7); if (!(q > 0)) return;
+        let q = mk * fth * Math.exp(-dt * dt) / Math.max(d, 0.7); if (!(q > 0)) return;
+        if (o.improve && o.sharp) q *= 0.45 + 0.55 * Math.min(1, sharpAt(img, u, v) / (o.lapScale || 12));
+        if (o.improve && o.expoFix) { const yy = yAt(img, u, v); if (yy <= 6 || yy >= 250) q *= 0.3; }
+        if (inDyn) { const k3 = i * 3; if (inDyn(B.P[k3] + ox, B.P[k3 + 1] + oy, B.P[k3 + 2] + oz)) return; }
         const base = i * K; let mi = 0, mq = B.q[base];
         for (let k = 1; k < K; k++) if (B.q[base + k] < mq) { mq = B.q[base + k]; mi = k; }
         if (q <= mq) return;
@@ -417,6 +572,90 @@ async function recolor(src, dst, a) {
       if ((fi & 7) === 0) prog(0.15 + 0.75 * (fi + 1) / frames.length, 'Цвет по фото: кадр ' + (fi + 1) + ' из ' + frames.length + '…');
     }
     for (const b of Array.from(live.keys()).sort((p, q) => p - q)) finalize(b);
+    // ---- 3.5 r145: перенос цвета на серые точки от ближайших цветных соседей по поверхности
+    let fillStat = null;
+    const doFill = o.improve && o.fill && inWin <= (o.fillMaxPts || 25e6);
+    if (doFill) {
+      const cell = Math.max(0.02, o.fillCell || 0.07);
+      const R = Math.max(1, Math.ceil((o.fillRadius || 0.2) / cell));
+      const iters = Math.max(1, o.fillIters | 0);
+      const B0 = 8192, OFF = 4096;
+      const keyOf = (x, y, z) => {
+        const ix = Math.floor(x / cell) + OFF, iy = Math.floor(y / cell) + OFF, iz = Math.floor(z / cell) + OFF;
+        if (ix < 0 || iy < 0 || iz < 0 || ix >= B0 || iy >= B0 || iz >= B0) return -1;
+        return (ix * B0 + iy) * B0 + iz;
+      };
+      const buckets = [];
+      for (let b = 0; b < NB; b++) {
+        if (!cnt[b]) continue;
+        const pf = path.join(tmp, b + '.p'), cf = cfile(b);
+        if (!fs.existsSync(pf) || !fs.existsSync(cf)) continue;
+        buckets.push({ n: Math.floor(fs.statSync(pf).size / REC), P: fs.readFileSync(pf), C: fs.readFileSync(cf) });
+      }
+      // суммы цветов по ячейкам (цветные точки; динамику в источники не берём)
+      const cellMap = new Map();
+      let cap = 1 << 16; let sR = new Float64Array(cap), sG = new Float64Array(cap), sB = new Float64Array(cap), nC = new Uint32Array(cap), nc = 0;
+      const grow = () => { cap <<= 1; const g = (a, T) => { const b2 = new T(cap); b2.set(a); return b2; }; sR = g(sR, Float64Array); sG = g(sG, Float64Array); sB = g(sB, Float64Array); nC = g(nC, Uint32Array); };
+      const addCell = (x, y, z, r, g, b) => {
+        const k = keyOf(x, y, z); if (k < 0) return;
+        let ci = cellMap.get(k); if (ci === undefined) { if (nc >= cap) grow(); ci = nc++; cellMap.set(k, ci); }
+        sR[ci] += r; sG[ci] += g; sB[ci] += b; nC[ci]++;
+      };
+      for (const Bk of buckets) {
+        const { n, P, C } = Bk;
+        for (let i = 0; i < n; i++) {
+          if (!C[i * 4 + 3]) continue;
+          const x = P.readFloatLE(i * REC), y = P.readFloatLE(i * REC + 4), z = P.readFloatLE(i * REC + 8);
+          if (inDyn && inDyn(x + ox, y + oy, z + oz)) continue;
+          const k = keyOf(x, y, z); if (k < 0) continue;
+          let ci = cellMap.get(k); if (ci === undefined) { if (nc >= cap) grow(); ci = nc++; cellMap.set(k, ci); }
+          sR[ci] += C[i * 4]; sG[ci] += C[i * 4 + 1]; sB[ci] += C[i * 4 + 2]; nC[ci]++;
+        }
+      }
+      let filled = 0;
+      for (let it = 0; it < iters; it++) {
+        const adds = new Map();   // ключ → [r,g,b,count] для следующего прохода
+        for (const Bk of buckets) {
+          const { n, P, C } = Bk;
+          for (let i = 0; i < n; i++) {
+            if (C[i * 4 + 3]) continue;
+            const x = P.readFloatLE(i * REC), y = P.readFloatLE(i * REC + 4), z = P.readFloatLE(i * REC + 8);
+            if (inDyn && inDyn(x + ox, y + oy, z + oz)) continue;
+            const ix = Math.floor(x / cell) + OFF, iy = Math.floor(y / cell) + OFF, iz = Math.floor(z / cell) + OFF;
+            let r = 0, g = 0, b = 0, cnt2 = 0;
+            for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) {
+              if (dx * dx + dy * dy + dz * dz > R * R) continue;
+              const k2 = ((ix + dx) * B0 + (iy + dy)) * B0 + (iz + dz);
+              const ci = cellMap.get(k2); if (ci === undefined || !nC[ci]) continue;
+              r += sR[ci]; g += sG[ci]; b += sB[ci]; cnt2 += nC[ci];
+            }
+            const ad = adds.get(((ix)*B0 + iy) * B0 + iz);
+            if (!cnt2) {
+              if (ad) { /* нет цвета в ячейке — пропускаем */ }
+              continue;
+            }
+            r /= cnt2; g /= cnt2; b /= cnt2;
+            C[i * 4] = Math.max(0, Math.min(255, Math.round(r)));
+            C[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(g)));
+            C[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(b)));
+            C[i * 4 + 3] = 1; filled++;
+            const kk = ((ix)*B0 + iy) * B0 + iz;
+            let A = adds.get(kk); if (!A) { A = [0, 0, 0, 0]; adds.set(kk, A); }
+            A[0] += r; A[1] += g; A[2] += b; A[3]++;
+          }
+        }
+        for (const [kk, A] of adds) {
+          let ci = cellMap.get(kk); if (ci === undefined) { if (nc >= cap) grow(); ci = nc++; cellMap.set(kk, ci); }
+          sR[ci] += A[0]; sG[ci] += A[1]; sB[ci] += A[2]; nC[ci] += A[3];
+        }
+        if (!adds.size) break;
+      }
+      for (const Bk of buckets) fs.writeFileSync(cfile(Bk.b), Bk.C);
+      // .p больше не нужны
+      for (let b = 0; b < NB; b++) { try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {} }
+      const rest = inWin - colored - filled;
+      fillStat = { filled, cell, radius: R * cell, iters, remaining: Math.max(0, rest), enabled: true };
+    }
     if (xfd !== null) { fs.closeSync(xfd); xfd = null; }
     // ---- 4: запись LAS: исходные записи, цвет — из корзин по порядку точек
     const hdr = Buffer.alloc(H.off); fs.readSync(fd, hdr, 0, H.off, 0);

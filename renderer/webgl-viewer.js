@@ -299,6 +299,12 @@
       this._cloudDisplay = { pointSize: 1, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };
       this._ptElev = false; this._cloudColorMode = 'rgb';
       this._ptBright = 1; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
+      // r145: как в Lixel — адаптивный (перспективный) размер точки по умолчанию (3–4 px при 1920×1080/1440).
+      // fixedPx (слайдер) остаётся ручным режимом; авто включается приложением/панелью производительности.
+      this._autoPointSize = false; this._autoPointBasePx = 3.2; this._motionSizeScale = 0.82;
+      // r145: динамическое разрешение во время вращения и режимы качества auto/high/fast.
+      this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.75; this._qualityMode = 'auto';
+      this._streamCpuMaxPoints = 160000000;   // потоковые копии частей в RAM — только для облаков до 160 млн
       this._denseFill = false; this._frameBox = false; // плотная заливка при приближении; чёрные рамки точек
       // Фотореалистичная цветокоррекция (тонмаппинг) — включена по умолчанию: убирает выбитый белый, даёт контраст/цвет «как фото».
       this._grade = { on: false, exposure: 1.06, contrast: 1.14, saturation: 1.22, gamma: 1.02, tone: 0.85 };
@@ -343,7 +349,8 @@
     }
 
     _resize() {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      // r145: масштаб рендера (динамическое разрешение во время вращения) — 1 в покое.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2) * (this._renderScale || 1);
       const w = this.canvas.clientWidth || 800, h = this.canvas.clientHeight || 600;
       const dw = Math.max(1, Math.round(w * dpr)), dh = Math.max(1, Math.round(h * dpr));
       if (this.canvas.width !== dw) this.canvas.width = dw;
@@ -768,8 +775,18 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     renderOverlay() { this._queueFrame(); }
     _queueFrame() { if (this._rafPending) { this._dirty = true; return; } this._rafPending = true; this._dirty = false; const self = this; requestAnimationFrame(() => { self._rafPending = false; try { self._renderNow(); } catch (e) { console.warn('render', e); } if (self._dirty) { self._dirty = false; self._queueFrame(); } }); }
     // «Идёт взаимодействие»: во время вращения/панорамы/зума рисуем прореженное облако для плавности.
-    _beginInteract() { this._interacting = true; if (this._idleT) { clearTimeout(this._idleT); this._idleT = 0; } }
-    _endInteractSoon(ms) { if (this._idleT) clearTimeout(this._idleT); const self = this; this._idleT = setTimeout(() => { self._idleT = 0; self._interacting = false; self.render(); }, ms == null ? (self._octActive ? 320 : 160) : ms); }
+    _beginInteract() { this._interacting = true; if (this._idleT) { clearTimeout(this._idleT); this._idleT = 0; } this._applyDynRes(true); }
+    _endInteractSoon(ms) { if (this._idleT) clearTimeout(this._idleT); const self = this; this._idleT = setTimeout(() => { self._idleT = 0; self._interacting = false; self._applyDynRes(false); self.render(); }, ms == null ? (self._octActive ? 320 : 160) : ms); }
+    // r145: динамическое разрешение — во время вращения холст меньше (быстрее растеризация),
+    // в покое возвращается 1:1 (резкая картинка). Выключается режимом «Высокое»/сеттингом.
+    _applyDynRes(moving) {
+      if (!this._dynRes) { if (this._renderScale !== 1) { this._renderScale = 1; try { this._resize(); } catch (e) { } } return; }
+      const target = moving ? Math.max(0.45, Math.min(1, this._dynScaleMoving || 0.75)) : 1;
+      if (Math.abs((this._renderScale || 1) - target) < 0.01) return;
+      this._renderScale = target;
+      try { this._resize(); } catch (e) { }
+      try { this.render(); } catch (e) { }
+    }
     // Однократное перемешивание точек (Fisher–Yates), чтобы префикс буфера был равномерной выборкой по всему облаку.
     _shuffleCloud(pos, col, intensity, classification) {
       const n = pos.length / 3; if (n < 2) return;
@@ -1137,7 +1154,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       const st = { total, srcTotal, every, cap, filled: 0, pos: new Float32Array(cap * 3), col: new Float32Array(cap * 3),
         int: info.hasIntensity ? new Float32Array(cap) : null, cls: info.hasClassification ? new Uint8Array(cap) : null };
       // ревизия 17: копии частей остаются в оперативной памяти (выделение, правка, чистка, классы, сохранение — renderer/big-cloud.js + webgl-viewer-big.js)
-      st.cpu = !!(this._bigInstalled && typeof window !== 'undefined' && window.BigCloud);
+      st.cpu = !!(this._bigInstalled && typeof window !== 'undefined' && window.BigCloud) && total <= (this._streamCpuMaxPoints || 160000000);
       const q = cloudQuality(Math.min(total || 1, 2000000000));
       const bb = info.bbox && info.bbox.mn && info.bbox.mx ? { mn: info.bbox.mn.slice(0, 3), mx: info.bbox.mx.slice(0, 3) } : { mn: [-1, 0, -1], mx: [1, 3, 1] };
       const bo = { id: null, points: true, pos: st.pos.subarray(0, 0), col: st.col.subarray(0, 0), intensity: null, classification: null,
@@ -2616,7 +2633,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         availableColorModes:this.getAvailableColorModes()
       });
     }
-    setCloudPointSize(value) {value=Number(value);if(!Number.isFinite(value))throw new RangeError('Некорректный размер точки');this._cloudDisplay.pointSize=Math.max(1,Math.min(10,value));this._ptSizeMul=1;this._attenuate=false;this._denseFill=false;this.render();this._notifyCloudChanged();return this._cloudDisplay.pointSize;}
+    setCloudPointSize(value) {value=Number(value);if(!Number.isFinite(value))throw new RangeError('Некорректный размер точки');this._autoPointSize=false;this._cloudDisplay.pointSize=Math.max(1,Math.min(10,value));this._ptSizeMul=1;this._attenuate=false;this._denseFill=false;this.render();this._notifyCloudChanged();return this._cloudDisplay.pointSize;}
     setCloudOpacity(value) {value=Number(value);if(!Number.isFinite(value))throw new RangeError('Некорректная непрозрачность');this._cloudDisplay.opacity=Math.max(0,Math.min(1,value));if(this._cloudDisplay.opacity===0)this.clearSelection();this.render();this._notifyCloudChanged();return this._cloudDisplay.opacity;}
     setCloudHeightRange(min,max) {min=Number(min);max=Number(max);if(!Number.isFinite(min)||!Number.isFinite(max)||min>max)throw new RangeError('Начало диапазона должно быть не больше конца');this._cloudDisplay.min=min;this._cloudDisplay.max=max;if(this._heightFilter())this.clearSelection();this.render();this._notifyCloudChanged();return [min,max];}
     setCloudPalette(value) {this._cloudDisplay.palette=({rainbow:0,gray:1,warm:2})[value]??0;this.render();this._notifyCloudChanged();}
@@ -2672,7 +2689,39 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this.render(); return Object.assign({}, this._grade);
     }
     getGrade() { return Object.assign({}, this._grade || {}); }
-    setPointSizeScale(m) { m = +m; if (!isFinite(m)) m = 1; this._ptSizeMul = Math.max(0.3, Math.min(4, m)); this._cloudDisplay.pointSize=Math.max(1,Math.min(10,(this.base[0]?.pointSize||2.2)*this._ptSizeMul)); this.render(); this._notifyCloudChanged(); return this._ptSizeMul; }
+    setPointSizeScale(m) {
+      m = +m; if (!isFinite(m)) m = 1;
+      this._ptSizeMul = Math.max(0.3, Math.min(4, m));
+      if (this._autoPointSize) { this.render(); this._notifyCloudChanged(); return this._ptSizeMul; }  // r145: в авто-режиме слайдер — множитель адаптивной базы
+      this._cloudDisplay.pointSize = Math.max(1, Math.min(10, (this.base[0]?.pointSize || 2.2) * this._ptSizeMul));
+      this.render(); this._notifyCloudChanged(); return this._ptSizeMul;
+    }
+    // r145: адаптивный (перспективный) размер точки, как в Lixel. Слайдер размера остаётся (множитель базы).
+    setAutoPointSize(on) { this._autoPointSize = on !== false; if (this._autoPointSize) { this._cloudDisplay.pointSize = null; this._attenuate = false; this._denseFill = false; } this.render(); this._notifyCloudChanged(); return this._autoPointSize; }
+    autoPointSizeOn() { return !!this._autoPointSize; }
+    setPointBasePx(px) { const v = +px; if (isFinite(v)) this._autoPointBasePx = Math.max(1.5, Math.min(8, v)); this.render(); return this._autoPointBasePx; }
+    // r145: качество рендера auto/high/fast — бюджеты точек при движении и динамическое разрешение.
+    setQualityMode(mode) {
+      mode = (mode === 'high' || mode === 'fast') ? mode : 'auto';
+      this._qualityMode = mode;
+      if (mode === 'high') { this._interBudget = 2000000000; this._dynScaleMoving = 1; this._dynRes = false; this._motionSizeScale = 1; this._autoPointBasePx = 4.0; }
+      else if (mode === 'fast') { this._interBudget = 24000000; this._dynScaleMoving = 0.5; this._dynRes = true; this._motionSizeScale = 0.7; this._autoPointBasePx = 3.0; }
+      else { this._interBudget = 128000000; this._dynScaleMoving = 0.75; this._dynRes = true; this._motionSizeScale = 0.82; this._autoPointBasePx = 3.2; }
+      if (!this._interacting) { this._renderScale = 1; }
+      try { this._resize(); } catch (e) { }
+      this.render(); this._notifyCloudChanged();
+      return this._qualityMode;
+    }
+    qualityMode() { return this._qualityMode || 'auto'; }
+    setRenderScale(s) { s = +s; if (!isFinite(s)) s = 1; this._renderScale = Math.max(0.4, Math.min(1, s)); this._resize(); this.render(); return this._renderScale; }
+    getRenderScale() { return this._renderScale || 1; }
+    // r145: «Как в Lixel» — яркость/насыщенность под эталон (brightness ×1.36, saturation ×1.29), резкость не размывается.
+    setLixelLook(on) {
+      if (on === false) { this.setBrightness(1); this.setGrade(false); return false; }
+      this.setBrightness(1.36);
+      this.setGrade({ on: true, exposure: 1.0, contrast: 1.0, saturation: 1.29, gamma: 1.0, tone: 0 });
+      return true;
+    }
     setEDL(on) { this._edl = !!on; if (this._edl && !this._edlReady) this._edlInit(); this.render(); return this._edl && !!this._edlReady; }
     // Постоянный размер точки на экране (как в CloudCompare) ↔ растёт при приближении
     setAttenuate(on) { this._attenuate = !!on; this._cloudDisplay.pointSize=on?null:1;this._notifyCloudChanged(); this.render(); return this._attenuate; }
@@ -2950,8 +2999,18 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const isCloud = !(o._isStation || o._isSel);
         gl.uniform1f(this.u.uCloudPass,isCloud?1:0);
         const vh = gl.canvas.height || 600;
-        const fixedPx=isCloud && this._cloudDisplay ? this._cloudDisplay.pointSize : null;
-        const baseSize = fixedPx || ((o.pointSize || 2.2) * psm);
+        // r145: адаптивный по дистанции размер точки (как в Lixel): база 3–4 px при 1920×1080/1440,
+        // вблизи точки растут (attenuation), в движении чуть мельче. Ручной слайдер (fixedPx) главнее.
+        const autoPx = isCloud && this._autoPointSize && !this._frameBox && !this._denseFill && !this._attenuate;
+        const fixedPx = (!autoPx && isCloud && this._cloudDisplay) ? this._cloudDisplay.pointSize : null;
+        let baseSize = fixedPx || ((o.pointSize || 2.2) * psm);
+        if (autoPx) {
+          const vhA = (gl.canvas && gl.canvas.height) || 1080;
+          const dprA = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2) * (this._renderScale || 1);
+          const hCss = vhA / Math.max(0.5, dprA);
+          const auto = Math.max(2.8, Math.min(4.5, hCss / 1200 * (this._autoPointBasePx || 3.2))) * (this._ptSizeMul || 1);
+          baseSize = Math.max(1.2, auto * (this._interacting ? Math.max(0.5, this._motionSizeScale || 0.82) : 1));
+        }
         // ревизия 8: при движении рисуем только часть точек (адаптивно по времени кадра); размер точек растёт на корень из доли пропущенного, чтобы поверхность не рассыпалась
         let dcI = o.count;
         if (isCloud && this._interacting && o._shuffled && !o._lod && !(this._octMovePct >= 100)) { const b = this._interBudget || 4000000; if (dcI > b) dcI = b; dcI = Math.min(dcI, this._octMovePct > 0 ? Math.max(100000, Math.round(o.count * this._octMovePct / 100)) : this.interactivePointBudget(o.count)); }   // ревизия 14: «Все точки» (100) — при движении тоже рисуется всё облако

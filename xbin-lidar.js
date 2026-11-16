@@ -245,8 +245,26 @@ function lasHeader(o) {
 }
 
 const DEF = { minRange: 0.5, maxRange: 120, maxPoints: 40e6, step: 0, t0: null, t1: null, maxMotorGap: 0.05, imu: true, imuShift: 0, position: 'hermite', poseStep: 0.005,
-  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false };
+  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false };
 
+// ---------- ревизия 145: VOXEL-балансировка плотности (по умолчанию ВЫКЛ) ----------
+// Мультипроходы дают на земле/фасаде смесь плотных и разреженных участков. balance ограничивает число точек
+// в вокселе поверхности (одна точка на ~1 см² для voxel=0.01 и cap=10), выравнивая «ковёр»; на разреженные
+// участки не влияет (точки не добавляются). opt.balance = false | true | {voxel, cap}.
+const DEF_BALANCE = { voxel: 0.02, cap: 20 };
+function normalizeBalance(b) {
+  if (b === false || b == null) return null;
+  if (b === true) b = {};
+  if (typeof b !== 'object' || Array.isArray(b)) throw new Error('opt.balance: ожидается false|true|объект {voxel, cap}');
+  const unknown = Object.keys(b).filter(k => k !== 'enabled' && k !== 'voxel' && k !== 'cap');
+  if (unknown.length) throw new Error('opt.balance: неизвестные параметры: ' + unknown.join(', '));
+  if (b.enabled === false) return null;
+  const voxel = b.voxel === undefined ? DEF_BALANCE.voxel : Number(b.voxel);
+  const cap = b.cap === undefined ? DEF_BALANCE.cap : Number(b.cap);
+  if (!Number.isFinite(voxel) || voxel <= 0) throw new Error('opt.balance.voxel: должно быть > 0 (м)');
+  if (!Number.isInteger(cap) || cap < 1 || cap > 65535) throw new Error('opt.balance.cap: целое 1..65535');
+  return { voxel, cap };
+}
 // ---------- ревизия 133: безопасный фильтр неба/далёких бликов (по умолчанию ВЫКЛ) ----------
 // Три критерия (все — только для удаления «неестественных» точек):
 //   height — мировая высота wz > maxHeight (небо, блики, перелётные отражения);
@@ -326,6 +344,17 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
   const EDGE = o.edge !== false && o.edge !== 0, eMin = o.edgeMin > 0 ? o.edgeMin : 0.15, eRel = o.edgeRel >= 0 ? o.edgeRel : 0.02, eGap = o.edgeGap > 0 ? o.edgeGap : 0.0003;
   // ревизия 133: фильтр неба/дальних бликов — только при включённом opt.sky (по умолчанию выкл.)
   const SKY = normalizeSky(o.sky);
+  // ревизия 145: VOXEL-балансировка плотности (не влияет на разреженные участки, только ограничивает плотные)
+  const BAL = normalizeBalance(o.balance);
+  let balanced = 0, balCnt = null;
+  const BAL_MASK = (1 << 22) - 1;
+  const balAllow = (x, y, z) => {
+    if (!BAL) return true;
+    if (!balCnt) balCnt = new Uint16Array(1 << 22);
+    const k = (Math.imul(Math.floor(x / BAL.voxel), 73856093) ^ Math.imul(Math.floor(y / BAL.voxel), 19349663) ^ Math.imul(Math.floor(z / BAL.voxel), 83492791)) & BAL_MASK;
+    if (balCnt[k] >= BAL.cap) return false;
+    balCnt[k]++; return true;
+  };
   let skyTotal = 0, skyHeight = 0, skyRange = 0, skySparse = 0;
   const skyCount = (why) => { skyTotal++; if (why === 'height') skyHeight++; else if (why === 'range') skyRange++; else skySparse++; };
   const NR = 256, Hr = new Float64Array(NR * 5), Ht = new Float64Array(NR * 5).fill(-1e18), Hp = new Uint8Array(NR * 5), Hv = new Float64Array(NR * 5 * 12), Hh = new Uint8Array(NR);
@@ -364,6 +393,7 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
       const why = skyRejectPoint(SKY, wz, rr, nb);
       if (why) { skyCount(why); return; }
     }
+    if (BAL && !balAllow(Hv[q], Hv[q + 1], Hv[q + 2])) { balanced++; return; }
     cb(Hv[q], Hv[q + 1], Hv[q + 2], Hv[q + 3], Hv[q + 4], Hv[q + 5], Hv[q + 6], Hv[q + 7], Hv[q + 8], Hv[q + 9], Hv[q + 10], Hv[q + 11]);
   };
   for (const r of C.recs) {
@@ -426,15 +456,15 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
         if (EDGE) slot(R, t, Math.sqrt(d2), true, wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
         else if (SKY) {
           const why = skyRejectPoint(SKY, wz, Math.sqrt(d2), -1);
-          if (why) skyCount(why); else cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
-        } else cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz);
+          if (why) skyCount(why); else if (!BAL || balAllow(wx, wy, wz)) cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz); else balanced++;
+        } else if (!BAL || balAllow(wx, wy, wz)) cb(wx, wy, wz, t, I, R, cx, cy, cz, mxx, myy, mzz); else balanced++;
       }
     }
     if (onBytes) onBytes(r.len);
   }
   // конец окна: отложенные точки — без правых соседей, остаются
   if (EDGE) for (let ring = 0; ring < NR; ring++) { slot(ring, -1e18, Infinity, false); slot(ring, -1e18, Infinity, false); }
-  return { skipped, empty, packets, self, edge, sky: SKY ? { total: skyTotal, height: skyHeight, range: skyRange, sparse: skySparse } : null };
+  return { skipped, empty, packets, self, edge, sky: SKY ? { total: skyTotal, height: skyHeight, range: skyRange, sparse: skySparse } : null, balance: balanced };
 }
 
 /**
@@ -478,7 +508,7 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
         const w0 = Math.min(...recsProbe.map(r => r.t)) - 0.02;
         const w1 = Math.min(C.T1, Math.max(...recsProbe.map(r => r.t)) + 0.5);
         let kept = 0;
-        walk(fd, Object.assign({}, C, { recs: recsProbe }), o, w0, w1, 1, () => { kept++; });
+        walk(fd, Object.assign({}, C, { recs: recsProbe }), Object.assign({}, o, { balance: false }), w0, w1, 1, () => { kept++; });
         if (kept > 0) keepFrac = Math.max(0.05, Math.min(1, kept / msgs));
       }
     } catch (_) { /* оценка не критична — остаётся консервативные 0.6 */ }
@@ -528,7 +558,7 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
     prog(1, 'Облако из .xbin: готово');
     const TR = C.TR;
     return { points: n, step, estimated: Math.round(est), estimatedKept: Math.round(estKept), keepFrac: +keepFrac.toFixed(4), bpp: +bpp.toFixed(3), attempts,
-      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, sky: W.sky, min: mn, max: mx,
+      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, sky: W.sky, balance: W.balance || 0, min: mn, max: mx,
       lidarCh: C.S.lidarCh, motorCh: C.S.motorCh, imuCh: C.S.imuCh,
       trajectory: { imu: TR.imu, imuIntervals: TR.imuIntervals, intervals: TR.intervals, gaps: TR.gaps, position: TR.position, corrMedianDeg: TR.corrMedianDeg, refined: !!refineInfo },
       refine: refineInfo ? refineInfo.summary : null };
@@ -538,4 +568,4 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
   }
 }
 
-module.exports = { scan, build, prepare, walk, motorAt, parseMotorMsg, parseImuMsg, looksLidar, lasHeader, makeTrajectory, qexp, qmul, qToMat, normalizeSky, skyRejectPoint, DEF_SKY, DEF };
+module.exports = { scan, build, prepare, walk, motorAt, parseMotorMsg, parseImuMsg, looksLidar, lasHeader, makeTrajectory, qexp, qmul, qToMat, normalizeSky, skyRejectPoint, DEF_SKY, normalizeBalance, DEF_BALANCE, DEF };
