@@ -1,7 +1,7 @@
 # P2P3-INTEGRATION-r155 — CRS/координаты, Mesh-инструменты, Clipping Box
 
-Статус: **интеграция выполнена**, E2E в реальном Electron пройден (см. ниже), тесты `node --test` зелёные.
-Ничего не закоммичено; файлы phase1-geometry (`crs-tools*.py`, `mesh-tools*.py`) и editor-basics (`clip-p3.js`, `app.js`, startup) не изменялись.
+Статус: **интеграция выполнена**, E2E в реальном Electron пройден (все 18 проверок PASS), полный `node --test` — **1788 тестов / 1784 pass / 0 fail / 4 skipped**.
+Мои изменения вошли в общий коммит **r156** (делал Lead) и **r157** (фиксы phase1-geometry); сам я ничего не коммитил. Файлы phase1-geometry (`crs-tools*.py`, `mesh-tools*.py`) и editor-basics (`clip-p3.js`, `app.js`, startup) я не изменял.
 
 ## 1. Что подключено
 
@@ -56,22 +56,36 @@
 
 Данные: синтетическое облако **272 500 точек**, UTM 36N (`E≈500000, N≈6180000`), LAS 1.2 fmt 3; mesh — куб с отверстием (PLY, 125 вершин/160 треугольников). Скриншоты: `D:\BIM-TWIN-TEST\r55\p2p3-r155\shots\`.
 
-<!-- E2E-TABLE -->
+| Проверка | Результат |
+|---|---|
+| Статус моста | `{ok:true, python:'python3', tools:{crs:true, mesh:true}, open3d:false}` |
+| CRS info | EPSG:32636, 272 500 т., bbox `499996.983…500007.1 / 6179997.985…6180004.099 / −0.016…3.5`; углы WGS84 lon `32.9999519…33.0001131`, lat `55.7656538…55.7657087`; 0.27 с; JSON + WKT в панели |
+| CRS georef | `--update-header --out-las --georef-file`: VLR 2 записи; `georef-header.las` + `georef.json`; 0.82 с; результат открыт в сцене |
+| CRS reproject → 25836 | 0.90 с; `reprojected.las`; `transform.target_epsg=25836`, bbox в метрах |
+| CRS reproject → 4326 | 0.78 с; `transform.target_epsg=4326`, `bbox_after` `32.9999519…33.0001131° / 55.7656538…55.7657087°`; файл открыт в сцене |
+| CRS reproject → local | `ok:true`, `target_epsg=0`, WKT `LOCAL_CS["USK/local"]`, bbox identity (`499996.983…6179997.985…`) |
+| CRS corners | CSV `corner,E,N,lon,lat` + JSON в `%APPDATA%\bim-twin\p2p3-r155\crs-*`; 4 угла в таблице |
+| Mesh-панель | панель открывается, операции/параметры на месте; кнопка запуска disabled из-за отсутствия Open3D — понятное сообщение в панели |
+| Mesh bridge | прямой вызов: `{ok:false, needOpen3D:true, error:'Mesh-инструменты требуют Open3D…'}` — без падения UI |
+| Clipping Box UI (editor-basics) | панель `#lxClipP3Panel` открывается, `__lxClipBox` активен; срез по половине объёма → **31 959 точек**; сохранён `clip-fragment.ply` **479 564 Б**, открыт в сцене; формат PLY |
+| Ошибки консоли | **0** |
+| Скриншоты | `01-crs-info.png`, `02-crs-corners.png`, `03-crs-georef.png`, `04-crs-reproject.png`, `04b-crs-reproject-4326.png`, `05-mesh-tools.png`, `06-clip-applied.png`, `07-clip-saved.png` |
+
+Примечание: при первом прогоне E2E обнаружились баги `crs-tools.py` (overflow int32 при записи WGS84 LAS; `--to local` → `epsg_info(0)`). Баг-репорт передан phase1-geometry, оба исправлены (коммит r157, `crs-tools-test.py` 19/19 PASS); финальный E2E выше — уже на исправленной версии, пересчёт в 4326 и local проходят.
 
 ## 4. Тесты
 
 - `node --test test/r155-p23.test.js` — **10/10 pass**.
 - `node --test test/ui-system.test.js test/r149-p1-tools.test.js test/r151-p1-integration.test.js test/r155-p23.test.js` — **37/37 pass** (id панелей/иконки/редизайн не сломаны).
-- Полный `node --test` — <!-- FULL-SUITE -->.
-- Python: `crs-tools-test.py` — **14/14 PASS** (phase1); `mesh-tools-test.py` — **11/11 PASS** (phase1).
+- Полный `node --test` — **1788 тестов / 1784 pass / 0 fail / 4 skipped** (`duration 89 с`).
+- Python: `crs-tools-test.py` — **19/19 PASS** (phase1, r157, включая 5 регрессий на исправленные 4326/local/широкий диапазон); `mesh-tools-test.py` — **11/11 PASS** (phase1).
 
-## 5. Известные ограничения/найденные баги (не мои файлы)
+## 5. Известные ограничения
 
-1. **`crs-tools.py`, пересчёт в `4326`** — падает `struct.error: 'i' format requires ...` при записи LAS (scale/offset для градусных координат). UI показывает понятную ошибку, не падает (см. скриншот `04b`). Пересчёт `32636→25836` и georef работают. Баг передан phase1-geometry.
-2. **`crs-tools.py`, `--to local`** — `ValueError: неподдерживаемый EPSG: 0` в `transform_las` (local-ветка недостижима из-за раннего `epsg_info(0)`). Передан phase1-geometry; UI готов (target «Локальная система» + `--local-params`).
-3. **Mesh-инструменты требуют Open3D**, которого нет в текущем Python-окружении: операции недоступны, панель это честно сообщает; интеграция/аргументы/JSON/открытие результата готовы и протестированы на уровне моста/юнитов.
-4. Клип-бокс: только axis-aligned (поворот — phase 2), форматы фрагмента PLY/PCD/XYZ (LAS/RCP/Protobuf — через экспорт/недоступны).
-5. E2E использует синтетические данные; для реального проекта рекомендуется прогон на облаке с VLR EPSG и (для Mesh) с Open3D.
+1. **Mesh-инструменты требуют Open3D**, которого нет в текущем Python-окружении: операции недоступны, панель честно сообщает; интеграция/аргументы/JSON/открытие результата готовы и протестированы на уровне моста/юнитов. В окружении phase1 `mesh-tools-test.py` — 11/11 PASS.
+2. Клип-бокс: только axis-aligned (поворот — phase 2), форматы фрагмента PLY/PCD/XYZ (LAS/RCP/Protobuf — через экспорт/недоступны).
+3. E2E использует синтетические данные; для реального проекта рекомендуется прогон на облаке с VLR EPSG и (для Mesh) с Open3D.
+4. Найденные в первом прогоне баги `crs-tools.py` (WGS84-запись и `--to local`) **исправлены phase1-geometry** (коммит r157); в `crs-tools.py` я ничего не менял. `crs-tools.py`/`mesh-tools.py`/`CRS-MESH-r155.md` остаются зоной phase1-geometry.
 
 ## 6. Воспроизведение
 
