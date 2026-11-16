@@ -23,7 +23,7 @@ const R = require('./scan-refine-core');
 const DEF = {
   mode: 'hist', passSec: 20, band: 0.15, planeBand: 0.03, minPlanePts: 3000, maxPlanes: 20,
   minPassPts: 50000, maxShift: 0.25, sample: 250000,
-  icpMaxPoints: 300000, icpMinInlier: 0.35, icpMaxRotDeg: 5, icpMaxTransM: 1.0, refMaxPts: 400000, icpTimeoutMs: 180000
+  icpMaxPoints: 300000, icpMinInlier: 0.35, icpMinOverlap: 0.35, icpMinPlanes: 1, icpMaxYawDeg: 5, icpMaxShiftM: 1.0, icpMaxTiltDeg: 5, refMaxPts: 400000, icpTimeoutMs: 180000
 };
 
 let _py = undefined, _icpAvail = undefined;
@@ -319,7 +319,7 @@ function histStage(fd, H, o, prog) {
     }
     prog(0.02 + 0.33 * (i + c) / H.n, 'Слияние проходов: разброс проходов…');
   }
-  const shifts = new Float64Array(nPass * 3), meds = new Array(nPass).fill(null);
+  const shifts = new Float64Array(nPass * 3), meds = new Array(nPass).fill(null), planeCounts = new Int32Array(nPass);
   let passCount = 0, shiftSum = 0, shiftMax = 0;
   for (let k = 0; k < nPass; k++) {
     if (!hst[k] || cnt[k] < o.minPassPts) continue;
@@ -332,7 +332,7 @@ function histStage(fd, H, o, prog) {
       for (let b = 0; b < BINS; b++) { acc += hist[b]; if (acc * 2 >= total) { med = (b - MID) * BMM; break; } }
       obs.set(planes[j], { median: med, count: total });
     }
-    meds[k] = obs;
+    meds[k] = obs; planeCounts[k] = obs.size;
     const tS = solveShift(planes, obs);
     shifts[k * 3] = tS.tx; shifts[k * 3 + 1] = tS.ty; shifts[k * 3 + 2] = tS.tz;
     const nn = Math.hypot(tS.tx, tS.ty, tS.tz); shiftSum += nn; if (nn > shiftMax) shiftMax = nn;
@@ -353,12 +353,32 @@ function histStage(fd, H, o, prog) {
     sig.sort((a, b) => a - b);
     return { planes: sig.length, median_sigma_mm: sig.length ? +sig[sig.length >> 1].toFixed(2) : null, max_sigma_mm: sig.length ? +sig[sig.length - 1].toFixed(2) : null };
   }
-  return { sample, planes, vplanes, t0, t1, nPass, passCount, shifts, shiftSum, shiftMax, residualBefore: spread(false), residualAfter: spread(true) };
+  return { sample, planes, vplanes, t0, t1, nPass, passCount, shifts, planeCounts, shiftSum, shiftMax, residualBefore: spread(false), residualAfter: spread(true) };
 }
 
 // ---------- ICP-стадия: последовательная опорная карта ----------
+/** r161: физический отбор ICP-трансформации (yaw+XYZ, клампы). Возвращает {applied,reason,yawDeg,tiltDeg,shiftM,overlap,planes}. */
+function evaluateIcp(M, inlier, planes, o) {
+  const opt = o || {};
+  if (!M) return { applied: false, reason: 'no-matrix' };
+  const yaw = Math.atan2(M[1][0], M[0][0]);
+  const pitch = Math.asin(Math.max(-1, Math.min(1, -M[2][0])));
+  const roll = Math.atan2(M[2][1], M[2][2]);
+  const yawDeg = Math.abs(yaw * 180 / Math.PI);
+  const tiltDeg = Math.max(Math.abs(pitch * 180 / Math.PI), Math.abs(roll * 180 / Math.PI));
+  const shiftM = Math.hypot(M[0][3], M[1][3], M[2][3]);
+  const overlap = Number(inlier), np = planes || 0;
+  let reason = null;
+  if (!(overlap >= (opt.icpMinOverlap || 0.6))) reason = 'low-overlap';
+  else if (np < (opt.icpMinPlanes || 3)) reason = 'few-planes';
+  else if (!(yawDeg <= (opt.icpMaxYawDeg || 1.5))) reason = 'yaw-clamp';
+  else if (!(tiltDeg <= (opt.icpMaxTiltDeg || 5))) reason = 'tilt-clamp';
+  else if (!(shiftM <= (opt.icpMaxShiftM || 0.3))) reason = 'shift-clamp';
+  return { applied: !reason, reason, yaw, yawDeg, tiltDeg, shiftM, overlap, planes: np };
+}
+
 function icpStage(src, H, hist, o, tmpDir, prog) {
-  if (!icpAvailable()) return { ok: false, reason: 'no-python-or-open3d' };
+  if (!icpAvailable() && typeof o.icpMock !== 'function') return { ok: false, reason: 'no-python-or-open3d' };
   const py = findPython(), tool = icpToolPath();
   if (!py || !fs.existsSync(tool)) return { ok: false, reason: 'no-python-or-tool' };
   const shiftOf = (t) => { const k = passIdOf(t, hist.t0, o.passSec); return k < hist.nPass ? [hist.shifts[k * 3], hist.shifts[k * 3 + 1], hist.shifts[k * 3 + 2]] : [0, 0, 0]; };
@@ -383,7 +403,8 @@ function icpStage(src, H, hist, o, tmpDir, prog) {
       refN = w;
     }
   };
-  const initN = o.refMode === 'global' ? passFiles.length : Math.min(3, passFiles.length);
+  const useGlobal = o.refMode === 'global' || (o.refMode === undefined && passFiles.length <= 30);
+  const initN = useGlobal ? passFiles.length : Math.min(3, passFiles.length);
   const initPer = Math.max(1, Math.ceil(refMax / initN));
   for (let i = 0; i < initN; i++) { const rd = readLasXyz(passFiles[i].file, null, initPer); addRef(rd.xyz, rd.n, initPer); }
   if (refN < 1000) return { ok: false, reason: 'empty-ref' };
@@ -395,29 +416,28 @@ function icpStage(src, H, hist, o, tmpDir, prog) {
   for (let idx = 0; idx < passFiles.length; idx++) {
     const pf = passFiles[idx];
     const outJson = path.join(tmpDir, 'reg-' + pf.k + '.json');
-    let applied = false, reg = null;
+    let applied = false, rr = null;
     try {
-      const r = spawnSync(py, [tool, '--ref', refLas, '--src', pf.file, '--mode', 'icp', '--max-points', String(o.icpMaxPoints || 300000), '--out', outJson], { timeout: maxAge, windowsHide: true, encoding: 'utf8' });
-      if (r.status === 0 && fs.existsSync(outJson)) {
-        reg = JSON.parse(fs.readFileSync(outJson, 'utf8'));
-        const rr = reg.results && reg.results[0];
-        if (rr && rr.matrix && rr.rms) {
-          const M = rr.matrix;
-          const tr = M[0][0] + M[1][1] + M[2][2];
-          const rotDeg = Math.acos(Math.min(1, Math.max(-1, (tr - 1) / 2))) * 180 / Math.PI;
-          const transM = Math.hypot(M[0][3], M[1][3], M[2][3]);
-          const ok = rr.rms.inlier_ratio >= (o.icpMinInlier || 0.35) && rotDeg <= (o.icpMaxRotDeg || 5) && transM <= (o.icpMaxTransM || 1.0);
-          if (ok) { matrices.set(pf.k, M); applied = true; }
-          stats.push({ pass: pf.k, rmsInlierM: rr.rms.rms_inlier_m, inlier: rr.rms.inlier_ratio, rotDeg: rr.transform && rr.transform.rotation_deg, applied, reason: ok ? null : 'implausible-transform' });
-        } else stats.push({ pass: pf.k, applied: false, reason: 'no-matrix' });
-      } else stats.push({ pass: pf.k, applied: false, error: (r.stderr || '').slice(-200) });
+      if (typeof o.icpMock === 'function') { rr = o.icpMock(pf.k, pf.points); }
+      else {
+        const r = spawnSync(py, [tool, '--ref', refLas, '--src', pf.file, '--mode', 'icp', '--max-points', String(o.icpMaxPoints || 300000), '--out', outJson], { timeout: maxAge, windowsHide: true, encoding: 'utf8' });
+        if (r.status === 0 && fs.existsSync(outJson)) { const reg = JSON.parse(fs.readFileSync(outJson, 'utf8')); rr = reg.results && reg.results[0]; rr = rr ? { matrix: rr.matrix, inlier: rr.rms && rr.rms.inlier_ratio, rmsM: rr.rms && rr.rms.rms_inlier_m } : null; }
+        else { stats.push({ pass: pf.k, applied: false, error: (r.stderr || '').slice(-200) }); rr = null; }
+      }
+      if (rr && rr.matrix) {
+        const M = rr.matrix;
+        const planes = hist.planeCounts && hist.planeCounts[pf.k] ? hist.planeCounts[pf.k] : 0;
+        const ev = evaluateIcp(M, rr.inlier, planes, o);
+        if (ev.applied) { matrices.set(pf.k, { M, yaw: ev.yaw }); applied = true; }
+        stats.push({ pass: pf.k, points: pf.points, overlap: Number.isFinite(ev.overlap) ? +ev.overlap.toFixed(3) : null, planes, rmsInlierM: rr.rmsM, yawDeg: +ev.yawDeg.toFixed(3), tiltDeg: +ev.tiltDeg.toFixed(3), shiftM: +ev.shiftM.toFixed(3), applied, reason: ev.reason });
+      } else stats.push({ pass: pf.k, points: pf.points, applied: false, reason: 'no-matrix' });
     } catch (e) { stats.push({ pass: pf.k, applied: false, error: String((e && e.message) || e) }); }
     if (applied) {
-      // пополняем опорную карту уже выровненными точками прохода
-      const rd = readLasXyz(pf.file, null, 60000);
-      const M = matrices.get(pf.k);
-      for (let i = 0; i < rd.n; i++) { const x = rd.xyz[i * 3], y = rd.xyz[i * 3 + 1], z = rd.xyz[i * 3 + 2]; rd.xyz[i * 3] = M[0][0] * x + M[0][1] * y + M[0][2] * z + M[0][3]; rd.xyz[i * 3 + 1] = M[1][0] * x + M[1][1] * y + M[1][2] * z + M[1][3]; rd.xyz[i * 3 + 2] = M[2][0] * x + M[2][1] * y + M[2][2] * z + M[2][3]; }
-      addRef(rd.xyz, rd.n, 60000);
+      // пополняем опорную карту уже выровненными (yaw+сдвиг) точками прохода
+      const rd = readLasXyz(pf.file, null, 40000);
+      const { M, yaw } = matrices.get(pf.k), cy = Math.cos(yaw), sy = Math.sin(yaw);
+      for (let i = 0; i < rd.n; i++) { const x = rd.xyz[i * 3], y = rd.xyz[i * 3 + 1], z = rd.xyz[i * 3 + 2]; rd.xyz[i * 3] = cy * x - sy * y + M[0][3]; rd.xyz[i * 3 + 1] = sy * x + cy * y + M[1][3]; rd.xyz[i * 3 + 2] = z + M[2][3]; }
+      addRef(rd.xyz, rd.n, 40000);
       writeSimpleLas(refXyz.subarray(0, refN * 3), refN, refLas);
     }
     try { fs.unlinkSync(pf.file); } catch (_) {}
@@ -448,16 +468,21 @@ function fuseLas(src, dst, opt, onProgress) {
       shiftMaxMm: +(hist.shiftMax * 1000).toFixed(2), residualBeforeMm: hist.residualBefore, residualAfterMm: hist.residualAfter
     };
     const shiftOf = (t) => { const k = passIdOf(t, hist.t0, o.passSec); if (k >= hist.nPass) return [0, 0, 0]; return o.zOnly ? [0, 0, hist.shifts[k * 3 + 2]] : [hist.shifts[k * 3], hist.shifts[k * 3 + 1], hist.shifts[k * 3 + 2]]; };
+    // r162: 'safe' (default) — r159; 'strict' — r161-отбор+клампы (yaw-only); 'global' — глобальная карта
+    const sel = o.fusionSelect === 'strict' ? 'strict' : (o.fusionSelect === 'global' ? 'global' : 'safe');
+    if (sel === 'strict') Object.assign(o, { icpMinOverlap: 0.6, icpMinPlanes: 3, icpMaxYawDeg: 1.5, icpMaxShiftM: 0.3 });
+    if (sel === 'global') Object.assign(o, { refMode: 'global' });
     const mode = o.mode === 'icp' ? 'icp' : 'hist';
+    o.fusionSelect = sel;
     if (mode === 'icp') {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbin-fusion-'));
       const icp = icpStage(src, H, hist, o, tmpDir, prog);
       if (icp.ok) {
-        const matrixOf = (k) => icp.matrices.get(k) || null;
-        const w = writeWithTransform(src, dst, H, { shiftOf, matrixOf, yawOnly: o.icpYawOnly ? true : false, t0: hist.t0, passSec: o.passSec, onProgress: (f) => prog(0.9 + 0.1 * f, 'Слияние проходов: запись с ICP…') });
+        const matrixOf = (k) => { const e = icp.matrices.get(k); return e ? e.M : null; };
+        const w = writeWithTransform(src, dst, H, { shiftOf, matrixOf, yawOnly: sel === 'strict', t0: hist.t0, passSec: o.passSec, onProgress: (f) => prog(0.9 + 0.1 * f, 'Слияние проходов: запись с ICP…') });
         prog(1, 'Слияние проходов: готово');
         return Object.assign(baseStats, {
-          mode: 'icp', points: w.points, removed: H.n - w.points,
+          mode: 'icp', fusionSelect: sel, refMode: o.refMode || 'auto', points: w.points, removed: H.n - w.points,
           icp: { applied: icp.applied, failed: icp.failed, refPoints: icp.refPoints, rmsInlierMedianM: icp.icpRmsMedianM, inlierMedian: icp.icpInlierMedian, runner: icp.icpRunner, passStats: icp.passStats },
           ms: Date.now() - t0ms
         });
@@ -476,4 +501,4 @@ function fuseLas(src, dst, opt, onProgress) {
   }
 }
 
-module.exports = { fuseLas, passBounds, passIdOf, ransacVertical, horizontalPlanes, solveShift, resolveMode, icpAvailable, findPython, readSample, setIcpAvailableForTest, DEF };
+module.exports = { fuseLas, passBounds, passIdOf, ransacVertical, horizontalPlanes, solveShift, resolveMode, evaluateIcp, icpAvailable, findPython, readSample, setIcpAvailableForTest, DEF };

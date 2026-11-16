@@ -568,7 +568,7 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
       const mode = F.resolveMode(o.fusion, T1 - T0);
       if (mode) {
         const ftmp = outLas + '.fused';
-        fusionInfo = F.fuseLas(outLas, ftmp, Object.assign({ mode, passSec: o.fusionPassSec, icpMaxPoints: o.fusionIcpMaxPoints }, o.fusionOpt || {}), (f, l) => prog(0.85 + 0.15 * f, l || 'Слияние проходов…'));
+        fusionInfo = F.fuseLas(outLas, ftmp, Object.assign({ mode, fusionSelect: o.fusionSelect || 'safe', passSec: o.fusionPassSec, icpMaxPoints: o.fusionIcpMaxPoints }, o.fusionOpt || {}), (f, l) => prog(0.85 + 0.15 * f, l || 'Слияние проходов…'));
         fs.renameSync(ftmp, outLas);
       }
     } catch (e) {

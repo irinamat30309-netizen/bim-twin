@@ -105,3 +105,52 @@ test('r159: сборка по умолчанию — auto (>600 с → icp), fus
   assert.match(read('xbin-fusion.js'), /cloud-register\.py/);
   assert.ok(require('../package.json').build.files.includes('xbin-fusion.js'));
 });
+test('r161: физический отбор ICP (yaw<=1.5°, сдвиг<=0.3 м, перекрытие>=0.6, >=3 плоскостей)', () => {
+  const mk = (tx, ty, tz, yawDeg, tiltDeg) => {
+    const y = yawDeg * Math.PI / 180, cy = Math.cos(y), sy = Math.sin(y);
+    const t = tiltDeg * Math.PI / 180, ct = Math.cos(t), st = Math.sin(t);
+    // yaw вокруг Z, затем наклон вокруг X (для проверки tilt-клампа)
+    return [[cy, -sy * ct, sy * st, tx], [sy, cy * ct, -cy * st, ty], [0, st, ct, tz], [0, 0, 0, 1]];
+  };
+  const o = {};
+  let ev = F.evaluateIcp(mk(0.02, -0.01, 0.005, 0.5, 0), 0.95, 5, o);
+  assert.ok(ev.applied, JSON.stringify(ev));
+  assert.strictEqual(F.evaluateIcp(mk(0, 0, 0, 10, 0), 0.95, 5, o).reason, 'yaw-clamp');
+  assert.strictEqual(F.evaluateIcp(mk(0.5, 0, 0, 0, 0), 0.95, 5, o).reason, 'shift-clamp');
+  assert.strictEqual(F.evaluateIcp(mk(0, 0, 0, 0, 10), 0.95, 5, o).reason, 'tilt-clamp');
+  assert.strictEqual(F.evaluateIcp(mk(0, 0, 0, 0, 0), 0.3, 5, o).reason, 'low-overlap');
+  assert.strictEqual(F.evaluateIcp(mk(0, 0, 0, 0, 0), 0.95, 2, o).reason, 'few-planes');
+});
+
+test('r161: мок ICP без Open3D — применяется только допустимая матрица, точки сохраняются', () => {
+  const d = tmpDir(), dst = path.join(d, 'out-mockicp.las');
+  const sc = makeScene(d, 8000, 4000, 3000);
+  F.setIcpAvailableForTest(false);
+  try {
+    const st = F.fuseLas(sc.src, dst, { mode: 'icp', passSec: 10, minPassPts: 500, sample: 200000,
+      icpMock: () => ({ matrix: [[1, 0, 0, 0.003], [0, 1, 0, -0.002], [0, 0, 1, 0.001], [0, 0, 0, 1]], inlier: 0.99 }) });
+    assert.strictEqual(st.mode, 'icp', JSON.stringify(st));
+    assert.ok(st.icp && st.icp.applied >= 1, JSON.stringify(st.icp));
+    assert.strictEqual(st.points, sc.n);
+    assert.strictEqual(readLas(dst).n, sc.n);
+  } finally { F.setIcpAvailableForTest(undefined); }
+});
+test('r162: default fusionSelect=safe (r159-профиль), strict/global — опциями', () => {
+  // безопасный профиль: rot<=5°, trans<=1 м, overlap>=0.35, плоскости>=1
+  const d0 = F.DEF;
+  assert.ok(d0.icpMaxYawDeg >= 5 && d0.icpMaxShiftM >= 1 && d0.icpMinOverlap <= 0.35 && d0.icpMinPlanes <= 1, JSON.stringify(d0));
+  // сборка по умолчанию пробрасывает fusionSelect='safe'
+  assert.match(read('xbin-lidar.js'), /fusionSelect: o\.fusionSelect \|\| 'safe'/);
+  // mock: yaw 3° — safe применяет, strict (кламп 1.5°) — отбрасывает и уходит в hist-fallback
+  const mk = (yawDeg) => { const y = yawDeg * Math.PI / 180, cy = Math.cos(y), sy = Math.sin(y);
+    return [[cy, -sy, 0, 0.002], [sy, cy, 0, -0.002], [0, 0, 1, 0.001], [0, 0, 0, 1]]; };
+  const mkRun = (sel) => {
+    const d = tmpDir(), dst = path.join(d, 'out-' + sel + '.las'); const sc = makeScene(d, 6000, 3000, 2000);
+    F.setIcpAvailableForTest(false);
+    try { return F.fuseLas(sc.src, dst, { mode: 'icp', fusionSelect: sel, passSec: 10, minPassPts: 500, sample: 200000,
+      icpMock: () => ({ matrix: mk(3), inlier: 0.99 }) }); }
+    finally { F.setIcpAvailableForTest(undefined); }
+  };
+  const safe = mkRun('safe'); assert.strictEqual(safe.mode, 'icp', JSON.stringify(safe)); assert.ok(safe.icp.applied >= 1);
+  const strict = mkRun('strict'); assert.strictEqual(strict.mode, 'hist-fallback', JSON.stringify(strict)); assert.ok(strict.icpFallback);
+});
