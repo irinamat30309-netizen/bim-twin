@@ -126,7 +126,7 @@
       { key: 'model', label: 'Модель', ico: 'building', count: '' },
       { key: 'docs', label: 'Документы', ico: 'file-text', count: '' },
       { key: 'scene', label: 'Сцена', ico: 'map-pin', count: '' },
-      { key: 'props', label: 'Свойства', ico: 'sliders', count: '' }
+      { key: 'props', label: 'Свойства', ico: 'sliders-horizontal', count: '' }
     ];
   }
   function buildData() {
@@ -189,7 +189,7 @@
     ensureStyles();
     var host = $id('stageSideR') || D.querySelector('.inspector') || D.body;
     var p = el('section', 'lx145-side lx145-props'); p.id = 'lx145Props'; p.setAttribute('data-lx145-panel', 'props');
-    p.innerHTML = '<h3><span class="ico">' + icon('sliders', 15) + '</span><span>Свойства</span></h3>' +
+    p.innerHTML = '<h3><span class="ico">' + icon('sliders-horizontal', 15) + '</span><span>Свойства</span></h3>' +
       '<div class="lx145-name"><span class="dot"></span><span class="nm" data-lx145-name>Облако не загружено</span></div>' +
       '<div class="lx145-kv">' +
       '<span class="k">Точек</span><span class="v" data-lx145-points>—</span>' +

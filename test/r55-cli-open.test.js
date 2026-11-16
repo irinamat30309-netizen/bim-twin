@@ -17,7 +17,10 @@ test('r55: облако из командной строки — разбор, �
   const pre = read('preload.js');
   assert.match(pre, /takePendingOpen: \(\) => inv\('bim:takePendingOpen'\)/, 'preload отдаёт метод окну');
   const app = read('renderer/app.js');
-  assert.match(app, /API\.takePendingOpen\(\)\)\.then\(function \(p\) \{ if \(p\) window\.__bimOpenCloudPath\(p, \{ fresh: true \}\)/, 'окно открывает облако само');
+  // r149: путь забирается и открывается после создания viewer, без окна «Перед загрузкой» и лишних вопросов.
+  assert.match(app, /API\.takePendingOpen\(\)/, 'окно забирает путь при старте');
+  assert.match(app, /function startPendingCloudOpen\(\)/, 'отложенный старт облака после viewer');
+  assert.match(app, /window\.__bimOpenCloudPath\(p, \{ fresh: true, skipPreview: true, noAllAsk: true, forceParts: true \}\)/, 'окно само открывает облако (без preview)');
 });
 
 test('r55: приложение запускается с облаком и не падает на неизвестных аргументах', () => {

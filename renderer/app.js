@@ -184,15 +184,15 @@
   // и окно просмотра становится белым. После такого сброса предел уменьшается вдвое (bim.gpuPointBudget).
   // r145: эффективный бюджет по VRAM (цель ≤5 ГБ): позиции 12 Б + цвет 3 Б на точку → 260 млн ≈ 3,9 ГБ.
   // В движении рисуется адаптивно меньше (40 %/25 %), в покое — плотно все загруженные точки.
-  const GPU_POINT_BUDGET = 260000000;
+  const GPU_POINT_BUDGET = 120000000;
   const GPU_VRAM_TARGET_MB = 5120;
   function gpuPointBudget() {
     // r145: разовый сброс старых «пределов после сброса GPU» (300-600 млн) на VRAM-бюджет,
     // иначе 589-млн облако оставалось прореженным/тормозным.
     try {
-      if (localStorage.getItem('bim.gpuBudgetRev') !== '146') {
+      if (localStorage.getItem('bim.gpuBudgetRev') !== '147') {
         localStorage.removeItem('bim.gpuPointBudget'); localStorage.removeItem('bim.gpuResetAt');
-        localStorage.setItem('bim.gpuBudgetRev', '146');
+        localStorage.setItem('bim.gpuBudgetRev', '147');
       }
     } catch (e) {}
     let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {} if (v >= 10000000) return Math.floor(v); try { const rc = window.__bimPcCapacity && window.__bimPcCapacity.recommendation; if (rc && rc.points >= 10000000) return Math.floor(Math.min(rc.points, GPU_POINT_BUDGET)); } catch (_) {} return GPU_POINT_BUDGET;
@@ -204,7 +204,7 @@
     if (!API || typeof API.cloudPartsOpen !== 'function' || typeof API.cloudPartsRead !== 'function' || !viewer || typeof viewer.beginCloudStream !== 'function' || !window.CloudChunks) return null;
     let opened = null;
     const pre = extra.pre && !extra.pre.cancelled ? extra.pre : null;   // ревизия 27: выбор окна «Перед загрузкой» (предел, область, высоты, маршрут, шум)
-    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), pre ? { maxPoints: pre.maxPoints, filter: pre.filter || null, estimate: pre.estimate, force: true } : { maxPoints: gpuPointBudget() }); } catch (e) { return null; }
+    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), pre ? { maxPoints: pre.maxPoints, filter: pre.filter || null, estimate: pre.estimate, force: true } : { maxPoints: gpuPointBudget(), force: !!(extra && extra.forceParts) }); } catch (e) { return null; }
     if (!opened || !opened.ok || !opened.token) return null;
     // Ревизия 55: если предел видеокарты срезал точки, а окна «Перед загрузкой» не было (открытие из командной строки,
     // перетаскиванием, ярлыком) — спрашиваем один раз, показать ли все. Иначе человек видит часть облака без выбора.
@@ -249,6 +249,9 @@
         const r = viewer.addCloudStreamSegment(res);
         if (!r || r.ok === false) { short = !!(r && r.short); if (!short) failure = (r && r.error) || 'часть облака не добавлена'; break; }
         loaded = r.loaded;
+        // r149: первый кадр облака — сразу после первой части (а не после полной загрузки): бенчмарк/UI видят облако,
+        // пока остальные части ещё читаются. Полное событие придёт из viewer.endCloudStream.
+        if (k === 0) { try { window.dispatchEvent(new CustomEvent('lx-cloud-loaded', { detail: { count: loaded, total: opened.sourceTotal || total, loaded: loaded, sourceName: filePath, name: label, progressive: true } })); } catch (_) {} }
         panel.update({ phase: 'read', fraction: Math.min(0.99, (k + 1) / nParts), message: 'Читаю точки: часть ' + (k + 1) + ' из ' + nParts, pointsLoaded: loaded });
         await new Promise(resolve => setTimeout(resolve, 0));   // окну — отрисовать кадр: облако появляется по мере чтения
       }
@@ -600,10 +603,12 @@
     try { window.__bimImportedProject = String((window.BimProjectState && window.BimProjectState.projectId) || ''); } catch (_) { window.__bimImportedProject = ''; }
     if (opts && opts.fresh) window.__bimDropCloudCache(p);
     try {
-      const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop(), opts && opts.allPoints ? { allPoints: true } : {});
+      const popts = opts && opts.allPoints ? { allPoints: true } : { skipPreview: !!(opts && opts.skipPreview), noAllAsk: !!(opts && opts.noAllAsk), forceParts: !!(opts && opts.forceParts) };
+      const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop(), popts);
       if (!pr || !pr.ok) { if (!(pr && pr.cancelled)) toast((pr && pr.message) || 'Не удалось открыть облако'); return false; }
       if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: p }); cacheCloud(p, pr); }
       lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0;
+      try { window.__bimCurrentCloudPath = p; } catch (_) {}
       // Ревизия 57: новое облако становится активным в проекте — при следующем открытии проекта поднимется оно,
       // а не то, что лежало в проекте раньше.
       try {
@@ -638,12 +643,21 @@
     } catch (_) {}
     return window.__bimOpenCloudPath(p, { fresh: true, allPoints: true });
   };
-  // Ревизия 55: файл, переданный при запуске (BIM Twin scan.las, «Открыть с помощью», ярлык) — забираем и открываем
-  try {
-    if (API && typeof API.takePendingOpen === 'function') {
-      Promise.resolve(API.takePendingOpen()).then(function (p) { if (p) window.__bimOpenCloudPath(p, { fresh: true }); }).catch(function () {});
-    }
-  } catch (_) {}
+  // Ревизия 55: файл, переданный при запуске (BIM Twin scan.las, «Открыть с помощью», ярлык) — забираем и открываем.
+  // r149: не открываем облако до создания viewer (иначе срабатывает fallback «целиком» и Array buffer failed на 271 млн),
+  // а запускаем сразу после готовности viewer — параллельно loadData()/настройкам, без ожидания окна «Перед загрузкой».
+  var __pendingCloudP = (API && typeof API.takePendingOpen === 'function')
+    ? Promise.resolve(API.takePendingOpen()).catch(function () { return null; })
+    : Promise.resolve(null);
+  function startPendingCloudOpen() {
+    if (window.__bimPendingCloudStarted) return;
+    __pendingCloudP.then(function (p) {
+      if (!p || window.__bimPendingCloudStarted) return;
+      window.__bimPendingCloudStarted = 1;
+      // r149: пропускаем предварительную карту «Перед загрузкой» (она сканировала файл и давала +16 с до первого кадра)
+      window.__bimOpenCloudPath(p, { fresh: true, skipPreview: true, noAllAsk: true, forceParts: true });
+    }).catch(function () {});
+  }
   // Ревизия 19: «Папка сканера» — облако и траектория находятся в папке проекта сами
   window.__bimOpenScanFolder = async function () {
     if (!API || typeof API.pickScanFolder !== 'function') { toast('Открытие папки сканера доступно в десктоп-версии'); return false; }
@@ -5930,6 +5944,15 @@
       document.head.appendChild(s);
     } catch (e) {}
   }
+  function ensureP1Tools() {
+    try {
+      if (window.__lxP1 || document.getElementById('lxP1Script')) return;
+      var s = document.createElement('script');
+      s.id = 'lxP1Script'; s.src = 'ui/p1-tools.js?v=149'; s.async = true;
+      s.onload = function () { try { if (window.__lxP1) window.__lxP1.mount(); } catch (e) {} };
+      document.head.appendChild(s);
+    } catch (e) {}
+  }
   async function init() {
     const canvas = $('viewer');
     const onSel = el => { if (el) selectEl(el.id); else selectEl(null); };
@@ -5940,7 +5963,9 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); ensurePerfPanel(); ensureLxDesign(); } catch (e) { console.warn('r145 render prefs', e); }
+    try { applyRenderPrefs(); ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); } catch (e) { console.warn('r145 render prefs', e); }
+    // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.
+    try { startPendingCloudOpen(); } catch (e) { console.warn('r149 pending cloud', e); }
     try { window.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { try { applyRenderPrefs(); } catch (e) {} }, 120); }); } catch (e) {}
     // Keep the AI-highlight affordance in sync with the viewer's default state.
     try { const aiBtn = $('btnAI'); const aiOn = !!viewer.showAI; if (aiBtn) { aiBtn.classList.toggle('on', aiOn); aiBtn.setAttribute('aria-pressed', String(aiOn)); } } catch (e) {}
