@@ -95,7 +95,7 @@ test('r26: связка — предел из окна в main, выборка �
   assert.match(h, /readSegmentAsync\(d, from, count, \{ signal: ss\.controller\.signal, keepPer: ss\.keepPer(, filter: ss\.filter \|\| null)? \}\)/);
   assert.match(pl, /cloudPartsOpen: \(p, jobId, opts\) => inv\('bim:cloudPartsOpen', \{ path: p, jobId, maxPoints:/);
   assert.match(w, /keepPer: d\.keepPer/); assert.match(s, /keepPer: Math\.floor\(Number\(opts\.keepPer\) \|\| 0\)/);
-  assert.match(a, /const GPU_POINT_BUDGET = 260000000;/); assert.match(a, /localStorage\.getItem\('bim\.gpuPointBudget'\)/);
+  assert.match(a, /const GPU_POINT_BUDGET = 120000000;/); assert.match(a, /localStorage\.getItem\('bim\.gpuPointBudget'\)/);
   assert.match(a, /API\.cloudPartsOpen\(filePath, makeCloudParseJobId\(\), (?:pre \? \{[^}]*\} : )?\{ maxPoints: gpuPointBudget\(\), force: !!\(extra && extra\.forceParts\) \}\)/);
   assert.match(a, /sourceTotal: opened\.sourceTotal \|\| total/);
   assert.match(a, /addEventListener\('bim-gl-lost'/); assert.match(a, /localStorage\.setItem\('bim\.gpuPointBudget'/); assert.match(a, /sessionStorage\.setItem\('bim\.reopenCloud'/); assert.match(a, /location\.reload\(\)/);

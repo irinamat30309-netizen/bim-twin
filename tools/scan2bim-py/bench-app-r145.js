@@ -110,9 +110,16 @@ const INIT = `(() => {
     const name = d.sourceName || d.name || d.source || null;
     const rec = { t: performance.now(), wall: B.wallAtInit + performance.now(), count, name };
     B.events.push(rec);
+    // r149: прогрессивный первый кадр (первая часть облака уже на экране) — фиксируем его как first-frame,
+    // но полную загрузку ждём по финальному событию endCloudStream.
+    if (d.progressive === true) {
+      if (B.firstDataWall == null) B.firstDataWall = rec.wall;
+      if (!B.progressive) B.progressive = rec;
+      return;
+    }
     if (!B.matched && (count >= 1000 || (name && String(name).indexOf(B.targetName) >= 0))) {
       B.matched = rec;
-      B.firstDataWall = rec.wall;
+      if (B.firstDataWall == null) B.firstDataWall = rec.wall;
     }
   }, false);
   let n = 0;

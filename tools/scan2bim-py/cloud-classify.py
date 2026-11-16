@@ -290,7 +290,9 @@ def _floor_field(X, cell=1.0, q=3.0, smooth=1):
         if ends[m] > starts[m]:
             a = z_s[starts[m]:ends[m]]
             floor[m] = np.percentile(a, q)
-    F = floor.reshape(nx, ny)
+    F = np.full(nx * ny, np.nan)
+    F[uk] = floor
+    F = F.reshape(nx, ny)
     # заполнить пустые ячейки соседями (итеративно), затем min-фильтр
     for _ in range(8):
         if not np.isnan(F).any():
@@ -398,7 +400,7 @@ def classify(X, opt):
     conf[wall_m] = np.clip(0.5 + 0.5 * (plan_s[wall_m] - opt['wall_plan']) / max(1e-6, 1 - opt['wall_plan']) * (1 - vert_s[wall_m] / max(1e-6, opt['wall_vert']) * 0.5), 0, 0.99)
     conf[veg_m] = np.clip(0.5 + 0.5 * (1 - plan_s[veg_m] / max(1e-6, opt['veg_plan'])), 0, 0.99)
     cls[floor_m] = CLS['ground_floor']; cls[roof_m] = CLS['roof']; cls[wall_m] = CLS['wall']; cls[veg_m] = CLS['vegetation']
-    cls[furn_m] = CLS['clutter']; conf[furn_m] = 0.7
+    # мебель/клаттер — только компактными компонентами (ниже), чтобы не красить подоконники/пояса фасада
     # ---- кандидаты в кластеры (люди/деревья/мебель): не пол/крыша, выше 0.1 м, низкая локальная плоскостность
     cand = (~floor_m) & (~roof_m) & (h > float(opt['cluster_h'])) & (h < float(opt['cluster_h_max']))
     cand &= (plan_s < float(opt['cluster_plan'])) | (rough_s > float(opt['cluster_rough']))
@@ -504,12 +506,32 @@ def classify(X, opt):
     conf = np.maximum(conf, 0.45 * agree)
     conf = np.clip(conf, 0.02, 0.99)
     # other: остатки (не пол/крыша) с низкой уверенностью
+    # ---- открытость: растительность — только под открытым небом (над точкой нет перекрытий-крыш/потолков)
+    # (внутри помещений «шероховатые» точки — это мебель/оборудование, а не деревья)
+    enclosed = np.zeros(N, bool)
+    if veg_m.any():
+        cell = 1.0
+        ij = np.floor((X[:, :2] - X[:, :2].min(axis=0)) / cell).astype(np.int64)
+        gx = int(ij[:, 0].max()) + 1; gy = int(ij[:, 1].max()) + 1
+        ckey = ij[:, 0] + gx * ij[:, 1]
+        roofish = (vert_s > 0.6) & (h > 0.5) & (plan_s > 0.4)
+        maxz = np.full(gx * gy, -np.inf)
+        np.maximum.at(maxz, ckey[roofish], X[roofish, 2].astype(np.float64))
+        Pz = np.pad(maxz.reshape(gx, gy), 1, constant_values=-1e9)
+        m3 = np.maximum.reduce([Pz[0:-2, 0:-2], Pz[0:-2, 1:-1], Pz[0:-2, 2:],
+                                Pz[1:-1, 0:-2], Pz[1:-1, 1:-1], Pz[1:-1, 2:],
+                                Pz[2:, 0:-2], Pz[2:, 1:-1], Pz[2:, 2:]])
+        enclosed = m3[np.clip(ij[:, 0], 0, gx - 1), np.clip(ij[:, 1], 0, gy - 1)] > (X[:, 2] + opt['open_height'])
+        bad_veg = veg_m & enclosed
+        cls[bad_veg] = CLS['other']; conf[bad_veg] = 0.4
+        veg_m = veg_m & (~enclosed)
+        st['veg_enclosed_removed'] = int(bad_veg.sum())
     # ---- деревья: кластеры растительности крупным вокселом; стволы/кроны рядом → vegetation
     # 1) грубая доля растительности в вокселе 1.5 м — добивает разреженные кроны
     vcnt = np.bincount(Fb['ids'], weights=veg_m.astype(np.float64), minlength=int(Fb['ids'].max()) + 1)
     tot = np.bincount(Fb['ids'], minlength=len(vcnt))
     veg_frac_big = (vcnt / np.maximum(1, tot))[Fb['ids']]
-    veg_fill = (~floor_m) & (~roof_m) & (h > opt['veg_h']) & (veg_frac_big > opt['veg_big_frac']) & (plan_s < opt['veg_fill_plan'])
+    veg_fill = (~floor_m) & (~roof_m) & (h > opt['veg_h']) & (veg_frac_big > opt['veg_big_frac']) & (plan_s < opt['veg_fill_plan']) & (~enclosed)
     cls[veg_fill] = CLS['vegetation']; conf[veg_fill] = np.maximum(conf[veg_fill], 0.75)
     st['veg_fill'] = int(veg_fill.sum())
     veg_idx = np.nonzero(veg_m | veg_fill)[0]
@@ -548,6 +570,33 @@ def classify(X, opt):
                 cls[add] = CLS['vegetation']; conf[add] = 0.85
         st.setdefault('tree_clusters', trees)
         del Xv, kk, keys, labv
+    # ---- мебель: горизонтальные поверхности, образующие компактные компоненты (стол, подоконник-предмет)
+    fidx = np.nonzero(furn_m & (cls == CLS['other']))[0]
+    if len(fidx) >= 40:
+        Xf = X[fidx]
+        sf = 0.30
+        mnf = Xf.min(axis=0)
+        kkf = np.floor((Xf - mnf) / sf).astype(np.int64); kkf -= kkf.min(axis=0)
+        B = 4096
+        keysf = (kkf[:, 0] + B) * (B * B) + (kkf[:, 1] + B) * B + (kkf[:, 2] + B)
+        offsf = [o for o in (db * (B * B) + dy * B + dz for db in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (db, dy, dz) > (0, 0, 0))]
+        labf, _ = _labels_for(keysf, None, offsf, B)
+        nlf = int(labf.max()) + 1
+        cntf = np.bincount(labf, minlength=nlf)
+        mnx = np.full(nlf, np.inf); mxx = np.full(nlf, -np.inf)
+        mny = np.full(nlf, np.inf); mxy = np.full(nlf, -np.inf)
+        mnz = np.full(nlf, np.inf); mxz = np.full(nlf, -np.inf)
+        np.minimum.at(mnx, labf, Xf[:, 0]); np.maximum.at(mxx, labf, Xf[:, 0])
+        np.minimum.at(mny, labf, Xf[:, 1]); np.maximum.at(mxy, labf, Xf[:, 1])
+        np.minimum.at(mnz, labf, Xf[:, 2]); np.maximum.at(mxz, labf, Xf[:, 2])
+        extf = np.maximum(np.maximum(mxx - mnx, mxy - mny), mxz - mnz)
+        zspf = mxz - mnz
+        furn_ok = (cntf >= opt['furn_min_pts']) & (cntf <= opt['furn_max_pts']) & (extf <= opt['furn_ext']) & (zspf <= opt['furn_zspan'])
+        for l in np.nonzero(furn_ok)[0].tolist():
+            m = labf == l
+            cls[fidx[m]] = CLS['clutter']; conf[fidx[m]] = 0.75
+        st['furniture_components'] = int(furn_ok.sum())
+        del Xf, kkf, keysf, labf
     # ---- остатки «стен»: вертикальные плоскости, не попавшие в строгие пороги (углы, края)
     rem = (cls == CLS['other']) & (~floor_m) & (~roof_m)
     weak_wall = rem & (vert_s < opt['weak_wall_vert']) & (plan_s > opt['weak_wall_plan']) & (h > opt['weak_wall_h'])
@@ -790,6 +839,7 @@ def default_opt():
         'wall_vert': 0.45, 'wall_plan': 0.30, 'wall_h': 0.10,
         'veg_plan': 0.30, 'veg_plan2': 0.45, 'veg_rough': 0.05, 'veg_rough2': 0.12, 'veg_lin': 0.9, 'veg_h': 0.4,
         'furn_vert': 0.72, 'furn_h': 0.30, 'furn_h_max': 1.80, 'furn_plan': 0.45, 'furn_rough': 0.08,
+        'furn_min_pts': 40, 'furn_max_pts': 200000, 'furn_ext': 2.5, 'furn_zspan': 1.0,
         'cluster_h': 0.10, 'cluster_h_max': 2.6, 'cluster_voxel': 0.15,
         'cluster_plan': 0.72, 'cluster_rough': 0.04,
         'people_min_pts': 150, 'people_max_pts': 2000000, 'people_zmin': 0.9, 'people_zmax': 2.25,
@@ -799,7 +849,7 @@ def default_opt():
         'trunk_min_pts': 60, 'trunk_zspan': 1.4, 'trunk_ext': 0.8, 'trunk_plan': 0.5,
         'wallc_ext': 1.2, 'wallc_zspan': 0.6, 'wallc_plan': 0.22, 'wallc_vert': 0.65,
         'veg_big_frac': 0.15, 'veg_cluster': 0.45, 'tree2_min_pts': 250, 'tree2_zspan': 1.5, 'tree2_ext': 1.0,
-        'tree2_max_ext': 4.5, 'tree2_plan': 0.55, 'veg_fill_plan': 0.9,
+        'tree2_max_ext': 4.5, 'tree2_plan': 0.55, 'veg_fill_plan': 0.9, 'open_height': 1.0,
         'weak_wall_vert': 0.60, 'weak_wall_plan': 0.22, 'weak_wall_h': 0.15,
     }
 
