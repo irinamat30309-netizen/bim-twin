@@ -362,6 +362,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   // r155: P2/P3 — CRS/координаты, Mesh-инструменты, сохранение фрагмента клип-бокса.
   p23Status: () => inv('bim:p23Status'),
   p23PickMesh: () => inv('bim:p23PickMesh'),
+  p23GrantMesh: (a) => inv('bim:p23GrantMesh', a || {}),
   p23CrsRun: (a) => inv('bim:p23CrsRun', a || {}),
   p23MeshRun: (a) => inv('bim:p23MeshRun', a || {}),
   p23SaveFragment: (a) => inv('bim:p23SaveFragment', a || {}),

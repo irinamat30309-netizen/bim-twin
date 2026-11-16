@@ -259,6 +259,16 @@
     var box = p.querySelector('[data-p23-crs-info]'); if (box) box.innerHTML = crsInfoHtml(st.crsInfo);
     var note = p.querySelector('.lx-p23-note'); if (note) note.textContent = statusText();
   }
+  function progressTicker(box, label) {
+    var t0 = Date.now();
+    if (!box) return function () { };
+    box.innerHTML = '<div class="lx-p23-note">' + esc(label) + '…</div>';
+    var timer = setInterval(function () {
+      if (!box || !box.isConnected) { clearInterval(timer); return; }
+      box.innerHTML = '<div class="lx-p23-note">' + esc(label) + '… ' + ((Date.now() - t0) / 1000).toFixed(1) + ' с</div>';
+    }, 300);
+    return function () { clearInterval(timer); };
+  }
   function runCrs() {
     var B = bridge(); if (!B) { toast('Система координат: мост недоступен (desktop)', 'err'); return false; }
     if (st.busy) return false;
@@ -269,33 +279,39 @@
     var from = fromInp ? String(fromInp.value || '').trim() : '';
     var localInp = p.querySelector('[data-p23="crs-local"]');
     var localParams = localInp ? String(localInp.value || '').trim() : '';
+    // всегда берём актуальное облако/путь: после пересчёта результат автоматически открыт в сцене
+    st.crsInfo = collectCrsInfo();
     var cloud = st.crsInfo && st.crsInfo.path;
-    if (!cloud) { st.crsInfo = collectCrsInfo(); cloud = st.crsInfo.path; }
     if (!cloud) { toast('Система координат: сначала откройте облако точек', 'warn'); return false; }
     st.busy = true; st.log = [];
     var btn = p.querySelector('[data-p23="crs-run"]'); if (btn) btn.disabled = true;
-    var resultBox = p.querySelector('[data-p23-crs-result]'); if (resultBox) resultBox.innerHTML = '<div class="lx-p23-note">Выполняется ' + esc(op) + '…</div>';
+    var resultBox = p.querySelector('[data-p23-crs-result]');
+    var stopTicker = progressTicker(resultBox, 'Выполняется ' + op);
     var log = p.querySelector('[data-p23-log]'); if (log) log.hidden = false;
     var id = jobId('crs'); var unsub = subscribe(id);
     var payload = { op: op, cloud: cloud, to: to, from: from || undefined, localParams: localParams || undefined, jobId: id };
     B.p23CrsRun(payload).then(function (r) {
-      st.busy = false; if (btn) btn.disabled = false; try { unsub(); } catch (e) { }
+      stopTicker(); st.busy = false; if (btn) btn.disabled = false; try { unsub(); } catch (e) { }
       st.crsResult = r;
       var box = p.querySelector('[data-p23-crs-result]'); if (box) box.innerHTML = crsResultHtml(r);
       if (r && r.ok && r.result) {
         var rr = r.result, src = rr.source || {}, base = st.crsInfo || {};
+        var newEpsg = rr.transform && rr.transform.target_epsg;
         st.crsInfo = Object.assign({}, base, {
           epsg: src.epsg || base.epsg || null,
           wkt: src.wkt || base.wkt || null,
           points: rr.points_file || base.points || 0,
           bbox: rr.bbox || base.bbox || null
         });
+        // текущая СК сменилась: поле «Исходная СК» должно соответствовать новому облаку,
+        // иначе следующий пересчёт применит устаревший --epsg (например, обратно WGS84→UTM).
+        if (fromInp) fromInp.value = (newEpsg && Number(newEpsg) > 0) ? String(newEpsg) : '';
         var infoBox = p.querySelector('[data-p23-crs-info]'); if (infoBox) infoBox.innerHTML = crsInfoHtml(st.crsInfo);
       }
       if (r && r.ok) { toast('Система координат: ' + op + ' — готово', 'ok'); if (r.out && W.__bimOpenCloudPath) { try { W.__bimOpenCloudPath(r.out, { fresh: false }); } catch (e) { } } }
       else toast('Система координат: ' + ((r && r.error) || 'не выполнено'), 'err');
     }).catch(function (e) {
-      st.busy = false; if (btn) btn.disabled = false; try { unsub(); } catch (_) { }
+      stopTicker(); st.busy = false; if (btn) btn.disabled = false; try { unsub(); } catch (_) { }
       st.crsResult = { ok: false, error: String((e && e.message) || e) };
       var box = p.querySelector('[data-p23-crs-result]'); if (box) box.innerHTML = crsResultHtml(st.crsResult);
       toast('Система координат: ' + ((e && e.message) || e), 'err');
@@ -391,6 +407,19 @@
       toast('Mesh: ' + baseName(r.path));
     }).catch(function (e) { toast('Mesh: ' + ((e && e.message) || e), 'err'); });
   }
+  /** Программный выбор mesh (скрипты/E2E): выдаёт грант чтения и обновляет панель. */
+  function setMeshFile(path) {
+    var B = bridge(); if (!B || !path) return Promise.resolve({ ok: false, error: 'нет моста/пути' });
+    var grant = (typeof B.p23GrantMesh === 'function') ? B.p23GrantMesh({ paths: [path] }) : Promise.resolve({ ok: true });
+    return Promise.resolve(grant).then(function (g) {
+      if (g && g.ok === false) return { ok: false, error: g.error || 'файл не авторизован' };
+      st.meshFile = String(path); st.meshFromScene = '';
+      var p = D.getElementById('lxMeshPanel');
+      if (p && !p.hidden) { var b = p.querySelector('.lx-p23-row .lb b'); if (b) b.textContent = baseName(path); }
+      toast('Mesh: ' + baseName(path));
+      return { ok: true, path: String(path) };
+    }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) }; });
+  }
   function meshParamsFromPanel() {
     var p = D.getElementById('lxMeshPanel'); var o = {};
     if (!p) return o;
@@ -410,41 +439,57 @@
     st.busy = true; st.log = [];
     var btn = p.querySelector('[data-p23="mesh-run"]'); if (btn) btn.disabled = true;
     var cancelBtn = p.querySelector('[data-p23="mesh-cancel"]'); if (cancelBtn) cancelBtn.disabled = false;
-    var box = p.querySelector('[data-p23-mesh-result]'); if (box) box.innerHTML = '<div class="lx-p23-note">Выполняется ' + esc(op) + '…</div>';
+    var box = p.querySelector('[data-p23-mesh-result]');
+    var stopTicker = progressTicker(box, 'Выполняется ' + op);
     var log = p.querySelector('[data-p23-log]'); if (log) log.hidden = false;
     var id = jobId('mesh'); var unsub = subscribe(id);
     B.p23MeshRun({ op: op, input: st.meshFile, params: meshParamsFromPanel(), jobId: id }).then(function (r) {
-      st.busy = false; if (btn) btn.disabled = false; if (cancelBtn) cancelBtn.disabled = true; try { unsub(); } catch (e) { }
+      stopTicker(); st.busy = false; if (btn) btn.disabled = false; if (cancelBtn) cancelBtn.disabled = true; try { unsub(); } catch (e) { }
       st.meshResult = r;
       var b2 = p.querySelector('[data-p23-mesh-result]'); if (b2) b2.innerHTML = meshResultHtml(r);
       if (r && r.ok) { toast('Mesh: ' + op + ' — готово', 'ok'); if (r.output) loadMeshIntoScene(r.output); }
       else toast('Mesh: ' + ((r && r.error) || 'не выполнено'), 'err');
     }).catch(function (e) {
-      st.busy = false; if (btn) btn.disabled = false; if (cancelBtn) cancelBtn.disabled = true; try { unsub(); } catch (_) { }
+      stopTicker(); st.busy = false; if (btn) btn.disabled = false; if (cancelBtn) cancelBtn.disabled = true; try { unsub(); } catch (_) { }
       st.meshResult = { ok: false, error: String((e && e.message) || e) };
       var b2 = p.querySelector('[data-p23-mesh-result]'); if (b2) b2.innerHTML = meshResultHtml(st.meshResult);
       toast('Mesh: ' + ((e && e.message) || e), 'err');
     });
     return true;
   }
+  function toMeshBuffer(data) {
+    if (!data) return null;
+    if (typeof data === 'string') {
+      var b64 = data.replace(/^data:[^,]*,/, '');
+      var bin = atob(b64), u8 = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      return u8.buffer;
+    }
+    if (data instanceof ArrayBuffer) return data;
+    if (data && data.buffer instanceof ArrayBuffer) return data.buffer.slice(data.byteOffset || 0, (data.byteOffset || 0) + data.byteLength);
+    return null;
+  }
   function loadMeshIntoScene(path) {
     var MV = W.MeshViewer, A = W.bimAPI;
-    if (!MV || !A || typeof A.readFile !== 'function') { toast('Mesh: вьюер недоступен', 'warn'); return false; }
-    A.readFile(path).then(function (b64) {
-      if (!b64) { toast('Mesh: не удалось прочитать результат', 'err'); return false; }
-      var bin = atob(String(b64).replace(/^data:[^,]*,/, ''));
-      var u8 = new Uint8Array(bin.length);
-      for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    if (!MV || !A) { toast('Mesh: вьюер недоступен', 'warn'); return false; }
+    // lcc2ReadFile умеет читать файлы по грантам (включая выходные файлы моста);
+    // bim:readFile ограничен uploads-каталогом и для mesh-результатов вернёт null.
+    var read = (typeof A.lcc2ReadFile === 'function')
+      ? A.lcc2ReadFile(path)
+      : (typeof A.readFile === 'function' ? A.readFile(path) : Promise.resolve(null));
+    Promise.resolve(read).then(function (data) {
+      var buf = toMeshBuffer(data);
+      if (!buf) { toast('Mesh: не удалось прочитать результат', 'err'); return false; }
       var host = D.querySelector('.stage') || D.body;
       try { MV.mount(host); } catch (e) { }
-      var pr = MV.loadAsync ? MV.loadAsync(u8.buffer, baseName(path)) : MV.load(u8.buffer, baseName(path));
-      Promise.resolve(pr).then(function (scene) {
-        if (!scene) { toast('Mesh: загрузка отменена', 'warn'); return; }
+      var pr = MV.loadAsync ? MV.loadAsync(buf, baseName(path)) : MV.load(buf, baseName(path));
+      return Promise.resolve(pr).then(function (scene) {
+        if (!scene) { toast('Mesh: загрузка отменена', 'warn'); return false; }
         try { MV.enter(); } catch (e) { }
         toast('Mesh открыт в сцене: ' + baseName(path), 'ok');
-      }).catch(function (e) { toast('Mesh: ' + ((e && e.message) || e), 'err'); });
-      return true;
-    }).catch(function (e) { toast('Mesh: ' + ((e && e.message) || e), 'err'); });
+        return true;
+      });
+    }).catch(function (e) { toast('Mesh: ' + ((e && e.message) || e), 'err'); return false; });
     return true;
   }
 
@@ -612,7 +657,7 @@
   }
 
   /* ---------------- публичный API ---------------- */
-  function state() { return { mounted: st.mounted, view: st.view, busy: st.busy, status: st.status, crs: st.crsInfo, meshFile: st.meshFile, clip: clipState() }; }
+  function state() { return { mounted: st.mounted, view: st.view, busy: st.busy, status: st.status, crs: st.crsInfo, meshFile: st.meshFile, meshResult: st.meshResult || null, clip: clipState() }; }
   function mount() {
     if (st.mounted) return true;
     st.mounted = true;
@@ -635,7 +680,7 @@
     } catch (e) { }
     return true;
   }
-  var API = { version: '155', mount: mount, openCrs: openCrs, openMesh: openMesh, state: state, refreshCrsInfo: refreshCrsInfo, loadMeshIntoScene: loadMeshIntoScene, CRS_PRESETS: CRS_PRESETS.slice(), MESH_OPS: MESH_OPS.slice(), _collectCrsInfo: collectCrsInfo, _extractEpsg: extractEpsg };
+  var API = { version: '159', mount: mount, openCrs: openCrs, openMesh: openMesh, setMeshFile: setMeshFile, state: state, refreshCrsInfo: refreshCrsInfo, loadMeshIntoScene: loadMeshIntoScene, CRS_PRESETS: CRS_PRESETS.slice(), MESH_OPS: MESH_OPS.slice(), _collectCrsInfo: collectCrsInfo, _extractEpsg: extractEpsg };
   W.__lxP23 = API;
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   function boot() { try { if (D.body) mount(); else D.addEventListener('DOMContentLoaded', mount); } catch (e) { } }

@@ -19,7 +19,7 @@ const { spawnSync } = require('node:child_process');
 const R = require('./scan-refine-core');
 
 const DEF = { mode: 'hist', passSec: 20, band: 0.15, planeBand: 0.03, minPlanePts: 3000, maxPlanes: 20, minPassPts: 50000, maxShift: 0.25, sample: 250000,
-  icpMaxPoints: 120000, icpMinInlier: 0.35, icpMaxIter: 240, icpTimeoutMs: 180000 };
+  icpMaxPoints: 300000, icpMinInlier: 0.35, icpMaxIter: 240, icpTimeoutMs: 180000 };
 
 let _py = undefined, _icpAvail = undefined;
 function findPython() {
@@ -383,7 +383,7 @@ function icpStage(src, H, hist, o, tmpDir, prog) {
     const outJson = path.join(tmpDir, 'reg-' + pf.k + '.json');
     let applied = false, reg = null;
     try {
-      const r = spawnSync(py, [tool, '--ref', refLas, '--src', pf.file, '--mode', 'icp', '--max-points', String(o.icpMaxPoints || 120000), '--max-iter', String(o.icpMaxIter || 240), '--out', outJson], { timeout: maxAge, windowsHide: true, encoding: 'utf8' });
+      const r = spawnSync(py, [tool, '--ref', refLas, '--src', pf.file, '--mode', 'icp', '--max-points', String(o.icpMaxPoints || 300000), '--out', outJson], { timeout: maxAge, windowsHide: true, encoding: 'utf8' });
       if (r.status === 0 && fs.existsSync(outJson)) {
         reg = JSON.parse(fs.readFileSync(outJson, 'utf8'));
         const rr = reg.results && reg.results[0];

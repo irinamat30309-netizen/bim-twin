@@ -103,23 +103,39 @@ function buildMeshArgs(op, o) {
   return args;
 }
 
-function findPython() {
+function pythonCandidates() {
   const cands = [];
-  if (process.env.PYTHON) cands.push(process.env.PYTHON);
+  const push = (p) => { if (p && !cands.includes(p)) cands.push(p); };
+  if (process.env.PYTHON) push(process.env.PYTHON);
   if (process.platform === 'win32') {
     const la = process.env.LOCALAPPDATA;
     if (la) {
-      try { const pf = path.join(la, 'BIMTwin', 'python-path.txt'); if (fs.existsSync(pf)) cands.push(String(fs.readFileSync(pf, 'utf8')).trim()); } catch (_) { }
-      cands.push(path.join(la, 'BIMTwin', 'py312', 'python.exe'), path.join(la, 'BIMTwin', 'py', 'python.exe'));
+      try { const pf = path.join(la, 'BIMTwin', 'python-path.txt'); if (fs.existsSync(pf)) push(String(fs.readFileSync(pf, 'utf8')).trim()); } catch (_) { }
+      push(path.join(la, 'BIMTwin', 'py312', 'python.exe'), path.join(la, 'BIMTwin', 'py', 'python.exe'));
+      push(path.join(la, 'Programs', 'Python', 'Python311', 'python.exe'));
+      push(path.join(la, 'Programs', 'Python', 'Python312', 'python.exe'));
+      push(path.join(la, 'Programs', 'Python', 'Python313', 'python.exe'));
     }
   }
-  cands.push('python3', 'python', 'py');
-  for (const c of cands) {
-    if (!c) continue;
+  push('python3'); push('python'); push('py');
+  return cands;
+}
+function findPython() {
+  for (const c of pythonCandidates()) {
     try {
       const r = cp.spawnSync(c, ['--version'], { windowsHide: true, timeout: 8000 });
       const txt = String((r && r.stdout) || '') + String((r && r.stderr) || '');
       if ((r && r.status === 0) || /Python\s+3/.test(txt)) return c;
+    } catch (_) { }
+  }
+  return null;
+}
+/** Python с установленным Open3D (mesh-tools.py требует его); null, если нет. */
+function findOpen3dPython() {
+  for (const c of pythonCandidates()) {
+    try {
+      const r = cp.spawnSync(c, ['-c', 'import open3d'], { windowsHide: true, timeout: 20000, env: Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }) });
+      if (r && r.status === 0) return c;
     } catch (_) { }
   }
   return null;
@@ -200,16 +216,18 @@ function register(deps) {
   const python = deps.python !== undefined ? deps.python : findPython();
   const jobs = new Map();
   const helpCache = {};
-  let open3dCache = null;
-  function hasOpen3d() {
-    if (open3dCache !== null) return open3dCache;
-    if (!python) return (open3dCache = false);
-    try {
-      const r = cp.spawnSync(python, ['-c', 'import open3d'], { windowsHide: true, timeout: 20000, env: Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }) });
-      open3dCache = !!(r && r.status === 0);
-    } catch (_) { open3dCache = false; }
-    return open3dCache;
+  let open3dResolved;
+  /** Python, в котором доступен Open3D (для mesh-tools.py). null — нет.
+   *  В юнит-тестах deps.python задан явно → реальные процессы не запускаем,
+   *  если не передан deps.open3dPython. */
+  function open3dPython() {
+    if (Object.prototype.hasOwnProperty.call(deps, 'open3dPython')) return deps.open3dPython || null;
+    if (deps.python !== undefined) return null;
+    if (open3dResolved !== undefined) return open3dResolved;
+    open3dResolved = findOpen3dPython();
+    return open3dResolved;
   }
+  function hasOpen3d() { return !!open3dPython(); }
 
   function outRoot() { const d = path.join(app.getPath('userData'), OUT_ROOT); try { fs.mkdirSync(d, { recursive: true }); } catch (_) { } return d; }
   function jobDir(tool) { const d = path.join(outRoot(), tool + '-' + stamp() + '-' + Math.random().toString(36).slice(2, 6)); fs.mkdirSync(d, { recursive: true }); return d; }
@@ -238,14 +256,15 @@ function register(deps) {
   }
   function runTool(tool, script, args, opts) {
     opts = opts || {};
+    const py = opts.python || python;
     return new Promise((resolve) => {
       const started = Date.now();
-      if (!python) { resolve({ ok: false, error: 'Python 3 не найден — установите Python или включите изолированный движок в настройках.', code: -1 }); return; }
+      if (!py) { resolve({ ok: false, error: 'Python 3 не найден — установите Python или включите изолированный движок в настройках.', code: -1 }); return; }
       if (!fileExists(script)) { resolve({ ok: false, missing: true, error: 'Инструмент ещё готовится: ' + baseName(script) + ' не найден в tools/scan2bim-py.', code: -1 }); return; }
       const jobId = String(opts.jobId || (tool + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6)));
       const senderObj = opts.sender || null;
       let child = null;
-      try { child = cp.spawn(python, [script].concat(args), { windowsHide: true, cwd: path.dirname(script), env: Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }) }); }
+      try { child = cp.spawn(py, [script].concat(args), { windowsHide: true, cwd: path.dirname(script), env: Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }) }); }
       catch (e) { resolve({ ok: false, error: 'Не удалось запустить Python: ' + (e && e.message || e), code: -1, jobId }); return; }
       let out = '', err = '', finished = false, killed = false;
       const lines = [];
@@ -305,9 +324,25 @@ function register(deps) {
     };
   });
 
-  /* ---------- выбор mesh-файла ---------- */
-  ipcMain.handle('bim:p23PickMesh', async (event) => {
+  /* ---------- программный грант mesh-файлов (скрипты/автотесты) ---------- */
+  ipcMain.handle('bim:p23GrantMesh', async (event, a) => {
     try {
+      const list = Array.isArray(a && a.paths) ? a.paths : [];
+      if (!list.length || list.length > 10) return { ok: false, error: 'paths: нужен массив 1..10 путей' };
+      const granted = [];
+      for (const raw of list) {
+        const p = path.resolve(String(raw || ''));
+        if (!fileExists(p)) return { ok: false, error: 'Файл не найден: ' + baseName(p) };
+        if (!MESH_EXT.has(path.extname(p).toLowerCase())) return { ok: false, error: 'Не mesh-формат (PLY/OBJ/STL): ' + baseName(p) };
+        if (!grantRead(event, p)) return { ok: false, error: 'Не удалось выдать грант: ' + baseName(p) };
+        granted.push(p);
+      }
+      return { ok: true, paths: granted };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  });
+
+  /* ---------- выбор mesh-файла ---------- */
+  ipcMain.handle('bim:p23PickMesh', async (event) => {    try {
       if (!dialog) return { ok: false, error: 'Нет доступа к диалогу' };
       const res = await dialog.showOpenDialog({ title: 'Выберите mesh (PLY/OBJ/STL)', properties: ['openFile'], filters: [{ name: 'Mesh', extensions: ['ply', 'obj', 'stl'] }, { name: 'Все файлы', extensions: ['*'] }] });
       if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, canceled: true };
@@ -380,7 +415,8 @@ function register(deps) {
     if (!fileExists(script)) return { ok: false, missing: true, error: 'Mesh-инструменты ещё готовятся: tools/scan2bim-py/mesh-tools.py не найден. Панель показывает параметры и ждёт CLI; как только он появится — операции заработают.' };
     const help = helpFor(script);
     if (help && (!/--in\b/.test(help) || !/--out\b/.test(help))) return { ok: false, cliMismatch: true, error: 'CLI mesh-tools.py не совпал с ожидаемым (--in/--out/--fill-holes/--smooth/--remove-triangles/--decimate). Нужна согласованная версия CLI.', help: help.slice(0, 2000) };
-    if (!hasOpen3d()) return { ok: false, needOpen3D: true, error: 'Mesh-инструменты требуют Open3D в Python-движке (чтение/запись mesh и операции над треугольниками). Установите изолированный Python-движок с Open3D (Настройки → Python/Open3D) — без него mesh-операции недоступны. Текущее облако/сцену это не затрагивает.' };
+    const meshPython = open3dPython();
+    if (!meshPython) return { ok: false, needOpen3D: true, error: 'Mesh-инструменты требуют Open3D в Python-движке (чтение/запись mesh и операции над треугольниками). Установите изолированный Python-движок с Open3D (Настройки → Python/Open3D) — без него mesh-операции недоступны. Текущее облако/сцену это не затрагивает.' };
     const input = authorize(event, a.input, MESH_EXT);
     if (!input) return { ok: false, error: 'Не выбран mesh-файл (PLY/OBJ/STL).' };
     if (!a.output && !/\.(ply|obj|stl)$/i.test(input)) return { ok: false, error: 'Формат mesh не поддерживается для записи.' };
@@ -389,7 +425,7 @@ function register(deps) {
     const output = a.output || path.join(dir, 'mesh-' + op + ext);
     const jsonPath = path.join(dir, 'mesh-' + op + '.json');
     const args = buildMeshArgs(op, { input, output, params: a.params || {}, json: jsonPath });
-    const run = await runTool('mesh', script, args, { sender: sender(event), jobId: a.jobId, timeoutMs: a.timeoutMs });
+    const run = await runTool('mesh', script, args, { sender: sender(event), jobId: a.jobId, timeoutMs: a.timeoutMs, python: meshPython });
     const result = readJson(jsonPath) || null;
     const files = {};
     for (const f of [jsonPath, output]) { if (fileExists(f)) { grant(event, f); files[baseName(f)] = f; } }
@@ -432,4 +468,4 @@ function register(deps) {
   return { ok: true, python, _scripts: { CRS_SCRIPT, MESH_SCRIPT }, _builders: { buildCrsArgs, buildMeshArgs } };
 }
 
-module.exports = { register, buildCrsArgs, buildMeshArgs, CRS_SCRIPT, MESH_SCRIPT, CRS_OPS, MESH_OPS };
+module.exports = { register, buildCrsArgs, buildMeshArgs, CRS_SCRIPT, MESH_SCRIPT, CRS_OPS, MESH_OPS, findPython, findOpen3dPython, pythonCandidates };
