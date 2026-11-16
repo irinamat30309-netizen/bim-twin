@@ -303,6 +303,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   refineScan: (payload) => inv('bim:refineScan', payload),
   // Ревизия 55: файл, переданный при запуске приложения (аргумент командной строки, «Открыть с помощью», ярлык)
   takePendingOpen: () => inv('bim:takePendingOpen'),
+  // r155: заголовок/bbox облака из argv, предзагруженный в main до старта UI (без чтения точек)
+  preloadedCloudHead: () => inv('bim:preloadedCloudHead'),
   onRefineScanProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };
@@ -355,6 +357,27 @@ contextBridge.exposeInMainWorld('bimAPI', {
       if (!active) return;
       active = false;
       try { ipcRenderer.removeListener('bim:p1Progress', listener); } catch (_) {}
+    };
+  },
+  // r155: P2/P3 — CRS/координаты, Mesh-инструменты, сохранение фрагмента клип-бокса.
+  p23Status: () => inv('bim:p23Status'),
+  p23PickMesh: () => inv('bim:p23PickMesh'),
+  p23CrsRun: (a) => inv('bim:p23CrsRun', a || {}),
+  p23MeshRun: (a) => inv('bim:p23MeshRun', a || {}),
+  p23SaveFragment: (a) => inv('bim:p23SaveFragment', a || {}),
+  p23Cancel: (jobId) => inv('bim:p23Cancel', { jobId: typeof jobId === 'string' ? jobId : '' }),
+  onP23Progress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => {
+      if (!payload || (payload.jobId && payload.jobId !== jobId)) return;
+      try { callback(payload); } catch (_) {}
+    };
+    ipcRenderer.on('bim:p23Progress', listener);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      try { ipcRenderer.removeListener('bim:p23Progress', listener); } catch (_) {}
     };
   }
 });

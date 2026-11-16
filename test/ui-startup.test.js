@@ -11,13 +11,15 @@ const html = read('startup.html'), js = read('startup.js'), css = read('startup.
 
 test('startup.html: стили и скрипты дизайн-системы подключены, файлы существуют', () => {
   const refs = [...html.matchAll(/(?:href|src)="([^"]+?)(?:\?[^"]*)?"/g)].map((m) => m[1]).filter((u) => !/^data:/.test(u));
-  for (const f of ['ui/fonts.css', 'ui/tokens.css', 'ui/base.css', 'ui/components.css', 'ui/motion.css', 'startup.css', 'icons.js', 'ui/kit.js', 'startup.js']) {
+  for (const f of ['ui/fonts.css', 'ui/tokens.css', 'ui/base.css', 'ui/components.css', 'ui/motion.css', 'startup.css', 'icons.js', 'startup.js']) {
     assert.ok(refs.includes(f), 'не подключён ' + f);
     assert.ok(fs.existsSync(path.join(R, f)), 'нет файла ' + f);
   }
+  // r155: kit.js больше не блокирует стартовую страницу — он грузится динамически после первого кадра
+  assert.ok(js.includes("'ui/kit.js"), 'kit.js должен подключаться динамически из startup.js');
   // порядок: токены раньше компонентов, значки и кит раньше логики экрана
   assert.ok(refs.indexOf('ui/tokens.css') < refs.indexOf('ui/components.css'));
-  assert.ok(refs.indexOf('icons.js') < refs.indexOf('ui/kit.js') && refs.indexOf('ui/kit.js') < refs.indexOf('startup.js'));
+  assert.ok(refs.indexOf('icons.js') < refs.indexOf('startup.js'));
 });
 
 test('startup.html: CSP без inline-скриптов и стилей; разметка без style= и on*=', () => {
@@ -59,7 +61,7 @@ test('startup.js: использует только существующие м�
   }
   for (const name of ['listProjects', 'createProject', 'switchProject', 'winMin', 'winMax', 'winClose']) assert.ok(methods.has(name), name);
   assert.doesNotMatch(js, /(?:^|[^.\w])(?:prompt|alert|confirm)\s*\(/m);
-  assert.match(js, /kit\.ask\(/);                          // название проекта — во встроенном диалоге
+  assert.match(js, /K\(\)\.ask\(/);                          // название проекта — во встроенном диалоге
   assert.match(js, /location\.replace\('index\.html\?fromStart=1/);   // переход, который разрешён в main.js
   assert.match(js, /bim\.autoFloorOnOpen/);               // флаг автораскладки по этажам читает chrome.js
 });

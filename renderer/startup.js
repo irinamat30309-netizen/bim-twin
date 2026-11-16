@@ -5,16 +5,24 @@
   'use strict';
   var W = window, D = document, ROOT = D.documentElement;
   var $ = function (id) { return D.getElementById(id); };
-  var api = W.bimAPI || null, kit = W.__lxKit || null;
+  var api = W.bimAPI || null;
+  // r155: тяжёлые UI-модули (kit/ProjectStorageUI) грузим после первого кадра — они не нужны для показа списка.
+  function K() { return W.__lxKit || null; }
+  var _lazyLoaded = false;
+  function loadLazyUi() {
+    if (_lazyLoaded) return; _lazyLoaded = true;
+    var files = ['ui/kit.js?v=1330', 'project-storage-ui.js?v=1380'];
+    files.forEach(function (src) { try { var s = D.createElement('script'); s.src = src; s.async = true; D.head.appendChild(s); } catch (e) {} });
+  }
   var projects = [], selected = null, query = '', opening = false, loadSeq = 0, working = false;
   var STATUS = { 'проект': 'Проект', active: 'Активный', draft: 'Черновик', done: 'Завершён', archived: 'В архиве' };   // служебные значения статуса → подписи
 
   /* ---------- Мелкие помощники ---------- */
   function el(tag, cls, text) { var n = D.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
   function glyph(cls, name, size) { var n = el('span', cls); n.setAttribute('data-ico', name); if (size) n.setAttribute('data-ico-size', String(size)); return n; }
-  function hydrate(scope) { if (kit && kit.hydrate) kit.hydrate(scope || D); else if (W.__lxIcons) W.__lxIcons.hydrate(scope || D); }
+  function hydrate(scope) { if (K() && K().hydrate) K().hydrate(scope || D); else if (W.__lxIcons) W.__lxIcons.hydrate(scope || D); }
   function plural(n, forms) { var a = Math.abs(n) % 100, b = a % 10; return forms[a > 10 && a < 20 ? 2 : b > 1 && b < 5 ? 1 : b === 1 ? 0 : 2]; }
-  function say(text, tone) { if (kit && kit.toast) kit.toast(text, tone ? { tone: tone } : undefined); }
+  function say(text, tone) { if (K() && K().toast) K().toast(text, tone ? { tone: tone } : undefined); }
   function why(e) { return (e && e.message) || String(e || 'ошибка'); }
   function store(key, value) { try { W.localStorage.setItem(key, value); } catch (e) { /* хранилище недоступно — выбор просто не запомнится */ } }
   function load1(key) { try { return W.localStorage.getItem(key); } catch (e) { return null; } }
@@ -74,7 +82,7 @@
     b.appendChild(glyph('st-card-ico', 'building-2')); b.appendChild(text); b.appendChild(meta); b.appendChild(glyph('st-card-check', 'check'));
     b.addEventListener('click', function () { choose(p.id); });
     b.addEventListener('dblclick', function () { choose(p.id); openSelected(); });
-    b.addEventListener('contextmenu', function (e) { e.preventDefault(); choose(p.id); projectMenu(p, kit && kit.pointAnchor ? kit.pointAnchor(e.clientX, e.clientY) : b); });
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); choose(p.id); projectMenu(p, K() && K().pointAnchor ? K().pointAnchor(e.clientX, e.clientY) : b); });
     // карточка — кнопка выбора, поэтому кнопка «Действия» — соседний элемент в общей обёртке (кнопка в кнопке недопустима)
     var slot = el('div', 'st-slot'); slot.style.setProperty('--i', String(Math.min(i, 12)));
     var more = el('button', 'icon-btn st-more'); more.type = 'button'; more.tabIndex = -1;
@@ -88,9 +96,9 @@
   /* ---------- Действия с проектом: меню карточки (кнопка «...», правый клик, Shift+F10) ---------- */
   function byId(id) { return projects.filter(function (x) { return x.id === id; })[0] || null; }
   function projectMenu(p, anchor) {
-    if (!kit || !kit.menu) return;
+    if (!K() || !K().menu) return;
     var arch = p.status === 'archived', only = projects.length < 2;
-    kit.menu(anchor, [
+    K().menu(anchor, [
       { label: 'Открыть', ico: 'arrow-right', onClick: function () { choose(p.id); openSelected(); } },
       { sep: true },
       { label: 'Переименовать…', sub: 'F2', ico: 'pencil', onClick: function () { renameProject(p); } },
@@ -112,8 +120,8 @@
   async function reloadKeep(id) { await load(); if (id && byId(id)) choose(id, true); }
   function checkName(v) { v = String(v).trim(); return !v ? 'Введите название проекта' : v.length > 200 ? 'Название длиннее 200 символов' : null; }
   async function renameProject(p) {
-    if (!kit || !kit.ask || !api || !api.editProject) return;
-    var name = await kit.ask({ title: 'Переименовать проект', input: true, value: p.name || '', okLabel: 'Сохранить', placeholder: 'Название проекта', validate: checkName });
+    if (!K() || !K().ask || !api || !api.editProject) return;
+    var name = await K().ask({ title: 'Переименовать проект', input: true, value: p.name || '', okLabel: 'Сохранить', placeholder: 'Название проекта', validate: checkName });
     if (name == null || String(name).trim() === (p.name || '')) return;
     await guard(async function () {
       await api.editProject(p.id, { name: String(name).trim() });
@@ -121,10 +129,10 @@
     }, 'Не удалось переименовать');
   }
   async function editProject(p) {
-    if (!kit || !kit.form || !api || !api.editProject) return;
+    if (!K() || !K().form || !api || !api.editProject) return;
     var opts = Object.keys(STATUS).map(function (k) { return { value: k, label: STATUS[k] }; });
     if (p.status && !STATUS[p.status]) opts.unshift({ value: p.status, label: p.status });
-    var v = await kit.form({
+    var v = await K().form({
       title: 'Свойства проекта', okLabel: 'Сохранить',
       fields: [
         { key: 'name', label: 'Название', type: 'text', value: p.name || '', maxLength: 200 },
@@ -156,9 +164,9 @@
     }, 'Не удалось дублировать');
   }
   async function deleteProject(p) {
-    if (!kit || !kit.ask || !api || !api.deleteProject) return;
+    if (!K() || !K().ask || !api || !api.deleteProject) return;
     if (projects.length < 2) { say('Единственный проект удалить нельзя — сначала создайте другой', 'warn'); return; }
-    var ok = await kit.ask({
+    var ok = await K().ask({
       title: 'Удалить проект?', danger: true, okLabel: 'Удалить',
       message: '«' + (p.name || 'Без названия') + '» будет удалён вместе с этажами, помещениями, историей изменений и копиями файлов в хранилище приложения. Исходные файлы облаков на диске останутся. Отменить удаление нельзя.'
     });
@@ -270,9 +278,9 @@
     else say('Не удалось выбрать папку: ' + ((r && r.message) || 'ошибка'), 'err');
   }
   async function createProject() {
-    if (!kit || !kit.ask || !api || !api.createProject) return;
+    if (!K() || !K().ask || !api || !api.createProject) return;
     // ревизия 38: название + где хранить проект (диск/папка, свободное место)
-    if (W.ProjectStorageUI && kit.form && api.projectStorage) {
+    if (W.ProjectStorageUI && K().form && api.projectStorage) {
       var v = await W.ProjectStorageUI.newProjectForm({});
       if (!v) return;
       var nb = $('newProject'); nb.classList.add('busy');
@@ -285,7 +293,7 @@
       finally { nb.classList.remove('busy'); }
       return;
     }
-    var name = await kit.ask({
+    var name = await K().ask({
       title: 'Новый проект', message: 'Название появится в списке проектов и в заголовке рабочей области.', input: true,
       placeholder: 'Например: ЖК «Северный», корпус А', okLabel: 'Создать',
       validate: function (v) { return String(v).trim() ? null : 'Введите название проекта'; }
@@ -332,6 +340,8 @@
   function init() {
     if (api && api.platform === 'darwin') ROOT.classList.add('st-mac');
     ROOT.setAttribute('data-theme', initialTheme()); paintTheme();
+    // r155: список проектов и первый кадр не ждут UI-кит/выбор папки — они грузятся в фоне после отрисовки.
+    setTimeout(loadLazyUi, 0);
     hydrate(D);
     $('theme').addEventListener('click', function () { setTheme(ROOT.getAttribute('data-theme') === 'light' ? 'dark' : 'light'); });
     [].forEach.call(D.querySelectorAll('[data-theme-set]'), function (b) { b.addEventListener('click', function () { setTheme(b.getAttribute('data-theme-set')); }); });
@@ -375,3 +385,4 @@
   }
   if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', init); else init();
 })();
+

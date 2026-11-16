@@ -245,7 +245,7 @@ function lasHeader(o) {
 }
 
 const DEF = { minRange: 0.5, maxRange: 120, maxPoints: 40e6, step: 0, t0: null, t1: null, maxMotorGap: 0.05, imu: true, imuShift: 0, position: 'hermite', poseStep: 0.005,
-  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: false };
+  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: 'auto' };
 
 // ---------- ревизия 145: VOXEL-балансировка плотности (по умолчанию ВЫКЛ) ----------
 // Мультипроходы дают на земле/фасаде смесь плотных и разреженных участков. balance ограничивает число точек
@@ -472,7 +472,8 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
  *   opt: minRange/maxRange (м, от лидара), maxPoints (прорежение каждой k-й точкой, k подбирается по объёму пакетов),
  *        step (k вручную), t0/t1 (UNIX-время, с), index (готовый результат scan()), imu (гироскоп между позами, по умолчанию да),
  *        refine (уточнение траектории по самому облаку — xbin-refine.js; дольше, но стены и пол тоньше),
- *        fusion (r149: scan-matching проходов + слияние без прореживания — xbin-fusion.js; 'auto' = для сканов >5 мин).
+ *        fusion (r149/r155: scan-matching проходов + слияние без прореживания — xbin-fusion.js; 'auto' = для сканов >10 мин:
+ *        ICP через cloud-register.py, иначе hist; 'hist'|'icp'|false — принудительно).
  */
 function build(xbinPath, posesText, outLas, opt, onProgress) {
   const o = Object.assign({}, DEF, opt || {});
@@ -559,19 +560,20 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
       try { fs.rmSync(tmp, { force: true }); } catch (_) {}
     }
     fs.renameSync(tmp, outLas);
-    // r149: scan-matching повторных проходов + fusion (по умолчанию для длинных сканов >5 мин — плавнее стены/пол)
+    // r149/r155: scan-matching повторных проходов + fusion. auto: для сканов >10 мин — ICP-fusion (r155),
+    // если cloud-register.py/Python/Open3D недоступны — hist-вариант; короткие сканы не трогаем.
     let fusionInfo = null;
-    const wantFusion = o.fusion === true;   // r149: fusion пока opt-in (см. XBIN-QUALITY-r145.md §8): выигрыш на плотных сборках не подтверждён, нужен ICP
-    if (wantFusion) {
-      try {
-        const F = require('./xbin-fusion');
+    try {
+      const F = require('./xbin-fusion');
+      const mode = F.resolveMode(o.fusion, T1 - T0);
+      if (mode) {
         const ftmp = outLas + '.fused';
-        fusionInfo = F.fuseLas(outLas, ftmp, Object.assign({}, o.fusionOpt || {}), (f, l) => prog(0.85 + 0.15 * f, l || 'Слияние проходов…'));
+        fusionInfo = F.fuseLas(outLas, ftmp, Object.assign({ mode, passSec: o.fusionPassSec, icpMaxPoints: o.fusionIcpMaxPoints }, o.fusionOpt || {}), (f, l) => prog(0.85 + 0.15 * f, l || 'Слияние проходов…'));
         fs.renameSync(ftmp, outLas);
-      } catch (e) {
-        fusionInfo = { error: String((e && e.message) || e) };
-        try { fs.rmSync(outLas + '.fused', { force: true }); } catch (_) {}
       }
+    } catch (e) {
+      fusionInfo = { error: String((e && e.message) || e) };
+      try { fs.rmSync(outLas + '.fused', { force: true }); } catch (_) {}
     }
     prog(1, 'Облако из .xbin: готово');
     const TR = C.TR;

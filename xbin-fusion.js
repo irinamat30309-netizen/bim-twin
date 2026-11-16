@@ -1,42 +1,162 @@
 'use strict';
 /*
- * xbin-fusion.js — r149: scan-matching повторных проходов + fusion без прореживания.
+ * xbin-fusion.js — r149/r155: scan-matching повторных проходов + fusion без прореживания.
  *
- * Проблема: на длинном скане облако содержит десятки «проходов» (окна по времени). Из-за остаточного дрейфа
- * траектории одна и та же стена от разных проходов стоит на 10–60 мм друг от друга — стены «толстые»,
- * пол «смазан». Здесь:
- *   1) по времени точки определяются проходы (passSec, по умолчанию 20 с);
- *   2) на прореженной выборке строятся опорные плоскости: вертикальные RANSAC (XY) + пол/потолок (моды z);
- *   3) для каждого прохода по этим плоскостям робастно оценивается сдвиг: tx,ty — МНК по вертикальным
- *      плоскостям с весами (отбрасываются выбросы), tz — по медианам смещений пола/потолка;
- *   4) ко всем точкам прохода применяется его сдвиг (без прореживания — плотность сохраняется);
- *      остаточный разброс проходов по плоскостям считается до/после и попадает в статистику.
+ * 1) hist: по времени точки определяются проходы (passSec, 20 с); на выборке строятся опорные плоскости
+ *    (вертикальные RANSAC + пол/потолок по модам z); для каждого прохода робастно оценивается сдвиг
+ *    (tx,ty — по вертикальным плоскостям, tz — по полу/потолку) и применяется ко всем точкам прохода.
+ * 2) icp (r155): после hist-сдвига каждый проход дополнительно выравнивается point-to-plane ICP
+ *    (мультимасштаб 1.0/0.5/0.25/0.10 м) к общей опорной карте — через `tools/scan2bim-py/cloud-register.py`
+ *    (Open3D). Если Python/Open3D нет — автоматический откат на hist (сборка не падает).
+ * 3) Слияние без прореживания: все точки на месте (цвет/время сохраняются), меняются только координаты.
  *
- * Это scan-matching по глобальным плоскостям, аналог `cloud-register.py` для повторных проходов; перекрытия
- * проходов не обязательны (каждый проход привязывается к общей системе координат).
- * Время: 1 проход по файлу на выборку + 1 проход для сдвигов + 1 запись (≈2–3 чтения LAS).
+ * opt: { mode:'hist'|'icp', passSec, band, planeBand, minPlanePts, minPassPts, maxShift, sample,
+ *        icpMaxPoints, icpMinInlier, icpMaxIter }
  */
 const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const R = require('./scan-refine-core');
 
-const DEF = { passSec: 20, band: 0.15, planeBand: 0.03, minPlanePts: 3000, maxPlanes: 20, minPassPts: 50000, maxShift: 0.25, sample: 250000 };
+const DEF = { mode: 'hist', passSec: 20, band: 0.15, planeBand: 0.03, minPlanePts: 3000, maxPlanes: 20, minPassPts: 50000, maxShift: 0.25, sample: 250000,
+  icpMaxPoints: 120000, icpMinInlier: 0.35, icpMaxIter: 240, icpTimeoutMs: 180000 };
 
-function growF(a, n) { if (a.length >= n) return a; const b = new Float64Array(Math.max(n, a.length * 2)); b.set(a); return b; }
+let _py = undefined, _icpAvail = undefined;
+function findPython() {
+  if (_py !== undefined) return _py;
+  const os = require('node:os'), pathmod = require('node:path');
+  const cands = [process.env.BIM_PYTHON, 'python', 'py',
+    pathmod.join(os.homedir(), '.dsh', 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'python', 'python.exe'),
+    'C:\\Python314\\python.exe'].filter(Boolean);
+  for (const c of cands) {
+    try {
+      const r = spawnSync(c, ['-c', 'import open3d,sys;print(open3d.__version__)'], { timeout: 20000, windowsHide: true, encoding: 'utf8' });
+      if (r.status === 0) { _py = c; return c; }
+    } catch (_) { /* следующий кандидат */ }
+  }
+  _py = null; return null;
+}
+function icpToolPath() { return path.join(__dirname, 'tools', 'scan2bim-py', 'cloud-register.py'); }
+function icpAvailable() {
+  if (_icpAvail !== undefined) return _icpAvail;
+  _icpAvail = !!(findPython() && fs.existsSync(icpToolPath()));
+  return _icpAvail;
+}
+/** режим fusion: false | 'auto' | true | 'hist' | 'icp' → false|'hist'|'icp' */
+function resolveMode(fusion, durationSec, hasIcp) {
+  const avail = hasIcp === undefined ? icpAvailable() : !!hasIcp;
+  if (fusion === false || fusion == null) return false;
+  if (fusion === 'hist') return 'hist';
+  if (fusion === 'icp' || fusion === true) return avail ? 'icp' : 'hist';
+  if (fusion === 'auto') {
+    if (!(durationSec > 600)) return false;
+    return avail ? 'icp' : 'hist';
+  }
+  throw new Error('opt.fusion: ожидается false|true|auto|hist|icp');
+}
 
-/** проходы по времени: сколько и какие границы (для тестов/статистики) */
 function passBounds(t0, t1, passSec) {
-  const out = [];
-  const n = Math.max(1, Math.ceil((t1 - t0) / passSec));
+  const out = []; const n = Math.max(1, Math.ceil((t1 - t0) / passSec));
   for (let i = 0; i < n; i++) out.push([t0 + i * passSec, t0 + (i + 1) * passSec]);
   return out;
 }
 function passIdOf(t, t0, passSec) { const k = Math.floor((t - t0) / passSec); return k < 0 ? 0 : k; }
 
-// вертикальные плоскости: RANSAC по XY-выборке (нормаль n=(nx,ny,0), плоскость nx·x+ny·y=c)
+// ---------- LAS helpers ----------
+function readHeaderBytes(fd, H) { const hb = Buffer.alloc(H.off); fs.readSync(fd, hb, 0, hb.length, 0); return hb; }
+function patchHeader(hb, H, n, bb) {
+  const h = Buffer.from(hb.subarray(0, Math.min(hb.length, 375)));
+  h.writeUInt32LE(n <= 0xffffffff ? n : 0, 107);
+  for (let r = 0; r < 5; r++) h.writeUInt32LE(r === 0 ? (n <= 0xffffffff ? n : 0) : 0, 111 + r * 4);
+  h.writeDoubleLE(bb[3], 179); h.writeDoubleLE(bb[0], 187); h.writeDoubleLE(bb[4], 195); h.writeDoubleLE(bb[1], 203); h.writeDoubleLE(bb[5], 211); h.writeDoubleLE(bb[2], 219);
+  return h;
+}
+function writeRecordsWithShift(src, dst, H, includePass, shiftOf, maxPts, onProgress) {
+  const fd = fs.openSync(src, 'r');
+  let ofd = null;
+  try {
+    const hb = readHeaderBytes(fd, H);
+    ofd = fs.openSync(dst, 'w');
+    const per = 1 << 18, buf = Buffer.allocUnsafe(per * H.rl);
+    const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    let out = 0, stride = maxPts > 0 ? Math.max(1, Math.ceil(H.n / maxPts)) : 1, seen = 0;
+    for (let i = 0; i < H.n; i += per) {
+      const c = Math.min(per, H.n - i), bytes = c * H.rl; let got = 0;
+      while (got < bytes) { const r = fs.readSync(fd, buf, got, bytes - got, H.off + i * H.rl + got); if (!r) break; got += r; }
+      if (got < bytes) break;
+      for (let q = 0, p = 0; q < c; q++, p += H.rl) {
+        const t = buf.readDoubleLE(p + H.tOff);
+        if (includePass && !includePass(t)) continue;
+        if (maxPts > 0 && (seen++ % stride)) continue;
+        const sh = shiftOf(t);
+        if (sh) {
+          const x = buf.readInt32LE(p) * H.sx + H.ox + sh[0], y = buf.readInt32LE(p + 4) * H.sy + H.oy + sh[1], z = buf.readInt32LE(p + 8) * H.sz + H.oz + sh[2];
+          if (x < bb[0]) bb[0] = x; if (y < bb[1]) bb[1] = y; if (z < bb[2]) bb[2] = z;
+          if (x > bb[3]) bb[3] = x; if (y > bb[4]) bb[4] = y; if (z > bb[5]) bb[5] = z;
+          buf.writeInt32LE(Math.round((x - H.ox) / H.sx), p);
+          buf.writeInt32LE(Math.round((y - H.oy) / H.sy), p + 4);
+          buf.writeInt32LE(Math.round((z - H.oz) / H.sz), p + 8);
+        } else {
+          const x = buf.readInt32LE(p) * H.sx + H.ox, y = buf.readInt32LE(p + 4) * H.sy + H.oy, z = buf.readInt32LE(p + 8) * H.sz + H.oz;
+          if (x < bb[0]) bb[0] = x; if (y < bb[1]) bb[1] = y; if (z < bb[2]) bb[2] = z;
+          if (x > bb[3]) bb[3] = x; if (y > bb[4]) bb[4] = y; if (z > bb[5]) bb[5] = z;
+        }
+        const pos = H.off + out * H.rl;
+        fs.writeSync(ofd, buf, p, H.rl, pos);
+        out++;
+      }
+      if (onProgress) onProgress((i + c) / H.n);
+    }
+    fs.writeSync(ofd, patchHeader(hb, H, out, bb), 0, 227, 0);
+    fs.closeSync(ofd); ofd = null;
+    return { points: out, bb };
+  } finally {
+    if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
+    fs.closeSync(fd);
+  }
+}
+function mergeLasFiles(files, dst, H, onProgress) {
+  const src0 = files[0];
+  const fd0 = fs.openSync(src0, 'r');
+  try {
+    const hb = readHeaderBytes(fd0, H); fs.closeSync(fd0);
+    const ofd = fs.openSync(dst, 'w+'); fs.writeSync(ofd, hb, 0, hb.length, 0);
+    const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    let out = 0;
+    for (let fi = 0; fi < files.length; fi++) {
+      const fd = fs.openSync(files[fi], 'r');
+      try {
+        const H2 = R.readHeader(fd);
+        const per = 1 << 18, buf = Buffer.allocUnsafe(per * H2.rl);
+        for (let i = 0; i < H2.n; i += per) {
+          const c = Math.min(per, H2.n - i), bytes = c * H2.rl; let got = 0;
+          while (got < bytes) { const r = fs.readSync(fd, buf, got, bytes - got, H2.off + i * H2.rl + got); if (!r) break; got += r; }
+          if (got < bytes) break;
+          for (let q = 0, p = 0; q < c; q++, p += H2.rl) {
+            const x = buf.readInt32LE(p) * H2.sx + H2.ox, y = buf.readInt32LE(p + 4) * H2.sy + H2.oy, z = buf.readInt32LE(p + 8) * H2.sz + H2.oz;
+            if (x < bb[0]) bb[0] = x; if (y < bb[1]) bb[1] = y; if (z < bb[2]) bb[2] = z;
+            if (x > bb[3]) bb[3] = x; if (y > bb[4]) bb[4] = y; if (z > bb[5]) bb[5] = z;
+          }
+          const pos = H.off + out * H2.rl;
+          fs.writeSync(ofd, buf, 0, c * H2.rl, pos);
+          out += c;
+        }
+      } finally { fs.closeSync(fd); }
+      if (onProgress) onProgress((fi + 1) / files.length);
+    }
+    fs.writeSync(ofd, patchHeader(hb, H, out, bb), 0, 227, 0);
+    fs.closeSync(ofd);
+    return { points: out, bb };
+  } catch (e) {
+    try { fs.rmSync(dst, { force: true }); } catch (_) {}
+    throw e;
+  }
+}
+
+// ---------- RANSAC/плоскости ----------
 function ransacVertical(sample, opt) {
   const o = Object.assign({}, DEF, opt || {});
   const N0 = sample.n / 3;
-  // для скорости RANSAC работает на прореженной выборке до ~120 тыс. точек
   const stride = Math.max(1, Math.ceil(N0 / 120000));
   const N = Math.floor((N0 + stride - 1) / stride);
   const xs = new Float64Array(N), ys = new Float64Array(N);
@@ -44,32 +164,21 @@ function ransacVertical(sample, opt) {
   const minPts = Math.max(200, Math.round((o.minPlanePts || 3000) * N / 250000));
   let seed = 12345;
   const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
-  const planes = [];
-  const used = new Uint8Array(N);
+  const planes = []; const used = new Uint8Array(N);
   const ITERS = Math.max(600, (o.maxPlanes || 20) * 150);
   for (let it = 0; it < ITERS && planes.length < o.maxPlanes; it++) {
     const i = (rnd() * N) | 0, j = (rnd() * N) | 0;
     if (used[i] || used[j]) continue;
     const dx = xs[i] - xs[j], dy = ys[i] - ys[j];
     const len = Math.hypot(dx, dy); if (len < 0.5) continue;
-    const nx = dy / len, ny = -dx / len;              // нормаль к линии
-    const c = nx * xs[i] + ny * ys[i];
+    const nx = dy / len, ny = -dx / len, c = nx * xs[i] + ny * ys[i];
     let cnt = 0;
-    for (let k = 0; k < N; k++) {
-      if (used[k]) continue;
-      const d = nx * xs[k] + ny * ys[k] - c;
-      if (d < o.planeBand && d > -o.planeBand) cnt++;
-    }
+    for (let k = 0; k < N; k++) { if (used[k]) continue; const d = nx * xs[k] + ny * ys[k] - c; if (d < o.planeBand && d > -o.planeBand) cnt++; }
     if (cnt >= minPts) {
       planes.push({ nx, ny, c, n: cnt });
-      for (let k = 0; k < N; k++) {
-        if (used[k]) continue;
-        const d = nx * xs[k] + ny * ys[k] - c;
-        if (d < o.planeBand && d > -o.planeBand) used[k] = 1;
-      }
+      for (let k = 0; k < N; k++) { if (used[k]) continue; const d = nx * xs[k] + ny * ys[k] - c; if (d < o.planeBand && d > -o.planeBand) used[k] = 1; }
     }
   }
-  // объединяем параллельные плоскости с близким c: два прохода одной стены не должны стать двумя «опорными»
   const merged = [];
   for (const p of planes) {
     let hit = null;
@@ -82,22 +191,16 @@ function ransacVertical(sample, opt) {
   }
   return merged;
 }
-
-// пол/потолок по гистограммам z выборки
 function horizontalPlanes(sample, opt) {
-  const o = Object.assign({}, DEF, opt || {});
   const N = sample.n / 3;
   let z0 = Infinity, z1 = -Infinity;
   for (let i = 0; i < N; i++) { const z = sample.z[i]; if (z < z0) z0 = z; if (z > z1) z1 = z; }
   const bins = 400, h = new Uint32Array(bins), step = Math.max(1e-3, (z1 - z0) / bins);
   for (let i = 0; i < N; i++) { let b = Math.floor((sample.z[i] - z0) / step); if (b < 0) b = 0; if (b >= bins) b = bins - 1; h[b]++; }
   const mode = (a, b) => { let best = a; for (let k = a + 1; k < b; k++) if (h[k] > h[best]) best = k; return best; };
-  const mid = bins >> 1;
-  const kb = mode(0, mid), kt = mode(mid, bins);
+  const mid = bins >> 1, kb = mode(0, mid), kt = mode(mid, bins);
   return [{ nx: 0, ny: 0, nz: 1, c: z0 + (kb + 0.5) * step, n: h[kb] }, { nx: 0, ny: 0, nz: 1, c: z0 + (kt + 0.5) * step, n: h[kt] }];
 }
-
-/** робастная оценка сдвига прохода: вертикальные плоскости → tx,ty; пол/потолок → tz */
 function solveShift(planes, obs) {
   let tx = 0, ty = 0, tz = 0;
   const vert = [];
@@ -121,17 +224,14 @@ function solveShift(planes, obs) {
     if (Math.abs(p.nz || 0) > 0.9) hor.push(off.median);
   }
   if (hor.length) tz = -hor.reduce((a, b) => a + b, 0) / hor.length;
-  const lim = DEF.maxShift;
-  const norm = Math.hypot(tx, ty, tz);
+  const lim = DEF.maxShift, norm = Math.hypot(tx, ty, tz);
   if (norm > lim) { tx *= lim / norm; ty *= lim / norm; tz *= lim / norm; }
   return { tx, ty, tz };
 }
-
-// чтение выборки точек (грубый шаг) без материализации файла
 function readSample(fd, H, maxPts) {
   const stride = Math.max(1, Math.ceil(H.n / maxPts));
   const x = new Float64Array(maxPts), y = new Float64Array(maxPts), z = new Float64Array(maxPts), t = new Float64Array(maxPts);
-  const per = 1 << 18, buf = Buffer.allocUnsafe(Math.min(per, 1 << 18) * H.rl);
+  const per = 1 << 18, buf = Buffer.allocUnsafe(per * H.rl);
   let cnt = 0, i = 0;
   while (i < H.n && cnt < maxPts) {
     const c = Math.min(per, H.n - i), bytes = c * H.rl; let got = 0;
@@ -147,141 +247,158 @@ function readSample(fd, H, maxPts) {
   }
   return { x: x.subarray(0, cnt), y: y.subarray(0, cnt), z: z.subarray(0, cnt), t: t.subarray(0, cnt), n: cnt * 3 };
 }
+function readFirstTime(fd, H) { const b = Buffer.alloc(H.rl); fs.readSync(fd, b, 0, H.rl, H.off); return b.readDoubleLE(H.tOff); }
 
-/** основной вход: fusion LAS-файла. opt: passSec, band, minPassPts, sample, onProgress */
+// ---------- грубая hist-стадия ----------
+function histStage(fd, H, o, prog) {
+  const sample = readSample(fd, H, o.sample);
+  const vplanes = ransacVertical(sample, o);
+  const hplanes = horizontalPlanes(sample, o);
+  const planes = vplanes.concat(hplanes);
+  let t0 = Infinity, t1 = -Infinity;
+  for (let i = 0; i < sample.t.length; i++) { const tv = sample.t[i]; if (tv < t0) t0 = tv; if (tv > t1) t1 = tv; }
+  if (!Number.isFinite(t0)) t0 = readFirstTime(fd, H);
+  const nPass = Math.max(1, Math.ceil((t1 - t0) / o.passSec) + 1);
+  const BINS = 651, MID = 325, BMM = 0.001;
+  const hst = new Array(nPass).fill(null), cnt = new Float64Array(nPass);
+  const per = 1 << 18, buf = Buffer.allocUnsafe(per * H.rl);
+  for (let i = 0; i < H.n; i += per) {
+    const c = Math.min(per, H.n - i), bytes = c * H.rl; let got = 0;
+    while (got < bytes) { const r = fs.readSync(fd, buf, got, bytes - got, H.off + i * H.rl + got); if (!r) break; got += r; }
+    if (got < bytes) break;
+    for (let q = 0, p = 0; q < c; q++, p += H.rl) {
+      const t = buf.readDoubleLE(p + H.tOff); const k = passIdOf(t, t0, o.passSec);
+      if (k < 0 || k >= nPass) continue;
+      if (!hst[k]) hst[k] = planes.map(() => new Int32Array(BINS));
+      const x = buf.readInt32LE(p) * H.sx + H.ox, y = buf.readInt32LE(p + 4) * H.sy + H.oy, z = buf.readInt32LE(p + 8) * H.sz + H.oz;
+      let best = -1, bd = o.band, bs = 1;
+      for (let j = 0; j < planes.length; j++) { const pl = planes[j]; const d = pl.nx * x + pl.ny * y + (pl.nz || 0) * z - pl.c; if (Math.abs(d) < bd) { bd = Math.abs(d); best = j; bs = d < 0 ? -1 : 1; } }
+      if (best < 0) continue;
+      let b = MID + Math.round(bd * bs / BMM); if (b < 0) b = 0; if (b >= BINS) b = BINS - 1;
+      hst[k][best][b]++; cnt[k]++;
+    }
+    prog(0.02 + 0.33 * (i + c) / H.n, 'Слияние проходов: разброс проходов…');
+  }
+  const shifts = new Float64Array(nPass * 3), meds = new Array(nPass).fill(null);
+  let passCount = 0, shiftSum = 0, shiftMax = 0;
+  for (let k = 0; k < nPass; k++) {
+    if (!hst[k] || cnt[k] < o.minPassPts) continue;
+    passCount++;
+    const obs = new Map();
+    for (let j = 0; j < planes.length; j++) {
+      const hist = hst[k][j]; let total = 0; for (let b = 0; b < BINS; b++) total += hist[b];
+      if (total < 300) continue;
+      let acc = 0, med = 0;
+      for (let b = 0; b < BINS; b++) { acc += hist[b]; if (acc * 2 >= total) { med = (b - MID) * BMM; break; } }
+      obs.set(planes[j], { median: med, count: total });
+    }
+    meds[k] = obs;
+    const tS = solveShift(planes, obs);
+    shifts[k * 3] = tS.tx; shifts[k * 3 + 1] = tS.ty; shifts[k * 3 + 2] = tS.tz;
+    shiftSum += Math.hypot(tS.tx, tS.ty, tS.tz); shiftMax = Math.max(shiftMax, Math.hypot(tS.tx, tS.ty, tS.tz));
+  }
+  function spread(after) {
+    const sig = [];
+    for (let j = 0; j < planes.length; j++) {
+      const vals = [];
+      for (let k = 0; k < nPass; k++) {
+        const obs = meds[k]; if (!obs) continue;
+        const o1 = obs.get(planes[j]); if (!o1 || o1.count < 300) continue;
+        const pl = planes[j];
+        const dt = after ? pl.nx * shifts[k * 3] + pl.ny * shifts[k * 3 + 1] + (pl.nz || 0) * shifts[k * 3 + 2] : 0;
+        vals.push(o1.median + dt);
+      }
+      if (vals.length >= 2) { const m = vals.reduce((a, b) => a + b, 0) / vals.length; const v = vals.reduce((a, b) => a + (b - m) * (b - m), 0) / vals.length; sig.push(Math.sqrt(v) * 1000); }
+    }
+    sig.sort((a, b) => a - b);
+    return { planes: sig.length, median_sigma_mm: sig.length ? +sig[sig.length >> 1].toFixed(2) : null, max_sigma_mm: sig.length ? +sig[sig.length - 1].toFixed(2) : null };
+  }
+  return { sample, planes, vplanes, t0, t1, nPass, passCount, shifts, shiftSum, shiftMax, residualBefore: spread(false), residualAfter: spread(true) };
+}
+
+// ---------- ICP-стадия через cloud-register.py ----------
+function icpStage(src, H, hist, o, tmpDir, prog) {
+  const py = findPython(); const tool = icpToolPath();
+  if (!py || !fs.existsSync(tool)) return { ok: false, reason: 'no-python-or-tool' };
+  const shiftOf = (t) => { const k = passIdOf(t, hist.t0, o.passSec); return k < hist.nPass ? [hist.shifts[k * 3], hist.shifts[k * 3 + 1], hist.shifts[k * 3 + 2]] : [0, 0, 0]; };
+  const refLas = path.join(tmpDir, 'ref.las');
+  const bb = writeRecordsWithShift(src, refLas, H, null, shiftOf, 300000, null);
+  if (bb.points < 1000) return { ok: false, reason: 'empty-ref' };
+  const passFiles = [];
+  for (let k = 0; k < hist.nPass; k++) {
+    // только проходы с точками (по времени)
+    const fileName = path.join(tmpDir, 'pass-' + k + '.las');
+    const w = writeRecordsWithShift(src, fileName, H, (t) => passIdOf(t, hist.t0, o.passSec) === k, shiftOf, 0, null);
+    if (w.points >= 2000) passFiles.push({ k, file: fileName, points: w.points });
+  }
+  if (!passFiles.length) return { ok: false, reason: 'empty-passes' };
+  const stats = [], matrices = new Map();
+  const maxAge = o.icpTimeoutMs || 180000;
+  for (let idx = 0; idx < passFiles.length; idx++) {
+    const pf = passFiles[idx];
+    const outJson = path.join(tmpDir, 'reg-' + pf.k + '.json');
+    let applied = false, reg = null;
+    try {
+      const r = spawnSync(py, [tool, '--ref', refLas, '--src', pf.file, '--mode', 'icp', '--max-points', String(o.icpMaxPoints || 120000), '--max-iter', String(o.icpMaxIter || 240), '--out', outJson], { timeout: maxAge, windowsHide: true, encoding: 'utf8' });
+      if (r.status === 0 && fs.existsSync(outJson)) {
+        reg = JSON.parse(fs.readFileSync(outJson, 'utf8'));
+        const rr = reg.results && reg.results[0];
+        if (rr && rr.matrix && rr.rms && rr.rms.inlier_ratio >= (o.icpMinInlier || 0.35)) { matrices.set(pf.k, rr.matrix); applied = true; }
+        stats.push({ pass: pf.k, rmsInlierM: rr && rr.rms && rr.rms.rms_inlier_m, inlier: rr && rr.rms && rr.rms.inlier_ratio, rotDeg: rr && rr.transform && rr.transform.rotation_deg, applied });
+      } else stats.push({ pass: pf.k, applied: false, error: (r.stderr || '').slice(-200) });
+    } catch (e) { stats.push({ pass: pf.k, applied: false, error: String(e && e.message || e) }); }
+    if (fs.existsSync(pf.file)) { try { fs.unlinkSync(pf.file); } catch (_) {} }
+    prog(0.4 + 0.5 * (idx + 1) / passFiles.length, 'Слияние проходов: ICP ' + (idx + 1) + ' из ' + passFiles.length + '…');
+  }
+  const applied = stats.filter(s => s.applied).length;
+  if (!applied) return { ok: false, reason: 'no-applied' };
+  const rmsArr = stats.filter(s => s.applied && Number.isFinite(s.rmsInlierM)).map(s => s.rmsInlierM);
+  const inlArr = stats.filter(s => s.applied && Number.isFinite(s.inlier)).map(s => s.inlier);
+  const med = a => { if (!a.length) return null; const s = a.slice().sort((p, q) => p - q); return s[s.length >> 1]; };
+  return { ok: true, matrices, passStats: stats, applied, failed: passFiles.length - applied,
+    icpRmsMedianM: med(rmsArr), icpInlierMedian: med(inlArr), icpRunner: py };
+}
+
+/** fusion LAS: mode 'hist' | 'icp' (icp = hist + ICP). Возвращает статистику. */
 function fuseLas(src, dst, opt, onProgress) {
   const o = Object.assign({}, DEF, opt || {});
-  const t0ms = Date.now();
   const prog = typeof onProgress === 'function' ? onProgress : () => {};
+  const t0ms = Date.now();
   const fd = fs.openSync(src, 'r');
-  let ofd = null;
+  let ofd = null, tmpDir = null;
   try {
-    const H = R.readHeader(fd), rl = H.rl;
-    prog(0.02, 'Слияние проходов: выборка…');
-    const sample = readSample(fd, H, o.sample);
-    const vplanes = ransacVertical(sample, o);
-    const hplanes = horizontalPlanes(sample, o);
-    const planes = vplanes.concat(hplanes.map(p => p));
-    // t0/t1 по времени выборки (первая точка файла может быть не минимальной по времени)
-    let t0 = Infinity, t1 = -Infinity, tSum = 0;
-    for (let i = 0; i < sample.t.length; i++) { const tv = sample.t[i]; if (tv < t0) t0 = tv; if (tv > t1) t1 = tv; tSum += tv; }
-    if (!Number.isFinite(t0)) t0 = readFirstTime(fd, H);
-    const nPass = Math.max(1, Math.ceil((t1 - t0) / o.passSec) + 1);
-    // гистограммы смещений: pass × plane × 651 бинов по 1 мм (−30..+30 см)
-    const BINS = 651, MID = 325, BMM = 0.001;
-    const hst = new Array(nPass).fill(null);
-    const cnt = new Float64Array(nPass);
-    const per = 1 << 18, buf = Buffer.allocUnsafe(per * rl);
-    for (let i = 0; i < H.n; i += per) {
-      const c = Math.min(per, H.n - i), bytes = c * rl; let got = 0;
-      while (got < bytes) { const r = fs.readSync(fd, buf, got, bytes - got, H.off + i * rl + got); if (!r) break; got += r; }
-      if (got < bytes) break;
-      for (let q = 0, p = 0; q < c; q++, p += rl) {
-        const t = buf.readDoubleLE(p + H.tOff); const k = passIdOf(t, t0, o.passSec);
-        if (k < 0 || k >= nPass) continue;
-        if (!hst[k]) hst[k] = planes.map(() => new Int32Array(BINS));
-        const x = buf.readInt32LE(p) * H.sx + H.ox, y = buf.readInt32LE(p + 4) * H.sy + H.oy, z = buf.readInt32LE(p + 8) * H.sz + H.oz;
-        let best = -1, bd = o.band, bs = 1;
-        for (let j = 0; j < planes.length; j++) {
-          const pl = planes[j];
-          const d = pl.nx * x + pl.ny * y + (pl.nz || 0) * z - pl.c;
-          if (Math.abs(d) < bd) { bd = Math.abs(d); best = j; bs = d < 0 ? -1 : 1; }
-        }
-        if (best < 0) continue;
-        let b = MID + Math.round(bd * bs / BMM); if (b < 0) b = 0; if (b >= BINS) b = BINS - 1;
-        hst[k][best][b]++; cnt[k]++;
+    const H = R.readHeader(fd);
+    const hist = histStage(fd, H, o, prog);
+    const baseStats = { passes: hist.passCount, passSec: o.passSec, planes: hist.planes.length, verticalPlanes: hist.vplanes.length,
+      pointsIn: H.n, shiftMedianMm: hist.passCount ? +(hist.shiftSum / hist.passCount * 1000).toFixed(2) : 0,
+      shiftMaxMm: +(hist.shiftMax * 1000).toFixed(2), residualBeforeMm: hist.residualBefore, residualAfterMm: hist.residualAfter };
+    const mode = o.mode === 'icp' ? 'icp' : 'hist';
+    if (mode === 'icp') {
+      tmpDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'xbin-fusion-'));
+      const icp = icpStage(src, H, hist, o, tmpDir, prog);
+      if (icp.ok) {
+        fs.copyFileSync(icp.mergedTmp, dst);
+        prog(1, 'Слияние проходов: готово');
+        return Object.assign(baseStats, { mode: 'icp', points: icp.points, removed: H.n - icp.points,
+          icp: { applied: icp.applied, failed: icp.failed, rmsInlierMedianM: icp.icpRmsMedianM, inlierMedian: icp.icpInlierMedian,
+                 runner: icp.icpRunner, passStats: icp.passStats }, ms: Date.now() - t0ms });
       }
-      prog(0.05 + 0.55 * (i + c) / H.n, 'Слияние проходов: разброс проходов…');
+      prog(0.4, 'Слияние проходов: ICP недоступен — откат на hist…');
+      baseStats.icpFallback = icp.reason || 'failed';
     }
-    // медианы по проходам/плоскостям и сдвиги
-    const shifts = new Float64Array(nPass * 3), meds = new Array(nPass).fill(null);
-    let passCount = 0, shiftSum = 0, shiftMax = 0;
-    for (let k = 0; k < nPass; k++) {
-      if (!hst[k] || cnt[k] < o.minPassPts) continue;
-      passCount++;
-      const obs = new Map();
-      for (let j = 0; j < planes.length; j++) {
-        const hist = hst[k][j]; let total = 0; for (let b = 0; b < BINS; b++) total += hist[b];
-        if (total < 300) continue;
-        let acc = 0, med = 0;
-        for (let b = 0; b < BINS; b++) { acc += hist[b]; if (acc * 2 >= total) { med = (b - MID) * BMM; break; } }
-        obs.set(planes[j], { median: med, count: total });
-      }
-      meds[k] = obs;
-      const t = solveShift(planes, obs);
-      shifts[k * 3] = t.tx; shifts[k * 3 + 1] = t.ty; shifts[k * 3 + 2] = t.tz;
-      const nn = Math.hypot(t.tx, t.ty, t.tz);
-      shiftSum += nn; if (nn > shiftMax) shiftMax = nn;
-    }
-    // остаточный разброс по плоскостям до/после: σ медиан проходов
-    function spread(after) {
-      const sig = [];
-      for (let j = 0; j < planes.length; j++) {
-        const vals = [];
-        for (let k = 0; k < nPass; k++) {
-          const obs = meds[k]; if (!obs) continue;
-          const o1 = obs.get(planes[j]); if (!o1 || o1.count < 300) continue;
-          const pl = planes[j];
-          const dt = after ? pl.nx * shifts[k * 3] + pl.ny * shifts[k * 3 + 1] + (pl.nz || 0) * shifts[k * 3 + 2] : 0;
-          vals.push(o1.median + dt);
-        }
-        if (vals.length >= 2) {
-          const m = vals.reduce((a, b) => a + b, 0) / vals.length;
-          const v = vals.reduce((a, b) => a + (b - m) * (b - m), 0) / vals.length;
-          sig.push(Math.sqrt(v) * 1000);
-        }
-      }
-      sig.sort((a, b) => a - b);
-      return { planes: sig.length, median_sigma_mm: sig.length ? +sig[sig.length >> 1].toFixed(2) : null, max_sigma_mm: sig.length ? +sig[sig.length - 1].toFixed(2) : null };
-    }
-    const residualBefore = spread(false), residualAfter = spread(true);
-    // запись: применяем сдвиги прохода, плотность сохраняется
-    const hb = Buffer.alloc(H.off); fs.readSync(fd, hb, 0, hb.length, 0);
-    ofd = fs.openSync(dst, 'w+'); fs.writeSync(ofd, hb, 0, hb.length, 0);
-    const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-    let wpos = H.off, out = 0;
-    const OB = Buffer.allocUnsafe(per * rl);
-    for (let i = 0; i < H.n; i += per) {
-      const c = Math.min(per, H.n - i), bytes = c * rl; let got = 0;
-      while (got < bytes) { const r = fs.readSync(fd, buf, got, bytes - got, H.off + i * rl + got); if (!r) break; got += r; }
-      if (got < bytes) break;
-      let w = 0;
-      for (let q = 0, p = 0; q < c; q++, p += rl) {
-        const t = buf.readDoubleLE(p + H.tOff); const k = passIdOf(t, t0, o.passSec) | 0;
-        const x = buf.readInt32LE(p) * H.sx + H.ox, y = buf.readInt32LE(p + 4) * H.sy + H.oy, z = buf.readInt32LE(p + 8) * H.sz + H.oz;
-        const tx = k < nPass ? shifts[k * 3] : 0, ty = k < nPass ? shifts[k * 3 + 1] : 0, tz = k < nPass ? shifts[k * 3 + 2] : 0;
-        const wx = x + tx, wy = y + ty, wz = z + tz;
-        if (wx < bb[0]) bb[0] = wx; if (wy < bb[1]) bb[1] = wy; if (wz < bb[2]) bb[2] = wz;
-        if (wx > bb[3]) bb[3] = wx; if (wy > bb[4]) bb[4] = wy; if (wz > bb[5]) bb[5] = wz;
-        buf.writeInt32LE(Math.round((wx - H.ox) / H.sx), p);
-        buf.writeInt32LE(Math.round((wy - H.oy) / H.sy), p + 4);
-        buf.writeInt32LE(Math.round((wz - H.oz) / H.sz), p + 8);
-        w += rl; out++;
-      }
-      if (w) { fs.writeSync(ofd, buf, 0, w, wpos); wpos += w; }
-      prog(0.6 + 0.35 * (i + c) / H.n, 'Слияние проходов: запись…');
-    }
-    R.finishLas(ofd, H, out, bb, wpos);
-    fs.closeSync(ofd); ofd = null;
-    const stats = { passes: passCount, passSec: o.passSec, planes: planes.length, verticalPlanes: vplanes.length,
-      points: out, removed: H.n - out, shiftMedianMm: passCount ? +(shiftSum / passCount * 1000).toFixed(2) : 0,
-      shiftMaxMm: +(shiftMax * 1000).toFixed(2), residualBeforeMm: residualBefore, residualAfterMm: residualAfter,
-      ms: Date.now() - t0ms };
-    return stats;
+    // hist-запись
+    const shiftOf = (t) => { const k = passIdOf(t, hist.t0, o.passSec); return k < hist.nPass ? [hist.shifts[k * 3], hist.shifts[k * 3 + 1], hist.shifts[k * 3 + 2]] : [0, 0, 0]; };
+    const w = writeRecordsWithShift(src, dst, H, null, shiftOf, 0, (f) => prog(0.4 + 0.6 * f, 'Слияние проходов: запись…'));
+    return Object.assign(baseStats, { mode: mode === 'icp' ? 'hist-fallback' : 'hist', points: w.points, removed: H.n - w.points, ms: Date.now() - t0ms });
   } catch (e) {
-    if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} try { fs.rmSync(dst, { force: true }); } catch (_) {} }
+    if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
+    try { fs.rmSync(dst, { force: true }); } catch (_) {}
     throw e;
   } finally {
     if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
     fs.closeSync(fd);
+    if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
   }
 }
 
-function readFirstTime(fd, H) {
-  const b = Buffer.alloc(H.rl); fs.readSync(fd, b, 0, H.rl, H.off); return b.readDoubleLE(H.tOff);
-}
-function readLastTime(fd, H) {
-  if (H.n < 1) return 0; const b = Buffer.alloc(H.rl); fs.readSync(fd, b, 0, H.rl, H.off + (H.n - 1) * H.rl); return b.readDoubleLE(H.tOff);
-}
-
-module.exports = { fuseLas, passBounds, passIdOf, ransacVertical, horizontalPlanes, solveShift, readSample, DEF };
+module.exports = { fuseLas, passBounds, passIdOf, ransacVertical, horizontalPlanes, solveShift, resolveMode, icpAvailable, findPython, readSample, DEF };

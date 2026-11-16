@@ -5962,6 +5962,15 @@
       document.head.appendChild(s);
     } catch (e) {}
   }
+  function ensureClipP3() {
+    try {
+      if (window.__lxClipP3 || document.getElementById('lxClipP3Script')) return;
+      var s = document.createElement('script');
+      s.id = 'lxClipP3Script'; s.src = 'ui/clip-p3.js?v=155'; s.async = true;
+      s.onload = function () { try { if (window.__lxClipP3) window.__lxClipP3.mount(); } catch (e) {} };
+      document.head.appendChild(s);
+    } catch (e) {}
+  }
   async function init() {
     const canvas = $('viewer');
     const onSel = el => { if (el) selectEl(el.id); else selectEl(null); };
@@ -5972,7 +5981,7 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); } catch (e) { console.warn('r145 render prefs', e); }
+    try { applyRenderPrefs(); ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); ensureClipP3(); } catch (e) { console.warn('r145 render prefs', e); }
     // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.
     try { startPendingCloudOpen(); } catch (e) { console.warn('r149 pending cloud', e); }
     try { window.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { try { applyRenderPrefs(); } catch (e) {} }, 120); }); } catch (e) {}

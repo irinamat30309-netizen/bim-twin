@@ -90,7 +90,7 @@ test('r38: main.js — кэши через workDir, выбор папки тол
   assert.ok(/projectStorage: \(payload\) => inv\('bim:projectStorage'/.test(read('preload.js')));
   const kit = read('renderer/ui/kit.js');
   assert.ok(/f\.type === 'folder'/.test(kit) && /lx-folder-pick/.test(kit) && /typeof f\.hint === 'function'/.test(kit));
-  assert.ok(read('renderer/startup.html').includes('project-storage-ui.js'));
+  assert.ok(read('renderer/startup.html').includes('project-storage-ui.js') || read('renderer/startup.js').includes("'project-storage-ui.js"));
   assert.ok(read('renderer/index.html').includes('project-storage-ui.js'));
   const st = read('renderer/startup.js');
   assert.ok(/ProjectStorageUI\.newProjectForm/.test(st) && /folderParent: v\.folderParent/.test(st) && /Папка проекта…/.test(st));

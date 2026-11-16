@@ -1,4 +1,4 @@
-﻿/* BIM Twin — r151 P1/P2: «Пакетная обработка проекта», «Совместить облака», «Классификация»,
+/* BIM Twin — r151 P1/P2: «Пакетная обработка проекта», «Совместить облака», «Классификация»,
  * «Отчёт о точности» (сверка с эталоном).
  *
  * Готовые Python-инструменты (tools/scan2bim-py) подключены через мост p1-bridge.js:
@@ -877,7 +877,19 @@
   }
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   if (typeof globalThis !== 'undefined' && typeof window === 'undefined') { try { globalThis.__lxP1 = API; } catch (e) { } }
-  function boot() { try { if (D.body) mount(); else D.addEventListener('DOMContentLoaded', mount); } catch (e) { } }
+  // r155: подгружаем слой P2/P3 (CRS, Mesh, клип-бокс) без правок app.js.
+  function ensureP23() {
+    try {
+      if (!W || !W.bimAPI) return false;                 // jsdom/легаси-окружение — не грузим
+      if (W.__lxP23 || D.getElementById('lxP23Script')) return true;
+      var s = D.createElement('script');
+      s.id = 'lxP23Script'; s.src = 'ui/p23-tools.js?v=155'; s.async = true;
+      s.onload = function () { try { if (W.__lxP23 && W.__lxP23.mount) W.__lxP23.mount(); } catch (e) { } };
+      (D.head || D.documentElement).appendChild(s);
+      return true;
+    } catch (e) { return false; }
+  }
+  function boot() { try { if (D.body) { mount(); ensureP23(); } else D.addEventListener('DOMContentLoaded', function () { mount(); ensureP23(); }); } catch (e) { } }
   boot();
 })();
 

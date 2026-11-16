@@ -33,6 +33,14 @@ const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'r149-'));
 
 test('r149: passBounds/passIdOf/solveShift — геометрия проходов и робастный сдвиг', () => {
   assert.deepStrictEqual(F.passBounds(1000, 1025, 20), [[1000, 1020], [1020, 1040]]);
+  // r155: режимы fusion (auto — только для сканов >600 с; icp при наличии cloud-register/Python)
+  assert.strictEqual(F.resolveMode(false, 1000, true), false);
+  assert.strictEqual(F.resolveMode('auto', 300, true), false);
+  assert.strictEqual(F.resolveMode('auto', 700, true), 'icp');
+  assert.strictEqual(F.resolveMode('auto', 700, false), 'hist');
+  assert.strictEqual(F.resolveMode('hist', 700, true), 'hist');
+  assert.strictEqual(F.resolveMode('icp', 60, true), 'icp');
+  assert.strictEqual(F.resolveMode(true, 60, false), 'hist');
   assert.strictEqual(F.passIdOf(1005, 1000, 20), 0);
   assert.strictEqual(F.passIdOf(1025, 1000, 20), 1);
   // две вертикальные плоскости (x=0.1, y=5) и пол z=0.1; проход смещён на (+0.02, −0.01, +0.03)
@@ -61,7 +69,7 @@ test('r149: fusion — два прохода одной сцены сдвига�
     }
   }
   writeLas(src, pts, [0, 0, 0, 6.1, 6.1, 3.1]);
-  const st = F.fuseLas(src, dst, { passSec: 10, minPassPts: 500, band: 0.15, planeBand: 0.02, sample: 200000 });
+  const st = F.fuseLas(src, dst, { mode: 'hist', passSec: 10, minPassPts: 500, band: 0.15, planeBand: 0.02, sample: 200000 });
   assert.ok(st.passes >= 2, JSON.stringify(st));
   assert.ok(st.residualBeforeMm && st.residualAfterMm, JSON.stringify(st));
   assert.ok(st.residualAfterMm.median_sigma_mm < st.residualBeforeMm.median_sigma_mm,
@@ -74,7 +82,8 @@ test('r149: fusion — два прохода одной сцены сдвига�
   assert.ok(sd(wallX) * 1000 < 6, 'стена после fusion должна быть тоньше 6 мм: ' + (sd(wallX) * 1000).toFixed(2));
   // сборка включает fusion и пробрасывает статистику
   const xl = read('xbin-lidar.js');
-  assert.match(xl, /const wantFusion = o\.fusion === true;/);
+  assert.match(xl, /const mode = F\.resolveMode\(o\.fusion, T1 - T0\);/);
+  assert.match(xl, /F\.fuseLas\(outLas, ftmp, Object\.assign\(\{ mode/);
   assert.match(xl, /require\('\.\/xbin-fusion'\)/);
   assert.match(xl, /fusion: fusionInfo/);
   assert.match(read('tools/las-fusion.js'), /F\.fuseLas/);

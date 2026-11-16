@@ -67,6 +67,7 @@ let octreeCleanupOnQuit = function () {};
 // Ревизия 55: путь к облаку, переданному при запуске (аргумент командной строки / «Открыть с помощью»).
 // Окно забирает его само, когда рабочая область готова (bim:takePendingOpen) — так не бывает гонки с загрузкой окна.
 let pendingOpen = null;
+let preloadedCloudHead = null;   // r155: {path,bbox,count,meta} — заголовок облака из argv, прочитан до окна
 
 function currentAvailableMemoryBytes() {
   const candidates = [];
@@ -680,6 +681,15 @@ function createWindow() {
       try { const abs = path.resolve(a); if (fs.statSync(abs).isFile()) { pendingOpen = abs; break; } } catch (_) {}
     }
   } catch (_) {}  // v1208.2: clear stale renderer cache before loading the UI hotfix.
+  // r155: предзагрузка LAS-заголовка/bbox сразу после создания окна (без чтения точек) — окно получает bbox
+  // ещё до того, как стартовая страница дойдёт до openCloud, и не ждёт первого IPC-заголовка.
+  try {
+    if (pendingOpen && /\.(las|laz|ply)$/i.test(pendingOpen)) {
+      const cs = require('./cloud-segments');
+      const d = cs.openSegmentSource(pendingOpen);
+      if (d) preloadedCloudHead = { path: pendingOpen, bbox: d.bbox, count: d.count, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity };
+    }
+  } catch (_) {}
   // r151: НЕ ждём clearCache перед показом стартового экрана — очистка кэша на диске занимала секунды.
   // Кэш чистим в фоне; стартовая страница грузится сразу (её ассеты — локальные файлы, кэш не критичен).
   win.webContents.session.clearCache().catch(() => {});
@@ -1484,6 +1494,11 @@ function registerIpc() {
       if (sender && typeof fileGrants.grantExistingFile === 'function') fileGrants.grantExistingFile(sender.id, p, { read: true });
     } catch (_) {}
     return p;
+  });
+  // r155: отдаём окну предзагруженный (до старта UI) заголовок/bbox облака из argv — без чтения точек и IPC-ожидания.
+  ipcMain.handle('bim:preloadedCloudHead', () => {
+    const h = preloadedCloudHead; if (!h) return null;
+    return { path: h.path, bbox: h.bbox, count: h.count, meta: h.meta, hasColor: h.hasColor, hasIntensity: h.hasIntensity };
   });
   ipcMain.handle('bim:refineScan', async (event, a) => {
     let workDir = null, tmpOut = null;
@@ -4667,6 +4682,15 @@ function registerIpc() {
       ipcSender, resolveAuthorizedFile, grantExistingOutput
     });
   } catch (e) { console.warn('[p1-bridge] не зарегистрирован:', (e && e.message) || e); }
+
+  // r155: P2/P3-мост — CRS/координаты, Mesh-инструменты, сохранение фрагмента клип-бокса.
+  // Append-only блок; существующие обработчики не меняет.
+  try {
+    require('./p23-bridge').register({
+      ipcMain, app, dialog, rootDir: __dirname, fileGrants,
+      ipcSender, resolveAuthorizedFile, grantExistingOutput
+    });
+  } catch (e) { console.warn('[p23-bridge] не зарегистрирован:', (e && e.message) || e); }
 }
 
 function safePath(keys) {

@@ -95,6 +95,6 @@ test('IPC и preload: editProject / duplicateProject с проверкой по�
   assert.throws(() => V({ name: 'x'.repeat(201) }, false), /слишком длинное/);
   assert.throws(() => V({ name: 5 }, false), /invalid string/);
   for (const k of ['renameProject', 'editProject', 'duplicateProject', 'deleteProject', 'projectMenu']) assert.match(js, new RegExp('function ' + k + '\\('));
-  assert.match(js, /kit\.form\(/); assert.match(js, /danger: true, okLabel: 'Удалить'/);
+  assert.match(js, /K\(\)\.form\(/); assert.match(js, /danger: true, okLabel: 'Удалить'/);
   assert.match(js, /e\.key === 'F2'/); assert.match(js, /e\.key === 'Delete'/); assert.match(js, /'contextmenu'/);
 });
