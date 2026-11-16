@@ -115,6 +115,50 @@ function writeRecordsWithShift(src, dst, H, includePass, shiftOf, maxPts, onProg
     fs.closeSync(fd);
   }
 }
+function writeWithMatrices(src, dst, H, hist, o, matrices, onProgress) {
+  const fd = fs.openSync(src, 'r');
+  let ofd = null;
+  try {
+    const hb = readHeaderBytes(fd, H);
+    ofd = fs.openSync(dst, 'w');
+    const per = 1 << 18, buf = Buffer.allocUnsafe(per * H.rl);
+    const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    let out = 0;
+    for (let i = 0; i < H.n; i += per) {
+      const c = Math.min(per, H.n - i), bytes = c * H.rl; let got = 0;
+      while (got < bytes) { const r = fs.readSync(fd, buf, got, bytes - got, H.off + i * H.rl + got); if (!r) break; got += r; }
+      if (got < bytes) break;
+      for (let q = 0, p = 0; q < c; q++, p += H.rl) {
+        const t = buf.readDoubleLE(p + H.tOff);
+        const k = passIdOf(t, hist.t0, o.passSec);
+        let x = buf.readInt32LE(p) * H.sx + H.ox, y = buf.readInt32LE(p + 4) * H.sy + H.oy, z = buf.readInt32LE(p + 8) * H.sz + H.oz;
+        if (k < hist.nPass) { x += hist.shifts[k * 3]; y += hist.shifts[k * 3 + 1]; z += hist.shifts[k * 3 + 2]; }
+        const M = matrices.get(k);
+        if (M) {
+          const X = M[0][0] * x + M[0][1] * y + M[0][2] * z + M[0][3];
+          const Y = M[1][0] * x + M[1][1] * y + M[1][2] * z + M[1][3];
+          const Z = M[2][0] * x + M[2][1] * y + M[2][2] * z + M[2][3];
+          x = X; y = Y; z = Z;
+        }
+        if (x < bb[0]) bb[0] = x; if (y < bb[1]) bb[1] = y; if (z < bb[2]) bb[2] = z;
+        if (x > bb[3]) bb[3] = x; if (y > bb[4]) bb[4] = y; if (z > bb[5]) bb[5] = z;
+        buf.writeInt32LE(Math.round((x - H.ox) / H.sx), p);
+        buf.writeInt32LE(Math.round((y - H.oy) / H.sy), p + 4);
+        buf.writeInt32LE(Math.round((z - H.oz) / H.sz), p + 8);
+        fs.writeSync(ofd, buf, p, H.rl, H.off + out * H.rl);
+        out++;
+      }
+      if (onProgress) onProgress((i + c) / H.n);
+    }
+    fs.writeSync(ofd, patchHeader(hb, H, out, bb), 0, 227, 0);
+    fs.closeSync(ofd); ofd = null;
+    return { points: out, bb };
+  } finally {
+    if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
+    fs.closeSync(fd);
+  }
+}
+
 function mergeLasFiles(files, dst, H, onProgress) {
   const src0 = files[0];
   const fd0 = fs.openSync(src0, 'r');
@@ -377,9 +421,9 @@ function fuseLas(src, dst, opt, onProgress) {
       tmpDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'xbin-fusion-'));
       const icp = icpStage(src, H, hist, o, tmpDir, prog);
       if (icp.ok) {
-        fs.copyFileSync(icp.mergedTmp, dst);
+        const w = writeWithMatrices(src, dst, H, hist, o, icp.matrices, (f) => prog(0.9 + 0.1 * f, 'Слияние проходов: запись с ICP…'));
         prog(1, 'Слияние проходов: готово');
-        return Object.assign(baseStats, { mode: 'icp', points: icp.points, removed: H.n - icp.points,
+        return Object.assign(baseStats, { mode: 'icp', points: w.points, removed: H.n - w.points,
           icp: { applied: icp.applied, failed: icp.failed, rmsInlierMedianM: icp.icpRmsMedianM, inlierMedian: icp.icpInlierMedian,
                  runner: icp.icpRunner, passStats: icp.passStats }, ms: Date.now() - t0ms });
       }

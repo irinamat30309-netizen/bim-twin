@@ -21,7 +21,7 @@ const CRS_SCRIPT = 'crs-tools.py';
 const MESH_SCRIPT = 'mesh-tools.py';
 const CRS_OPS = { info: 1, reproject: 1, georef: 1, corners: 1 };
 const MESH_OPS = { 'fill-holes': 1, laplacian: 1, 'remove-class': 1, 'remove-color': 1, simplify: 1 };
-const MESH_EXT = new Set(['.ply', '.obj', '.stl', '.glb', '.gltf']);
+const MESH_EXT = new Set(['.ply', '.obj', '.stl']);
 const CLOUD_EXT = new Set(['.las', '.laz', '.ply']);
 const OUT_ROOT = 'p2p3-r155';
 const FRAG_MAX_POINTS = 5_000_000;
@@ -45,11 +45,13 @@ function buildCrsArgs(op, o, variant) {
   op = CRS_OPS[op] ? op : 'info';
   const args = ['--in', String(o.cloud || '')];
   if (op === 'reproject') {
-    args.push('--to', String(o.to || 'local'));
+    const to = String(o.to || 'local').replace(/^EPSG\s*:\s*/i, '');
+    args.push('--to', to);
     if (o.localParams) args.push('--local-params', String(o.localParams));
     if (o.out) args.push('--out-las', String(o.out));
   } else if (op === 'georef') {
     args.push('--update-header');
+    if (o.out) args.push('--out-las', String(o.out));
     if (o.georefFile) args.push('--georef-file', String(o.georefFile));
   }
   if (o.from) args.push('--epsg', String(String(o.from).replace(/^EPSG:/i, '')));
@@ -307,7 +309,7 @@ function register(deps) {
   ipcMain.handle('bim:p23PickMesh', async (event) => {
     try {
       if (!dialog) return { ok: false, error: 'Нет доступа к диалогу' };
-      const res = await dialog.showOpenDialog({ title: 'Выберите mesh (PLY/OBJ/STL/GLB/GLTF)', properties: ['openFile'], filters: [{ name: 'Mesh', extensions: ['ply', 'obj', 'stl', 'glb', 'gltf'] }, { name: 'Все файлы', extensions: ['*'] }] });
+      const res = await dialog.showOpenDialog({ title: 'Выберите mesh (PLY/OBJ/STL)', properties: ['openFile'], filters: [{ name: 'Mesh', extensions: ['ply', 'obj', 'stl'] }, { name: 'Все файлы', extensions: ['*'] }] });
       if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, canceled: true };
       const p = res.filePaths[0]; if (!fileExists(p)) return { ok: false, error: 'Файл не найден' };
       grantRead(event, p);
@@ -337,7 +339,7 @@ function register(deps) {
     if (!cloud) return { ok: false, error: 'Не выбрано облако (LAS/PLY) — откройте облако точек, чтобы читать/пересчитывать его СК.' };
     if (op === 'reproject' && !a.to) return { ok: false, error: 'Не указана целевая система координат (EPSG:4326/32636/25836 или local).' };
     const dir = jobDir('crs');
-    const outLas = op === 'reproject' ? path.join(dir, 'reprojected.las') : null;
+    const outLas = (op === 'reproject' || op === 'georef') ? path.join(dir, op === 'reproject' ? 'reprojected.las' : 'georef-header.las') : null;
     const jsonPath = path.join(dir, 'crs-' + op + '.json');
     const georefFile = op === 'georef' ? path.join(dir, 'georef.json') : null;
     const args = buildCrsArgs(op, { cloud, from: a.from, to: a.to, out: outLas, json: jsonPath, georefFile, localParams: a.localParams, maxPoints: a.maxPoints });
@@ -348,7 +350,7 @@ function register(deps) {
     if (op === 'corners' && result) {
       try { csv = writeCornersCsv(result, path.join(dir, 'corners.csv')); } catch (_) { csv = null; }
     }
-    const outCandidates = [jsonPath, csv, georefFile].filter(Boolean);
+    const outCandidates = [jsonPath, csv, outLas, georefFile].filter(Boolean);
     for (const f of outCandidates) { if (fileExists(f)) { grant(event, f); files[baseName(f)] = f; } }
     const toolOut = result && result.out_las ? (typeof result.out_las === 'string' ? result.out_las : (result.out_las.file || null)) : null;
     if (toolOut && fileExists(toolOut)) { grant(event, toolOut); files[baseName(toolOut)] = toolOut; }
@@ -380,11 +382,11 @@ function register(deps) {
     if (help && (!/--in\b/.test(help) || !/--out\b/.test(help))) return { ok: false, cliMismatch: true, error: 'CLI mesh-tools.py не совпал с ожидаемым (--in/--out/--fill-holes/--smooth/--remove-triangles/--decimate). Нужна согласованная версия CLI.', help: help.slice(0, 2000) };
     if (!hasOpen3d()) return { ok: false, needOpen3D: true, error: 'Mesh-инструменты требуют Open3D в Python-движке (чтение/запись mesh и операции над треугольниками). Установите изолированный Python-движок с Open3D (Настройки → Python/Open3D) — без него mesh-операции недоступны. Текущее облако/сцену это не затрагивает.' };
     const input = authorize(event, a.input, MESH_EXT);
-    if (!input) return { ok: false, error: 'Не выбран mesh-файл (PLY/OBJ/STL/GLB/GLTF).' };
-    if (!a.output && !/\.(ply|obj|stl|glb|gltf)$/i.test(input)) return { ok: false, error: 'Формат mesh не поддерживается для записи.' };
+    if (!input) return { ok: false, error: 'Не выбран mesh-файл (PLY/OBJ/STL).' };
+    if (!a.output && !/\.(ply|obj|stl)$/i.test(input)) return { ok: false, error: 'Формат mesh не поддерживается для записи.' };
     const dir = jobDir('mesh');
     const ext = path.extname(input).toLowerCase() || '.ply';
-    const output = a.output || path.join(dir, 'mesh-' + op + (ext === '.glb' || ext === '.gltf' ? '.ply' : ext));
+    const output = a.output || path.join(dir, 'mesh-' + op + ext);
     const jsonPath = path.join(dir, 'mesh-' + op + '.json');
     const args = buildMeshArgs(op, { input, output, params: a.params || {}, json: jsonPath });
     const run = await runTool('mesh', script, args, { sender: sender(event), jobId: a.jobId, timeoutMs: a.timeoutMs });

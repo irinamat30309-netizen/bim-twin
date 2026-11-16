@@ -277,7 +277,9 @@ def transform_las(path, to_epsg, out_path, source_epsg, max_points=None, local_p
     """Пересчитывает LAS из source_epsg в to_epsg и пишет LAS с VLR/WKT. → статистика."""
     H = read_las_header(path)
     src = epsg_info(source_epsg)
-    dst = epsg_info(to_epsg)
+    # to_epsg == 0 → локальная (УСК/local) система: не EPSG-код
+    dst = {'kind': 'local', 'datum': None, 'zone': None, 'hemi': None,
+           'name': 'USK/local'} if int(to_epsg) == 0 else epsg_info(to_epsg)
     t0 = time.time()
     # функции преобразования (E,N,H) → target coords
     if src['kind'] == 'projected':
@@ -412,17 +414,22 @@ def _vlr_bytes(user_id, rec_id, data):
 
 
 def write_las(path, pts, rgb=None, wkt=None, epsg=None):
-    """Пишет LAS 1.2 fmt 3; при wkt добавляет VLR LASF_Projection/4224 + GeoKeyDirectory."""
+    """Пишет LAS 1.2 fmt 3; при wkt добавляет VLR LASF_Projection/4224 + GeoKeyDirectory.
+    Смещение/масштаб подбираются автоматически так, чтобы int32 гарантированно не переполнялся
+    (для градусов — 1e-9°, для метров — 0.001 м; при широком диапазоне шаг увеличивается)."""
     pts = np.asarray(pts, dtype=np.float64)
     n = len(pts)
     mn = pts.min(axis=0) if n else np.zeros(3)
     mx = pts.max(axis=0) if n else np.zeros(3)
-    off = np.floor(mn)
-    # для географических координат (градусы) нужен более мелкий шаг, иначе 0.001° ≈ 111 м
-    if n and abs(mx[0]) < 1000.0 and abs(mx[1]) < 1000.0 and abs(mn[0]) < 1000.0 and abs(mn[1]) < 1000.0:
-        scale = (1e-9, 1e-9, 0.001)
-    else:
-        scale = (0.001, 0.001, 0.001)
+    geographic = bool(n and abs(mx[0]) < 1000.0 and abs(mx[1]) < 1000.0
+                      and abs(mn[0]) < 1000.0 and abs(mn[1]) < 1000.0)
+    base = 1e-9 if geographic else 0.001
+    span = np.maximum(mx - mn, 1e-12)
+    # int32 = ±2.147e9; берём запас: |coord-off|/scale ≤ 1e9
+    scale_xy = max(base, float(np.max(span[:2])) / 1.0e9) if n else base
+    scale_z = max(0.001, float(span[2]) / 1.0e9) if n else 0.001
+    scale = (scale_xy, scale_xy, scale_z)
+    off = 0.5 * (mn + mx)   # центрируем — int32 не переполнится ни при каких данных
     hsize = 375
     rec = 34
     vlrs = b''

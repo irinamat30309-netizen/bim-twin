@@ -54,7 +54,7 @@ test('r155: API клип-бокса ровно по договору с editor-b
 test('r155: аргументы crs-tools.py — реальный CLI r155 (--in/--to/--out-las/--update-header)', () => {
   const reproj = BRIDGE.buildCrsArgs('reproject', { cloud: 'a.las', from: '32636', to: 'EPSG:4326', out: 'out.las', json: 'r.json' });
   assert.deepEqual(reproj.slice(0, 2), ['--in', 'a.las']);
-  assert.ok(reproj.includes('--to') && reproj.includes('EPSG:4326'));
+  assert.ok(reproj.includes('--to') && reproj.includes('4326'), 'EPSG:-префикс срезается для CLI: ' + reproj.join(' '));
   assert.ok(reproj.includes('--out-las') && reproj.includes('out.las'));
   assert.ok(reproj.includes('--json') && reproj.includes('r.json'));
   assert.ok(reproj.includes('--epsg') && reproj.includes('32636'), 'исходный EPSG прокидывается как --epsg');

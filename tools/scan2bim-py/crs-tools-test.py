@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """crs-tools-test.py — тест crs-tools.py (Karney TM, control-точка dfi, roundtrip, VLR/georef)."""
 import importlib.util
 import json
@@ -142,9 +142,48 @@ def main():
     eps2, wkt2 = C2.las_crs_from_vlrs(v2) if v2 else (None, None)
     check('--update-header: VLR с EPSG/WKT', r.returncode == 0 and eps2 == 32636 and bool(wkt2),
           'epsg=%s vlr=%d' % (eps2, len(v2)))
+    print('\n=== 5. Регрессии: 4326 на UTM-36N (N≈6.18e6), --to local, широкий диапазон ===')
+    P3 = np.column_stack([rng.uniform(499997, 500007, 3000), rng.uniform(6179998, 6180004, 3000),
+                          rng.uniform(-0.02, 3.5, 3000)])
+    las3 = os.path.join(tmp, 'utm-36n.las')
+    C2.write_las(las3, P3, wkt=C2.wkt_for(32636), epsg=32636)
+    out3 = os.path.join(tmp, 'utm-36n-wgs84.las')
+    j3 = os.path.join(tmp, 'r3.json')
+    r3 = run_cli(['--in', las3, '--to', '4326', '--out-las', out3, '--json', j3])
+    ok3 = os.path.exists(out3) and os.path.exists(j3)
+    rep3 = json.load(open(j3, encoding='utf-8')) if ok3 else {}
+    check('4326 на UTM-36N (N≈6.18e6): exit 0, LAS записан (нет int32-overflow)',
+          r3.returncode == 0 and ok3 and rep3.get('ok') is True,
+          'code=%d %s' % (r3.returncode, (r3.stderr or '')[:100]))
+    if ok3:
+        H3 = C2.read_las_header(out3)
+        check('4326-файл: bbox в градусах (lon≈33, lat≈55.77)',
+              abs(H3['bbox'][0] - 33.0) < 0.01 and abs(H3['bbox'][1] - 55.77) < 0.01,
+              'bbox=%s scale=%s' % ([round(v, 5) for v in H3['bbox'][:2]], H3['scale']))
+    out4 = os.path.join(tmp, 'utm-local.las')
+    j4 = os.path.join(tmp, 'r4.json')
+    r4 = run_cli(['--in', las3, '--to', 'local', '--local-params', '0,0,0,1',
+                  '--out-las', out4, '--json', j4])
+    ok4 = os.path.exists(out4) and os.path.exists(j4)
+    check('--to local --local-params: exit 0, LAS записан (нет epsg_info(0))',
+          r4.returncode == 0 and ok4, 'code=%d %s' % (r4.returncode, (r4.stderr or '')[:100]))
+    if ok4:
+        H4 = C2.read_las_header(out4)
+        check('local: координаты совпадают с UTM (identity)',
+              abs(H4['bbox'][0] - 499997.0) < 0.01 and abs(H4['bbox'][1] - 6179998.0) < 0.01,
+              'bbox=%s' % [round(v, 2) for v in H4['bbox'][:2]])
+    # широкий диапазон градусов — int32 не должен переполняться
+    try:
+        Pw = np.column_stack([np.linspace(30, 40, 500), np.linspace(50, 60, 500), np.zeros(500)])
+        C2.write_las(os.path.join(tmp, 'wide.las'), Pw, wkt=C2.wkt_for(4326), epsg=4326)
+        check('широкий диапазон 10°: запись LAS без переполнения int32', True,
+              'scale=%s' % (C2.read_las_header(os.path.join(tmp, 'wide.las'))['scale'],))
+    except Exception as e:  # noqa: BLE001
+        check('широкий диапазон 10°: запись LAS без переполнения int32', False, str(e))
     print('\n=== ИТОГ: PASS %d | FAIL %d | SKIP %d ===' % (CHK['pass'], CHK['fail'], CHK['skip']))
     return 0 if CHK['fail'] == 0 else 1
 
 
 if __name__ == '__main__':
     sys.exit(main())
+

@@ -29,6 +29,19 @@
   ];
   function bridge() { try { return (W.bimAPI && typeof W.bimAPI.p23Status === 'function') ? W.bimAPI : null; } catch (e) { return null; } }
   function viewer() { try { return (W.__pcTools && W.__pcTools.viewer && W.__pcTools.viewer()) || W.__viewer || W.__lxViewer || null; } catch (e) { return null; } }
+  // Облако из вьюера: getEditedCloud() может быть null в потоковом/большом режиме,
+  // тогда берём base[0] (pos/col/classification) и запись _cloudRecord.
+  function viewerCloud() {
+    try { var t = W.__pcTools; if (t && t.getCloud) { var c = t.getCloud(); if (c && c.pos && c.pos.length) return c; } } catch (e) { }
+    var v = viewer();
+    try {
+      var b = v && v.base && v.base[0];
+      if (b && b.pos && b.pos.length) {
+        return { pos: b.pos, col: b.col || null, intensity: b.intensity || null, classification: b.classification || null, count: b.count || (b.pos.length / 3), meta: (v._cloudRecord || {}) };
+      }
+    } catch (e) { }
+    return null;
+  }
   function toast(m, tone) { try { if (W.__toast) W.__toast(m, tone); else if (W.__lxKit && W.__lxKit.toast) W.__lxKit.toast(m, { tone: tone }); } catch (e) { } }
   function icon(n, s) { try { return W.__lxIcons && W.__lxIcons.svg ? W.__lxIcons.svg(n, s || 16) : ''; } catch (e) { return ''; } }
   function $(id) { return D.getElementById(id); }
@@ -144,19 +157,21 @@
     return m2 ? m2[1] : last;
   }
   function collectCrsInfo() {
-    var v = viewer(), t = W.__pcTools, cloud = null;
-    try { cloud = t && t.getCloud ? t.getCloud() : null; } catch (e) { cloud = null; }
+    var v = viewer(), t = W.__pcTools, cloud = viewerCloud();
+    var rec = null;
+    try { rec = v && v._cloudRecord ? v._cloudRecord : null; } catch (e) { rec = null; }
     var wkt = null, xf = null, path = null;
     try { wkt = (t && t.getSourceCrs) ? t.getSourceCrs() : (v && v._srcCrs) || (cloud && cloud.meta && cloud.meta.crsWkt) || null; } catch (e) { wkt = null; }
     try { xf = (t && t.getSourceTransform) ? t.getSourceTransform() : (v && v._srcXform) || null; } catch (e) { xf = null; }
-    try { path = W.__bimCurrentCloudPath || null; } catch (e) { path = null; }
+    try { path = W.__bimCurrentCloudPath || (rec && rec.sourceName) || null; } catch (e) { path = null; }
     var model = null;
     try { model = (W.__lxScan2BIM && W.__lxScan2BIM.state && W.__lxScan2BIM.state.model) || (W.BimProjectState && W.BimProjectState.current) || null; } catch (e) { model = null; }
     var bbox = v && v.bbox ? { mn: v.bbox.mn.slice(), mx: v.bbox.mx.slice() } : null;
     var epsg = extractEpsg(wkt) || (cloud && cloud.meta && (cloud.meta.epsg || cloud.meta.crsEpsg)) || null;
+    var points = (cloud && cloud.count) || (rec && (rec.loadedCount || rec.sourceCount)) || (v && v.pointCount) || 0;
     var corners = [];
     if (bbox) for (var i = 0; i < 8; i++) corners.push([i & 1 ? bbox.mx[0] : bbox.mn[0], i & 2 ? bbox.mx[1] : bbox.mn[1], i & 4 ? bbox.mx[2] : bbox.mn[2]]);
-    return { wkt: wkt || null, epsg: epsg || null, xform: xf || null, path: path, model: model ? (model.name || model.title || 'модель проекта') : null, bbox: bbox, corners: corners, points: cloud && cloud.count ? cloud.count : (v && v.pointCount) || 0, isYup: true };
+    return { wkt: wkt || null, epsg: epsg || null, xform: xf || null, path: path, model: model ? (model.name || model.title || 'модель проекта') : null, bbox: bbox, corners: corners, points: points, isYup: true };
   }
   function crsInfoHtml(info) {
     var rows = '';
@@ -255,6 +270,7 @@
     var localInp = p.querySelector('[data-p23="crs-local"]');
     var localParams = localInp ? String(localInp.value || '').trim() : '';
     var cloud = st.crsInfo && st.crsInfo.path;
+    if (!cloud) { st.crsInfo = collectCrsInfo(); cloud = st.crsInfo.path; }
     if (!cloud) { toast('Система координат: сначала откройте облако точек', 'warn'); return false; }
     st.busy = true; st.log = [];
     var btn = p.querySelector('[data-p23="crs-run"]'); if (btn) btn.disabled = true;
@@ -266,6 +282,16 @@
       st.busy = false; if (btn) btn.disabled = false; try { unsub(); } catch (e) { }
       st.crsResult = r;
       var box = p.querySelector('[data-p23-crs-result]'); if (box) box.innerHTML = crsResultHtml(r);
+      if (r && r.ok && r.result) {
+        var rr = r.result, src = rr.source || {}, base = st.crsInfo || {};
+        st.crsInfo = Object.assign({}, base, {
+          epsg: src.epsg || base.epsg || null,
+          wkt: src.wkt || base.wkt || null,
+          points: rr.points_file || base.points || 0,
+          bbox: rr.bbox || base.bbox || null
+        });
+        var infoBox = p.querySelector('[data-p23-crs-info]'); if (infoBox) infoBox.innerHTML = crsInfoHtml(st.crsInfo);
+      }
       if (r && r.ok) { toast('Система координат: ' + op + ' — готово', 'ok'); if (r.out && W.__bimOpenCloudPath) { try { W.__bimOpenCloudPath(r.out, { fresh: false }); } catch (e) { } } }
       else toast('Система координат: ' + ((r && r.error) || 'не выполнено'), 'err');
     }).catch(function (e) {
@@ -351,7 +377,7 @@
     return html;
   }
   function openMesh() {
-    if (!st.meshFile) { var v = viewer(); try { if (v && v._cloudRecord && /\.(ply|obj|glb|gltf|stl)$/i.test(String(v._cloudRecord.sourceName || ''))) { st.meshFile = ''; st.meshFromScene = baseName(v._cloudRecord.sourceName); } } catch (e) { } }
+    if (!st.meshFile) { var v = viewer(); try { if (v && v._cloudRecord && /\.(ply|obj|stl)$/i.test(String(v._cloudRecord.sourceName || ''))) { st.meshFile = ''; st.meshFromScene = baseName(v._cloudRecord.sourceName); } } catch (e) { } }
     showPanel('mesh', meshPanelHtml());
     if (!st.status) loadStatus().then(function () { if (st.view === 'mesh') { var p = D.getElementById('lxMeshPanel'); if (p) { var n = p.querySelector('.lx-p23-note'); if (n) n.textContent = statusText(); } } });
     return true;
@@ -376,7 +402,7 @@
     if (st.busy) return false;
     var p = D.getElementById('lxMeshPanel'); if (!p) return false;
     var op = p.querySelector('[data-p23="mesh-op"]').value;
-    if (!st.meshFile) { toast('Mesh: выберите файл (PLY/OBJ/STL/GLB/GLTF)', 'warn'); return false; }
+    if (!st.meshFile) { toast('Mesh: выберите файл (PLY/OBJ/STL)', 'warn'); return false; }
     if (st.status && st.status.tools && st.status.tools.mesh && st.status.open3d === false) {
       toast('Mesh-инструменты: нужен Open3D (Настройки → Python/Open3D)', 'warn');
       return false;
@@ -455,8 +481,7 @@
     return f;
   }
   function countPointsInBox(box) {
-    var v = viewer(); var cl = null;
-    try { cl = (W.__pcTools && W.__pcTools.getCloud) ? W.__pcTools.getCloud() : (v && v.getEditedCloud ? v.getEditedCloud() : null); } catch (e) { cl = null; }
+    var cl = viewerCloud();
     if (!cl || !cl.pos || !cl.pos.length) return 0;
     var P = cl.pos, n = Math.min(cl.count || (P.length / 3), P.length / 3);
     var step = n > 3000000 ? Math.ceil(n / 2000000) : 1;
@@ -519,8 +544,7 @@
     var v = viewer(); if (!v) return Promise.resolve({ ok: false, error: 'нет вьюера' });
     var box = st.clipBox || getViewerBox();
     if (!box) return Promise.resolve({ ok: false, error: 'не задан клип-бокс' });
-    var cl = null;
-    try { cl = (W.__pcTools && W.__pcTools.getCloud) ? W.__pcTools.getCloud() : (v.getEditedCloud ? v.getEditedCloud() : null); } catch (e) { cl = null; }
+    var cl = viewerCloud();
     if (!cl || !cl.pos || !cl.pos.length) return Promise.resolve({ ok: false, error: 'нет открытого облака' });
     var P = cl.pos, C = cl.col || null, n = Math.min(cl.count || (P.length / 3), P.length / 3);
     var mn = box.min, mx = box.max; var keep = 0;
@@ -595,12 +619,18 @@
     styles();
     ensureBarButtons();
     loadStatus();
+    // облако загрузилось/сменилось — обновляем панель CRS (в потоковом режиме getCloud может быть null)
+    try {
+      ['lx-cloud-loaded', 'bim-cloud-loaded', 'lx-pctools-ready', 'bim-project-state-restored'].forEach(function (ev) {
+        W.addEventListener(ev, function () { if (st.view === 'crs') refreshCrsInfo(); });
+      });
+    } catch (e) { }
     // Кнопка editor-basics: data-p3="open" → открыть наш клип-бокс (если панель ещё не вызывает API сама)
     try {
       D.addEventListener('click', function (e) {
         var b = e.target && e.target.closest && e.target.closest('[data-p3="open"]');
         if (!b) return;
-        if (W.__lxClipBox && typeof W.__lxClipBox.open === 'function') { try { W.__lxClipBox.open(); toast('Клип-бокс: включён — задайте границы и сохраните фрагмент'); } catch (e) { } }
+        if (W.__lxClipBox && typeof W.__lxClipBox.open === 'function') { try { W.__lxClipBox.open(); } catch (e) { } }
       }, true);
     } catch (e) { }
     return true;
