@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   parseCloud: (p, jobId, opts) => inv('bim:parseCloud', jobId ? Object.assign({ path: p, jobId, preview: !!(opts && opts.preview), allowReduced: !!(opts && opts.allowReduced) },
     opts && opts.pre && typeof opts.pre === 'object' ? { pre: true, filter: opts.pre.filter || null, maxPoints: Number(opts.pre.maxPoints) || 0, estimate: Number(opts.pre.estimate) || 0 } : {}) : p),
   readCloudChunk: (a) => inv('bim:readCloudChunk', a),
-  cloudPartsOpen: (p, jobId, opts) => inv('bim:cloudPartsOpen', { path: p, jobId, maxPoints: opts && opts.maxPoints > 0 ? Number(opts.maxPoints) : 0,
+  cloudPartsOpen: (p, jobId, opts) => inv('bim:cloudPartsOpen', { path: p, jobId, maxPoints: opts && opts.maxPoints > 0 ? Number(opts.maxPoints) : 0, firstSegPoints: opts && opts.firstSegPoints > 0 ? Number(opts.firstSegPoints) : 0,
     filter: opts && opts.filter && typeof opts.filter === 'object' ? opts.filter : null, estimate: opts && opts.estimate > 0 ? Number(opts.estimate) : 0, force: !!(opts && opts.force) }),
   // ревизия 27: карта облака до загрузки, мощность ПК, план из облака (DXF), PDF-отчёт, папка проекта, работа с файлом на месте
   systemCapacity: (opts) => inv('bim:systemCapacity', { refresh: !!(opts && opts.refresh), renderer: opts && typeof opts.renderer === 'string' ? opts.renderer : '' }),
@@ -332,5 +332,29 @@ contextBridge.exposeInMainWorld('bimAPI', {
   },
   cancelOctreeBuild: (jobId) => {
     if (typeof jobId === 'string' && jobId) snd('bim:cancelOctreeBuild', { jobId });
+  },
+  // r151: P1/P2 — готовые Python-инструменты (совмещение облаков, классификация, отчёт о точности)
+  p1Status: () => inv('bim:p1Status'),
+  p1PickClouds: (a) => inv('bim:p1PickClouds', a || {}),
+  p1PickPairs: () => inv('bim:p1PickPairs'),
+  p1GrantPaths: (a) => inv('bim:p1GrantPaths', { paths: a && Array.isArray(a.paths) ? a.paths.map(String).slice(0, 10) : [] }),
+  p1Register: (a) => inv('bim:p1Register', a || {}),
+  p1Classify: (a) => inv('bim:p1Classify', a || {}),
+  p1Accuracy: (a) => inv('bim:p1Accuracy', a || {}),
+  p1Export: (a) => inv('bim:p1Export', a || {}),
+  p1Cancel: (jobId) => inv('bim:p1Cancel', { jobId: typeof jobId === 'string' ? jobId : '' }),
+  onP1Progress: (jobId, callback) => {
+    if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
+    const listener = (_event, payload) => {
+      if (!payload || (payload.jobId && payload.jobId !== jobId)) return;
+      try { callback(payload); } catch (_) {}
+    };
+    ipcRenderer.on('bim:p1Progress', listener);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      try { ipcRenderer.removeListener('bim:p1Progress', listener); } catch (_) {}
+    };
   }
 });

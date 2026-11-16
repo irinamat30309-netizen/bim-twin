@@ -364,7 +364,14 @@
     });
     W.addEventListener('resize', tipTruncated);
     loadAbout();
-    load();
+    // r151: облако из командной строки — сразу входим в проект (автостарт), не дожидаясь клика.
+    load().then(function () {
+      if (!/[?&]auto=1/.test(W.location.search)) return;
+      try {
+        if (!selected && projects.length) { var a = projects.filter(function (x) { return x.active; })[0] || projects[0]; if (a) choose(a.id); }
+        setTimeout(function () { if (selected) openSelected(); }, 40);
+      } catch (e) { }
+    });
   }
   if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', init); else init();
 })();

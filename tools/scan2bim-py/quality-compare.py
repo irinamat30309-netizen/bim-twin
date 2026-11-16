@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """quality-compare.py — независимая количественная сверка «наша сборка из .xbin vs Lixel Studio»
 по визуальному качеству (r145). Метрики соответствуют претензиям заказчика:
 
@@ -54,7 +54,13 @@ def read_header(path):
     s = struct.unpack_from('<ddd', h, 131); o = struct.unpack_from('<ddd', h, 155)
     maxx, minx, maxy, miny, maxz, minz = struct.unpack_from('<dddddd', h, 179)
     t_off = 20 if fmt in (1, 3, 4, 5, 10) else None
-    rgb_off = 28 if fmt in (2, 3, 5, 7, 8, 10) else None
+    # r151: смещение RGB зависит от формата LAS (было 28 для всех, из-за чего fmt 2/7/8/10
+    # читались со сдвигом и падали). LAS 1.4: fmt 2 → 20 (core 20 + RGB 6), fmt 3/5 → 28,
+    # fmt 7/8/10 → 30 (core 30 + RGB 6).
+    if fmt == 2: rgb_off = 20
+    elif fmt in (3, 5): rgb_off = 28
+    elif fmt in (7, 8, 10): rgb_off = 30
+    else: rgb_off = None
     return {'path': path, 'fmt': fmt, 'rl': rl, 'off': off, 'n': int(n),
             'scale': s, 'offset': o, 'bbox': (minx, miny, minz, maxx, maxy, maxz),
             't_off': t_off, 'rgb_off': rgb_off, 'size': os.path.getsize(path),

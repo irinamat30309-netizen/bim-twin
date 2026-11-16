@@ -203,8 +203,22 @@ async function benchOne(file, label, outDir, opts) {
   let ws = null, send = null;
   let targetName = path.basename(file);
   try {
-    const startup = await connect(port, /startup\.html/, 90000);
+    const startup = await connect(port, /startup\.html/, 30000);
     result.times.startupMs = now() - tSpawn;
+    // r151 lazy startup: страница появляется очень быстро (0,8 с) — ждём, пока её JS реально нарисует
+    // кнопки/список проектов, иначе клик уходит в пустоту и рабочая область не открывается.
+    for (let w = 0; w < 100; w++) {
+      let ui = null;
+      try {
+        ui = await ev(startup.send, `(() => {
+          const b = document.getElementById('openProject');
+          const cards = document.querySelectorAll('.st-card:not(.st-new)').length;
+          return { ready: !!b, disabled: !!(b && b.disabled), cards, text: (document.body && document.body.innerText || '').slice(0, 120) };
+        })()`, 15000);
+      } catch (_) { }
+      if (ui && ui.ready && !ui.disabled && (ui.cards > 0 || /Новый проект|Проекты/.test(ui.text || ''))) break;
+      await sleep(250);
+    }
     const opened = await ev(startup.send, `(() => {
       const btn = document.getElementById('openProject');
       const cards = Array.from(document.querySelectorAll('.st-card:not(.st-new)'));
@@ -216,7 +230,17 @@ async function benchOne(file, label, outDir, opts) {
     result.log.push({ t: now(), event: 'open-workspace', how: opened });
     try { startup.ws.close(); } catch (_) { }
     await sleep(300);
-    const idx = await connect(port, /index\.html/, 180000);
+    let idx;
+    try {
+      idx = await connect(port, /index\.html/, 25000);
+    } catch (e) {
+      result.log.push({ t: now(), event: 'open-retry', error: String((e && e.message) || e) });
+      const s2 = await connect(port, /startup\.html/, 15000);
+      await sleep(1500);
+      await ev(s2.send, `(() => { const b = document.getElementById('openProject'); if (b && !b.disabled) { b.click(); return true; } const c = document.querySelector('.st-card:not(.st-new)'); if (c) { c.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; } return false; })()`, 15000);
+      try { s2.ws.close(); } catch (_) { }
+      idx = await connect(port, /index\.html/, 180000);
+    }
     ws = idx.ws; send = idx.send;
     result.times.workspaceMs = now() - tSpawn;
     await ev(send, `window.__bench145 = window.__bench145 || null; window.__benchTargetName = ${JSON.stringify(targetName)}; true`, 20000);

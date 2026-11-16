@@ -680,9 +680,13 @@ function createWindow() {
       try { const abs = path.resolve(a); if (fs.statSync(abs).isFile()) { pendingOpen = abs; break; } } catch (_) {}
     }
   } catch (_) {}  // v1208.2: clear stale renderer cache before loading the UI hotfix.
-  win.webContents.session.clearCache().catch(() => {}).finally(() => {
-    win.loadFile(path.join(__dirname, 'renderer', 'startup.html'));
-  });
+  // r151: НЕ ждём clearCache перед показом стартового экрана — очистка кэша на диске занимала секунды.
+  // Кэш чистим в фоне; стартовая страница грузится сразу (её ассеты — локальные файлы, кэш не критичен).
+  win.webContents.session.clearCache().catch(() => {});
+  // r151: если облако передано при запуске — стартовая страница сама входит в проект (не ждём клика),
+  // это убирает гонку «клик раньше, чем загрузился startup.js» и ускоряет путь до рабочей области.
+  try { win.loadFile(path.join(__dirname, 'renderer', 'startup.html'), pendingOpen ? { query: { auto: '1' } } : undefined); }
+  catch (_) { win.loadFile(path.join(__dirname, 'renderer', 'startup.html')); }
   win.webContents.on('did-finish-load', () => {
     try { win.webContents.setZoomFactor(1); } catch (_) {}
   });
@@ -1854,11 +1858,16 @@ function registerIpc() {
       }
       // ревизия 36: с фильтром доля подстраивается после каждой части (adaptiveRatio) — загружается выбранное число точек, а не меньше
       const budgetInfo = filter && gpuBudget > 0 ? { budget: gpuBudget, est: Math.min(d.count, Math.max(1, Math.floor(finiteOr(payload.estimate, d.count)))), src: 0, passed: 0, kept: 0, next: 0 } : null;
-      cloudPartSessions.set(token, { senderId: sender.id, desc: d, controller, key, keepPer, filter, budgetInfo });
+      // r151: первый сегмент — маленький (2–5 млн), чтобы первый кадр появился быстро; дальше обычные 16 млн.
+      const firstLenRaw = Number(payload && payload.firstSegPoints);
+      const firstLen = firstLenRaw > 0 ? Math.max(200000, Math.min(8000000, Math.floor(firstLenRaw))) : 0;
+      const useFirst = firstLen > 0 && d.count > firstLen * 2;
+      const segCount = useFirst ? 1 + Math.ceil((d.count - firstLen) / d.segPoints) : Math.ceil(d.count / d.segPoints);
+      cloudPartSessions.set(token, { senderId: sender.id, desc: d, controller, key, keepPer, filter, budgetInfo, firstLen: useFirst ? firstLen : 0 });
       try { sender.once('destroyed', () => { const ss = cloudPartSessions.get(token); if (ss) { try { ss.controller.abort(); } catch (_) {} cloudPartSessions.delete(token); if (ss.key) activeCloudParseJobs.delete(ss.key); } }); } catch (_) {}
       return { ok: true, token, total: shown, sourceTotal: d.count, thinned: keepPer < d.chunkPoints ? { keepPer, chunkPoints: d.chunkPoints, budget: gpuBudget } : (filter && filter.ratio < 1 ? { ratio: filter.ratio, budget: gpuBudget } : null),
         filtered: filter ? { rect: !!filter.rect, area: !!filter.area, h: !!filter.h, route: !!filter.mask, noise: !!filter.noise, ratio: filter.ratio } : null, estimated: !!filter,
-        segPoints: d.segPoints, chunkPoints: keepPer, segments: Math.ceil(d.count / d.segPoints), bbox: d.bbox, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity, hasClassification: d.hasClassification };
+        segPoints: d.segPoints, firstSegPoints: useFirst ? firstLen : 0, chunkPoints: keepPer, segments: segCount, bbox: d.bbox, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity, hasClassification: d.hasClassification };
     } catch (e) { let ab = null; try { ab = resolveAuthorizedFile(event, String((payload && payload.path) || payload || ''), CLOUD_EXT_ALLOW); } catch (_) {} return { ok: false, message: ruCloudMessage(String((e && e.message) || e), ab) }; }
   });
   ipcMain.handle('bim:cloudPartsRead', async (event, req) => {
@@ -1868,8 +1877,10 @@ function registerIpc() {
       if (!ss || ss.senderId !== sender.id) return { ok: false, message: 'чтение облака уже закрыто' };
       const k = Number(req.part);
       const d = ss.desc;
-      if (!Number.isInteger(k) || k < 0 || k * d.segPoints >= d.count) return { ok: false, message: 'неверный номер части' };
-      const from = k * d.segPoints, count = Math.min(d.segPoints, d.count - from);
+      const firstLen = ss.firstLen | 0;
+      const from = k === 0 ? 0 : (firstLen + (k - 1) * d.segPoints);
+      if (!Number.isInteger(k) || k < 0 || from >= d.count) return { ok: false, message: 'неверный номер части' };
+      const count = k === 0 && firstLen ? Math.min(firstLen, d.count) : Math.min(d.segPoints, d.count - from);
       const bi = ss.budgetInfo;
       // ревизия 36: части читаются по очереди (следующая запрашивается после прихода предыдущей) — доля фильтра обновляется перед каждой
       if (ss.filter && bi && k === bi.next) ss.filter.ratio = cloudSegments.adaptiveRatio(bi.budget, d.count, bi.est, bi);
@@ -4647,6 +4658,15 @@ function registerIpc() {
     const buf = fs.readFileSync(abs);
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   });
+
+  // r151: P1/P2-мост к готовым Python-инструментам (совмещение/классификация/точность).
+  // Отдельный модуль, чтобы не раздувать main.js; окно получает понятные ошибки и прогресс.
+  try {
+    require('./p1-bridge').register({
+      ipcMain, app, dialog, rootDir: __dirname, fileGrants,
+      ipcSender, resolveAuthorizedFile, grantExistingOutput
+    });
+  } catch (e) { console.warn('[p1-bridge] не зарегистрирован:', (e && e.message) || e); }
 }
 
 function safePath(keys) {

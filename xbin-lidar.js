@@ -245,7 +245,7 @@ function lasHeader(o) {
 }
 
 const DEF = { minRange: 0.5, maxRange: 120, maxPoints: 40e6, step: 0, t0: null, t1: null, maxMotorGap: 0.05, imu: true, imuShift: 0, position: 'hermite', poseStep: 0.005,
-  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false };
+  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: false };
 
 // ---------- ревизия 145: VOXEL-балансировка плотности (по умолчанию ВЫКЛ) ----------
 // Мультипроходы дают на земле/фасаде смесь плотных и разреженных участков. balance ограничивает число точек
@@ -471,7 +471,8 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
  * build(xbinPath, posesText, outLas, opt, onProgress) → { points, step, t0, t1, seconds, skipped, trajectory, refine, ... }
  *   opt: minRange/maxRange (м, от лидара), maxPoints (прорежение каждой k-й точкой, k подбирается по объёму пакетов),
  *        step (k вручную), t0/t1 (UNIX-время, с), index (готовый результат scan()), imu (гироскоп между позами, по умолчанию да),
- *        refine (уточнение траектории по самому облаку — xbin-refine.js; дольше, но стены и пол тоньше).
+ *        refine (уточнение траектории по самому облаку — xbin-refine.js; дольше, но стены и пол тоньше),
+ *        fusion (r149: scan-matching проходов + слияние без прореживания — xbin-fusion.js; 'auto' = для сканов >5 мин).
  */
 function build(xbinPath, posesText, outLas, opt, onProgress) {
   const o = Object.assign({}, DEF, opt || {});
@@ -558,10 +559,24 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
       try { fs.rmSync(tmp, { force: true }); } catch (_) {}
     }
     fs.renameSync(tmp, outLas);
+    // r149: scan-matching повторных проходов + fusion (по умолчанию для длинных сканов >5 мин — плавнее стены/пол)
+    let fusionInfo = null;
+    const wantFusion = o.fusion === true;   // r149: fusion пока opt-in (см. XBIN-QUALITY-r145.md §8): выигрыш на плотных сборках не подтверждён, нужен ICP
+    if (wantFusion) {
+      try {
+        const F = require('./xbin-fusion');
+        const ftmp = outLas + '.fused';
+        fusionInfo = F.fuseLas(outLas, ftmp, Object.assign({}, o.fusionOpt || {}), (f, l) => prog(0.85 + 0.15 * f, l || 'Слияние проходов…'));
+        fs.renameSync(ftmp, outLas);
+      } catch (e) {
+        fusionInfo = { error: String((e && e.message) || e) };
+        try { fs.rmSync(outLas + '.fused', { force: true }); } catch (_) {}
+      }
+    }
     prog(1, 'Облако из .xbin: готово');
     const TR = C.TR;
     return { points: n, step, estimated: Math.round(est), estimatedKept: Math.round(estKept), keepFrac: +keepFrac.toFixed(4), bpp: +bpp.toFixed(3), attempts,
-      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, sky: W.sky, balance: W.balance || 0, min: mn, max: mx,
+      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, sky: W.sky, balance: W.balance || 0, fusion: fusionInfo, min: mn, max: mx,
       lidarCh: C.S.lidarCh, motorCh: C.S.motorCh, imuCh: C.S.imuCh,
       trajectory: { imu: TR.imu, imuIntervals: TR.imuIntervals, intervals: TR.intervals, gaps: TR.gaps, position: TR.position, corrMedianDeg: TR.corrMedianDeg, refined: !!refineInfo },
       refine: refineInfo ? refineInfo.summary : null };

@@ -204,7 +204,7 @@
     if (!API || typeof API.cloudPartsOpen !== 'function' || typeof API.cloudPartsRead !== 'function' || !viewer || typeof viewer.beginCloudStream !== 'function' || !window.CloudChunks) return null;
     let opened = null;
     const pre = extra.pre && !extra.pre.cancelled ? extra.pre : null;   // ревизия 27: выбор окна «Перед загрузкой» (предел, область, высоты, маршрут, шум)
-    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), pre ? { maxPoints: pre.maxPoints, filter: pre.filter || null, estimate: pre.estimate, force: true } : { maxPoints: gpuPointBudget(), force: !!(extra && extra.forceParts) }); } catch (e) { return null; }
+    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), pre ? { maxPoints: pre.maxPoints, filter: pre.filter || null, estimate: pre.estimate, force: true, firstSegPoints: 3000000 } : { maxPoints: gpuPointBudget(), force: !!(extra && extra.forceParts), firstSegPoints: 3000000 }); } catch (e) { return null; }
     if (!opened || !opened.ok || !opened.token) return null;
     // Ревизия 55: если предел видеокарты срезал точки, а окна «Перед загрузкой» не было (открытие из командной строки,
     // перетаскиванием, ярлыком) — спрашиваем один раз, показать ли все. Иначе человек видит часть облака без выбора.
@@ -5944,6 +5944,15 @@
       document.head.appendChild(s);
     } catch (e) {}
   }
+  function ensureSectionsP2() {
+    try {
+      if (window.__lxSections || document.getElementById('lxSecScript')) return;
+      var s = document.createElement('script');
+      s.id = 'lxSecScript'; s.src = 'ui/sections-p2.js?v=151'; s.async = true;
+      s.onload = function () { try { if (window.__lxSections) window.__lxSections.mount(); } catch (e) {} };
+      document.head.appendChild(s);
+    } catch (e) {}
+  }
   function ensureP1Tools() {
     try {
       if (window.__lxP1 || document.getElementById('lxP1Script')) return;
@@ -5963,7 +5972,7 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); } catch (e) { console.warn('r145 render prefs', e); }
+    try { applyRenderPrefs(); ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); } catch (e) { console.warn('r145 render prefs', e); }
     // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.
     try { startPendingCloudOpen(); } catch (e) { console.warn('r149 pending cloud', e); }
     try { window.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { try { applyRenderPrefs(); } catch (e) {} }, 120); }); } catch (e) {}
