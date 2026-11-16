@@ -422,3 +422,14 @@ CV плотности 1.31→0.80); recolor `improve.fill` — заполнен�
 xbin-fusion.js (+opt.fusion, CLI 	ools/las-fusion.js, тест r149 2/2): 72.4M — 21.6 с / RSS 73 МБ,
 66.8M фасад — 19.8 с / 91 МБ; в JS-версии выигрыш пока меньше (стены 81.1 против 80.0) — нужен перенос ICP
 из cloud-register.py, поэтому по умолчанию opt.fusion=false (opt-in). Подробно — XBIN-QUALITY-r145.md §8.
+
+## 13. r159: ICP-этап в fusion
+
+xbin-fusion.js получил режим icp: после hist-сдвигов проходы выравниваются point-to-plane ICP через
+	ools/scan2bim-py/cloud-register.py (Open3D), опорная карта из уже обработанных проходов (300–500k),
+матрица 4×4 применяется в потоке; фильтр правдоподобности (rot ≤5°, trans ≤1 м, inlier ≥0.35).
+opt.fusion: false|true|auto|hist|icp, default **auto** (>600 с → icp при наличии Python/Open3D, иначе
+hist-fallback с пометкой; короткие сканы без изменений). Замеры: интерьер 72.4M — 188 с, RSS 64 МБ,
+стены 80.0→**73.1 мм** (Lixel 65.4; цель ≤66.7 не достигнута), пол 1.88 % (цель ≤1.5 не достигнута),
+люди 0 % PASS, точки сохранены; фасад 66.8M — 163 с, стены 81.6 (цель ≤77.5 не достигнута), пол 5.22 %
+(лучше Lixel 5.92). Тесты r149 4/4, graceful fallback без Open3D покрыт моком. Подробно — XBIN-QUALITY-r145.md §9.

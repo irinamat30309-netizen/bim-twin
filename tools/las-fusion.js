@@ -1,6 +1,7 @@
 // node tools/las-fusion.js in.las out.las [json-opts|@file] — scan-matching проходов + fusion без прореживания (r149).
 // Определяет проходы по времени, оценивает сдвиг каждого прохода по глобальным плоскостям (стены/пол/потолок),
 // переносит точки — стены/пол становятся тоньше. Плотность сохраняется (все точки на месте).
+// opt.mode: 'hist' (быстро, сдвиги по плоскостям) | 'icp' (hist + внешний cloud-register.py/Open3D).
 const fs = require('node:fs');
 const F = require('../xbin-fusion');
 const [src, dst, o] = process.argv.slice(2);
