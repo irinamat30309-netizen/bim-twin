@@ -181,7 +181,7 @@ test('r37: предел точек после сброса видеокарты 
 test('r37: форма сборки из .xbin — фильтр краёв, Чистовая обработка сразу; понятные ошибки LAS и чистка остатков', () => {
   const app = read('renderer/app.js'), main = read('main.js'), pre = read('preload.js'), ext = read('renderer/lixel-tools-ext.js');
   assert.ok(app.includes("key: 'edge', label: 'Убрать «бахрому» у краёв и пыль в воздухе'") && app.includes("key: 'finish'"), 'поля формы');
-  assert.ok(app.includes('API.xbinBuildCloud(p, jobId, density, { refine, color, edge })'));
+  assert.ok(app.includes('API.xbinBuildCloud(p, jobId, density, { refine, fast, color, edge })'), 'сборка .xbin с fast-профилем (r143) и фильтром краёв');
   assert.ok(app.includes("ext.opRefineScan({ title: 'Чистовая обработка нового облака', photoOff: !!r.photo"), 'цепочка Чистовой обработки');
   assert.ok(pre.includes('edge: !(opts && opts.edge === false)'));
   assert.ok(main.includes("edge: a.edge !== false };") && main.includes('edge: Number(r.edge) || 0'));

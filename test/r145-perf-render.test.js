@@ -53,10 +53,13 @@ test('r145: viewer — адаптивный размер точки, качес�
   assert.match(SRC, /_grade\s*=\s*\{\s*on:\s*false/, 'нейтральный grade по умолчанию должен сохраниться (r145 включает его из настроек)');
 });
 
-test('r145: app — GPU-бюджет 520 млн, «показать все» до 600 млн, панель и пресеты', () => {
-  assert.match(APP, /GPU_POINT_BUDGET = 520000000/);
+test('r145: app — эффективный VRAM-бюджет (260 млн ≈ 3,9 ГБ), «показать все» до 600 млн, панель и пресеты', () => {
+  assert.match(APP, /GPU_POINT_BUDGET = 260000000/);
+  assert.match(APP, /GPU_VRAM_TARGET_MB = 5120/);
   assert.ok(APP.includes('600000000'), 'нет повышенного предела «показать все точки»');
   assert.match(APP, /bim\.gpuBudgetRev/, 'нет миграции старых пределов GPU (иначе 589 млн останется прореженным)');
+  assert.ok(!APP.includes('— предел видеокарты'), 'старый тост «предел видеокарты» должен быть заменён на эффективный бюджет');
+  assert.match(APP, /Эффективный бюджет по VRAM/, 'нет сообщения об эффективном бюджете');
   assert.match(APP, /function applyRenderPrefs\(\)/);
   assert.match(APP, /function ensurePerfPanel\(\)/);
   assert.match(APP, /perf-panel\.js\?v=145/);

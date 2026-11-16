@@ -770,7 +770,19 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       try { if (typeof window !== 'undefined' && window.dispatchEvent && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('bim-gl-lost', { detail })); } catch (_) {}
       return true;
     }
-    render() { if (this._glLost) return; this._sceneRev = (this._sceneRev | 0) + 1; this._queueFrame(); }
+    render() {
+      if (this._glLost) return;
+      // r145: любое движение камеры (в т.ч. программное, бенчмарк/тур) — это взаимодействие:
+      // на время движения включаем бюджет точек, динамическое разрешение и мелкие точки;
+      // после остановки (150 мс) — снова полная плотность. «В покое повышать, в движении снижать».
+      try {
+        const sig = (this.yaw || 0).toFixed(5) + ',' + (this.pitch || 0).toFixed(5) + ',' + (this.dist || 0).toFixed(4) +
+          ',' + (this.target ? this.target[0].toFixed(4) + ',' + this.target[1].toFixed(4) + ',' + this.target[2].toFixed(4) : '');
+        if (this._camSig && sig !== this._camSig && this._autoInteractCam !== false) { this._beginInteract(); this._endInteractSoon(150); }
+        this._camSig = sig;
+      } catch (e) { }
+      this._sceneRev = (this._sceneRev | 0) + 1; this._queueFrame();
+    }
     // Только динамика (маркер под курсором, подсказки, превью измерения): статичную сцену из кэша не перерисовываем
     renderOverlay() { this._queueFrame(); }
     _queueFrame() { if (this._rafPending) { this._dirty = true; return; } this._rafPending = true; this._dirty = false; const self = this; requestAnimationFrame(() => { self._rafPending = false; try { self._renderNow(); } catch (e) { console.warn('render', e); } if (self._dirty) { self._dirty = false; self._queueFrame(); } }); }
@@ -2937,7 +2949,12 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     // После остановки (≈160 мс) облако рисуется целиком. Профиль «Максимум» терпит 22 мс.
     _adaptInter(ms, drawn, total) {
       if (!(ms > 0) || !(drawn > 0)) return;
-      const tgt = this._perfProfile === 'max' ? 22 : 16, ppms = drawn / Math.max(0.5, ms);
+      // r145: целевой кадр при вращении — как у Lixel (≥79 FPS): авто ≈12.5 мс, быстро ≈10 мс,
+      // высокое ≈16.5 мс; профиль «Максимум» терпит больше (совместимость с r8).
+      const tgt = this._qualityMode === 'fast' ? 10
+        : (this._qualityMode === 'high' ? 16.5
+          : (this._perfProfile === 'max' ? 20 : 12.5));
+      const ppms = drawn / Math.max(0.5, ms);
       this._ptsPerMs = this._ptsPerMs ? this._ptsPerMs * 0.6 + ppms * 0.4 : ppms;
       let want = this._ptsPerMs * tgt;
       if (ms < tgt * 0.7 && drawn >= (this._interPts || total)) want = Math.max(want, drawn * 1.25);   // запас есть — возвращаем точки

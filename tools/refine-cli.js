@@ -18,6 +18,15 @@ delete opt.dyn;
 // ревизия 50: плитки как в приложении (scan-refine-parallel; со сглаживанием зерна цвета — color-grain-core); opt.single: true — прежний R.refine
 // ревизия 51: "xbin": "путь.xbin" — после обработки уплотнение по сырому лидару (cloud-densify-core; нужна траектория poses.csv)
 const xbin = opt.xbin; delete opt.xbin;
+// Ревизия 146: для плотных сборок (>50 млн точек) ограничиваем сдвиг тонких поверхностей 1 см — на плотном облаке
+// thinSurfaces с 2 см «размазывает» стену (MAD +30 %). Явный opt.maxThinShift главнее; старые сборки 36–53 млн не меняются.
+let cleanProfile = null;
+try {
+  const fd = fs.openSync(src, 'r'); const H = R.readHeader(fd); fs.closeSync(fd);
+  cleanProfile = R.cleanProfile(H.n);
+  if (opt.thin === undefined) opt.thin = cleanProfile.thin;   // r146: на плотных облаках thin выключается (замер: MAD 79.5 vs 82.6)
+  if (opt.maxThinShift === undefined && opt.thin !== false) opt.maxThinShift = cleanProfile.maxThinShift;
+} catch (_) { /* не LAS — профиль не нужен */ }
 const densify = async (st) => {
   if (!xbin) return st;
   if (!poses || poses === '-') throw new Error('для уплотнения по .xbin нужна траектория poses.csv');
@@ -56,7 +65,7 @@ const repass = async (st) => {
   const tmp2 = dst + '.nodyn.las';
   const r = R.filterVoxels(dst, tmp2, det, log);
   fs.renameSync(tmp2, dst);
-  st.dynamicRepass = { dynVoxels: r.dynVoxels, sets: r.sets, removed: r.removed, points: r.points, ms: Date.now() - t0, auto };
+  st.dynamicRepass = { dynVoxels: r.dynVoxels, sets: r.sets, removed: r.removed, points: r.points, ms: Date.now() - t0, auto };  st.cleanProfile = cleanProfile;
   return st;
 };
 if (opt.single) densify(R.refine(src, dst, opt, log)).then(repass).then((st) => { console.log(JSON.stringify(st)); process.exit(0); }, (e) => { console.error(e && e.stack || e); process.exit(1); });

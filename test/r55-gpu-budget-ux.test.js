@@ -20,8 +20,11 @@ test('r55: свойства облака и итог объясняют пред
   assert.match(ui, /«Показать все» поднимет его/, 'подсказывают, как показать все точки');
   assert.match(read('renderer/cloud-preview.js'), /Вернуть полный предел/, 'в окне загрузки есть сброс предела');
   const app = read('renderer/app.js');
-  assert.match(app, /Показано ' \+ Math\.round\(shown \/ 1e6\)/, 'итог после загрузки');
-  assert.match(app, /предел видеокарты/, 'итог объясняет предел');
+  // r145: вместо «предела видеокарты» — эффективный бюджет по VRAM и настройка качества.
+  assert.match(app, /Эффективный бюджет по VRAM/, 'итог объясняет эффективный бюджет');
+  assert.match(app, /Показано |показано ' \+ Math\.round\(shown \/ 1e6\)/, 'итог после загрузки');
+  assert.match(app, /Качество отображения|Авто\/Высокое\/Быстрое|«Авто\/Высокое\/Быстрое»/, 'итог подсказывает настройку качества');
+  assert.doesNotMatch(app, /— предел видеокарты/, 'старого тоста «предел видеокарты» больше нет');
   assert.ok(!/сконвертируйте файл в LAS или PLY/.test(app), 'старого совета «сконвертировать в LAS» больше нет');
 });
 
@@ -32,7 +35,7 @@ test('r55: «Показать все точки файла» — кнопка в
   assert.match(ui, /window\.__bimShowAllPoints\(\)/, 'нажимает обработчик');
   const app = read('renderer/app.js');
   assert.match(app, /window\.__bimShowAllPoints = async function \(\)/, 'обработчик есть');
-  assert.match(app, /localStorage\.setItem\('bim\.gpuPointBudget', '400000000'\)/, 'поднимает предел');
+  assert.match(app, /localStorage\.setItem\('bim\.gpuPointBudget', '600000000'\)/, 'поднимает предел');
   assert.match(app, /window\.__bimOpenCloudPath\(p, \{ fresh: true, allPoints: true \}\)/, 'перечитывает файл целиком');
   assert.match(app, /if \(extra && extra\.allPoints\) pre = \{ maxPoints: 0 \}/, 'окно загрузки и предел обходятся');
 });

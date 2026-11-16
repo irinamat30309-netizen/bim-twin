@@ -138,6 +138,7 @@
       '<span class="k">Показано точек</span><span class="v" data-perf-points>—</span>' +
       '<span class="k">Всего в облаке</span><span class="v" data-perf-total>—</span>' +
       '<span class="k">Бюджет при движении</span><span class="v" data-perf-budget>—</span>' +
+      '<span class="k">Эффективный бюджет VRAM (≤5 ГБ)</span><span class="v" data-perf-vram>—</span>' +
       '<span class="k">Память JS / VRAM (оценка)</span><span class="v" data-perf-mem>—</span>' +
       '<span class="k">Разрешение рендера</span><span class="v" data-perf-scale>—</span>' +
       '<span class="k">GPU</span><span class="v" data-perf-gpu style="max-width:170px;overflow:hidden;text-overflow:ellipsis">—</span>' +
@@ -198,6 +199,8 @@
     var pts = q('[data-perf-points]'); if (pts) pts.textContent = fmtMln(m.drawn) + ' из ' + fmtMln(m.loaded);
     var tot = q('[data-perf-total]'); if (tot) tot.textContent = fmtMln(m.total);
     var bud = q('[data-perf-budget]'); if (bud) bud.textContent = m.budget ? fmtMln(m.budget) : 'все';
+    var vramBud = q('[data-perf-vram]');
+    if (vramBud) { try { var eb = (W.__bimEffectiveBudget && W.__bimEffectiveBudget()) || 0; vramBud.textContent = eb ? fmtMln(eb) + ' ≈ ' + ((eb * 15) / 1073741824).toFixed(1).replace('.', ',') + ' ГБ' : '—'; } catch (e) { vramBud.textContent = '—'; } }
     var mem = q('[data-perf-mem]'); if (mem) mem.textContent = (m.heapMB != null ? m.heapMB + ' МБ' : '—') + ' / ~' + fmtMln(m.vramMB * 1048576);
     var sc = q('[data-perf-scale]'); if (sc) sc.textContent = Math.round(m.renderScale * 100) + ' %';
     var gpu = q('[data-perf-gpu]'); if (gpu && !gpu.title) { try { var c = D.createElement('canvas'); var gl = c.getContext('webgl2'); var d = gl && gl.getExtension('WEBGL_debug_renderer_info'); gpu.textContent = d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : 'WebGL2'; gpu.title = gpu.textContent; } catch (e) { gpu.textContent = 'WebGL2'; } }

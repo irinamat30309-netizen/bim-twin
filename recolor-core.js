@@ -36,7 +36,7 @@ const DEF = { window: 2.5, bucket: 2, K: 4, cell: 8, thetaMax: 1.35, thetaSharp:
   bestView: true, sharp: true, sharpW: 0.55, lapScale: 12, expoFix: true,
   frameNorm: true, normClip: [0.05, 0.95], normGainMin: 0.8, normGainMax: 1.25, wb: true,
   grade: true, gradeGain: 1.36, gradeKnee: 170, gradeDark: 25, gradeSat: 1.29,
-  fill: true, fillCell: 0.07, fillRadius: 0.14, fillIters: 3, fillMaxPts: 25000000,
+  fill: true, fillCell: 0.07, fillRadius: 0.14, fillIters: 3, fillMaxPts: 60000000,   // r146: заполнение цветом на плотных сборках до 60 млн
   dither: true };
 
 // ---- траектория с ориентацией: t,x,y,z,qx,qy,qz,qw (poses.csv Lixel) ----
@@ -228,7 +228,7 @@ function frameStats(img, step) {
 function prepareFrame(img, st, target, o) {
   if (!st) return;
   const lim = (v, a, b) => v < a ? a : (v > b ? b : v);
-  const sc = 255 / Math.max(8, st.p95 - st.p5);
+  const sc = 235 / Math.max(8, st.p95 - st.p5);   // r145: p95 → 235, а не 255 — не выжигаем света
   const meanAfter = Math.max(1, (st.meanY - st.p5) * sc);
   const exp = target ? lim(target.meanY / meanAfter, o.normGainMin, o.normGainMax) : 1;
   // баланс белого — ТОЛЬКО по цветности (доля канала), иначе экспозиция применялась бы дважды
@@ -643,6 +643,10 @@ async function recolor(src, dst, a) {
               continue;
             }
             r /= cnt2; g /= cnt2; b /= cnt2;
+            // Ревизия 146: заполненные точки — цвет ближайшей поверхности; слегка поднимаем насыщенность и
+            // минимальную яркость, чтобы заполнение не давало серых/тёмных пятен (covered ≥95 %).
+            { const L = 0.299 * r + 0.587 * g + 0.114 * b; r = L + (r - L) * 2.0; g = L + (g - L) * 2.0; b = L + (b - L) * 2.0;
+              const L2 = 0.299 * r + 0.587 * g + 0.114 * b; if (L2 < 42) { const k = 42 / Math.max(1, L2); r *= k; g *= k; b *= k; } }
             C[i * 4] = Math.max(0, Math.min(255, Math.round(r)));
             C[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(g)));
             C[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(b)));

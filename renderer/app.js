@@ -182,18 +182,22 @@
   // Ревизия 26: сколько точек видеокарта показывает надёжно. Облако крупнее (например, 670 млн точек «Все точки» из .xbin) читается
   // равномерной выборкой по всему облаку: 670 млн точек — это ~10 ГБ видеопамяти и ~12 ГБ памяти, видеокарта сбрасывает изображение
   // и окно просмотра становится белым. После такого сброса предел уменьшается вдвое (bim.gpuPointBudget).
-  const GPU_POINT_BUDGET = 520000000;
+  // r145: эффективный бюджет по VRAM (цель ≤5 ГБ): позиции 12 Б + цвет 3 Б на точку → 260 млн ≈ 3,9 ГБ.
+  // В движении рисуется адаптивно меньше (40 %/25 %), в покое — плотно все загруженные точки.
+  const GPU_POINT_BUDGET = 260000000;
+  const GPU_VRAM_TARGET_MB = 5120;
   function gpuPointBudget() {
-    // r145: разовый сброс старых «пределов после сброса GPU» (300-400 млн) на новый целевой бюджет,
-    // иначе 589-млн облако навсегда оставалось прореженным, хотя 12 ГБ VRAM его держат.
+    // r145: разовый сброс старых «пределов после сброса GPU» (300-600 млн) на VRAM-бюджет,
+    // иначе 589-млн облако оставалось прореженным/тормозным.
     try {
-      if (localStorage.getItem('bim.gpuBudgetRev') !== '145') {
+      if (localStorage.getItem('bim.gpuBudgetRev') !== '146') {
         localStorage.removeItem('bim.gpuPointBudget'); localStorage.removeItem('bim.gpuResetAt');
-        localStorage.setItem('bim.gpuBudgetRev', '145');
+        localStorage.setItem('bim.gpuBudgetRev', '146');
       }
     } catch (e) {}
-    let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {} if (v >= 10000000) return Math.floor(v); try { const rc = window.__bimPcCapacity && window.__bimPcCapacity.recommendation; if (rc && rc.points >= 10000000) return Math.floor(rc.points); } catch (_) {} return GPU_POINT_BUDGET;
+    let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {} if (v >= 10000000) return Math.floor(v); try { const rc = window.__bimPcCapacity && window.__bimPcCapacity.recommendation; if (rc && rc.points >= 10000000) return Math.floor(Math.min(rc.points, GPU_POINT_BUDGET)); } catch (_) {} return GPU_POINT_BUDGET;
   }
+  try { window.__bimEffectiveBudget = gpuPointBudget; window.__bimGpuVramTargetMB = GPU_VRAM_TARGET_MB; } catch (e) {}
   window.__bimGpuPointBudget = gpuPointBudget;
   async function tryPartsLoad(filePath, label, extra) {
     extra = extra || {};
@@ -317,7 +321,7 @@
         // и валили всё на «свободную память», хотя предел часто ставит видеокарта
         try {
           const pb = result.pointBudget, total = Number(pb.total) || 0, shown = Number(pb.applied) || 0;
-          toast('Показано ' + Math.round(shown / 1e6) + ' из ' + (total / 1e6).toFixed(1).replace('.', ',') + ' млн точек — предел видеокарты. Все точки в файле: «Показать все точки файла» поднимет предел.');
+          toast('Эффективный бюджет по VRAM (цель ≤ ' + Math.round((window.__bimGpuVramTargetMB || 5120) / 1024) + ' ГБ): показано ' + Math.round(shown / 1e6) + ' из ' + (total / 1e6).toFixed(1).replace('.', ',') + ' млн точек. Плотность — в покое, скорость — при вращении; качество: «Авто/Высокое/Быстрое» в панели «Производительность».');
         } catch (_) {}
       }
       return result;

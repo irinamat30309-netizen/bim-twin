@@ -1033,4 +1033,13 @@ function refine(src, dst, opt, onProgress) {
   }
 }
 
-module.exports = { filterVoxels, processTile, finishLas, structureCells, nbSum, refine, cleanColors, clampColors, offSurface, fixSpeckles, fixFringe, fixIcicles, fixGlass, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3, passEqualize, fillNoColor };
+// Ревизия 146: профиль чистовой обработки по плотности сборки. На плотных облаках (>50 млн точек, мультипроход/
+// денсификация) thinSurfaces со сдвигом 2 см «размазывает» стену (толщина +30 %); ограничиваем сдвиг 1 см.
+// Старые сборки 36–53 млн точек не меняются: для них профиль прежний (2 см).
+function cleanProfile(points, seconds) {
+  // Замеры r146: на плотной сборке (>=50 млн) thinSurfaces ухудшает толщину стен (MAD 82–92 мм против 79.5 без thin),
+  // поэтому для плотных облаков thin по умолчанию выключается; старые сборки 36–53 млн сохраняют прежние 2 см.
+  const n = Number(points) || 0, dense = n >= 50e6;
+  return { dense, points: n, seconds: Number(seconds) || 0, thin: !dense, maxThinShift: 0.02, threshold: 50e6, best: dense ? 'no-thin (MAD 79.5 vs 82.6 с thin)' : 'thin 2 см (MAD 44.9)' };
+}
+module.exports = { cleanProfile, filterVoxels, processTile, finishLas, structureCells, nbSum, refine, cleanColors, clampColors, offSurface, fixSpeckles, fixFringe, fixIcicles, fixGlass, colorClass, readHeader, thinSurfaces, fixColors, isolated, lowDensity, smallClusters, planeOutliers, denoise, NOISE_LEVELS, cellsOf, eig3, passEqualize, fillNoColor };
