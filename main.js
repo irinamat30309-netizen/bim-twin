@@ -1204,7 +1204,8 @@ function registerIpc() {
       if (!info.poses || !info.poses.path) return { ok: false, error: 'no_trajectory', message: 'Не найдена траектория сканера (project_data/poses.csv) в папке проекта .xbin.' };
       const pst = fs.statSync(info.poses.path); if (pst.size > 512 * 1024 * 1024) return { ok: false, error: 'trajectory_too_large' };
       const posesText = fs.readFileSync(info.poses.path, 'utf8');
-      const density = Object.prototype.hasOwnProperty.call(XBIN_DENSITY, a.density) ? a.density : 'normal';
+      // Ревизия 145: для «качества как Lixel» дефолт — все точки без прореживания; «нормальная» плотность — опцией.
+      const density = Object.prototype.hasOwnProperty.call(XBIN_DENSITY, a.density) ? a.density : 'all';
       const dir = projectOutputDir(a.projectId) || path.dirname(abs), stem = path.basename(abs).replace(/\.xbin$/i, '') + '-lidar';
       cleanupStaleCloudTemp(dir);   // ревизия 37
       let target = null; for (let i = 0; i < 1000 && !target; i++) { const f = path.join(dir, stem + (i ? '-' + (i + 1) : '') + '.las'); if (!fs.existsSync(f) && !fs.existsSync(f + '.part')) target = f; }
@@ -1315,7 +1316,7 @@ function registerIpc() {
     try {
       tmp = fs.mkdtempSync(path.join(dir, '.bimtwin-color-'));
       const out = path.join(tmp, 'color.las');
-      const pr = await runPhotoRecolor({ src: srcAbs, dst: out, xbin: xbinAbs, posesText, tmpDir: tmp, opt: {} }, onProgress, job);
+      const pr = await runPhotoRecolor({ src: srcAbs, dst: out, xbin: xbinAbs, posesText, tmpDir: tmp, opt: { improve: true } }, onProgress, job);
       if (job.cancelled || (pr && pr.cancelled)) return { ok: false, cancelled: true, error: 'cancelled' };
       if (!pr || !pr.ok) return { ok: false, error: 'photo_failed', message: String((pr && (pr.message || pr.error)) || 'ошибка перекраски') };
       if (!(pr.stats && pr.stats.colored > 0)) return { ok: false, error: 'photo_none', message: 'ни одна точка не получила цвет с кадров камер (кадры не совпали по времени с облаком)' };

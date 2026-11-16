@@ -139,7 +139,7 @@ test('r36: проводка — сборка из .xbin с цветом, кно�
   assert.match(main, /'bim:photoColorProgress'/);
   assert.match(pre, /color: opts && opts\.color === 'gray' \? 'gray' : 'photo'/);
   for (const k of ['photoColorCloud:', 'onPhotoColorProgress:', 'cancelPhotoColor:', "'bim:photoColorProgress'", "'bim:cancelPhotoColor'"]) assert.ok(pre.includes(k), 'preload: ' + k);
-  assert.match(app, /API\.xbinBuildCloud\(p, jobId, density, \{ refine, color(, edge)? \}\)/);   // ревизия 37: + фильтр краёв
+  assert.match(app, /API\.xbinBuildCloud\(p, jobId, density, \{ refine, (fast, )?color(, edge)? \}\)/);   // ревизия 37: + фильтр краёв
   assert.match(app, /window\.__bimPhotoColor = async function/);
   assert.match(app, /r\.needXbin && typeof API\.pickXbin/); assert.match(app, /r\.needPoses && typeof API\.pickTrajectory/);
   assert.match(app, /'Настоящий, по фото камер \(дольше\)'/); assert.match(app, /'Серый, яркость лидара \(быстро\)'/);

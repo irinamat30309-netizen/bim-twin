@@ -104,6 +104,25 @@ test('r145: VOXEL-балансировка плотности (opt.balance) — 
   assert.ok(cnt(path.join(d, 'on.las')) === rOn.points && cnt(path.join(d, 'off.las')) === rOff.points);
 });
 
+test('r145: дефолт — все точки без прореживания и цвет по фото камер; серая сборка — только с предупреждением', () => {
+  const main = read('main.js'), app = read('renderer/app.js'), pre = read('preload.js');
+  // плотность: по умолчанию all (step 1); normal — опцией
+  assert.match(main, /hasOwnProperty\.call\(XBIN_DENSITY, a\.density\) \? a\.density : 'all'/);
+  assert.match(main, /density === 'all' \? info\.xbin\.size \* 1\.2/);
+  assert.match(app, /let density = 'all'/);
+  assert.match(app, /key: 'density', label: 'Плотность', type: 'select', value: 'all'/);
+  // цвет: по умолчанию «настоящий по фото камер», если в .xbin есть камеры
+  assert.match(app, /color = x\.photoReady \? 'photo' : 'gray'/);
+  assert.match(pre, /color: opts && opts\.color === 'gray' \? 'gray' : 'photo'/);
+  assert.match(main, /const photo = a\.color !== 'gray' && !!\(info\.xbin && info\.xbin\.photoReady\)/);
+  assert.match(main, /photoColorLas\(target, target, abs, posesText/);
+  assert.match(main, /photoWarning = 'цвет по фото отменён/);
+  assert.match(app, /r\.photoWarning/);
+  // сборка сама пишет серую заглушку в RGB — цвет даёт recolor; в тестовых CLI-облаках цвет нужен recolor-cli
+  const xl = read('xbin-lidar.js');
+  assert.match(xl, /const g = I > 255 \? 255 : I;/);
+});
+
 test('r145: приоритетные облака собираются без прореживания (XBIN_DENSITY.all → step 1), long-scan repass авто', () => {
   const main = read('main.js'), cli = read('tools/refine-cli.js');
   assert.match(main, /XBIN_DENSITY = \{ normal: 40e6, high: 120e6, all: 0 \}/);

@@ -29,6 +29,9 @@ function parseOpt(s) {
   console.error('не понял опции: ' + s); process.exit(2);
 }
 const opt = parseOpt(optJson || process.env.BIM_RECOLOR_OPT);
+// r145: по умолчанию включён улучшенный цвет (лучший кадр, нормализация по кадрам,
+// заполнение серых зон, цветокоррекция «как в Lixel»); opt.improve:false — прежнее поведение
+if (opt.improve === undefined) opt.improve = true;
 const posesText = fs.readFileSync(path.resolve(posesPath), 'utf8');
 const LOG = path.resolve(dst) + '.log';
 try { fs.writeFileSync(LOG, ''); } catch (_) {}

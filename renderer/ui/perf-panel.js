@@ -254,7 +254,7 @@
     var q = p.querySelector('[data-perf-quality]'); if (q) q.value = r.quality;
     var ap = p.querySelector('[data-perf-autopoint]'); if (ap) ap.checked = r.autoPoint;
   }
-  function refreshPanel() { var p = panel(); p.innerHTML = html(); syncInputs(); paint(); }
+  function refreshPanel() { var p = panel(); p.innerHTML = html(); syncInputs(); paint(); return p; }
 
   function open() {
     var p = refreshPanel(); p.hidden = false; st.open = true; pill(); syncInputs(); paint();

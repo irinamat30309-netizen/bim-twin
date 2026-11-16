@@ -105,7 +105,7 @@ test('r24: облако из лидара .xbin совпадает со сцен
   for (const p of L.pts) {
     const q = byT.get(Math.round(p.t * 1e6)); assert.ok(q, 'время точки ' + p.t);
     worst = Math.max(worst, Math.hypot(p.x - q.w[0], p.y - q.w[1], p.z - q.w[2]));
-    assert.strictEqual(p.r, q.r); assert.strictEqual(p.i, q.i * 257); assert.strictEqual(p.g, q.i * 257);
+    assert.strictEqual(p.r, q.r); assert.strictEqual(p.i, q.i * 257); assert.strictEqual(p.g, q.i);   // ревизия 145: RGB — 8-бит, как у Lixel
   }
   assert.ok(worst < 0.01, 'ошибка положения ' + worst);
   { const RC = require('../recolor-core'); const fd = fs.openSync(out, 'r'); try { const H = RC.readHeader(fd); assert.match(H.soft, /^BIM Twin xbin-lidar/); assert.strictEqual(H.rgb !== undefined && H.tOff !== undefined, true); } finally { fs.closeSync(fd); } }   // мм-округление + линейная поза за пакет

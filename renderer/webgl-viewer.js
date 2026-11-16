@@ -2704,9 +2704,9 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     setQualityMode(mode) {
       mode = (mode === 'high' || mode === 'fast') ? mode : 'auto';
       this._qualityMode = mode;
-      if (mode === 'high') { this._interBudget = 2000000000; this._dynScaleMoving = 1; this._dynRes = false; this._motionSizeScale = 1; this._autoPointBasePx = 4.0; }
-      else if (mode === 'fast') { this._interBudget = 24000000; this._dynScaleMoving = 0.5; this._dynRes = true; this._motionSizeScale = 0.7; this._autoPointBasePx = 3.0; }
-      else { this._interBudget = 128000000; this._dynScaleMoving = 0.75; this._dynRes = true; this._motionSizeScale = 0.82; this._autoPointBasePx = 3.2; }
+      if (mode === 'high') { this._interBudget = 2000000000; this._octMovePct = 100; this._dynScaleMoving = 1; this._dynRes = false; this._motionSizeScale = 1; this._autoPointBasePx = 4.0; }
+      else if (mode === 'fast') { this._interBudget = 24000000; this._octMovePct = 25; this._dynScaleMoving = 0.5; this._dynRes = true; this._motionSizeScale = 0.45; this._autoPointBasePx = 3.0; }
+      else { this._interBudget = 128000000; this._octMovePct = 40; this._dynScaleMoving = 0.6; this._dynRes = true; this._motionSizeScale = 0.55; this._autoPointBasePx = 3.2; }
       if (!this._interacting) { this._renderScale = 1; }
       try { this._resize(); } catch (e) { }
       this.render(); this._notifyCloudChanged();

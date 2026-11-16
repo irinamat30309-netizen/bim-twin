@@ -430,13 +430,16 @@
   }
 
   // ---------- room / viewer ----------
-  async function openRoom(id) {
+  async function openRoom(id, opts) {
+    const keepScene = !!(opts && opts.keepScene);   // r145: не перезагружать 3D-сцену (сохранить открытое облако)
     current = findRoom(id); selEl = null; if (!current) return;
     $('roomTitle').textContent = current.name + (current.number ? ' · ' + current.number : '');
     const _tbr = $('tbRoom'); if (_tbr) { const _rt = current.name + (current.number ? ' · ' + current.number : ''); _tbr.textContent = _rt; _tbr.title = _rt; }
     $('btnBackRoom').style.display = 'none';
-    viewer.loadRoom(current);
-    await maybeLoadModel(current);
+    if (!keepScene) {
+      viewer.loadRoom(current);
+      await maybeLoadModel(current);
+    }
     // Фоновую предзагрузку всех облаков больше не запускаем автоматически (тормозила старт).
     // Предзагрузка теперь только по кнопке «Макс. память» (профиль «Максимум памяти/качество»).
     renderElbar(); renderTree(); updateElProps();
@@ -696,12 +699,12 @@
     if (!info.poses || !info.poses.n) { toast('Рядом с .xbin не найдена траектория project_data/poses.csv — без неё облако не собрать'); return false; }
     const kit = window.__lxKit, mins = Math.max(1, Math.round((info.poses.duration || 0) / 60));
     const allMln = Math.max(1, Math.round((info.poses.duration || 0) * 0.36));   // L2 Pro: ~360 тыс. точек/с после фильтра дальности
-    let density = 'normal', refine = true, fast = true, color = x.photoReady ? 'photo' : 'gray', edge = true, finish = true;
+    let density = 'all', refine = true, fast = true, color = x.photoReady ? 'photo' : 'gray', edge = true, finish = true;
     if (kit && kit.form) {
       const v = await kit.form({ title: 'Облако из сырого лидара (.xbin)', okLabel: 'Собрать облако', wide: true,
         message: (lead ? lead + ' ' : '') + 'Точки лидара переводятся в координаты проекта по траектории сканера (' + info.poses.name + ', ' + mins + ' мин) и калибровкам из .xbin. Результат — LAS рядом с .xbin со временем точек: после сборки работают «Движущиеся объекты» и «Автоочистка».' + (x.photoReady ? ' Лидар сам по себе цвета не видит (только яркость отражения — серое облако), поэтому настоящий цвет точкам даётся по кадрам камер сканера из того же .xbin (около 1 минуты на 10–15 млн точек; серое облако можно раскрасить и потом).' : ' Камер в .xbin нет — облако будет серым (яркость отражения лидара).'),
         hint: 'Поза сканера между точками траектории (5 раз в секунду) дополняется гироскопом IMU из .xbin, а уточнение по облаку подгоняет траекторию так, чтобы стены и пол из разных проходов совпали: поверхности тоньше, чем в map.las со сканера. Отражения от корпуса сканера убираются. Сборка идёт в фоне: без уточнения — около 1 минуты на 5–10 минут съёмки, с быстрым уточнением — примерно как длилась съёмка (15 минут съёмки — около 15–20 минут), без него — в 2,5–3,5 раза дольше.',
-        fields: [{ key: 'density', label: 'Плотность', type: 'select', value: 'normal', options: [
+        fields: [{ key: 'density', label: 'Плотность', type: 'select', value: 'all', options: [
           { value: 'normal', label: 'Обычная — до 40 млн точек (до 1,4 ГБ)' },
           { value: 'high', label: 'Высокая — до 120 млн точек (до 4 ГБ)' },
           { value: 'all', label: 'Все точки — около ' + allMln + ' млн (' + (allMln * 34 / 1024).toFixed(1).replace('.', ',') + ' ГБ)' + (allMln * 1e6 > gpuPointBudget() ? ', на экране — до ' + fmtMln(gpuPointBudget()) + ' млн' : '') }] },
@@ -749,7 +752,7 @@
     if (kit && kit.ask) {
       const go = await kit.ask({ title: 'Раскрасить по фото камер', okLabel: 'Раскрасить', cancelLabel: 'Отмена', wide: true,
         message: 'Каждая точка облака ' + nm + ' получит цвет с кадра камеры сканера, снятого в момент её съёмки (кадры — из файла .xbin, положение — по траектории poses.csv). Результат — новый файл ' + nm.replace(/\.las$/i, '') + '-color.las рядом, исходное облако не меняется.',
-        hint: 'Идёт в фоне: около 1 минуты на 10–15 млн точек (400 млн — 30–40 минут, 670 млн — около часа). Нужно свободное место: размер облака плюс около 21 байта на точку. Точки, которые не видела ни одна камера (потолок над сканером, тёмные углы), остаются серыми.' });
+        hint: 'Идёт в фоне: около 1 минуты на 10–15 млн точек (400 млн — 30–40 минут, 670 млн — около часа). Нужно свободное место: размер облака плюс около 21 байта на точку. Цвет сразу улучшенный, как в Lixel Studio: на каждую точку — лучший кадр (резкий, без усреднения), выравнивание экспозиции и баланса белого по кадрам, заполнение серых зон цветом соседей, ярче/насыщеннее.' });
       if (!go) return false;
     }
     const jobId = 'pc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -998,7 +1001,10 @@
       let rep;
       try { rep = await API.analyzeRoom(current.id); }
       catch (e) { console.error(e); toast('Ошибка проверки'); return; }
-      await refresh(current.id);
+      // r145: обновляем данные проверки, но НЕ перезагружаем 3D-сцену —
+      // иначе открытое облако точек подменялось демо-геометрией помещения и
+      // 39 кнопок с needs:'cloud' блокировались («Сначала откройте облако»).
+      await refresh(current.id, { keepScene: true });
       if (!silent) { activeTab = 'ai'; syncTabs(); }
       if (rep && rep.ok) { toast('Проверка: ' + rep.counts.err + ' ошибок, ' + rep.counts.warn + ' на проверке'); showAnalyzeDone(rep.counts); if (!silent) showVerifyReport(rep); }
       else toast('Не удалось выполнить проверку');
@@ -1022,7 +1028,7 @@
       if (CAN_VERIFY) {
         let res; try { res = await API.analyzeAll(); } catch (e) { toast('Ошибка проверки'); return; }
         results = (res && res.results) || [];
-        await refresh(current && current.id);
+        await refresh(current && current.id, { keepScene: true });   // r145: не сбрасывать открытое облако
       } else {
         const intent = window.DESIGN_INTENT || {};
         results = [];
@@ -1999,7 +2005,7 @@
   }
 
   // ---------- CRUD UI ----------
-  async function refresh(preserveId) { if (CAN_PERSIST) { DB = await API.getData(); normalize(DB); } const id = preserveId || (current && current.id); renderTree(); if (id && findRoom(id)) openRoom(id); else if (DB.rooms[0]) openRoom(DB.rooms[0].id); }
+  async function refresh(preserveId, opts) { if (CAN_PERSIST) { DB = await API.getData(); normalize(DB); } const id = preserveId || (current && current.id); renderTree(); if (id && findRoom(id)) openRoom(id, opts); else if (DB.rooms[0]) openRoom(DB.rooms[0].id, opts); }
 
   async function createFloorUI() { const v = await openForm('Новая папка (этаж)', [{ k: 'name', label: 'Название', value: '' }]); if (!v || !v.name) return; const num = DB.floors.length + 1; if (CAN_PERSIST) await API.createFloor({ name: v.name, number: num }); else DB.floors.push({ id: 'floor_' + Date.now(), project_id: DB.project.id, name: v.name, number: num }); await refresh(); toast('Этаж добавлен'); }
   async function editFloorUI(f) { const v = await openForm('Этаж', [{ k: 'name', label: 'Название', value: f.name }, { k: 'number', label: 'Номер', value: f.number, type: 'number' }]); if (!v) return; if (CAN_PERSIST) await API.updateFloor(f.id, { name: v.name, number: Number(v.number) }); else Object.assign(f, { name: v.name, number: Number(v.number) }); await refresh(); }
@@ -5908,6 +5914,18 @@
       document.head.appendChild(s);
     } catch (e) {}
   }
+  // r145: Lixel-подобный слой (левая панель инструментов, дерево данных, свойства) — только новый файл,
+  // shell/ribbon/index.html не правим, r130-решения сохраняются.
+  function ensureLxDesign() {
+    try {
+      if (window.__lxDesign145 && window.__lxDesign145.mount) { window.__lxDesign145.mount(); return; }
+      if (document.getElementById('lx145Script')) return;
+      var s = document.createElement('script');
+      s.id = 'lx145Script'; s.src = 'ui/lx-redesign145.js?v=145'; s.async = true;
+      s.onload = function () { try { if (window.__lxDesign145) window.__lxDesign145.mount(); } catch (e) {} };
+      document.head.appendChild(s);
+    } catch (e) {}
+  }
   async function init() {
     const canvas = $('viewer');
     const onSel = el => { if (el) selectEl(el.id); else selectEl(null); };
@@ -5918,7 +5936,7 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); ensurePerfPanel(); } catch (e) { console.warn('r145 render prefs', e); }
+    try { applyRenderPrefs(); ensurePerfPanel(); ensureLxDesign(); } catch (e) { console.warn('r145 render prefs', e); }
     try { window.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { try { applyRenderPrefs(); } catch (e) {} }, 120); }); } catch (e) {}
     // Keep the AI-highlight affordance in sync with the viewer's default state.
     try { const aiBtn = $('btnAI'); const aiOn = !!viewer.showAI; if (aiBtn) { aiBtn.classList.toggle('on', aiOn); aiBtn.setAttribute('aria-pressed', String(aiOn)); } } catch (e) {}

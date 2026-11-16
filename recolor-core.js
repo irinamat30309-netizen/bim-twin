@@ -36,7 +36,7 @@ const DEF = { window: 2.5, bucket: 2, K: 4, cell: 8, thetaMax: 1.35, thetaSharp:
   bestView: true, sharp: true, sharpW: 0.55, lapScale: 12, expoFix: true,
   frameNorm: true, normClip: [0.05, 0.95], normGainMin: 0.8, normGainMax: 1.25, wb: true,
   grade: true, gradeGain: 1.36, gradeKnee: 170, gradeDark: 25, gradeSat: 1.29,
-  fill: true, fillCell: 0.07, fillRadius: 0.20, fillIters: 3, fillMaxPts: 25000000,
+  fill: true, fillCell: 0.07, fillRadius: 0.14, fillIters: 3, fillMaxPts: 25000000,
   dither: true };
 
 // ---- траектория с ориентацией: t,x,y,z,qx,qy,qz,qw (poses.csv Lixel) ----
@@ -231,9 +231,15 @@ function prepareFrame(img, st, target, o) {
   const sc = 255 / Math.max(8, st.p95 - st.p5);
   const meanAfter = Math.max(1, (st.meanY - st.p5) * sc);
   const exp = target ? lim(target.meanY / meanAfter, o.normGainMin, o.normGainMax) : 1;
-  const gr = target && o.wb ? lim(target.meanR / Math.max(1, st.meanR), o.normGainMin, o.normGainMax) : 1;
-  const gg = target && o.wb ? lim(target.meanG / Math.max(1, st.meanG), o.normGainMin, o.normGainMax) : 1;
-  const gb = target && o.wb ? lim(target.meanB / Math.max(1, st.meanB), o.normGainMin, o.normGainMax) : 1;
+  // баланс белого — ТОЛЬКО по цветности (доля канала), иначе экспозиция применялась бы дважды
+  let gr = 1, gg = 1, gb = 1;
+  if (target && o.wb) {
+    const sumS = Math.max(1e-6, st.meanR + st.meanG + st.meanB), sumT = Math.max(1e-6, target.meanR + target.meanG + target.meanB);
+    gr = lim((target.meanR / sumT) / Math.max(1e-6, st.meanR / sumS), 0.85, 1.2);
+    gg = lim((target.meanG / sumT) / Math.max(1e-6, st.meanG / sumS), 0.85, 1.2);
+    gb = lim((target.meanB / sumT) / Math.max(1e-6, st.meanB / sumS), 0.85, 1.2);
+    const gm = Math.cbrt(gr * gg * gb) || 1; gr /= gm; gg /= gm; gb /= gm;
+  }
   img.norm = { off: st.p5, scale: sc };
   img.wb = [gr * exp, gg * exp, gb * exp];
 }
@@ -439,14 +445,16 @@ async function recolor(src, dst, a) {
         const g = s.grid || {}, keys = s.keys || [];
         const nx = Number(g.nx) || 1, ny = Number(g.ny) || 1;
         dynGrid.push({ gx: Number(g.gx) || 0, gy: Number(g.gy) || 0, gz: Number(g.gz) || 0, v: Number(g.v) || 0.1, nx, ny });
-        for (let k = 0; k < keys.length; k++) dynSet.add(Math.round(Number(keys[k]) * 1e6));
+        const addKey = (v) => { const q = Math.round(Number(v)); if (Number.isFinite(q)) dynSet.add(q); };
+        if (keys && typeof keys.forEach === 'function' && !Array.isArray(keys) && !(keys instanceof Float64Array)) keys.forEach(addKey);
+        else for (let k = 0; k < keys.length; k++) addKey(keys[k]);
       }
       if (!dynSet.size) dynSet = null;
     }
     const inDyn = dynSet ? (wx, wy, wz) => {
       for (const g of dynGrid) {
         const ix = Math.floor((wx - g.gx) / g.v), iy = Math.floor((wy - g.gy) / g.v), iz = Math.floor((wz - g.gz) / g.v);
-        const key = Math.round((ix + g.nx * (iy + g.ny * iz)) * 1e6);
+        const key = Math.round(ix + g.nx * (iy + g.ny * iz));
         if (dynSet.has(key)) return true;
       }
       return false;
@@ -590,7 +598,7 @@ async function recolor(src, dst, a) {
         if (!cnt[b]) continue;
         const pf = path.join(tmp, b + '.p'), cf = cfile(b);
         if (!fs.existsSync(pf) || !fs.existsSync(cf)) continue;
-        buckets.push({ n: Math.floor(fs.statSync(pf).size / REC), P: fs.readFileSync(pf), C: fs.readFileSync(cf) });
+        buckets.push({ b, n: Math.floor(fs.statSync(pf).size / REC), P: fs.readFileSync(pf), C: fs.readFileSync(cf) });
       }
       // суммы цветов по ячейкам (цветные точки; динамику в источники не берём)
       const cellMap = new Map();
@@ -684,7 +692,15 @@ async function recolor(src, dst, a) {
     if (size > end) { const tail = Buffer.alloc(Math.min(size - end, 64 << 20)); fs.readSync(fd, tail, 0, tail.length, end); fs.writeSync(ofd, tail, 0, tail.length, wpos); }
     for (const R of rd) if (R && R.fd) fs.closeSync(R.fd);
     fs.closeSync(ofd); ofd = null;
-    return { points: H.n, inWindow: inWin, colored: changed, frames: frames.length, views, corr: +corr.toFixed(3), masked: masks.map(m => m.off), cameras: RG.length, lidarCloud: fromXbinLidar, ms: Date.now() - t0ms, color16: c16,
+    return { points: H.n, inWindow: inWin, colored: changed, directColored: colored,
+      filled: fillStat ? fillStat.filled : 0,
+      improve: o.improve ? {
+        bestView: !!o.bestView, sharp: !!o.sharp, frameNorm: !!o.frameNorm, wb: !!o.wb,
+        grade: o.grade ? { gain: o.gradeGain, sat: o.gradeSat, knee: o.gradeKnee } : null,
+        fill: fillStat,
+        normTarget: normTarget ? { y: +normTarget.meanY.toFixed(1), r: +normTarget.meanR.toFixed(1), g: +normTarget.meanG.toFixed(1), b: +normTarget.meanB.toFixed(1) } : null,
+      } : null,
+      frames: frames.length, views, corr: +corr.toFixed(3), masked: masks.map(m => m.off), cameras: RG.length, lidarCloud: fromXbinLidar, ms: Date.now() - t0ms, color16: c16,
       align: doAlign ? { frames: alignStat.frames, used: alignStat.used, corrGain: alignStat.used ? +(alignStat.gain / alignStat.used).toFixed(3) : 0, meanDeg: alignStat.used ? +(alignStat.deg / alignStat.used).toFixed(3) : 0 } : null };
   } finally {
     try { fs.closeSync(fd); } catch (_) {}
@@ -694,4 +710,5 @@ async function recolor(src, dst, a) {
   }
 }
 
-module.exports = { recolor, alignFrame, rotDeg, applyRot, lumaAt, parsePoses, poseAt, rigs, projectKB4, sampleRGB, resolveColor, makeProjector, mul4, invRigid, readHeader, DEF };
+module.exports = { recolor, alignFrame, rotDeg, applyRot, lumaAt, parsePoses, poseAt, rigs, projectKB4, sampleRGB, resolveColor, makeProjector, mul4, invRigid, readHeader, DEF,
+  frameStats, prepareFrame, gradeLUT, gradeRGB, dithOff, sharpAt, yAt };

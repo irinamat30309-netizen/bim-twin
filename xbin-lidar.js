@@ -541,7 +541,10 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
         out.writeInt32LE(Math.round((wx - ox) * 1000), fill); out.writeInt32LE(Math.round((wy - oy) * 1000), fill + 4); out.writeInt32LE(Math.round((wz - oz) * 1000), fill + 8);
         out.writeUInt16LE(I * 257 > 65535 ? 65535 : I * 257, fill + 12); out[fill + 14] = 0x09; out[fill + 15] = 0; out[fill + 16] = 0; out[fill + 17] = R & 255;
         out.writeUInt16LE(0, fill + 18); out.writeDoubleLE(t, fill + 20);
-        const g = (I > 255 ? 255 : I) * 257; out.writeUInt16LE(g, fill + 28); out.writeUInt16LE(g, fill + 30); out.writeUInt16LE(g, fill + 32);
+        // ревизия 145: серая заглушка RGB пишется 8-битной (0..255), как у Lixel map.las: recolor-core определяет
+        // масштаб цвета по colorMax <= 255 и пишет цвет 8-битным в те же поля; смешанные 8/16-битные каналы ломали
+        // определение цвета во внешних инструментах и делали цветное облако «тёмным» при чтении с colDiv=65535.
+        const g = I > 255 ? 255 : I; out.writeUInt16LE(g, fill + 28); out.writeUInt16LE(g, fill + 30); out.writeUInt16LE(g, fill + 32);
         fill += 34; cnt++;
       }, (bytes) => { done += bytes; if (done - lastProg > (64 << 20)) { lastProg = done; prog(pw + (1 - pw) * done / total, 'Облако из .xbin: точки лидара…'); } });
       flush();

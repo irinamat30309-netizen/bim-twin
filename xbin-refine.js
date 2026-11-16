@@ -167,7 +167,7 @@ function refine(fd, C, opt, prog, walk) {
     let n = 0, org = null; let tq0 = Date.now();
     // карта равномерной плотности: не больше одной точки на воксель thinVoxel за thinSlot секунд (у сканера точек в сотни раз больше)
     seenStamp++;
-    walk(fd, Object.assign({}, opt, { balance: false }), a, b, stepMap, (x, y, z, t, I, R, cx, cy, cz) => {
+    walk(fd, C, Object.assign({}, opt, { balance: false }), a, b, stepMap, (x, y, z, t, I, R, cx, cy, cz) => {
       const h = (Math.imul(Math.floor(x / o.thinVoxel), 73856093) ^ Math.imul(Math.floor(y / o.thinVoxel), 19349663) ^ Math.imul(Math.floor(z / o.thinVoxel), 83492791) ^ Math.imul(Math.floor((t - a) / o.thinSlot), 2654435761)) & SEEN_MASK;
       if (seen[h] === seenStamp) return; seen[h] = seenStamp;
       if (!org) org = [x, y, z];

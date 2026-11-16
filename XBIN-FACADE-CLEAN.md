@@ -338,3 +338,13 @@ PNG: `_scratch/r133-front-refine-compare.png` (3 панели: refine=false / re
 `r133_render_compare.py`; `facade-refine.las`, `facade-refine-clean.las`, `before-v133-crop.las`,
 `refine-crop.las`, `refine-clean-crop.las`, `xbin_refine_build.json`, `xbin_before_v133_build.json`,
 `r133_clean.json`, `r133_clean_stats.json`, `r133_metrics.json`. Не коммичено, UI не менялся.
+
+## 12. r145: полная плотность и цвет (см. XBIN-QUALITY-r145.md)
+
+Фасадная сборка без прореживания — 589 864 631 точек (123/ТЕСТ/2026-09-03-110319-lidar.las); в кропе 20×20×20 м это
+66.8M против 27.7M у Lixel (**+143 %** плотности). Толщина стен MAD 81.7 мм против 73.8 мм у Lixel (+10.8 % — не проходит
+порог +5 %), резкость/MTF выше эталона, люди 0 %. Цвет: исправлена 8-битная серая заглушка RGB в xbin-lidar (была 16-битная,
+из-за смешанного масштаба color-инструменты читали сборку как серую); дефолт UI — цвет по фото камер. Проверка recolor:
+24.1M из 28.1M точек (77.6 % vs 85.2 % у Lixel; остальное — вне обзора камер). Full-density рендеры/кропы:
+D:\BIM-TWIN-TEST\xbin-verify\renders\r145-facade-color-montage.png, heatmaps ...\heatmaps-facade\.
+Ограничение: толщина плотной сборки после чистки требует fusion/balance до шумодава (r146).
