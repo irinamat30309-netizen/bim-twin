@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 // Ревизия 4: бюджет точек проекта 200 млн (дефолт, миграция, защита по памяти).
 const test = require('node:test');
 const assert = require('node:assert');
@@ -18,7 +18,7 @@ test('конфиг: дефолт и минимум бюджета — 200 млн
   assert.strictEqual(cfg.MIN_POINT_BUDGET, 200000000);
   assert.ok(cfg.MAX_POINT_BUDGET >= cfg.MIN_POINT_BUDGET);
   assert.strictEqual(cfg.PLY_EXPORT_MAX_POINTS, 200000000);
-  assert.ok(cfg.LOD_DRAW_BUDGET > 0 && cfg.LOD_DRAW_BUDGET < cfg.DEFAULT_MAX_POINTS);
+  assert.ok(cfg.LOD_DRAW_BUDGET > 0 && cfg.LOD_DRAW_BUDGET <= cfg.OCTREE_MAX_POINTS);
   assert.ok(cfg.MIN_SAFE_PREVIEW_POINTS >= 1000000);
 });
 
@@ -110,3 +110,4 @@ test('подключение (ревизия 12): main.js берёт едины�
   assert.match(app, /resolvePointBudget/);
   assert.ok(!/id="qDensity"/.test(html) && !/qDensity/.test(app));
 });
+

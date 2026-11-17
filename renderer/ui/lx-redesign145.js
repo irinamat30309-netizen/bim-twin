@@ -1,4 +1,4 @@
-/* BIM Twin — r145: UI-редизайн «ближе к Lixel, с нашим акцентом».
+﻿/* BIM Twin — r145: UI-редизайн «ближе к Lixel, с нашим акцентом».
  *  1) левая вертикальная панель инструментов (иконки + тултипы) — дублирует основные вкладки ленты;
  *  2) правая панель «Управление данными» — дерево Облако точек / Этажи / Модель / Документы / Сцена / Свойства
  *     с чекбоксами видимости (облако — реально скрывает/показывает точки);
@@ -194,7 +194,7 @@
       '<div class="lx145-kv">' +
       '<span class="k">Точек</span><span class="v" data-lx145-points>—</span>' +
       '<span class="k">Габариты X / Y / Z</span><span class="v" data-lx145-bbox>—</span>' +
-      '<span class="k">Размер точки</span><span class="v" data-lx145-size>авто · 3–4 px</span>' +
+      '<span class="k">Размер точки</span><span class="v" data-lx145-size>авто · 2–3 px</span>' +
       '</div>' +
       '<label class="lx145-lbl"><span>Размер точки</span><input type="range" min="0.5" max="3" step="0.1" value="1" data-lx145-psize><output data-lx145-psize-o>1.0</output></label>' +
       '<label class="lx145-lbl"><span>Прозрачность</span><input type="range" min="0" max="1" step="0.05" value="1" data-lx145-op><output data-lx145-op-o>1.00</output></label>' +
@@ -234,7 +234,7 @@
       var bb = q('[data-lx145-bbox]');
       if (bb && ci.bounds) bb.textContent = fmtM(ci.bounds.mx[0] - ci.bounds.mn[0]) + ' × ' + fmtM(ci.bounds.mx[1] - ci.bounds.mn[1]) + ' × ' + fmtM(ci.bounds.mx[2] - ci.bounds.mn[2]) + ' м';
       var sz = q('[data-lx145-size]');
-      if (sz) sz.textContent = (viewer() && viewer()._autoPointSize) ? 'авто · 3–4 px' : ('фикс. ' + (+((viewer() && viewer()._cloudDisplay && viewer()._cloudDisplay.pointSize) || 1)).toFixed(1) + ' px');
+      if (sz) sz.textContent = (viewer() && viewer()._autoPointSize) ? 'авто · 2–3 px' : ('фикс. ' + (+((viewer() && viewer()._cloudDisplay && viewer()._cloudDisplay.pointSize) || 1)).toFixed(1) + ' px');
       var cm = q('[data-lx145-color]');
       if (cm) { var mode = viewer() && viewer().getColorMode ? viewer().getColorMode() : 'rgb'; if (cm.value !== mode) cm.value = mode; var opts = viewer() && viewer().getAvailableColorModes ? viewer().getAvailableColorModes() : ['rgb', 'elev']; Array.prototype.slice.call(cm.options).forEach(function (o) { o.disabled = opts.indexOf(o.value) < 0; }); }
     } else {
@@ -263,3 +263,4 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   if (typeof globalThis !== 'undefined' && typeof window === 'undefined') { try { globalThis.__lxDesign145 = API; } catch (e) { } }
 })();
+

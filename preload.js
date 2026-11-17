@@ -303,6 +303,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   refineScan: (payload) => inv('bim:refineScan', payload),
   // Ревизия 55: файл, переданный при запуске приложения (аргумент командной строки, «Открыть с помощью», ярлык)
   takePendingOpen: () => inv('bim:takePendingOpen'),
+  // r173: override бюджета точек для стенда (BIM_RENDER_BUDGET=80000000/200000000/300000000/600000000)
+  renderBudgetOverride: (() => { try { const v = Number(process.env.BIM_RENDER_BUDGET); return Number.isFinite(v) && v >= 10000000 ? v : 0; } catch (e) { return 0; } })(),
   // r155: заголовок/bbox облака из argv, предзагруженный в main до старта UI (без чтения точек)
   preloadedCloudHead: () => inv('bim:preloadedCloudHead'),
   // r164: фоновая инициализация ИИ/Scan2BIM — окно просит после bim-app-ready, не на критическом пути старта

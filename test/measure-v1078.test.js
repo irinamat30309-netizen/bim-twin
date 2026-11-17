@@ -135,7 +135,7 @@ test('webgl-viewer.js: CloudCompare-стиль — снап под курсор 
 test('webgl-viewer.js: адаптивная плотность при приближении', () => {
   assert.ok(/const adaptive = isCloud && !fixedPx && !this\._frameBox/.test(VW), 'adaptive density flag missing');
   assert.ok(VW.includes('uPtMin, adaptive ? baseSize : 1.0'), 'adaptive must keep base size as floor');
-  assert.ok(VW.includes('adaptive ? 6.0 : 1.0'), 'adaptive should raise max point size to fill gaps');
+  assert.ok(VW.includes('adaptive ? 4.0 : 1.0'), 'adaptive should raise max point size to fill gaps (r172: 4 px fill-rate cap)');
   assert.ok(VW.includes('this._densityBoost'), 'density boost must widen adaptive point size');
   assert.ok(VW.includes('this._interBudget = 128000000'), 'interactive budget must keep points on zoom');
   assert.ok(VW.includes('setDensityBoost(v)'), 'density boost setter missing');
@@ -148,7 +148,7 @@ test('webgl-viewer.js: лупа-увеличитель для точного п�
   assert.ok(VW.includes('setLoupeZoom(z)'), 'loupe zoom setter missing');
   // лупа копирует область под курсором из основного canvas
   assert.ok(VW.includes('ctx.drawImage(this.canvas'), 'loupe must copy from main canvas');
-  assert.ok(VW.includes('preserveDrawingBuffer: true'), 'preserveDrawingBuffer required to copy WebGL canvas');
+  assert.ok(VW.includes('preserveDrawingBuffer: false'), 'r172: preserveDrawingBuffer выключен ради FPS на больших облаках; canvas-снимки делаются сразу после render()');
   // лупа вызывается в цикле наведения и скрывается при выходе
   assert.ok(VW.includes('this._drawLoupe(xy[0], xy[1]'), 'hover loop must drive loupe');
   assert.ok(/mouseleave.*_hideLoupe\(\)/s.test(VW), 'loupe should hide on mouseleave');
@@ -200,3 +200,4 @@ test('app.js: пресеты плана/фасада/бока показываю
   assert.ok(APP.includes('viewer.setSectionView(axis)'), 'preset must orient the view to the section plane');
   assert.ok(APP.includes('толщина ') && APP.includes('toFixed(3)'), 'missing metric slab readout');
 });
+

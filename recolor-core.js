@@ -37,7 +37,13 @@ const DEF = { window: 2.5, bucket: 2, K: 4, cell: 8, thetaMax: 1.35, thetaSharp:
   frameNorm: true, normClip: [0.05, 0.95], normGainMin: 0.8, normGainMax: 1.25, wb: true,
   grade: true, gradeGain: 1.36, gradeKnee: 170, gradeDark: 25, gradeSat: 1.29,
   fill: true, fillCell: 0.07, fillRadius: 0.14, fillIters: 3, fillMaxPts: 60000000,   // r146: заполнение цветом на плотных сборках до 60 млн
-  dither: true };
+  // r173: анти-«зерно». 1) пространственная согласованность кадра: соседние точки предпочитают один
+  // доминирующий кадр в ячейке 5 см (меньше «спекла» от разных кадров); 2) усреднение 2 согласованных
+  // лучших взглядов; 3) медианное сглаживание цвета по 2-см соседям с защитой резких границ; дизеринг выкл.
+  dither: false,
+  spatialFrame: true, spatialCell: 0.05, spatialBoost: 0.35,
+  avgBest: true, avgAgree: 16,
+  denoise: true, denoiseCell: 0.02, denoiseIters: 0, denoiseEdge: 70, denoiseEdgePoint: 200, denoiseMinPts: 3, denoiseMaxPts: 60000000 };
 
 // ---- траектория с ориентацией: t,x,y,z,qx,qy,qz,qw (poses.csv Lixel) ----
 function parsePoses(text) {
@@ -293,6 +299,46 @@ function gradeRGB(rgb, k, LUT, sat) {
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 const dithOff = (i) => (BAYER4[((i & 3) << 2) | ((i >> 2) & 3)] / 16) - 0.5;
 
+// ======================= r173: анти-«зерно» цвета =======================
+// Медианное сглаживание поля средних цветов 2-см ячеек (3×3, iters проходов). Возвращает
+// { r, g, b, valid } — сглаженные средние; границы сохраняются на этапе применения (см. ниже):
+// точка, чей цвет сильно отличается от сглаженного (|Δ|>edge), сохраняет свой цвет — край не размывается.
+function smoothCellColors(mR, mG, mB, valid, nU, nV, iters) {
+  const N = nU * nV;
+  let aR = mR, aG = mG, aB = mB, av = valid;
+  let bR = new Float32Array(N), bG = new Float32Array(N), bB = new Float32Array(N), bv = new Uint8Array(N);
+  const vr = new Float64Array(9), vg = new Float64Array(9), vb = new Float64Array(9);
+  const med = (a, n) => { // медиана для n<=9
+    for (let i = 1; i < n; i++) { const x = a[i]; let j = i - 1; while (j >= 0 && a[j] > x) { a[j + 1] = a[j]; j--; } a[j + 1] = x; }
+    return a[n >> 1];
+  };
+  const it = Math.max(0, iters | 0);
+  for (let k = 0; k < it; k++) {
+    for (let iv = 0; iv < nV; iv++) {
+      for (let iu = 0; iu < nU; iu++) {
+        const k0 = iu + iv * nU;
+        if (!av[k0]) { bv[k0] = 0; continue; }
+        let n = 0;
+        for (let dv = -1; dv <= 1; dv++) {
+          const jv = iv + dv; if (jv < 0 || jv >= nV) continue;
+          for (let du = -1; du <= 1; du++) {
+            const ju = iu + du; if (ju < 0 || ju >= nU) continue;
+            const k2 = ju + jv * nU; if (!av[k2]) continue;
+            vr[n] = aR[k2]; vg[n] = aG[k2]; vb[n] = aB[k2]; n++;
+          }
+        }
+        if (!n) { bv[k0] = 0; continue; }
+        bR[k0] = med(vr, n); bG[k0] = med(vg, n); bB[k0] = med(vb, n); bv[k0] = 1;
+      }
+    }
+    let t;
+    t = aR; aR = bR; bR = t; t = aG; aG = bG; bG = t; t = aB; aB = bB; bB = t; t = av; av = bv; bv = t;
+  }
+  return { r: aR, g: aG, b: aB, valid: av };
+}
+// Замена цвета точки на сглаженный: только если отличие не «крайнее» (иначе — резкая граница, цвет свой).
+const denoiseReplace = (own, sm, edge) => Math.max(Math.abs(own[0] - sm[0]), Math.abs(own[1] - sm[1]), Math.abs(own[2] - sm[2])) <= edge;
+
 /**
  * recolor(src, dst, { index, posesText, decode, onProgress, tmpDir, opt }) → Promise<stats>
  *   index — результат xbin-core.open(); decode(bytes, frame) — декодер кадра; результат dst — копия src с новым RGB.
@@ -522,6 +568,13 @@ async function recolor(src, dst, a) {
     const out3 = new Float64Array(3);
     const gradeL = o.improve && o.grade ? gradeLUT(o) : null;
     const gradeSat = o.improve && o.grade ? o.gradeSat : 1;
+    const doDenoise = !!(o.improve && o.denoise && inWin <= (o.denoiseMaxPts || 60e6));
+    const deferredGrade = false;   // r173: цветокоррекция — как в r145 (в finalize), денойз ПОСЛЕ; не меняем поведение r145
+    const keepPts = !!(o.improve && (o.fill || doDenoise));
+    // r173: пространственная согласованность кадра — карта «доминирующий кадр» в ячейке 5 см
+    const sCell = o.improve && o.spatialFrame ? new Map() : null;
+    const SC = Math.max(0.01, o.spatialCell || 0.05);
+    const sKeyOf = (P, i) => { const q = i * 3, ix = Math.floor(P[q] / SC) + 4096, iy = Math.floor(P[q + 1] / SC) + 4096, iz = Math.floor(P[q + 2] / SC) + 4096; return (ix * 8192 + iy) * 8192 + iz; };
     const finalize = (b) => {
       const B = live.get(b); live.delete(b);
       if (!B) return;
@@ -530,13 +583,30 @@ async function recolor(src, dst, a) {
       for (let i = 0; i < B.n; i++) {
         let ok = false;
         if (best) {
-          // r145: НЕ усредняем кадры — берём лучший по q (резкость/угол/дистанция/подтверждение маской)
-          const base = i * K; let mi = -1, mq = 0;
-          for (let k = 0; k < K; k++) { const q = B.q[base + k]; if (q > mq) { mq = q; mi = k; } }
-          if (mi >= 0) { const c = B.c[base + mi]; out3[0] = c & 255; out3[1] = (c >>> 8) & 255; out3[2] = (c >>> 16) & 255; ok = true; }
+          // r145/r173: лучший кадр по q; r173 — если второй согласован по цвету (|Δ|<=avgAgree), усредняем
+          // два лучших взгляда — это снижает шум одного кадра, не давая «двоения» (только при согласии).
+          const base = i * K; let mi = -1, mq = 0, mj = -1, mq2 = 0;
+          for (let k = 0; k < K; k++) {
+            const q = B.q[base + k];
+            if (q > mq) { mq2 = mq; mj = mi; mq = q; mi = k; } else if (q > mq2) { mq2 = q; mj = k; }
+          }
+          if (mi >= 0) {
+            const c = B.c[base + mi];
+            out3[0] = c & 255; out3[1] = (c >>> 8) & 255; out3[2] = (c >>> 16) & 255; ok = true;
+            if (o.avgBest && mj >= 0 && mq2 >= mq * 0.6) {
+              const c2 = B.c[base + mj];
+              const r2 = c2 & 255, g2 = (c2 >>> 8) & 255, b2 = (c2 >>> 16) & 255;
+              if (Math.abs(out3[0] - r2) + Math.abs(out3[1] - g2) + Math.abs(out3[2] - b2) <= o.avgAgree * 3) {
+                const w1 = mq * mq, w2 = mq2 * mq2, ws = w1 + w2;
+                out3[0] = (out3[0] * w1 + r2 * w2) / ws;
+                out3[1] = (out3[1] * w1 + g2 * w2) / ws;
+                out3[2] = (out3[2] * w1 + b2 * w2) / ws;
+              }
+            }
+          }
         } else ok = resolveColor(B.q, B.c, i * K, K, o.agree, out3);
         if (!ok) continue;
-        if (gradeL || gradeSat !== 1) gradeRGB(out3, 0, gradeL, gradeSat);
+        if (!deferredGrade && (gradeL || gradeSat !== 1)) gradeRGB(out3, 0, gradeL, gradeSat);
         const off = o.improve && o.dither ? dithOff(i) : 0;
         C[i * 4] = Math.max(0, Math.min(255, Math.round(out3[0] + off)));
         C[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(out3[1] + off)));
@@ -544,7 +614,7 @@ async function recolor(src, dst, a) {
         C[i * 4 + 3] = 1; colored++;
       }
       fs.writeFileSync(cfile(b), C);
-      if (!(o.improve && o.fill)) { try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {} }
+      if (!keepPts) { try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {} }
     };
     const rgb = new Float64Array(3), cosS = o.thetaSharp, thM = o.thetaMax;
     const queue = []; let qi = 0;
@@ -569,12 +639,20 @@ async function recolor(src, dst, a) {
         let q = mk * fth * Math.exp(-dt * dt) / Math.max(d, 0.7); if (!(q > 0)) return;
         if (o.improve && o.sharp) q *= 0.45 + 0.55 * Math.min(1, sharpAt(img, u, v) / (o.lapScale || 12));
         if (o.improve && o.expoFix) { const yy = yAt(img, u, v); if (yy <= 6 || yy >= 250) q *= 0.3; }
+        // r173: бонус кадру, который уже «доминирует» у соседей в этой 5-см ячейке — меньше спекла
+        let sk = -1;
+        if (sCell) {
+          sk = sKeyOf(B.P, i);
+          const e = sCell.get(sk);
+          if (e) q *= (e.f === fi ? 1 + o.spatialBoost : 1 - o.spatialBoost * 0.35);
+        }
         if (inDyn) { const k3 = i * 3; if (inDyn(B.P[k3] + ox, B.P[k3 + 1] + oy, B.P[k3 + 2] + oz)) return; }
         const base = i * K; let mi = 0, mq = B.q[base];
         for (let k = 1; k < K; k++) if (B.q[base + k] < mq) { mq = B.q[base + k]; mi = k; }
         if (q <= mq) return;
         if (!sampleRGB(img, u, v, rgb)) return;
         B.q[base + mi] = q; B.c[base + mi] = (rgb[0] + 0.5 | 0) | ((rgb[1] + 0.5 | 0) << 8) | ((rgb[2] + 0.5 | 0) << 16); views++;
+        if (sCell && (sk >= 0)) { const e = sCell.get(sk); if (!e) sCell.set(sk, { f: fi, q }); else if (q > e.q) { e.f = fi; e.q = q; } }
       });
       if (img.close) img.close();
       if ((fi & 7) === 0) prog(0.15 + 0.75 * (fi + 1) / frames.length, 'Цвет по фото: кадр ' + (fi + 1) + ' из ' + frames.length + '…');
@@ -663,10 +741,146 @@ async function recolor(src, dst, a) {
         if (!adds.size) break;
       }
       for (const Bk of buckets) fs.writeFileSync(cfile(Bk.b), Bk.C);
-      // .p больше не нужны
-      for (let b = 0; b < NB; b++) { try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {} }
+      // .p ещё нужны для сглаживания цвета (r173), иначе удаляем
+      if (!doDenoise) for (let b = 0; b < NB; b++) { try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {} }
       const rest = inWin - colored - filled;
       fillStat = { filled, cell, radius: R * cell, iters, remaining: Math.max(0, rest), enabled: true };
+    }
+    // ---- 3.6 r173: медианное сглаживание цвета по 2-см соседям (анти-«зерно»), с защитой резких границ
+    let denoiseStat = null;
+    if (doDenoise) {
+      const tDn = Date.now();
+      const cell0 = Math.max(0.005, o.denoiseCell || 0.02);
+      const buckets = [];
+      for (let b = 0; b < NB; b++) {
+        if (!cnt[b]) continue;
+        const pf = path.join(tmp, b + '.p'), cf = cfile(b);
+        if (!fs.existsSync(pf) || !fs.existsSync(cf)) continue;
+        buckets.push({ b, n: Math.floor(fs.statSync(pf).size / REC), P: fs.readFileSync(pf), C: fs.readFileSync(cf) });
+      }
+      // оси: гасим ось с наименьшим разбросом (толщина поверхности); для фасада это X → сетка Y-Z,
+      // как в эталонной метрике «зерна» (2-см ячейки Y-Z)
+      let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+      for (const Bk of buckets) {
+        const { n, P } = Bk;
+        for (let i = 0; i < n; i += 7) {
+          const x = P.readFloatLE(i * REC), y = P.readFloatLE(i * REC + 4), z = P.readFloatLE(i * REC + 8);
+          if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+          if (y < mny) mny = y; if (y > mxy) mxy = y;
+          if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+        }
+      }
+      const ext = [mxx - mnx, mxy - mny, mxz - mnz];
+      let drop = 0; for (let a = 1; a < 3; a++) if (ext[a] < ext[drop]) drop = a;
+      const axes = [0, 1, 2].filter(a => a !== drop), A1 = axes[0], A2 = axes[1];
+      const los = [mnx, mny, mnz], his = [mxx, mxy, mxz];
+      const lo1 = los[A1], hi1 = his[A1], lo2 = los[A2], hi2 = his[A2];
+      const o1 = A1 * 4, o2 = A2 * 4;
+      let cellU = cell0;
+      let nU = Math.floor((hi1 - lo1) / cellU) + 2, nV = Math.floor((hi2 - lo2) / cellU) + 2;
+      if (nU * nV > 12000000) {
+        const s = Math.sqrt(nU * nV / 12000000);
+        cellU = cell0 * s;
+        nU = Math.floor((hi1 - lo1) / cellU) + 2; nV = Math.floor((hi2 - lo2) / cellU) + 2;
+      }
+      const N = nU * nV;
+      // r173: цвет ячейки — МЕДИАНА цветов точек (устойчива к выбросам: «оператор», блики, чужие кадры)
+      const cellOf = new Uint32Array(inWin);
+      const cntC = new Uint32Array(N);
+      let nC = 0;
+      const cellIdxAt = (P, i) => {
+        let iu = ((P.readFloatLE(i * REC + o1) - lo1) / cellU) | 0;
+        let iv = ((P.readFloatLE(i * REC + o2) - lo2) / cellU) | 0;
+        if (iu < 0) iu = 0; else if (iu >= nU) iu = nU - 1;
+        if (iv < 0) iv = 0; else if (iv >= nV) iv = nV - 1;
+        return iu + iv * nU;
+      };
+      for (const Bk of buckets) {
+        const { n, P, C } = Bk;
+        for (let i = 0; i < n; i++) {
+          if (!C[i * 4 + 3]) continue;
+          const k = cellIdxAt(P, i); cellOf[nC++] = k; cntC[k]++;
+        }
+      }
+      const offs = new Uint32Array(N), cur = new Uint32Array(N);
+      { let s0 = 0; for (let k = 0; k < N; k++) { offs[k] = s0; s0 += cntC[k]; } }
+      cur.set(offs);
+      const colR = new Uint8Array(nC), colG = new Uint8Array(nC), colB = new Uint8Array(nC);
+      let j0 = 0;
+      for (const Bk of buckets) {
+        const { n, C } = Bk;
+        for (let i = 0; i < n; i++) {
+          if (!C[i * 4 + 3]) continue;
+          const k = cellOf[j0++]; const p = cur[k]++;
+          colR[p] = C[i * 4]; colG[p] = C[i * 4 + 1]; colB[p] = C[i * 4 + 2];
+        }
+      }
+      const mR = new Float32Array(N), mG = new Float32Array(N), mB = new Float32Array(N), valid = new Uint8Array(N);
+      const hR = new Uint16Array(256), hG = new Uint16Array(256), hB = new Uint16Array(256);
+      const medOf = (h, c) => { let a = 0, half = c >> 1; for (let v = 0; v < 256; v++) { a += h[v]; if (a > half) return v; } return 255; };
+      let vcells = 0;
+      for (let k = 0; k < N; k++) {
+        const c = cntC[k]; if (c < (o.denoiseMinPts || 2)) continue;
+        hR.fill(0); hG.fill(0); hB.fill(0);
+        const s = offs[k], e = s + c;
+        for (let p = s; p < e; p++) { hR[colR[p]]++; hG[colG[p]]++; hB[colB[p]]++; }
+        mR[k] = medOf(hR, c); mG[k] = medOf(hG, c); mB[k] = medOf(hB, c);
+        valid[k] = 1; vcells++;
+      }
+      const sm = smoothCellColors(mR, mG, mB, valid, nU, nV, o.denoiseIters);
+      // r173: границы — на уровне ЯЧЕЕК: цвет ячейки сильно отличается от соседней → это настоящий край
+      // (окно/рама), точки сохраняют свой цвет; иначе — цвет сглаженного поля (внутри ячейки один цвет,
+      // межъячеечная текстура сохраняется — «зерно» уходит, кирпич/рамы читаются).
+      const edgeCell = new Uint8Array(N);
+      const edgeThr = o.denoiseEdge || 55;
+      let edgeCells = 0;
+      for (let iv = 0; iv < nV; iv++) for (let iu = 0; iu < nU; iu++) {
+        const k = iu + iv * nU; if (!sm.valid[k]) continue;
+        let mx = 0;
+        if (iu > 0 && sm.valid[k - 1]) mx = Math.max(mx, Math.abs(sm.r[k] - sm.r[k - 1]), Math.abs(sm.g[k] - sm.g[k - 1]), Math.abs(sm.b[k] - sm.b[k - 1]));
+        if (iu + 1 < nU && sm.valid[k + 1]) mx = Math.max(mx, Math.abs(sm.r[k] - sm.r[k + 1]), Math.abs(sm.g[k] - sm.g[k + 1]), Math.abs(sm.b[k] - sm.b[k + 1]));
+        if (iv > 0 && sm.valid[k - nU]) mx = Math.max(mx, Math.abs(sm.r[k] - sm.r[k - nU]), Math.abs(sm.g[k] - sm.g[k - nU]), Math.abs(sm.b[k] - sm.b[k - nU]));
+        if (iv + 1 < nV && sm.valid[k + nU]) mx = Math.max(mx, Math.abs(sm.r[k] - sm.r[k + nU]), Math.abs(sm.g[k] - sm.g[k + nU]), Math.abs(sm.b[k] - sm.b[k + nU]));
+        if (mx > edgeThr) { edgeCell[k] = 1; edgeCells++; }
+      }
+      let replaced = 0, edgeKept = 0, coloredCnt = 0;
+      let jA = 0;
+      for (const Bk of buckets) {
+        const { n, C } = Bk;
+        for (let i = 0; i < n; i++) {
+          if (!C[i * 4 + 3]) continue;
+          const k = cellOf[jA++]; coloredCnt++;
+          if (!sm.valid[k]) continue;
+          if (edgeCell[k]) { edgeKept++; continue; }
+          // r173: и на уровне точки — если свой цвет сильно отличается от цвета ячейки (настоящий край,
+          // блик, «оператор»), оставляем свой: сглаживание не размазывает границы и не плодит артефакты
+          const sR2 = sm.r[k], sG2 = sm.g[k], sB2 = sm.b[k];
+          if (Math.max(Math.abs(C[i * 4] - sR2), Math.abs(C[i * 4 + 1] - sG2), Math.abs(C[i * 4 + 2] - sB2)) > (o.denoiseEdgePoint || 200)) { edgeKept++; continue; }
+          C[i * 4] = Math.max(0, Math.min(255, Math.round(sR2)));
+          C[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(sG2)));
+          C[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(sB2)));
+          replaced++;
+        }
+        fs.writeFileSync(cfile(Bk.b), Bk.C);
+      }
+      // отложенная цветокоррекция «как в Lixel» — уже по сглаженным цветам (не усиливает зерно)
+      if (deferredGrade && (gradeL || gradeSat !== 1)) {
+        for (const Bk of buckets) {
+          const { n, C } = Bk;
+          for (let i = 0; i < n; i++) {
+            if (!C[i * 4 + 3]) continue;
+            out3[0] = C[i * 4]; out3[1] = C[i * 4 + 1]; out3[2] = C[i * 4 + 2];
+            gradeRGB(out3, 0, gradeL, gradeSat);
+            C[i * 4] = Math.max(0, Math.min(255, Math.round(out3[0])));
+            C[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(out3[1])));
+            C[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(out3[2])));
+          }
+          fs.writeFileSync(cfile(Bk.b), Bk.C);
+        }
+      }
+      for (let b = 0; b < NB; b++) { try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {} }
+      denoiseStat = { cell: +cellU.toFixed(4), grid: [nU, nV], cells: vcells, colored: coloredCnt,
+        replaced, edgeKept, edgeCells, edgeThr, ms: Date.now() - tDn };
     }
     if (xfd !== null) { fs.closeSync(xfd); xfd = null; }
     // ---- 4: запись LAS: исходные записи, цвет — из корзин по порядку точек
@@ -700,8 +914,10 @@ async function recolor(src, dst, a) {
       filled: fillStat ? fillStat.filled : 0,
       improve: o.improve ? {
         bestView: !!o.bestView, sharp: !!o.sharp, frameNorm: !!o.frameNorm, wb: !!o.wb,
+        dither: !!o.dither, spatialFrame: !!o.spatialFrame, avgBest: !!o.avgBest,
         grade: o.grade ? { gain: o.gradeGain, sat: o.gradeSat, knee: o.gradeKnee } : null,
         fill: fillStat,
+        denoise: denoiseStat,
         normTarget: normTarget ? { y: +normTarget.meanY.toFixed(1), r: +normTarget.meanR.toFixed(1), g: +normTarget.meanG.toFixed(1), b: +normTarget.meanB.toFixed(1) } : null,
       } : null,
       frames: frames.length, views, corr: +corr.toFixed(3), masked: masks.map(m => m.off), cameras: RG.length, lidarCloud: fromXbinLidar, ms: Date.now() - t0ms, color16: c16,
@@ -715,4 +931,4 @@ async function recolor(src, dst, a) {
 }
 
 module.exports = { recolor, alignFrame, rotDeg, applyRot, lumaAt, parsePoses, poseAt, rigs, projectKB4, sampleRGB, resolveColor, makeProjector, mul4, invRigid, readHeader, DEF,
-  frameStats, prepareFrame, gradeLUT, gradeRGB, dithOff, sharpAt, yAt };
+  frameStats, prepareFrame, gradeLUT, gradeRGB, dithOff, sharpAt, yAt, smoothCellColors, denoiseReplace };

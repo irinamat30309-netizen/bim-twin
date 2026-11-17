@@ -271,7 +271,10 @@
     static isSupported() { try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2', { powerPreference: 'high-performance' })); } catch (e) { return false; } }
     constructor(canvas, onSelect) {
       this.canvas = canvas; this.onSelect = onSelect || function () { }; this.onHover = null; this.onMeasure = null;
-      const gl = canvas.getContext('webgl2', { antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }); if (!gl) throw new Error('WebGL2 unavailable');
+      // r172: preserveDrawingBuffer:true заставлял драйвер копировать весь кадр каждый раз (сильный удар по FPS
+    // на 2560×1400/120 млн точек); antialias для квадратных точек не нужен и тоже стоит fill-rate.
+    // Снимки окна идут через Electron captureScreenshot; точечные canvas-снимки делаются сразу после render().
+    const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: false, powerPreference: 'high-performance', desynchronized: true }); if (!gl) throw new Error('WebGL2 unavailable');
       this.gl = gl; this.supportsTools = true;
       // Ревизия 26: видеокарта может сбросить изображение (нехватка видеопамяти, сброс драйвера при слишком тяжёлом кадре) — тогда
       // холст становится пустым (белым). Отрисовка останавливается, окно получает событие bim-gl-lost и предлагает открыть облако снова
@@ -284,7 +287,7 @@
       this.base = []; this.overlay = []; this.bbox = { mn: [-1, 0, -1], mx: [1, 3, 1] };
       this._octActive = false; this._octIndex = null; this._octFetch = null; this._octCache = null; this._octBudget = Infinity; this._octAll = true; this._octMovePct = 100; this._octIdleLimit = 0; this._octVramBytes = 0;
       this._octGeneration = 0; this._octFailures = null; this._octNow = null; // cancel stale node reads; bounded retry state
-      this._interBudget = 128000000; this._perfProfile = 'balanced'; this._densityBoost = 1.8; // бюджет точек при движении камеры (порог плотности): 6 млн — без подвисаний на больших LAS
+      this._interBudget = 128000000; this._perfProfile = 'balanced'; this._densityBoost = 1.4; // бюджет точек при движении камеры (порог плотности): 6 млн — без подвисаний на больших LAS
       this._selDepthMode = 0; this._selThrough = false; // режим глубины выделения: 0 тонко / 1 шире / 2 насквозь
       this._selGrowPx = null; // расширение точек-окклюдеров в pick-проходе (px); null = авто по режиму глубины
       this._selSubtract = false;   // режим снятия выделения (Alt / кнопка): рамка/лассо УБИРАЕТ точки
@@ -298,16 +301,16 @@
       // Качество облака (Патч 30): цветовой режим, яркость, множитель размера точки, EDL
       this._cloudDisplay = { pointSize: 1, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };
       this._ptElev = false; this._cloudColorMode = 'rgb';
-      this._ptBright = 1; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
-      // r145: как в Lixel — адаптивный (перспективный) размер точки по умолчанию (3–4 px при 1920×1080/1440).
-      // fixedPx (слайдер) остаётся ручным режимом; авто включается приложением/панелью производительности.
-      this._autoPointSize = false; this._autoPointBasePx = 3.2; this._motionSizeScale = 0.82;
-      // r145: динамическое разрешение во время вращения и режимы качества auto/high/fast.
-      this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.75; this._qualityMode = 'auto';
-      this._streamCpuMaxPoints = 160000000;   // потоковые копии частей в RAM — только для облаков до 160 млн
+      this._ptBright = 1.1; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
+      // r172: базовый тон «как есть» (без пересвета): небольшой gain ×1.1, grade выключен; «Как в Lixel» — пресет.
+      // Адаптивный размер точки по умолчанию: 2–3 px в покое (не жирно), в движении не меньше 2 px.
+      this._autoPointSize = true; this._autoPointBasePx = 2.8; this._motionSizeScale = 0.95;
+      // r172: динамическое разрешение в движении не ниже 85 % (было 75 % → «мыло»).
+      this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.9; this._qualityMode = 'auto';
+      this._streamCpuMaxPoints = 60000000;   // r172: CPU-копии только для небольших облаков; 120–590 млн — без копий
       this._denseFill = false; this._frameBox = false; // плотная заливка при приближении; чёрные рамки точек
-      // Фотореалистичная цветокоррекция (тонмаппинг) — включена по умолчанию: убирает выбитый белый, даёт контраст/цвет «как фото».
-      this._grade = { on: false, exposure: 1.06, contrast: 1.14, saturation: 1.22, gamma: 1.02, tone: 0.85 };
+      // Фотореалистичная цветокоррекция (тонмаппинг) — по умолчанию ВЫКЛ: убирает «пересвет/вымытость».
+      this._grade = { on: false, exposure: 1.0, contrast: 1.05, saturation: 1.05, gamma: 1.0, tone: 0.9 };
       this._edl = false; this._edlReady = false; this._edlStrength = 1.0; this._edlRadius = 1.4;
       this._pickReady = false; // GPU-проход выбора видимых точек (ленивая инициализация)
       this._photo = false; this._photoSaved = null;   // фото-качество экскурсии
@@ -793,7 +796,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     // в покое возвращается 1:1 (резкая картинка). Выключается режимом «Высокое»/сеттингом.
     _applyDynRes(moving) {
       if (!this._dynRes) { if (this._renderScale !== 1) { this._renderScale = 1; try { this._resize(); } catch (e) { } } return; }
-      const target = moving ? Math.max(0.45, Math.min(1, this._dynScaleMoving || 0.75)) : 1;
+      const target = moving ? Math.max(0.85, Math.min(1, this._dynScaleMoving || 0.9)) : 1;
       if (Math.abs((this._renderScale || 1) - target) < 0.01) return;
       this._renderScale = target;
       try { this._resize(); } catch (e) { }
@@ -2721,21 +2724,26 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     // r145: адаптивный (перспективный) размер точки, как в Lixel. Слайдер размера остаётся (множитель базы).
     setAutoPointSize(on) { this._autoPointSize = on !== false; if (this._autoPointSize) { this._cloudDisplay.pointSize = null; this._attenuate = false; this._denseFill = false; } this.render(); this._notifyCloudChanged(); return this._autoPointSize; }
     autoPointSizeOn() { return !!this._autoPointSize; }
-    setPointBasePx(px) { const v = +px; if (isFinite(v)) this._autoPointBasePx = Math.max(1.5, Math.min(8, v)); this.render(); return this._autoPointBasePx; }
-    // r145: качество рендера auto/high/fast — бюджеты точек при движении и динамическое разрешение.
+    setPointBasePx(px) { const v = +px; if (isFinite(v)) this._autoPointBasePx = Math.max(2.0, Math.min(4.0, v)); this.render(); return this._autoPointBasePx; }
+    // r172: качество рендера auto/high/fast — не режем точки в 3D ниже 60–70 % и разрешение ниже 85 %.
     setQualityMode(mode) {
       mode = (mode === 'high' || mode === 'fast') ? mode : 'auto';
       this._qualityMode = mode;
-      if (mode === 'high') { this._interBudget = 2000000000; this._octMovePct = 100; this._dynScaleMoving = 1; this._dynRes = false; this._motionSizeScale = 1; this._autoPointBasePx = 4.0; }
-      else if (mode === 'fast') { this._interBudget = 24000000; this._octMovePct = 25; this._dynScaleMoving = 0.5; this._dynRes = true; this._motionSizeScale = 0.45; this._autoPointBasePx = 3.0; }
-      else { this._interBudget = 128000000; this._octMovePct = 40; this._dynScaleMoving = 0.6; this._dynRes = true; this._motionSizeScale = 0.55; this._autoPointBasePx = 3.2; }
+      if (mode === 'high') { this._interBudget = 2000000000; this._octMovePct = 100; this._dynScaleMoving = 1; this._dynRes = false; this._motionSizeScale = 1; this._autoPointBasePx = 3.0; }
+      else if (mode === 'fast') { this._interBudget = 96000000; this._octMovePct = 60; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.85; this._autoPointBasePx = 2.8; }
+      else { this._interBudget = 128000000; this._octMovePct = 65; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.9; this._autoPointBasePx = 2.8; }
       if (!this._interacting) { this._renderScale = 1; }
+      // r173: бюджет отрисовки по режиму: «Высокое» — без потолка, «Авто» — 300M (детализация ≥ Lixel), «Быстрое» — 80M.
+      try {
+        const fastCap = 80000000, autoCap = (typeof window !== 'undefined' && window.APP_CONFIG && Number(window.APP_CONFIG.LOD_DRAW_BUDGET)) || 300000000;
+        this.setLodBudget(mode === 'fast' ? fastCap : (mode === 'high' ? 2000000000 : autoCap));
+      } catch (e) {}
       try { this._resize(); } catch (e) { }
       this.render(); this._notifyCloudChanged();
       return this._qualityMode;
     }
     qualityMode() { return this._qualityMode || 'auto'; }
-    setRenderScale(s) { s = +s; if (!isFinite(s)) s = 1; this._renderScale = Math.max(0.4, Math.min(1, s)); this._resize(); this.render(); return this._renderScale; }
+    setRenderScale(s) { s = +s; if (!isFinite(s)) s = 1; this._renderScale = Math.max(0.85, Math.min(1, s)); this._resize(); this.render(); return this._renderScale; }
     getRenderScale() { return this._renderScale || 1; }
     // r145: «Как в Lixel» — яркость/насыщенность под эталон (brightness ×1.36, saturation ×1.29), резкость не размывается.
     setLixelLook(on) {
@@ -2959,17 +2967,23 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     // После остановки (≈160 мс) облако рисуется целиком. Профиль «Максимум» терпит 22 мс.
     _adaptInter(ms, drawn, total) {
       if (!(ms > 0) || !(drawn > 0)) return;
-      // r145: целевой кадр при вращении — как у Lixel (≥79 FPS): авто ≈12.5 мс, быстро ≈10 мс,
-      // высокое ≈16.5 мс; профиль «Максимум» терпит больше (совместимость с r8).
+      // r172/r173: цель — 60 FPS в авто (16.5 мс), быстро — 80M/кадр, высокое — 16.5 мс без среза точек.
       const tgt = this._qualityMode === 'fast' ? 10
         : (this._qualityMode === 'high' ? 16.5
-          : (this._perfProfile === 'max' ? 20 : 12.5));
+          : (this._perfProfile === 'max' ? 20 : 16.5));
       const ppms = drawn / Math.max(0.5, ms);
       this._ptsPerMs = this._ptsPerMs ? this._ptsPerMs * 0.6 + ppms * 0.4 : ppms;
       let want = this._ptsPerMs * tgt;
       if (ms < tgt * 0.7 && drawn >= (this._interPts || total)) want = Math.max(want, drawn * 1.25);   // запас есть — возвращаем точки
       // ревизия 13: срезаем только то, что видеокарта не успевает; но не меньше 2 % облака (и 1,5 млн) — картинка остаётся плотной
       this._interPts = Math.max(Math.min(total, 1500000), Math.min(total, Math.max(want, total * 0.02)));
+      // r173: «Авто» адаптивно по FPS: при ≥60 FPS показываем максимум точек (до 100 %), при просадке — не ниже 60 %.
+      if (this._qualityMode === 'auto' && this._interacting) {
+        const fps = 1000 / Math.max(0.1, ms);
+        const pct = Math.round(this._octMovePct || 65);
+        if (fps >= 58 && pct < 100) this._octMovePct = Math.min(100, pct + 2);
+        else if (fps < 45 && pct > 60) this._octMovePct = Math.max(60, pct - 2);
+      }
       this._interMs = ms;
     }
     // ревизия 19: до первого замера кадра при движении рисуется не больше 12 млн точек (а не всё облако): первый же поворот огромного облака не «залипает»
@@ -3035,8 +3049,9 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
           const vhA = (gl.canvas && gl.canvas.height) || 1080;
           const dprA = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2) * (this._renderScale || 1);
           const hCss = vhA / Math.max(0.5, dprA);
-          const auto = Math.max(2.8, Math.min(4.5, hCss / 1200 * (this._autoPointBasePx || 3.2))) * (this._ptSizeMul || 1);
-          baseSize = Math.max(1.2, auto * (this._interacting ? Math.max(0.5, this._motionSizeScale || 0.82) : 1));
+          const auto = Math.max(2.0, Math.min(4.0, hCss / 1200 * (this._autoPointBasePx || 2.8))) * (this._ptSizeMul || 1);
+          const moving = this._interacting ? Math.max(2.0, auto * (this._motionSizeScale || 0.9)) : auto;
+          baseSize = Math.max(1.2, Math.min(6.0, moving));
         }
         // ревизия 8: при движении рисуем только часть точек (адаптивно по времени кадра); размер точек растёт на корень из доли пропущенного, чтобы поверхность не рассыпалась
         let dcI = o.count;
@@ -3051,7 +3066,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const adaptive = isCloud && !fixedPx && !this._frameBox && !this._denseFill && !this._attenuate && scale > 0;
         const atten = (!fixedPx && isCloud && (this._attenuate || this._denseFill || adaptive) && scale > 0) ? 1 : 0;
         gl.uniform1f(this.u.uAttenuate, atten); gl.uniform1f(this.u.uPtScale, scale);
-        gl.uniform1f(this.u.uPtMin, adaptive ? baseSize : 1.0); gl.uniform1f(this.u.uPtMax, (o._ptMax || 8.0) * psm * (isCloud && this._denseFill ? 9.0 : (adaptive ? 6.0 : 1.0)));
+        gl.uniform1f(this.u.uPtMin, adaptive ? baseSize : 1.0); gl.uniform1f(this.u.uPtMax, (o._ptMax || 8.0) * psm * (isCloud && this._denseFill ? 9.0 : (adaptive ? 4.0 : 1.0)));
         // ревизия 7: вблизи точки растут до замыкания поверхности (прежний потолок ≈ 3–5 px оставлял зазоры); размер — по локальному
         // шагу этого места (поле o._rad), а без него — по среднему шагу облака; потолок зависит от высоты окна, а не от числа точек.
         let radOn = 0;
@@ -4765,3 +4780,4 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
   if (typeof window !== 'undefined') window.Viewer3DGL = Viewer3DGL;
   if (typeof module !== 'undefined' && module.exports) module.exports = { Viewer3DGL: Viewer3DGL, cloudQuality: cloudQuality };
 })();
+

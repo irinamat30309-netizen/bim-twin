@@ -195,7 +195,10 @@ async function benchOne(file, label, outDir, opts) {
     times: {}, load: {}, fps: {}, memory: {}, ui: {}, screenshots: {} };
   fs.mkdirSync(outDir, { recursive: true });
   const env = Object.assign({}, process.env); delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(EXE, ['.', file, '--remote-debugging-port=' + port], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const _profile = process.env.BENCH_PROFILE || '';
+const _args = ['.', file, '--remote-debugging-port=' + port];
+if (_profile) _args.push('--user-data-dir=' + _profile);
+const child = spawn(EXE, _args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', (d) => { stderr += String(d); if (stderr.length > 20000) stderr = stderr.slice(-20000); });
   const tSpawn = now();
@@ -326,42 +329,91 @@ async function benchOne(file, label, outDir, opts) {
       await sleep(300);
     }
     result.times.settleMs = settleMs;
-    // -------- FPS: вращение 10 с
-    const rot = await ev(send, `(async () => {
-      const v = window.__viewer || window.__lxViewer;
-      if (!v) return { error: 'нет __viewer' };
+    // -------- r172: скриншоты «до/во время/после» вращения + состояние по умолчанию
+    const baseName = label.replace(/[^\w.-]+/g, '_');
+    const cap = async (suffix) => { const f = path.join(outDir, baseName + '-' + suffix + '.png'); const b = await shot(send, f); return { file: f, bytes: b }; };
+    const probe = await ev(send, `(() => {
+      const val = (sel) => { const e = document.querySelector(sel); return e ? Number(e.value) : null; };
+      const rows = [];
+      try {
+        document.querySelectorAll('input[type=range]').forEach((e) => {
+          const r = e.closest('.lx-cp-row, .q-row, .row, .fx-row');
+          const lab = r ? (r.textContent || '').trim().slice(0, 48) : (e.getAttribute('aria-label') || e.id || '');
+          rows.push({ id: e.id || null, label: lab, value: Number(e.value), min: e.min != null ? Number(e.min) : null, max: e.max != null ? Number(e.max) : null });
+        });
+      } catch (_) { }
+      const v = window.__viewer || window.__lxViewer || null;
+      const c = v && v.canvas ? v.canvas.getBoundingClientRect() : null;
+      const g = (o, k, d) => (o && o[k] != null ? o[k] : d);
+      return {
+        ranges: rows.slice(0, 60),
+        cpSize: val('#cpSize'),
+        shownNote: (document.getElementById('cpShareNote') || {}).textContent || '',
+        cpLoaded: (document.getElementById('cpLoaded') || {}).textContent || '',
+        cpTotal: (document.getElementById('cpTotal') || {}).textContent || '',
+        perfPoints: (document.querySelector('[data-perf-points]') || {}).textContent || '',
+        viewer: v ? {
+          pointSizeScale: g(v, 'pointSizeScale', null), exposure: g(v, 'exposure', null), brightness: g(v, 'brightness', null),
+          toneMap: g(v, '_toneMap', null), colorMode: g(v, 'colorMode', null), attenuate: g(v, 'attenuate', null),
+          adaptivePoint: g(v, '_adaptivePoint', null), pointSize: g(v, 'pointSize', null), dispSize: (v.disp ? v.disp.size : null)
+        } : null,
+        canvas: c ? { x: c.left, y: c.top, w: c.width, h: c.height } : null,
+        dpr: window.devicePixelRatio || 1,
+        budgets: (() => { try { return { gpuPointBudget: window.__bimGpuPointBudget ? window.__bimGpuPointBudget() : null,
+          lodDrawBudget: (window.APP_CONFIG && window.APP_CONFIG.LOD_DRAW_BUDGET) || null,
+          cfg: window.APP_CONFIG ? { GPU_POINT_BUDGET: window.APP_CONFIG.GPU_POINT_BUDGET || null, LOD_DRAW_BUDGET: window.APP_CONFIG.LOD_DRAW_BUDGET || null, MAX_POINT_BUDGET: window.APP_CONFIG.MAX_POINT_BUDGET || null } : null,
+          ls: (() => { const o = {}; for (const k of ['bim.perf.quality', 'bim.perf.look', 'bim.perfRev', 'bim.gpuBudgetRev', 'bim.gpuPointBudget', 'bim.gpuShowAll', 'bim.gpuResetAt', 'bim.preloadPoints']) { try { o[k] = localStorage.getItem(k); } catch (e) { } } return o; })() }; } catch (e) { return null; } })(),
+        vkeys: (() => { const o = {}; try { for (const k of Object.keys(v || {})) { if (!/size|bright|expos|tone|color|disp|qual|atten|point|scale|luma|gamma|budget/i.test(k)) continue; const x = v[k]; if (typeof x === 'number' || typeof x === 'string' || typeof x === 'boolean') o[k] = x; } } catch (_) { } return o; })(),
+        cloudInfo: (() => { try { const ci = window.__pcTools && window.__pcTools.cloudInfo ? window.__pcTools.cloudInfo() : null; return ci ? { loaded: ci.loadedCount, source: ci.sourceCount, streaming: !!ci.streaming } : null; } catch (_) { return null; } })(),
+        loadedVsSource: (() => { try { const vv = window.__viewer || window.__lxViewer; const rec = vv && vv._cloudRecord; const src = vv && (vv._sourceTotal || vv._cloudTotal); return { record: rec ? { name: rec.name, count: rec.count, sourceCount: rec.sourceCount } : null, sourceTotal: src || null }; } catch (_) { return null; } })()
+      };
+    })()`, 30000);
+    result.ui = Object.assign(result.ui || {}, probe);
+    result.screenshots.before = (await cap('before')).file;
+    // -------- FPS: вращение (кадр «во время» снимается снаружи, пока идёт rAF-цикл)
+    await ev(send, `(() => {
+      const v = window.__viewer || window.__lxViewer; if (!v) return { error: 'нет __viewer' };
       const MS = ${Number(opts.rotateSec || 10) * 1000};
-      let frames = 0, dts = [], last = performance.now(), run = true, maxLag = 0, exp = performance.now() + 16;
-      const lagTick = () => { const t = performance.now(); const d = t - exp; if (d > maxLag) maxLag = d; exp += 16; if (run) setTimeout(lagTick, 16); };
+      const st = window.__benchRot = { done: false, frames: 0, dts: [], maxLag: 0, ms: 0, t0: 0 };
+      let last = performance.now(), exp = performance.now() + 16;
+      const lagTick = () => { const t = performance.now(); const d = t - exp; if (d > st.maxLag) st.maxLag = d; exp += 16; if (!st.done) setTimeout(lagTick, 16); };
       setTimeout(lagTick, 16);
-      const t0 = performance.now();
-      function loop(ts) {
-        frames++; const dt = ts - last; last = ts; if (dts.length < 200000) dts.push(dt);
-        try { v.yaw = (v.yaw || 0) + 0.012; } catch (_) {}
-        try { v.render(); } catch (_) {}
-        if (run && performance.now() - t0 < MS) requestAnimationFrame(loop);
-        else { run = false; window.__benchRot = { frames, ms: performance.now() - t0, dts, maxLag, done: true }; }
-      }
+      st.t0 = performance.now();
+      const loop = (ts) => { if (st.done) return; st.frames++; const dt = ts - last; last = ts; if (st.dts.length < 200000) st.dts.push(dt); try { v.yaw = (v.yaw || 0) + 0.012; } catch (_) {} try { v.render(); } catch (_) {} if (performance.now() - st.t0 < MS) requestAnimationFrame(loop); else st.done = true; };
       requestAnimationFrame(loop);
-      await new Promise((r) => { const iv = setInterval(() => { if (window.__benchRot && window.__benchRot.done) { clearInterval(iv); r(); } }, 100); setTimeout(() => { clearInterval(iv); r(); }, MS + 15000); });
-      const R = window.__benchRot || {};
-      const sorted = (R.dts || []).slice().sort((a, b) => a - b);
-      const pct = (p) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] : null;
-      return { frames: R.frames, ms: R.ms, avgFps: R.frames ? R.frames / (R.ms / 1000) : null,
-               p95FrameMs: pct(0.95), maxFrameMs: sorted.length ? sorted[sorted.length - 1] : null,
-               minFps: sorted.length ? 1000 / sorted[sorted.length - 1] : null, maxLag,
-               heapMB: (performance.memory && performance.memory.usedJSHeapSize) ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null };
-    })()`, (Number(opts.rotateSec || 10) + 25) * 1000);
+      return true;
+    })()`, 20000);
+    await sleep(Math.max(1200, Math.min(4500, Number(opts.rotateSec || 10) * 400)));
+    result.screenshots.during = (await cap('during')).file;
+    await sleep(Math.max(800, Math.min(2500, Number(opts.rotateSec || 10) * 220)));
+    result.screenshots.during2 = (await cap('during2')).file;
+    let rot = null;
+    const rotDeadline = Date.now() + (Number(opts.rotateSec || 10) + 20) * 1000;
+    while (Date.now() < rotDeadline) {
+      try {
+        rot = await ev(send, `(() => { const R = window.__benchRot; if (!R || !R.done) return null;
+          const sorted = (R.dts || []).slice().sort((a, b) => a - b);
+          const pct = (p) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] : null;
+          const ms = performance.now() - R.t0;
+          return { frames: R.frames, ms, avgFps: R.frames ? R.frames / (ms / 1000) : null, p95FrameMs: pct(0.95), maxFrameMs: sorted.length ? sorted[sorted.length - 1] : null,
+                   minFps: sorted.length ? 1000 / sorted[sorted.length - 1] : null, maxLag: R.maxLag,
+                   heapMB: (performance.memory && performance.memory.usedJSHeapSize) ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null }; })()`, 30000);
+      } catch (_) { rot = null; }
+      if (rot) break;
+      await sleep(250);
+    }
     result.fps = rot || {};
+    result.screenshots.after = (await cap('after')).file;
+    result.ui.rotationMaxLagMs = result.fps.maxLag;
+
     // -------- HUD и скриншот
     const loaded = result.load.loadedPoints || 0;
-    const hudText = ['BIM Twin — бенчмарк r145', 'файл: ' + path.basename(file),
+    const hudText = ['BIM Twin — бенчмарк r172', 'файл: ' + path.basename(file),
       'точек: ' + Number(loaded).toLocaleString('ru-RU'),
       'FPS: ' + fmt(result.fps.avgFps, 1),
       'кадр p95: ' + fmt(result.fps.p95FrameMs, 1) + ' мс',
       'загрузка: ' + fmt(result.times.fullLoadMs / 1000, 1) + ' с'].join('\n');
     await ev(send, `window.__benchHud(${JSON.stringify(hudText)})`, 20000);
-    const baseName = label.replace(/[^\w.-]+/g, '_');
     result.screenshots.hud = path.join(outDir, baseName + '-hud.png');
     result.screenshots.hudBytes = await shot(send, result.screenshots.hud);
     result.memory = {
@@ -372,7 +424,6 @@ async function benchOne(file, label, outDir, opts) {
       peakGpuMB: Math.max(0, ...sampler.samples.map((s) => s.gpuMB || 0)),
       samples: sampler.samples.slice(-160),
     };
-    result.ui = { rotationMaxLagMs: result.fps.maxLag };
     result.ok = true;
   } catch (e) {
     result.error = String((e && e.message) || e);

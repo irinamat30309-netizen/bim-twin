@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /*
  * r145 — производительность и «как в Lixel» для больших облаков:
  *   • viewer: адаптивный размер точки 3–4 px (perspective), quality-режимы auto/high/fast,
@@ -31,10 +31,10 @@ function viewerStub() {
   v._resize = function () { };
   v.base = [{ points: true, count: 1000, _gpuCount: 1000, pointSize: 2.2 }];
   v._cloudDisplay = { pointSize: 1, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };
-  v._grade = { on: false, exposure: 1.06, contrast: 1.14, saturation: 1.22, gamma: 1.02, tone: 0.85 };
-  v._ptBright = 1;
-  v._renderScale = 1; v._dynRes = true; v._dynScaleMoving = 0.75; v._qualityMode = 'auto';
-  v._interBudget = 128000000; v._autoPointSize = false; v._ptSizeMul = 1;
+  v._grade = { on: false, exposure: 1.0, contrast: 1.05, saturation: 1.05, gamma: 1.0, tone: 0.9 };
+  v._ptBright = 1.1;
+  v._renderScale = 1; v._dynRes = true; v._dynScaleMoving = 0.85; v._qualityMode = 'auto';
+  v._interBudget = 128000000; v._autoPointSize = true; v._ptSizeMul = 1;
   return v;
 }
 
@@ -47,14 +47,14 @@ test('r145: viewer — адаптивный размер точки, качес�
   }
   assert.match(SRC, /_resize\(\)[\s\S]{0,200}\(this\._renderScale \|\| 1\)/, 'динамическое разрешение не применяется в _resize');
   assert.match(SRC, /const autoPx = isCloud && this\._autoPointSize/, 'авто-размер не учитывается в отрисовке');
-  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 3\.2\)/, 'база 3–4 px (perspective) не задана');
+  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.8\)/, 'база 2–3 px (perspective) не задана');
   assert.match(SRC, /total <= \(this\._streamCpuMaxPoints \|\| 160000000\)/, 'CPU-копии потока не ограничены 160 млн');
   assert.match(SRC, /setLixelLook\(on\)[\s\S]{0,240}setBrightness\(1\.36\)[\s\S]{0,240}saturation: 1\.29/, 'пресет «как в Lixel» не задан (1.36/1.29)');
   assert.match(SRC, /_grade\s*=\s*\{\s*on:\s*false/, 'нейтральный grade по умолчанию должен сохраниться (r145 включает его из настроек)');
 });
 
-test('r145: app — эффективный VRAM-бюджет (120 млн ≈ 1,8 ГБ, запас под общий GPU), «показать все» до 600 млн, панель и пресеты', () => {
-  assert.match(APP, /GPU_POINT_BUDGET = 120000000/);
+test('r145: app — эффективный VRAM-бюджет (96 млн ≈ 1,4 ГБ), «показать все» до 600 млн, панель и пресеты', () => {
+  assert.match(APP, /GPU_POINT_BUDGET = 300000000/);
   assert.match(APP, /GPU_VRAM_TARGET_MB = 5120/);
   assert.ok(APP.includes('600000000'), 'нет повышенного предела «показать все точки»');
   assert.match(APP, /bim\.gpuBudgetRev/, 'нет миграции старых пределов GPU (иначе 589 млн останется прореженным)');
@@ -90,31 +90,31 @@ test('r145: setAutoPointSize включает perspective-режим и сним
 test('r145: quality-режимы auto/high/fast задают бюджеты и динамическое разрешение', () => {
   const v = viewerStub();
   assert.strictEqual(v.setQualityMode('fast'), 'fast');
-  assert.strictEqual(v._interBudget, 24000000);
-  assert.strictEqual(v._dynScaleMoving, 0.5);
+  assert.strictEqual(v._interBudget, 96000000);
+  assert.strictEqual(v._dynScaleMoving, 0.85);
   assert.strictEqual(v._dynRes, true);
   assert.strictEqual(v.setQualityMode('high'), 'high');
   assert.strictEqual(v._dynRes, false, 'в «высоком» разрешение не режется');
   assert.ok(v._interBudget >= 1000000000);
   assert.strictEqual(v.setQualityMode('auto'), 'auto');
-  assert.strictEqual(v._dynScaleMoving, 0.6);
-  assert.strictEqual(v._octMovePct, 40, 'авто-режим рисует при движении 40 % облака');
-  assert.strictEqual(v._motionSizeScale, 0.55, 'в движении точки мельче (заливка дешевле)');
+  assert.strictEqual(v._dynScaleMoving, 0.85, 'разрешение в движении не ниже 85 %');
+  assert.strictEqual(v._octMovePct, 65, 'авто-режим рисует при движении 65 % точек');
+  assert.strictEqual(v._motionSizeScale, 0.9, 'в движении точки почти не мельчают');
   assert.strictEqual(v.setQualityMode('нет-такого'), 'auto', 'неизвестный режим — авто');
   assert.strictEqual(v.qualityMode(), 'auto');
 });
 
 test('r145: setRenderScale и _applyDynRes меняют масштаб, в покое возвращают 1', () => {
   const v = viewerStub();
-  assert.strictEqual(v.setRenderScale(0.6), 0.6);
-  assert.strictEqual(v.getRenderScale(), 0.6);
-  assert.strictEqual(v.setRenderScale(0.1), 0.4, 'нижний предел 0.4');
+  assert.strictEqual(v.setRenderScale(0.9), 0.9);
+  assert.strictEqual(v.getRenderScale(), 0.9);
+  assert.strictEqual(v.setRenderScale(0.1), 0.85, 'нижний предел 0.85');
   assert.strictEqual(v.setRenderScale(5), 1, 'верхний предел 1');
   v._renderScale = 0.7; v._dynRes = true;
   v._applyDynRes(false);
   assert.strictEqual(v._renderScale, 1, 'в покое 1:1 (резкая картинка)');
   v._applyDynRes(true);
-  assert.strictEqual(v._renderScale, 0.75, 'при вращении — динамическое разрешение');
+  assert.strictEqual(v._renderScale, 0.85, 'при вращении — динамическое разрешение 85 %');
 });
 
 test('r145: «Как в Lixel» — яркость ×1.36 и насыщенность ×1.29, grade включается', () => {
@@ -221,3 +221,7 @@ test('r145: панель (jsdom) — сворачивание/раскрытие
     assert.strictEqual(env.w.document.querySelector('[data-perf-panel]').hidden, true);
   } finally { try { env.dom.window.close(); } catch (e) { } }
 });
+
+
+
+

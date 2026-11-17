@@ -1,4 +1,4 @@
-/* BIM Twin — r145: панель «Производительность» (FPS/точки/память/бюджет)
+﻿/* BIM Twin — r145: панель «Производительность» (FPS/точки/память/бюджет)
  * + настройка качества отображения «авто / высокое / быстрое» и цветокоррекция
  * «Яркость / Контраст / Насыщенность» + пресет «Как в Lixel».
  *
@@ -103,10 +103,10 @@
   function readPrefs() {
     function g(k, d) { try { var v = W.localStorage.getItem(Wkey + k); return v == null ? d : v; } catch (e) { return d; } }
     var q = g('quality', 'auto'); if (['auto', 'high', 'fast'].indexOf(q) < 0) q = 'auto';
-    var look = g('look', 'lixel'); if (['lixel', 'neutral', 'custom'].indexOf(look) < 0) look = 'lixel';
-    var b = Number(g('brightness', 1.36)); if (!isFinite(b)) b = 1.36;
-    var c = Number(g('contrast', 1)); if (!isFinite(c)) c = 1;
-    var s = Number(g('saturation', 1.29)); if (!isFinite(s)) s = 1.29;
+    var look = g('look', 'neutral'); if (['lixel', 'neutral', 'custom'].indexOf(look) < 0) look = 'neutral';
+    var b = Number(g('brightness', 1.1)); if (!isFinite(b)) b = 1.1;
+    var c = Number(g('contrast', 1.05)); if (!isFinite(c)) c = 1.05;
+    var s = Number(g('saturation', 1.05)); if (!isFinite(s)) s = 1.05;
     return { quality: q, look: look, autoPoint: g('autoPoint', '1') !== '0', brightness: b, contrast: c, saturation: s };
   }
   function applyPrefs() {
@@ -116,7 +116,7 @@
     try { if (v.setAutoPointSize) v.setAutoPointSize(p.autoPoint); } catch (e) { }
     try {
       if (p.look === 'lixel') { if (v.setLixelLook) v.setLixelLook(true); }
-      else if (p.look === 'neutral') { if (v.setBrightness) v.setBrightness(1); if (v.setGrade) v.setGrade(false); }
+      else if (p.look === 'neutral') { if (v.setBrightness) v.setBrightness(1.1); if (v.setGrade) v.setGrade(false); }
       else {
         if (v.setBrightness) v.setBrightness(p.brightness);
         if (v.setGrade) v.setGrade({ on: true, exposure: 1, contrast: p.contrast, saturation: p.saturation, gamma: 1, tone: 0 });
@@ -158,7 +158,7 @@
       '<button type="button" class="lx-perf-btn sub" data-perf="neutral">Нейтрально</button>' +
       '<button type="button" class="lx-perf-btn sub" data-perf="reset" title="Сбросить настройки рендера">Сброс</button>' +
       '</div>' +
-      '<label class="lx-perf-chk"><input type="checkbox" data-perf-autopoint ' + (p.autoPoint ? 'checked' : '') + '>Адаптивный размер точки (3–4 px, ближе — крупнее)</label>' +
+      '<label class="lx-perf-chk"><input type="checkbox" data-perf-autopoint ' + (p.autoPoint ? 'checked' : '') + '>Адаптивный размер точки (2–3 px, в движении не меньше 2 px)</label>' +
       '<p class="lx-perf-note">Слева внизу — кнопка «FPS»; горячая клавиша F2. «Показано» при вращении — бюджет, в покое — все загруженные точки. VRAM — оценка по 15 Б/точку.</p>' +
       '</div>';
   }
@@ -226,7 +226,7 @@
     if (act === 'lixel') { savePrefs({ look: 'lixel', brightness: 1.36, saturation: 1.29, contrast: 1, autoPoint: true }); applyPrefs(); syncInputs(); paint(); return; }
     if (act === 'neutral') { savePrefs({ look: 'neutral' }); applyPrefs(); syncInputs(); paint(); return; }
     if (act === 'reset') {
-      savePrefs({ quality: 'auto', look: 'lixel', autoPoint: true, brightness: 1.36, contrast: 1, saturation: 1.29 });
+      savePrefs({ quality: 'auto', look: 'neutral', autoPoint: true, brightness: 1.1, contrast: 1.05, saturation: 1.05 });
       applyPrefs(); syncInputs(); paint();
     }
   }
@@ -304,3 +304,4 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api();
   if (typeof globalThis !== 'undefined' && typeof window === 'undefined') { try { globalThis.__lxPerf = api(); } catch (e) { } }
 })();
+

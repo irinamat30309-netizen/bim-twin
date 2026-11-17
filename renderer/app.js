@@ -158,7 +158,13 @@
     };
   }
   // Бюджет чтения (200 млн) и бюджет рисования потока октодерева за кадр — разные вещи: рисуем не больше LOD_DRAW_BUDGET точек.
-  function lodDrawBudget(budget) { const cap = Number(window.APP_CONFIG && window.APP_CONFIG.LOD_DRAW_BUDGET) || 80000000; return Math.max(1000000, Math.min(Number(budget) || cap, cap)); }
+  function lodDrawBudget(budget) {
+    // r173: «Быстрое» — 80M/кадр (как было), «Авто» — 300M (детализация не хуже Lixel), «Высокое» — без потолка (VRAM-запас).
+    let q = 'auto'; try { q = localStorage.getItem('bim.perf.quality') || 'auto'; } catch (_) {}
+    const capCfg = Number(window.APP_CONFIG && window.APP_CONFIG.LOD_DRAW_BUDGET) || 300000000;
+    const cap = q === 'fast' ? 80000000 : (q === 'high' ? 2000000000 : capCfg);
+    return Math.max(1000000, Math.min(Number(budget) || cap, cap));
+  }
   // Ревизия 15: потокового режима больше нет. Файл читается и рисуется ЦЕЛИКОМ (все точки, сколько бы их ни было в файле).
   // Только если памяти реально не хватило, окно предлагает открыть максимум возможного (равномерная выборка) — и только с согласия.
   const fmtMln = (n) => (n / 1e6).toFixed(1).replace('.', ',');
@@ -191,18 +197,33 @@
   // и окно просмотра становится белым. После такого сброса предел уменьшается вдвое (bim.gpuPointBudget).
   // r145: эффективный бюджет по VRAM (цель ≤5 ГБ): позиции 12 Б + цвет 3 Б на точку → 260 млн ≈ 3,9 ГБ.
   // В движении рисуется адаптивно меньше (40 %/25 %), в покое — плотно все загруженные точки.
-  const GPU_POINT_BUDGET = 120000000;
+  // r173: детализация как в Lixel требует держать в GPU заметно больше 96M. Бюджет по режиму качества:
+  // «Авто»/«Высокое» — 300M (позиции+цвет ≈4,5 ГБ, VRAM ≤5 ГБ), «Быстрое» — 80M. Старый сохранённый предел (305M)
+  // больше не даёт мыла: он режется по режиму, а не по случайной константе.
+  const GPU_POINT_BUDGET = 300000000;
+  const GPU_POINT_BUDGET_FAST = 80000000;
   const GPU_VRAM_TARGET_MB = 5120;
+  function qualityPointBudget() {
+    let q = 'auto'; try { q = localStorage.getItem('bim.perf.quality') || 'auto'; } catch (_) {}
+    return q === 'fast' ? GPU_POINT_BUDGET_FAST : GPU_POINT_BUDGET;
+  }
   function gpuPointBudget() {
-    // r145: разовый сброс старых «пределов после сброса GPU» (300-600 млн) на VRAM-бюджет,
-    // иначе 589-млн облако оставалось прореженным/тормозным.
+    // r145/r173: разовый сброс старых «пределов после сброса GPU» на VRAM-бюджет.
     try {
-      if (localStorage.getItem('bim.gpuBudgetRev') !== '147') {
+      if (localStorage.getItem('bim.gpuBudgetRev') !== '173') {
         localStorage.removeItem('bim.gpuPointBudget'); localStorage.removeItem('bim.gpuResetAt');
-        localStorage.setItem('bim.gpuBudgetRev', '147');
+        localStorage.setItem('bim.gpuBudgetRev', '173');
       }
     } catch (e) {}
-    let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {} if (v >= 10000000) return Math.floor(v); try { const rc = window.__bimPcCapacity && window.__bimPcCapacity.recommendation; if (rc && rc.points >= 10000000) return Math.floor(Math.min(rc.points, GPU_POINT_BUDGET)); } catch (_) {} return GPU_POINT_BUDGET;
+    // стенд r173: BIM_RENDER_BUDGET переопределяет бюджет (80/200/300/600 млн)
+    try { const ov = Number(API && API.renderBudgetOverride) || 0; if (ov >= 10000000) return Math.floor(Math.min(ov, 600000000)); } catch (_) {}
+    let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {}
+    let allowAll = false; try { allowAll = localStorage.getItem('bim.gpuShowAll') === '1'; } catch (_) {}
+    const qb = qualityPointBudget();
+    if (allowAll) return Math.floor(Math.min(Math.max(v, qb), 600000000));   // «Показать все точки файла» — явная кнопка
+    if (v >= 10000000) return Math.floor(Math.min(v, qb));
+    try { const rc = window.__bimPcCapacity && window.__bimPcCapacity.recommendation; if (rc && rc.points >= 10000000) return Math.floor(Math.min(rc.points, qb)); } catch (_) {}
+    return qb;
   }
   try { window.__bimEffectiveBudget = gpuPointBudget; window.__bimGpuVramTargetMB = GPU_VRAM_TARGET_MB; } catch (e) {}
   window.__bimGpuPointBudget = gpuPointBudget;
@@ -226,7 +247,7 @@
       } catch (_) { all = false; }
       if (all) {
         try { await API.cloudPartsClose({ token: opened.token }); } catch (_) {}
-        try { localStorage.setItem('bim.gpuPointBudget', String(Math.min(Number(opened.sourceTotal) || 0, 600000000))); localStorage.removeItem('bim.gpuResetAt'); } catch (_) {}
+        try { localStorage.setItem('bim.gpuPointBudget', String(Math.min(Number(opened.sourceTotal) || 0, 600000000))); localStorage.setItem('bim.gpuShowAll', '1'); localStorage.removeItem('bim.gpuResetAt'); } catch (_) {}
         return await tryPartsLoad(filePath, label, Object.assign({}, extra, { noAllAsk: true, pre: null }));
       }
     }
@@ -646,6 +667,7 @@
     if (!ok) return false;
     try {
       localStorage.setItem('bim.gpuPointBudget', '600000000');
+      localStorage.setItem('bim.gpuShowAll', '1');
       localStorage.removeItem('bim.gpuResetAt');
     } catch (_) {}
     return window.__bimOpenCloudPath(p, { fresh: true, allPoints: true });
@@ -5923,17 +5945,25 @@
   }
 
   // ---------- init ----------
-  // ---------- r145: рендер «как в Lixel» (ярче/насыщеннее, адаптивный размер точки) + качество/бюджет ----------
+  // ---------- r172: базовый рендер без пересвета; «Как в Lixel» — отдельный пресет ----------
   function renderPrefs() {
     function s(k, d) { try { var v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } }
     function n(k, d) { var v = Number(s(k, d)); return isFinite(v) ? v : d; }
+    // миграция один раз: старые дефолты (lixel 1.36/1.29) давали пересвет — сбрасываем на базовый тон 1.1
+    try {
+      if (localStorage.getItem('bim.perfRev') !== '172') {
+        ['bim.perf.look', 'bim.perf.brightness', 'bim.perf.contrast', 'bim.perf.saturation', 'bim.perf.autoPoint', 'bim.perf.quality', 'bim.perf.dynRes'].forEach(function (k) { localStorage.removeItem(k); });
+        localStorage.setItem('bim.perfRev', '172');
+      }
+    } catch (e) {}
+    var look = s('bim.perf.look', 'neutral'), bright = n('bim.perf.brightness', 1.1), contrast = n('bim.perf.contrast', 1.05), sat = n('bim.perf.saturation', 1.05);
     return {
       quality: ['auto', 'high', 'fast'].indexOf(s('bim.perf.quality', 'auto')) >= 0 ? s('bim.perf.quality', 'auto') : 'auto',
-      look: ['lixel', 'neutral', 'custom'].indexOf(s('bim.perf.look', 'lixel')) >= 0 ? s('bim.perf.look', 'lixel') : 'lixel',
+      look: ['lixel', 'neutral', 'custom'].indexOf(look) >= 0 ? look : 'neutral',
       autoPoint: s('bim.perf.autoPoint', '1') !== '0',
-      brightness: n('bim.perf.brightness', 1.36),
-      contrast: n('bim.perf.contrast', 1.0),
-      saturation: n('bim.perf.saturation', 1.29),
+      brightness: bright,
+      contrast: contrast,
+      saturation: sat,
       dynRes: s('bim.perf.dynRes', '1') !== '0'
     };
   }
@@ -5942,10 +5972,10 @@
     var p = renderPrefs();
     try { if (viewer.setQualityMode) viewer.setQualityMode(p.quality); } catch (e) {}
     try { if (viewer.setAutoPointSize) viewer.setAutoPointSize(p.autoPoint); } catch (e) {}
-    try { if (viewer.setPointBasePx) viewer.setPointBasePx(3.2); } catch (e) {}
+    try { if (viewer.setPointBasePx) viewer.setPointBasePx(2.8); } catch (e) {}
     try {
       if (p.look === 'lixel') viewer.setLixelLook(true);
-      else if (p.look === 'neutral') { viewer.setBrightness(1); viewer.setGrade(false); }
+      else if (p.look === 'neutral') { viewer.setBrightness(1.1); viewer.setGrade(false); }
       else { viewer.setBrightness(p.brightness); viewer.setGrade({ on: true, exposure: 1, contrast: p.contrast, saturation: p.saturation, gamma: 1, tone: 0 }); }
     } catch (e) {}
     try { var qb = $('qBright'); if (qb) qb.value = String(p.look === 'lixel' ? 1.36 : p.brightness); var qg = $('qGrade'); if (qg) qg.classList.toggle('on', p.look !== 'neutral'); } catch (e) {}
@@ -6323,3 +6353,4 @@
 
   window.addEventListener('DOMContentLoaded', init);
 })();
+

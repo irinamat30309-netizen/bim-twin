@@ -245,7 +245,7 @@ function lasHeader(o) {
 }
 
 const DEF = { minRange: 0.5, maxRange: 120, maxPoints: 40e6, step: 0, t0: null, t1: null, maxMotorGap: 0.05, imu: true, imuShift: 0, position: 'hermite', poseStep: 0.005,
-  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: 'auto' };
+  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: 'auto', detail: false };
 
 // ---------- ревизия 145: VOXEL-балансировка плотности (по умолчанию ВЫКЛ) ----------
 // Мультипроходы дают на земле/фасаде смесь плотных и разреженных участков. balance ограничивает число точек
@@ -477,6 +477,13 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
  */
 function build(xbinPath, posesText, outLas, opt, onProgress) {
   const o = Object.assign({}, DEF, opt || {});
+  // r172: detail-preset для приоритетных облаков — минимум фильтров, полная плотность и цвет.
+  //   edge=false (не режем кромки/рельсы/остекление), sky=false, balance=false, step=1 (без прореживания).
+  //   Чистка/refine — отдельными шагами, чтобы не терять детали; recolor — как обычно (цвет по фото).
+  if (o.detail === true) {
+    o.edge = false; o.sky = false; o.balance = false; o.step = 1;
+    if (!(Number(o.maxPoints) > 0)) o.maxPoints = 2000000000;
+  }
   const prog = typeof onProgress === 'function' ? onProgress : () => {};
   const C = prepare(xbinPath, posesText, o, prog);
   const { recs, T0, T1, P } = C;

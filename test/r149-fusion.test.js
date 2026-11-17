@@ -96,7 +96,7 @@ test('r159: ICP без Python/Open3D — graceful fallback на hist с поме
 
 test('r159: сборка по умолчанию — auto (>600 с → icp), fusion проброшен в статистику', () => {
   const xl = read('xbin-lidar.js');
-  assert.match(xl, /fusion: 'auto' \};/);
+  assert.match(xl, /fusion: 'auto', detail: false \};/);
   assert.match(xl, /const mode = F\.resolveMode\(o\.fusion, T1 - T0\);/);
   assert.match(xl, /F\.fuseLas\(outLas, ftmp, Object\.assign\(\{ mode/);
   assert.match(xl, /fusion: fusionInfo/);

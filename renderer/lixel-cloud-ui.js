@@ -1,4 +1,4 @@
-/* Свойства активного облака точек и его запись в дереве сцены.
+﻿/* Свойства активного облака точек и его запись в дереве сцены.
  * Одно резидентное облако: без мнимого менеджера нескольких облаков.
  * Панель живёт на вкладке «Сцена» справа, меню действий — общий всплывающий список ui/kit.js. */
 (function () {
@@ -292,3 +292,5 @@
   ['bim-cloud-change', 'bim-app-ready', 'lx-scene-built'].forEach(e => window.addEventListener(e, sync));
   if (document.readyState !== 'loading') sync(); else window.addEventListener('DOMContentLoaded', () => setTimeout(sync, 200));
 })();
+
+
