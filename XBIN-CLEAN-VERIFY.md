@@ -454,3 +454,13 @@ r161-отбор/клампы — опцией usionSelect='strict', глоба�
 9/45 проходов; bbox |Δ| по xy <16 мм, макс 58 мм по z-границам. Фасад: 81.6 мм / 5.22 % (лучше Lixel по полу).
 Цели ≤66.7 мм/≤1.5 % не достигнуты — нужен pose graph LS. Тесты 1799/1795 pass/0 fail/4 skip, r149 7/7.
 Подробно — XBIN-QUALITY-r145.md §11.
+
+## 16. r164: pose graph LS (4DoF) — реализован, default остаётся safe-ICP
+
+Добавлены poseGraphSolve (4N×4N LS, yaw+XYZ, приоры hist, якорь) и режим opt.fusion='icp-global'
+(парные ICP соседних проходов; inlier≥0.5, |yaw|≤2°, tilt≤5°; глобальные позы → слияние).
+Интерьер 72.4M: safe-ICP default 75.4 мм / 1.87 % / люди 0 % / 200 с; pose graph yaw+XYZ 83.9 мм / 2.06 %;
+translation-only 86.7 мм / 2.05 % — хуже (граф рвётся, перекрытие соседних проходов часто <0.5, yaw при
+плече ~20 м даёт до 30 мм). Фасад safe: 81.6 мм / 5.22 % (лучше Lixel по полу). Default — safe-ICP
+(auto >600 с → icp, fallback hist), icp-global — опция. Bbox xy |Δ|<16 мм, макс 58 мм по z; плотность
+сохранена. Тесты 1805/1801 pass/0 fail/4 skip, r149 9/9. Подробно — XBIN-QUALITY-r145.md §12.
