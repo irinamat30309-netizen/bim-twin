@@ -1,0 +1,7 @@
+﻿BIM Twin — ЗАКРЫТЫЙ ПРОЕКТ (r163)
+===================================
+ЗАПУСК: cd bim-twin; npm install; npm start
+Модель: deliverables/py2-final-v5.json + py2-final-v5.ifc (A 8/8, 0 ERROR).
+Тесты: node --test 1799/1795 pass/0 fail; Python 188 проверок PASS; IFC OK.
+Приёмка: CLOSING-r163.md. Регрессия: PHASE5-FINAL-r151.md. Качество: XBIN-QUALITY-r145.md.
+Пакет: bim-twin-r55-full.zip. Скриншоты: screenshots/. Отчёты r145–r163 в корне и в docs.
