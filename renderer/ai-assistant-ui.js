@@ -39,6 +39,94 @@
   function toast(m, err) { var k = K(); if (k && k.toast) k.toast(m, err ? { tone: 'err' } : undefined); }
   function fmtGb(x) { return (Math.round(x * 10) / 10).toString().replace('.', ',') + ' ГБ'; }
 
+  // ------------------------------------------------------------------ r169: контекст приложения + локальный интент-парсер
+  function AC() { return W && W.AiContext; }
+  function AI() { return W && W.AiIntent; }
+  TOOL_TEXT.app_context = 'контекст приложения';
+  TOOL_TEXT.auto_measure = 'автозамер';
+  TOOL_TEXT.cloud_classifier = 'классификатор';
+  function ensureAiModules(done) {
+    if (!W || !D) { if (done) done(false); return false; }
+    if (AC() && AI()) { if (done) done(true); return true; }
+    var pending = 2, ok = true;
+    function one(src, id, globalName) {
+      if (W[globalName]) { if (--pending <= 0 && done) done(ok); return; }
+      var s = D.getElementById(id);
+      if (s) { s.addEventListener('load', function () { if (--pending <= 0 && done) done(ok); }); return; }
+      s = D.createElement('script'); s.id = id; s.src = src; s.async = true;
+      s.onload = function () { if (--pending <= 0 && done) done(ok); };
+      s.onerror = function () { ok = false; if (--pending <= 0 && done) done(false); };
+      (D.head || D.documentElement).appendChild(s);
+    }
+    one('ai-context.js?v=r169', 'lxAiCtx169', 'AiContext');
+    one('ai-intent.js?v=r169', 'lxAiInt169', 'AiIntent');
+    return true;
+  }
+  /** Свежий структурированный контекст (renderer/ai-context.js). */
+  function appPack() {
+    var A2 = AC();
+    if (A2 && A2.build) { try { return A2.build(W); } catch (_) { } }
+    return null;
+  }
+  /** Компактный блок фактов для локальной модели. */
+  function promptBlock(pack) {
+    var A2 = AC();
+    if (A2 && A2.toPromptBlock) { try { return A2.toPromptBlock(pack || appPack()); } catch (_) { } }
+    return '';
+  }
+  function parseIntent(text) {
+    var I = AI(); if (!I || !I.parse) return null;
+    try { return I.parse(text); } catch (_) { return null; }
+  }
+  /** Отвечает локально по фактам; null — намерение не распознано/не применимо. */
+  function localIntentAnswer(text, ctx) {
+    var I = AI(), pack = null;
+    if (!I || !I.parse || !I.execute) return null;
+    var parsed = null;
+    try { parsed = I.parse(text); } catch (_) { return null; }
+    if (!parsed || parsed.intent === 'unknown') return null;
+    try { pack = appPack(); } catch (_) { pack = null; }
+    if (!pack) return null;
+    return runIntent(parsed, pack, ctx);
+  }
+  /** Выполнение намерения; при need:'analyze-selection' — дообогащаем контекст классификатором. */
+  function runIntent(parsed, pack, ctx) {
+    var I = AI(), out = null;
+    try { out = I.execute(parsed, pack, { W: W }); } catch (e) { out = null; }
+    if (!out) return null;
+    if (out && out.handled === false && out.need === 'analyze-selection') {
+      var C = AC(), el = null;
+      try { el = C && C.analyzeSelection ? C.analyzeSelection(W) : null; } catch (_) { el = null; }
+      if (el) {
+        pack = Object.assign({}, pack, { element: el, capabilities: Object.assign({}, pack.capabilities || {}, { element: true }) });
+        try { out = I.execute(parsed, pack, { W: W }); } catch (_) { out = null; }
+      }
+    }
+    if (!out) return null;
+    out.parsed = parsed;
+    out.pack = pack;
+    return out;
+  }
+  /** Элемент из инспектора/последнего замера/выделения (без побочных эффектов). */
+  function currentElement() {
+    var C = AC();
+    if (!C) return null;
+    try { return C.elementFromInspector(W) || null; } catch (_) { }
+    var pk = state.picked;
+    if (pk && pk.res && C.elementFromIdentify) { try { return C.elementFromIdentify(pk.res); } catch (_) { } }
+    return null;
+  }
+  function explainElementLocally(el) {
+    var I = AI(), C = AC();
+    var pack = appPack() || { capabilities: {} };
+    if (el) pack = Object.assign({}, pack, { element: el, capabilities: Object.assign({}, pack.capabilities || {}, { element: true }) });
+    var parsed = { intent: 'element.type', params: {}, raw: 'что это за элемент', confidence: 0.9 };
+    if (I && I.execute) { try { return I.execute(parsed, pack, { W: W }); } catch (_) { } }
+    if (!el) return { handled: true, honest: true, text: 'Не знаю — элемент не выделен и не распознан. Выделите точки в облаке и нажмите «Что это?».' };
+    var label = (C && C.TYPE_LABEL && (C.TYPE_LABEL[el.type] || el.type)) || el.type;
+    return { handled: true, honest: false, text: (el.title || label) + ' — тип: ' + label + (el.dims && el.dims.length ? '. Размеры: ' + el.dims.slice(0, 6).map(function (d) { return d.label + ' — ' + (d.text || d.value); }).join('; ') + '.' : '') };
+  }
+
   // лёгкая разметка ответа: **жирный**, `код`, списки «- » и «1. », абзацы
   function md(text) {
     var lines = esc(text).split(/\r?\n/), out = [], list = null;
@@ -121,6 +209,19 @@
         return Promise.resolve(X.ops.opAutoClean({ deep: th === 'deep', preset: { level: th === 'quick' ? 'soft' : th === 'deep' ? 'strong' : 'medium', people: o.people === 'off' ? 'off' : o.people === 'strict' ? 'strict' : 'normal', flatten: th !== 'quick', keepShape: !o.flatten, hair: th !== 'quick' } }))
           .then(function (r) { return r || { ok: false, message: 'Облако не изменено (нет открытого облака или идёт другая обработка).' }; });
       },
+      // r169: структурированный контекст приложения — для модели (промпт) и локальных ответов
+      appContext: function () { return appPack(); },
+      appContextBlock: function () { return promptBlock(); },
+      appContextCompact: function () { var C = AC(), p = appPack(); return C && p && C.compact ? C.compact(p) : null; },
+      selection: function () { var C = AC(); try { return C && C.selectionOf ? C.selectionOf(W) : null; } catch (_) { return null; } },
+      element: function () { return currentElement(); },
+      analyzeSelection: function () { var C = AC(); try { return C && C.analyzeSelection ? C.analyzeSelection(W) : null; } catch (_) { return null; } },
+      parseIntent: function (text) { return parseIntent(text); },
+      executeIntent: function (text) { var pack = appPack(); var p = parseIntent(text); if (!pack || !p) return null; return runIntent(p, pack, makeCtx()); },
+      explainSelection: function () { return explainSelection({}); },
+      explainInspector: function (el) { return explainInspector(el); },
+      modelSummary: function () { var C = AC(); try { return C && C.modelFrom ? C.modelFrom(W) : null; } catch (_) { return null; } },
+      checks: function () { var C = AC(); try { return C && C.inspectionFrom ? (C.inspectionFrom(W).checks || []) : []; } catch (_) { return []; } },
       picked: function () { var E = EI(), pk = state.picked; return pk && E ? Object.assign(E.toTool(pk.res, pk.cmp), { age_s: Math.round((Date.now() - pk.at) / 1000) }) : null; },
       hasPicked: function () { return !!(state.picked && state.picked.res && state.picked.res.ok); },
       pickedTitle: function () { return state.picked && state.picked.res ? state.picked.res.title : ''; },
@@ -262,12 +363,100 @@
     bot.appendChild(bar);
   }
 
-  // ------------------------------------------------------------------ r42: «Что это?» — щелчок по облаку
-  function viewer() { return W && W.__viewer; }
+  // ------------------------------------------------------------------ r42/r169: «Что это?» — щелчок по облаку
+  function viewer() { return (W && W.__viewer) || (W && W.__pcTools && W.__pcTools.viewer && W.__pcTools.viewer()) || null; }
   function getCloudArr() {
     var t = W && W.__pcTools, c = null; try { c = t && t.getCloud ? t.getCloud() : null; } catch (_) {}
-    if (!c) { var v = viewer(); try { c = v && v.getEditedCloud ? v.getEditedCloud() : null; } catch (_) {} }
-    return c && c.pos ? c : null;
+    if (!c || !c.pos || !c.pos.length) {
+      var v = viewer();
+      try { c = v && v.getEditedCloud ? v.getEditedCloud() : null; } catch (_) {}
+      // r169: потоковое/большое облако — getEditedCloud() намеренно null; берём буфер вьюера (sample),
+      // иначе «Что это?» ложно сообщал «Откройте облако точек».
+      if (!c || !c.pos || !c.pos.length) {
+        try {
+          var bo = v && v.base && v.base[0];
+          if (bo && bo.pos && bo.pos.length >= 3) c = { pos: bo.pos, col: bo.col || null, classification: bo.classification || (v._classificationLabels || null), count: bo.count || (bo.pos.length / 3), sample: true, source: 'viewer-sample' };
+        } catch (_) {}
+      }
+    }
+    return c && c.pos && c.pos.length ? c : null;
+  }
+
+  /** r169: «Что это?» по текущему выделению (если клик не нужен): auto-measure + классификатор + контекст.
+   *  Возвращает карточку-ответ; при готовой модели дополняет объяснением ИИ. */
+  function explainSelection(opts) {
+    opts = opts || {};
+    if (!W || !D) return Promise.resolve({ ok: false, error: 'нет окна' });
+    if (!isOpen()) open();
+    if (state.view !== 'chat') showView('chat');
+    var empty = P && P.list ? P.list.querySelector('.ai-empty') : null; if (empty) empty.remove();
+    var card = addMsg('bot', '<div class="ai-tools">' + toolChip({ name: 'auto_measure' }) + toolChip({ name: 'app_context' }) + '</div><div class="ai-text"><p class="ai-note">Определяю элемент по выделению…</p></div>', 'ai-pick');
+    var body = card.querySelector('.ai-text');
+    var C = AC(), el = null, err = null;
+    try { el = C && C.analyzeSelection ? C.analyzeSelection(W) : null; } catch (e) { err = e; }
+    if (!el) {
+      var pack0 = appPack();
+      var text0 = 'Не знаю — по выделению классификатор не смог определить элемент' + (err ? ' (' + err.message + ')' : '') + '. Выделите точки плотнее или щёлкните «Что это?» по поверхности.'
+        + (pack0 && pack0.selection && pack0.selection.active ? '\n\nВыделено точек: ' + pack0.selection.count + (pack0.selection.bbox ? ', габариты bbox ' + pack0.selection.bbox.size.map(function (v) { return v.toFixed(2); }).join(' × ') + ' м' : '') + '.' : '');
+      body.innerHTML = md(text0);
+      state.history.push({ role: 'assistant', content: text0 });
+      return Promise.resolve({ ok: false, error: 'not_classified' });
+    }
+    var pack = appPack() || { capabilities: {} };
+    pack = Object.assign({}, pack, { element: el, capabilities: Object.assign({}, pack.capabilities || {}, { element: true }) });
+    var local = null;
+    try { var I = AI(); local = I && I.execute ? I.execute({ intent: 'element.type', params: {}, raw: 'что это за элемент', confidence: 0.9 }, pack, { W: W }) : null; } catch (_) { local = null; }
+    var txt = local && local.text ? local.text : explainElementLocally(el).text;
+    body.innerHTML = md(txt);
+    try { if (W.__lxKit && W.__lxKit.hydrate) W.__lxKit.hydrate(body); } catch (_) {}
+    state.picked = { res: null, el: el, pack: pack, at: Date.now() };
+    state.history.push({ role: 'assistant', content: 'Элемент по выделению: ' + el.title + '. ' + (el.dims || []).slice(0, 4).map(function (d) { return d.label + ' — ' + (d.text || d.value); }).join('; ') });
+    // если локальная модель готова — дополняем тем же контекстом (структурированно), без выдумывания
+    if (ready() && opts.model !== false) {
+      var q = 'Что это за элемент по выделению? Дай краткий вывод по фактам: тип, главные размеры, что проверить. Если данных нет — скажи «не знаю».';
+      var ctx = makeCtx();
+      var BA = B();
+      if (BA && BA.runAgent) {
+        try {
+          BA.runAgent({ question: q + '\n\n' + promptBlock(pack), ctx: ctx, history: state.history.slice(-4), think: false, onEvent: function () {} }).then(function (out) {
+            if (out && out.text) {
+              var ex = D.createElement('div'); ex.className = 'ai-text ai-context-expl'; ex.innerHTML = md(out.text);
+              card.appendChild(ex);
+              state.history.push({ role: 'assistant', content: out.text });
+            }
+          }).catch(function () {});
+        } catch (_) {}
+      }
+    }
+    var acts = D.createElement('div'); acts.className = 'ai-sugg ai-pick-acts';
+    ['Что это и соответствует ли нормам и проекту?', 'Что проверить на месте?', 'Какая толщина?', 'Сколько материала на выравнивание?'].forEach(function (t) {
+      var b = D.createElement('button'); b.type = 'button'; b.className = 'ai-chip'; b.textContent = t; b.onclick = function () { ask(t); }; acts.appendChild(b);
+    });
+    card.appendChild(acts);
+    return Promise.resolve({ ok: true, element: el, text: txt });
+  }
+
+  /** r169: «Что это?» по элементу из инспектора/внешнего вызова (структура {title,type,dims,...} или AutoMeasure res). */
+  function explainInspector(elLike) {
+    var C = AC(), el = null;
+    if (elLike) {
+      if (elLike.main !== undefined || elLike.objects) el = C && C.elementFromAuto ? C.elementFromAuto(elLike) : null;
+      else if (elLike.kind || elLike.type) el = C && C.elementFromIdentify ? C.elementFromIdentify(elLike) : null;
+      else el = elLike;
+    }
+    if (!el) el = currentElement();
+    if (!W) return { ok: false, error: 'нет окна' };
+    if (!isOpen()) open();
+    var pack = appPack() || { capabilities: {} };
+    if (el) pack = Object.assign({}, pack, { element: el, capabilities: Object.assign({}, pack.capabilities || {}, { element: true }) });
+    var ans = explainElementLocally(el);
+    var card = addMsg('bot', '<div class="ai-tools">' + toolChip({ name: 'app_context' }) + (el ? toolChip({ name: 'auto_measure' }) : '') + '</div>' + md(ans.text), 'offline');
+    if (!el) {
+      var acts = D.createElement('div'); acts.className = 'ai-sugg';
+      var b = D.createElement('button'); b.type = 'button'; b.className = 'ai-chip'; b.textContent = 'Что это? — выбрать элемент'; b.onclick = function () { startPick(); };
+      acts.appendChild(b); card.appendChild(acts);
+    }
+    return { ok: !!el, text: ans.text, element: el, card: card };
   }
   function stopPick() { state.picking = false; if (W) { if (W.__bimPick) W.__bimPick.active = false; } if (D && D.body) D.body.classList.remove('ai-picking'); if (P && P.pickBtn) P.pickBtn.classList.remove('on'); D.removeEventListener('keydown', pickKey, true); }
   function pickKey(e) { if (e.key === 'Escape' && state.picking) { e.preventDefault(); e.stopPropagation(); stopPick(); toast('Выбор элемента отменён'); } }
@@ -300,6 +489,26 @@
     state.picked = { res: res, cmp: null, at: Date.now() };
     body.innerHTML = md(E.describe(res));
     highlight(res, cr);
+    // r169: второй классификатор — auto-measure по врезке (lead: «использует результат классификатора
+    // auto-measure/cloud-inspect»); тип/размеры уточняем, но карточку ElementIdentify не ломаем.
+    var autoRes = null;
+    try { if (W.AutoMeasure && W.AutoMeasure.analyze) autoRes = W.AutoMeasure.analyze(cr.pos, cr.pos.length / 3, { finish: state.finish || 'improved', focus: pt }); } catch (_) { autoRes = null; }
+    var C2 = AC(), autoEl = C2 && C2.elementFromAuto ? C2.elementFromAuto(autoRes) : null;
+    var identEl = C2 && C2.elementFromIdentify ? C2.elementFromIdentify(res) : null;
+    state.picked = state.picked || {};
+    // основной источник — ElementIdentify (он создан именно для щелчка); auto-measure дополняет.
+    state.picked.el = identEl || autoEl || null;
+    state.picked.auto = autoRes;
+    if (autoEl && identEl && autoEl.type !== identEl.type) {
+      // классификаторы разошлись: не выдаём один за другой, честно показываем оба варианта
+      try {
+        body.insertAdjacentHTML('beforeend', '<p class="ai-note">Auto-measure предложил «' + esc(autoEl.title) + '» (' + esc((C2.TYPE_LABEL && C2.TYPE_LABEL[autoEl.type]) || autoEl.type) + '), но карточка ElementIdentify увереннее («' + esc(identEl.title) + '»). Уточните выделением, если это не так.</p>');
+      } catch (_) {}
+    } else if (autoEl && autoRes && autoRes.ok) {
+      try {
+        body.insertAdjacentHTML('beforeend', '<p class="ai-note">Auto-measure: ' + esc(autoEl.title) + ' · тип ' + esc((C2.TYPE_LABEL && C2.TYPE_LABEL[autoEl.type]) || autoEl.type) + (autoEl.dims.length ? ' · размеров ' + autoEl.dims.length : '') + (autoEl.confidence != null ? ' · уверенность ' + Math.round(autoEl.confidence * 100) + '%' : '') + '</p>');
+      } catch (_) {}
+    }
     // поиск в документах пользователя и встроенной базе — именно по этому элементу
     var ctx = makeCtx(), hits = [], src = [];
     if (ctx.searchNorms && res.queries && res.queries.length) {
@@ -320,6 +529,27 @@
     card.appendChild(acts);
     state.history.push({ role: 'assistant', content: 'Выбран элемент: ' + res.title + '. ' + res.dims.slice(0, 4).map(function (d) { return d.label + ' — ' + d.text; }).join('; ') });
     P.list.scrollTop = P.list.scrollHeight;
+    // r169: если локальная модель готова — отправляем ей ПРАВИЛЬНО СОБРАННЫЙ контекст (элемент + облако +
+    // инспектор + выделение) и дописываем объяснение; офлайн остаётся карточка локального классификатора.
+    explainPickedViaModel(card, state.picked && state.picked.el);
+  }
+  function explainPickedViaModel(card, el) {
+    if (!ready() || !card || !W) return;
+    var BA = B(); if (!BA || !BA.runAgent) return;
+    var pack = appPack(); if (!pack) return;
+    if (el) pack = Object.assign({}, pack, { element: el, capabilities: Object.assign({}, pack.capabilities || {}, { element: true }) });
+    try {
+      BA.runAgent({
+        question: 'Что это за элемент и что важно проверить? Коротко, по фактам ниже; отсутствующие данные не выдумывай.\n\n' + promptBlock(pack),
+        ctx: makeCtx(), history: state.history.slice(-4), think: false, onEvent: function () {}
+      }).then(function (out) {
+        if (!out || !out.text) return;
+        var ex = D.createElement('div'); ex.className = 'ai-text ai-context-expl'; ex.innerHTML = md(out.text);
+        card.appendChild(ex);
+        state.history.push({ role: 'assistant', content: out.text });
+        if (P && P.list) P.list.scrollTop = P.list.scrollHeight;
+      }).catch(function () {});
+    } catch (_) {}
   }
   // подсветить найденный элемент на 4 с (точки области)
   function highlight(res, cr) {
@@ -404,12 +634,85 @@
     return '<span class="ai-tool' + (ev.action ? ' act' : '') + '">' + ic(ev.action ? 'sparkles' : 'search', 12) + esc(t) + '</span>';
   }
 
+  // r169: отрисовка ответа локального интент-парсера (факты из контекста, без модели)
+  function renderLocalIntentAnswer(ans, q) {
+    if (!ans || !P) return;
+    var tools = ans.tools || [];
+    var html = (tools.length ? '<div class="ai-tools">' + tools.map(function (n) { return toolChip({ name: n }); }).join('') + '</div>' : '') + md(ans.text || 'Нет данных.');
+    var card = addMsg('bot', html, 'offline' + (ans.honest ? ' ai-honest' : ''));
+    var acts = ans.actions || [];
+    if (acts.length) {
+      var box = D.createElement('div'); box.className = 'ai-sugg';
+      acts.forEach(function (a) {
+        var b = D.createElement('button'); b.type = 'button'; b.className = 'ai-chip'; b.textContent = a.label || a.kind;
+        b.onclick = function () { runAiAction(a); };
+        box.appendChild(b);
+      });
+      card.appendChild(box);
+    }
+    if (anyToolsFeedback()) { try { feedbackBar(card, q, ans.text || '', tools.map(function (n) { return { name: n }; })); } catch (_) {} }
+    state.history.push({ role: 'user', content: q }, { role: 'assistant', content: ans.text || '' });
+  }
+  function anyToolsFeedback() { return true; }
+  /** Выполнение безопасных действий из подсказок локального парсера/ответов. */
+  function runAiAction(a) {
+    if (!a || !W) return false;
+    var ctx = makeCtx();
+    if (a.kind === 'pick-element') { startPick(); return true; }
+    if (a.kind === 'analyze-selection') { explainSelection({}); return true; }
+    if (a.kind === 'open-inspection') {
+      try { var r = ctx.runCommand('cpInspect'); if (r && r.ok !== false) return true; } catch (_) {}
+      toast('Контроль геометрии: откройте «Инструменты» → «Контроль геометрии» или нажмите cpInspect', true); return false;
+    }
+    if (a.kind === 'open-norms') { try { showView('norms'); return true; } catch (_) {} return false; }
+    if (a.kind === 'open-docs') {
+      try {
+        var D2 = W.__lxScan2BIM && W.__lxScan2BIM.docs;
+        if (D2 && D2.open) { D2.open(); return true; }
+        if (W.__lxScan2BIM && W.__lxScan2BIM.open) { W.__lxScan2BIM.open(); return true; }
+      } catch (_) {}
+      toast('Документы доступны в «Скан → BIM» → «Документы»', true); return false;
+    }
+    if (a.kind === 'open-model') {
+      try { if (W.__lxScan2BIM && W.__lxScan2BIM.open) { W.__lxScan2BIM.open(); return true; } } catch (_) {}
+      return false;
+    }
+    if (a.kind === 'find') { if (W.__lxScan2BIM && W.__lxScan2BIM.open) { try { W.__lxScan2BIM.open(); } catch (_) {} } return true; }
+    return false;
+  }
+
   async function ask(text) {
     var q = String(text || '').trim(); if (!q || state.busy || !P) return;
     var empty = P.list.querySelector('.ai-empty'); if (empty) empty.remove();
     addMsg('user', esc(q).replace(/\n/g, '<br>'));
-    var BA = B(); if (!BA) { addMsg('bot', '<p>Модуль ассистента не загружен.</p>', 'err'); return; }
     var ctx = makeCtx();
+    // r169: (1) сначала понимаем намерение локально; (2) фактические вопросы отвечаем без модели по контексту;
+    //         (3) для остальных — отправляем модели структурированный контекст приложения.
+    //         Локальный парсер работает даже если модуль модели/API ещё не загружен.
+    ensureAiModules();
+    var r169pack = appPack();
+    var r169parsed = parseIntent(q);
+    var LOCAL_FIRST = { 'element.type': 1, 'element.measure': 1, 'selection.measure': 1, find: 1, 'checks.summary': 1, 'model.info': 1, 'project.info': 1, calculate: 1, 'unknown.meta': 1 };
+    if (r169parsed && r169parsed.intent !== 'unknown' && (!ready() || LOCAL_FIRST[r169parsed.intent])) {
+      var r169ans = runIntent(r169parsed, r169pack, ctx);
+      if (r169ans && r169ans.handled) {
+        renderLocalIntentAnswer(r169ans, q);
+        if (!ready()) return;
+        // модель готова, но ответ по фактам уже точный — дополнительно не спрашиваем (быстро и без выдумок)
+        return;
+      }
+      if (!ready() && r169ans) { renderLocalIntentAnswer(r169ans, q); return; }
+    }
+    var BA = B(); if (!BA) {
+      // даже без модуля ассистента локальный парсер обязан честно ответить и предложить действия
+      try {
+        var fb = null, Ip = AI();
+        var packNoBa = r169pack || appPack() || { capabilities: {} };
+        if (Ip && Ip.execute) fb = Ip.execute(r169parsed || { intent: 'unknown', params: {}, raw: q, confidence: 0.2 }, packNoBa, { W: W });
+        if (fb && fb.handled) { renderLocalIntentAnswer(fb, q); return; }
+      } catch (_) { }
+      addMsg('bot', '<p>Модуль ассистента не загружен.</p>', 'err'); return;
+    }
     if (!ready()) {
       var pa = BA.planAction ? BA.planAction(q, ctx) : null;
       if (pa) {
@@ -437,8 +740,14 @@
       setAttach(false);
     }
     try {
+      // r169: модель получает не только текст вопроса, но и структурированный контекст приложения
+      var qEnriched = q;
+      if (r169pack) {
+        qEnriched = q + '\n\n' + promptBlock(r169pack);
+        try { tools.insertAdjacentHTML('beforeend', toolChip({ name: 'app_context' })); } catch (_) {}
+      }
       var out = await BA.runAgent({
-        question: q, images: images, history: state.history, ctx: ctx, chat: chatViaIpc, signal: ac.signal, think: thinkPref == null ? undefined : thinkPref === '1',
+        question: qEnriched, images: images, history: state.history, ctx: ctx, chat: chatViaIpc, signal: ac.signal, think: thinkPref == null ? undefined : thinkPref === '1',
         onEvent: function (ev) {
           if (ev.type === 'tool_result' && ev.name === 'search_norms' && ev.result && ev.result._src) ev.result._src.forEach(function (x) { if (!sources.some(function (y) { return y.cite === x.cite; })) sources.push(x); });
           if (ev.type === 'tool') { tools.insertAdjacentHTML('beforeend', toolChip(ev)); }
@@ -463,7 +772,9 @@
     } catch (e) {
       if (e && (e.cancelled || e.message === 'cancelled')) body.innerHTML = '<p class="ai-note">Остановлено.</p>';
       else {
-        var off2 = BA.offlineAnswer(q, ctx);
+        var off2 = null;
+        try { off2 = localIntentAnswer(q, ctx); } catch (_) { off2 = null; }
+        if (!off2) off2 = BA.offlineAnswer(q, ctx);
         body.innerHTML = '<p class="ai-note">Модель не ответила (' + esc((e && e.message) || e) + ').' + (off2 && off2.text ? ' Ответ простого режима:' : '') + '</p>' + (off2 && off2.text ? md(off2.text) : '');
         refresh();
       }
@@ -819,7 +1130,37 @@
   if (D && D.addEventListener) D.addEventListener('keydown', function (e) {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyA') { e.preventDefault(); toggle(); }
   });
+  // r169: подгружаем контекст/интент-парсер сразу, не дожидаясь первого вопроса
+  try { ensureAiModules(); } catch (_) { }
+
+  // r169: мост для инспектора/других окон: «Что это?» → ИИ по элементу инспектора/выделению.
+  // Кнопки с data-ai="what-is"/data-ai-explain (если их добавит инспектор) и событие lx-ai-what-is
+  // открывают ответ в чате ассистента; сами чужие файлы не правим.
+  if (W) {
+    try {
+      W.__lxAiWhatIs = function (elLike) { return explainInspector(elLike); };
+      W.addEventListener('lx-ai-what-is', function (e) {
+        try { explainInspector(e && e.detail && (e.detail.element || e.detail.auto || e.detail.res) || null); } catch (_) {}
+      });
+    } catch (_) {}
+  }
+  if (D && D.addEventListener) D.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('[data-ai="what-is"],[data-ai-explain],#lxAskWhatIs') : null;
+    if (!b) return;
+    e.preventDefault();
+    try {
+      var elLike = null;
+      var st = W && W.__lxObjectInspector && W.__lxObjectInspector.state;
+      if (st && st.auto && st.auto.res) elLike = st.auto.res;
+      explainInspector(elLike);
+    } catch (_) {}
+  }, true);
 
   return { open: open, close: close, toggle: toggle, isOpen: isOpen, ask: function (q) { open(); return ask(q); }, clear: clear, refresh: refresh, norms: function () { open(); showView('norms'); },
-    memory: function () { open(); showView('mem'); }, pick: function () { open(); startPick(); }, _md: md, _ctx: makeCtx, _onPicked: onPicked, _state: function () { return state; } };
+    memory: function () { open(); showView('mem'); }, pick: function () { open(); startPick(); },
+    explainSelection: explainSelection, explainInspector: explainInspector, explainElement: explainInspector,
+    appContext: function () { return appPack(); }, appContextBlock: function () { return promptBlock(); },
+    parseIntent: parseIntent, executeIntent: function (q) { var pack = appPack(), p = parseIntent(q); return pack && p ? runIntent(p, pack, makeCtx()) : null; },
+    runAiAction: runAiAction, _md: md, _ctx: makeCtx, _onPicked: onPicked, _state: function () { return state; },
+    _appPack: appPack, _promptBlock: promptBlock, _localIntentAnswer: localIntentAnswer };
 });

@@ -165,7 +165,14 @@
   // Ревизия 17: облако больше 48 млн точек (читается частями) правится, чистится, классифицируется и сохраняется «большими» методами viewer
   // (webgl-viewer-big.js) по сегментам памяти: плоских массивов у него нет, но все функции работают и ничего не прореживается.
   const isBigCloud = () => !!(viewer && typeof viewer.isBigCloud === 'function' && viewer.isBigCloud());
-  const hasCloudArrays = () => { if (isBigCloud()) return true; const c = (viewer && viewer.getEditedCloud) ? viewer.getEditedCloud() : null; return !!(c && c.pos && c.pos.length); };
+  const hasCloudArrays = () => {
+    if (isBigCloud()) return true;
+    const c = (viewer && viewer.getEditedCloud) ? viewer.getEditedCloud() : null;
+    if (c && c.pos && c.pos.length) return true;
+    // r169: потоковое облако тоже «открыто» — есть выборка в буфере viewer (bo.pos), хотя getEditedCloud() = null
+    const bo = viewer && viewer.base && viewer.base[0];
+    return !!(bo && bo.pos && bo.pos.length >= 3);
+  };
   // Плоские массивы для инструментов, которым они нужны (3DGS): у «большого» облака — равномерная выборка из всех точек.
   const flatCloudForTool = async () => {
     if (isBigCloud()) {
@@ -3723,8 +3730,28 @@
       geomCloudReady: geomCloudReady,
       api: () => API,
       viewer: () => viewer,
-      getCloud: () => (viewer && viewer.getEditedCloud) ? viewer.getEditedCloud() : null,
-      getSourceCloud: () => (viewer && viewer.getSourceCloud) ? viewer.getSourceCloud() : ((viewer && viewer.getEditedCloud) ? viewer.getEditedCloud() : null),
+      // r169: для большого/потокового облака getEditedCloud() намеренно возвращает null (плоских массивов нет),
+      // из-за чего «Что это?» в инспекторе считал, что облако не открыто. Для инспектора/ИИ отдаём
+      // равномерную выборку из потокового буфера (bo.pos), а не null.
+      getCloud: () => {
+        let c = null;
+        try { c = (viewer && viewer.getEditedCloud) ? viewer.getEditedCloud() : null; } catch (_) {}
+        if (c && c.pos && c.pos.length) return c;
+        try {
+          const bo = viewer && viewer.base && viewer.base[0];
+          if (bo && bo.pos && bo.pos.length >= 3) {
+            return { pos: bo.pos, col: bo.col || null,
+              intensity: viewer._intensityValues || null,
+              classification: viewer._classificationLabels || null,
+              count: bo.pos.length / 3, sample: true, source: 'viewer-sample' };
+          }
+        } catch (_) {}
+        return null;
+      },
+      getSourceCloud: () => {
+        try { const c = viewer && viewer.getSourceCloud ? viewer.getSourceCloud() : null; if (c && c.pos && c.pos.length) return c; } catch (_) {}
+        try { return window.__pcTools.getCloud(); } catch (_) { return null; }
+      },
       isOctreeStreamActive: () => !!(viewer && viewer.octreeActive && viewer.octreeActive()),
       getSourceTransform: () => viewer && viewer._srcXform ? { axis: viewer._srcXform.axis, t: viewer._srcXform.t.slice() } : null,
       getSourceCrs: () => viewer && viewer._srcCrs || null,

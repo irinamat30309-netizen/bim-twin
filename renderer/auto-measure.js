@@ -1613,10 +1613,11 @@
   var KIND_ROLES = {
     'проём': ['opening'], 'дверь': ['opening'], 'окно': ['opening'],
     'труба': ['pipe'], 'воздуховод': ['pipe'],
-    'стена': ['wall', 'room-width'], 'перекрытие': ['slab'], 'пол': ['slab', 'room-height'], 'потолок': ['slab', 'room-height'],
-    'колонна': ['pipe', 'wall', 'slab'], 'балка': ['wall', 'slab'], 'лоток': ['tray', 'wall', 'slab'], 'оборудование': null
+    'стена': ['wall', 'room-width'], 'перекрытие': ['slab', 'floor', 'ceiling'], 'пол': ['floor', 'slab', 'room-height'], 'потолок': ['ceiling', 'slab', 'room-height'],
+    'колонна': ['column', 'pipe', 'wall', 'slab'], 'балка': ['beam', 'wall', 'slab'], 'лоток': ['tray', 'wall', 'slab'], 'оборудование': null
   };
   function roleOf(ob) {
+    if (ob.clsRole) return ob.clsRole;   // r169: роль от классификатора (стена/колонна/балка/труба/пол…)
     if (ob.type === 'opening') return 'opening';
     if (ob.type === 'cylinder' || ob.type === 'pipes' || ob.type === 'duct') return 'pipe';
     var k = ob.dims && ob.dims[0] && ob.dims[0].key;
@@ -1665,6 +1666,7 @@
   }
   function outlineOf(ob, ctx) {
     var out = [], k, j;
+    if (ob.clsOutline && ob.clsOutline.length >= 2) return ob.clsOutline.slice();   // r169: контур от классификатора
     if (ob.cylinder) {
       var c = ob.cylinder, bs = planeBasis(c.a), A = add(c.c, mul(c.a, c.t0)), B = add(c.c, mul(c.a, c.t1));
       out.push(A, B);
@@ -1766,10 +1768,743 @@
     return cnt;
   }
 
+  /* =====================================================================================
+   * r169. КЛАССИФИКАТОР ВЫДЕЛЕННОГО ФРАГМЕНТА.
+   *
+   * Зачем. До r169 тип элемента брался из готовых находок (открытия/цилиндры/плоскости), а
+   * «главным» становился объект с наибольшим рангом. У цилиндра ранг был выше всех, поэтому
+   * на выделении колонны/стены/балки главной оказывалась «Труба Ø…», а размеры считались по
+   * подгонке окружности. Здесь тип определяется ДО выбора главного: строятся гипотезы
+   *   • плоскость  — стена/перегородка (вертикальная), пол/потолок (по положению),
+   *                  перекрытие/панель (пара параллельных граней или наклонная грань);
+   *   • коробка    — колонна (вертикальная, квадратное сечение), балка (горизонтальная),
+   *                  лоток (низкий открытый профиль) по граням вдоль 3 ортогональных осей;
+   *   • цилиндр    — труба (ось преимущественно горизонтальная) или круглая колонна
+   *                  (вертикальная ось): 3D-подгонка оси/радиуса по всем точкам;
+   *   • проём      — существующий детектор проёмов (по откосам или дыре в стене);
+   *   • ребро/угол — линейное облако (одно измерение много больше других), запасной вариант.
+   * У каждой гипотезы есть доля объяснённых точек (inlier), СКО подгонки, размеры и σ.
+   * Выбор — по score = приор типа × качество подгонки × доля объяснённых точек; вероятности
+   * top-3 считаются softmax по score. classify() — чистые функции без DOM (Node/окно).
+   * ===================================================================================== */
+  var CLS_DEF = {
+    wall: { ru: 'Стена', family: 'panel', role: 'wall' },
+    floor: { ru: 'Пол', family: 'panel', role: 'floor' },
+    ceiling: { ru: 'Потолок', family: 'panel', role: 'ceiling' },
+    slab: { ru: 'Перекрытие', family: 'panel', role: 'slab' },
+    panel: { ru: 'Панель', family: 'panel', role: 'other' },
+    column: { ru: 'Колонна', family: 'box', role: 'column' },
+    beam: { ru: 'Балка', family: 'box', role: 'beam' },
+    tray: { ru: 'Лоток', family: 'box', role: 'tray' },
+    pipe: { ru: 'Труба', family: 'pipe', role: 'pipe' },
+    opening: { ru: 'Проём', family: 'opening', role: 'opening' },
+    edge: { ru: 'Ребро/угол', family: 'edge', role: 'edge' }
+  };
+  var CLS_PRIOR = { wall: 1.00, floor: 0.82, ceiling: 0.74, slab: 0.88, panel: 0.56, column: 1.02, beam: 1.00, tray: 0.92, pipe: 1.06, opening: 1.08, edge: 0.42 };
+  var CLS_T = 0.14;   // температура вероятностей
+
+  function _clsClamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function _clsCentroid(P, ids) {
+    var sx = 0, sy = 0, sz = 0, i, q;
+    if (!ids) return [0, 0, 0];
+    for (i = 0; i < ids.length; i++) { q = ids[i] * 3; sx += P[q]; sy += P[q + 1]; sz += P[q + 2]; }
+    var m = ids.length || 1;
+    return [sx / m, sy / m, sz / m];
+  }
+  /* Проекция точки/массива на ось. ids == null — все n точек. */
+  function _clsProj(P, n, dir, ids) {
+    var out = new Float64Array(ids ? ids.length : n), i, q;
+    if (ids) for (i = 0; i < ids.length; i++) { q = ids[i] * 3; out[i] = P[q] * dir[0] + P[q + 1] * dir[1] + P[q + 2] * dir[2]; }
+    else for (i = 0; i < n; i++) { q = i * 3; out[i] = P[q] * dir[0] + P[q + 1] * dir[1] + P[q + 2] * dir[2]; }
+    return out;
+  }
+  /* min/max/размер вдоль оси; ids == null — все точки. */
+  function _clsExtend(P, n, dir, ids) {
+    var lo = Infinity, hi = -Infinity, i, q, v;
+    if (ids) for (i = 0; i < ids.length; i++) { q = ids[i] * 3; v = P[q] * dir[0] + P[q + 1] * dir[1] + P[q + 2] * dir[2]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    else for (i = 0; i < n; i++) { q = i * 3; v = P[q] * dir[0] + P[q + 1] * dir[1] + P[q + 2] * dir[2]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    return { lo: lo, hi: hi, size: hi - lo, mid: 0.5 * (lo + hi) };
+  }
+  function _clsYRange(P, n) {
+    var lo = Infinity, hi = -Infinity, i;
+    for (i = 0; i < n; i++) { var y = P[i * 3 + 1]; if (y < lo) lo = y; if (y > hi) hi = y; }
+    return { min: lo, max: hi, size: hi - lo };
+  }
+  /* Пики 1D-гистограммы: позиции граней/плоскостей. Без сканирования всех точек на пик.
+     minRatio — во сколько раз плотность в пике должна превышать локальный фон: у равномерного
+     распределения вдоль ребра (±шум) пиков быть не должно, у грани/плоскости — должны. */
+  function _clsPeaks(vals, minCount, binw, minSep, minRatio) {
+    minRatio = minRatio || 1.0;
+    var m = vals.length, i;
+    if (m < 8) return [];
+    var lo = Infinity, hi = -Infinity;
+    for (i = 0; i < m; i++) { var v = vals[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    if (!(hi - lo > 1e-5)) return [];
+    binw = Math.max(binw, (hi - lo) / 5000);
+    var nb = Math.min(4000, Math.max(10, Math.ceil((hi - lo) / binw) + 5));
+    var base = lo - 2 * binw, hist = new Float64Array(nb);
+    for (i = 0; i < m; i++) { var k = Math.floor((vals[i] - base) / binw); if (k < 0) k = 0; if (k >= nb) k = nb - 1; hist[k]++; }
+    var sm = new Float64Array(nb);
+    for (i = 0; i < nb; i++) {
+      var s = 0;
+      for (var d = -2; d <= 2; d++) { var j = i + d; if (j < 0 || j >= nb) continue; s += hist[j] * (d === 0 ? 3 : (d === -1 || d === 1 ? 2 : 1)); }
+      sm[i] = s;
+    }
+    var cand = [];
+    for (i = 2; i < nb - 2; i++) {
+      if (!(sm[i] >= sm[i - 1] && sm[i] > sm[i + 1] && sm[i] > 1.5)) continue;
+      var c0 = Math.max(0, i - 2), c1 = Math.min(nb - 1, i + 2), cnt = 0, wsum = 0, wpos = 0;
+      for (var j2 = c0; j2 <= c1; j2++) { cnt += hist[j2]; wsum += hist[j2]; wpos += hist[j2] * (base + (j2 + 0.5) * binw); }
+      if (cnt < minCount) continue;
+      // локальный фон: медиана занятых бинов в окне ±6·5 бинов, исключая сам пик
+      var bg = [], sp = Math.max(6, 3 * (c1 - c0));
+      for (var j3 = Math.max(0, i - sp); j3 <= Math.min(nb - 1, i + sp); j3++) if (j3 < c0 - 1 || j3 > c1 + 1) bg.push(hist[j3]);
+      var baseDen = bg.length ? median(bg) : 0;
+      if (minRatio > 1.01 && baseDen > 0 && cnt / (baseDen * (c1 - c0 + 1) * 1) < minRatio) continue;
+      cand.push({ pos: wsum ? wpos / wsum : base + (i + 0.5) * binw, count: cnt, sm: sm[i] });
+    }
+    cand.sort(function (a, b) { return b.count - a.count || a.pos - b.pos; });
+    var out = [];
+    for (i = 0; i < cand.length; i++) {
+      var ok = true;
+      for (var q = 0; q < out.length; q++) if (Math.abs(cand[i].pos - out[q].pos) < minSep) { ok = false; break; }
+      if (ok) out.push(cand[i]);
+    }
+    out.sort(function (a, b) { return a.pos - b.pos; });
+    return out;
+  }
+  /* Уточнение положения грани: медиана координат точек в узком окне вокруг предварительного пика.
+     У настоящей грани все точки лежат на ней (±шум) — медиана даёт миллиметровую точность. */
+  function _clsRefineFace(P, n, axis, pos, win) {
+    var vals = [];
+    for (var i = 0; i < n; i++) {
+      var q = i * 3, v = P[q] * axis[0] + P[q + 1] * axis[1] + P[q + 2] * axis[2];
+      if (Math.abs(v - pos) <= win) vals.push(v);
+    }
+    if (vals.length < 20) return pos;
+    return median(vals);
+  }
+  /* Габариты грани в её осях (u,v). Коридор плоскости ограничен габаритом куска (по ids) с
+     запасом на ячейку растра (возвращаем точки, потерянные раскубировкой патчей), а сами
+     габариты считаем по ЦЕНТРАЛЬНОЙ полосе второй оси: так чужая поверхность (пол/соседняя
+     стена), задевающая грань по краю, не растягивает размер. */
+  function _clsPlaneExtent(P, n, pl, tol) {
+    var i, q, mg = Math.max(0.006, 1.5 * (pl.cs || 0.02), 3 * tol);
+    var bu0 = Infinity, bu1 = -Infinity, bv0 = Infinity, bv1 = -Infinity;
+    for (i = 0; i < pl.ids.length; i++) {
+      q = pl.ids[i] * 3;
+      var pu0 = P[q] * pl.u[0] + P[q + 1] * pl.u[1] + P[q + 2] * pl.u[2];
+      var pv0 = P[q] * pl.v[0] + P[q + 1] * pl.v[1] + P[q + 2] * pl.v[2];
+      if (pu0 < bu0) bu0 = pu0; if (pu0 > bu1) bu1 = pu0;
+      if (pv0 < bv0) bv0 = pv0; if (pv0 > bv1) bv1 = pv0;
+    }
+    if (!isFinite(bu0)) return null;
+    var uLo = bu0 - mg, uHi = bu1 + mg, vLo = bv0 - mg, vHi = bv1 + mg;
+    var uBand = 0.10 * (bu1 - bu0), vBand = 0.10 * (bv1 - bv0);
+    var u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (i = 0; i < n; i++) {
+      q = i * 3;
+      var res = pl.n[0] * P[q] + pl.n[1] * P[q + 1] + pl.n[2] * P[q + 2] - pl.d;
+      if (res > tol || res < -tol) continue;
+      var pu = P[q] * pl.u[0] + P[q + 1] * pl.u[1] + P[q + 2] * pl.u[2];
+      if (pu < uLo || pu > uHi) continue;
+      var pv = P[q] * pl.v[0] + P[q + 1] * pl.v[1] + P[q + 2] * pl.v[2];
+      if (pv < vLo || pv > vHi) continue;
+      if (pv >= bv0 + vBand && pv <= bv1 - vBand) { if (pu < u0) u0 = pu; if (pu > u1) u1 = pu; }
+      if (pu >= bu0 + uBand && pu <= bu1 - uBand) { if (pv < v0) v0 = pv; if (pv > v1) v1 = pv; }
+    }
+    if (!isFinite(u0)) { u0 = bu0; u1 = bu1; }
+    if (!isFinite(v0)) { v0 = bv0; v1 = bv1; }
+    return { u: { lo: u0, hi: u1, size: u1 - u0, mid: 0.5 * (u0 + u1) }, v: { lo: v0, hi: v1, size: v1 - v0, mid: 0.5 * (v0 + v1) } };
+  }
+
+  /* Ось по ковариации локальных нормалей: у цилиндра нормали ⟂ оси, т.е. ось — наименьшее
+     собственное направление. Плоские участки (плоскости) в оценку НЕ берём: иначе у рамки
+     «труба + потолок» нормали потолка задавят нормали трубы и ось будет неверной. */
+  function _clsAxisFromNormals(ln, flat) {
+    var i, q, nx, ny, nz;
+    function collect(skipFlat) {
+      var xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0, m = 0;
+      for (i = 0; i < ln.m; i++) {
+        if (ln.L0[i] < 0 || ln.K[i] < 10) continue;
+        if (skipFlat && flat && flat[i]) continue;
+        q = i * 3; nx = ln.N[q]; ny = ln.N[q + 1]; nz = ln.N[q + 2];
+        xx += nx * nx; xy += nx * ny; xz += nx * nz; yy += ny * ny; yz += ny * nz; zz += nz * nz; m++;
+      }
+      return { xx: xx, xy: xy, xz: xz, yy: yy, yz: yz, zz: zz, m: m };
+    }
+    var acc = collect(true);
+    if (acc.m < 40) acc = collect(false);   // большая труба/колонна: локальные пятна ещё «плоские»
+    if (acc.m < 40) return null;
+    var e = eig3([acc.xx / acc.m, acc.xy / acc.m, acc.xz / acc.m, acc.yy / acc.m, acc.yz / acc.m, acc.zz / acc.m]);
+    return { axis: e.vectors[0], iso: e.values[1] > 1e-9 ? e.values[0] / e.values[1] : 0, m: acc.m };
+  }
+
+  /* ---------- Гипотеза «плоскость»: стена / пол / потолок / перекрытие / панель ---------- */
+  function _clsPlaneHyps(S, surfaces, ctx) {
+    var P = S.P, n = S.n, out = [], yR = _clsYRange(P, n);
+    var minPts = Math.max(150, Math.round(0.08 * n));
+    var big = [], i, lim = Math.min(surfaces.length, 40);
+    for (i = 0; i < lim && big.length < 10; i++) {
+      var sf = surfaces[i];
+      if (sf.count >= minPts && sf.minW >= 0.12 && sf.area >= 0.03) big.push(sf);
+    }
+    if (!big.length) return out;
+    var used = {}, tol = Math.max(2.5 * (S.noise || 0.001), 1.2 * (S.spacing || 0.01), 0.004);
+    var sigExt = Math.max(S.spacing || 0.01, 2 * (S.noise || 0.001), 0.002);
+    big.forEach(function (A) {
+      if (used[A.id]) return;
+      var step = Math.max(1, Math.floor(n / 40000)), cnt = 0, tot = 0;
+      for (var k = 0; k < n; k += step) { tot++; var q = k * 3; if (Math.abs(A.n[0] * P[q] + A.n[1] * P[q + 1] + A.n[2] * P[q + 2] - A.d) <= tol) cnt++; }
+      var cover = tot ? cnt / tot : 0;
+      if (cover < 0.15) return;
+      // вторая параллельная грань (толщина) — по совпадению «следа»
+      var partner = null, pinfo = null;
+      for (var j = 0; j < big.length; j++) {
+        var B = big[j];
+        if (B.id === A.id || used[B.id]) continue;
+        var pi = null;
+        try { pi = pairInfo(A, B, P); } catch (e) { pi = null; }
+        if (pi && pi.gap != null && pi.gap >= 0.02 && pi.gap <= 0.9 && pi.iou >= 0.18) { partner = B; pinfo = pi; break; }
+      }
+      var pe = _clsPlaneExtent(P, n, A, tol);
+      var eu = pe ? pe.u : _clsExtend(P, n, A.u, A.ids), ev = pe ? pe.v : _clsExtend(P, n, A.v, A.ids);
+      var dims = [], notes = [], type;
+      if (A.kind === 'V') {
+        type = 'wall';
+        var cA = A.c;
+        if (partner && pinfo) {
+          used[A.id] = used[partner.id] = 1;
+          var th = pinfo.gap, thSig = gapSigma(pinfo), thConf = pairConfidence(pinfo, A, partner);
+          dims.push(makeDim({ key: 'wall-thickness', dimension: 'thickness', label: 'Толщина стены', value: th, sigma: thSig, method: 'planes', how: 'две грани (плоскости)', confidence: thConf, a: pinfo.a, b: pinfo.b, evidence: { pointsA: A.count, pointsB: partner.count, rmsA: A.rms, rmsB: partner.rms } }));
+        } else {
+          used[A.id] = 1;
+          notes.push('Видна только одна грань стены — толщина не измеряется; нужна вторая грань в выделении.');
+        }
+        var mU = 0.5 * (eu.lo + eu.hi), mV = 0.5 * (ev.lo + ev.hi);
+        dims.push(makeDim({ key: 'wall-length', dimension: 'length', label: 'Длина стены (видимый участок)', value: eu.size, sigma: sigExt, method: 'extent', how: 'по грани стены', confidence: clamp(Math.min(0.62, 0.35 + 0.5 * Math.min(1, cover)), 0.15, 0.7), a: add(cA, mul(A.u, -0.5 * eu.size)), b: add(cA, mul(A.u, 0.5 * eu.size)), notes: ['Края — границы видимого участка грани, а не обязательно торцы стены.'] }));
+        dims.push(makeDim({ key: 'wall-height', dimension: 'height', label: 'Высота стены (видимый участок)', value: ev.size, sigma: sigExt, method: 'extent', how: 'по грани стены', confidence: clamp(Math.min(0.60, 0.35 + 0.5 * Math.min(1, cover)), 0.15, 0.68), a: add(cA, mul(A.v, -0.5 * ev.size)), b: add(cA, mul(A.v, 0.5 * ev.size)) }));
+        if (thConf != null && thConf < 0.5) notes.push('Пара граней совпадает лишь частично — толщину проверьте вручную.');
+      } else if (A.kind === 'H') {
+        var up = A.n[1] >= 0 ? A.n : mul(A.n, -1);
+        var hgt = up[0] * A.c[0] + up[1] * A.c[1] + up[2] * A.c[2];
+        var rel = (hgt - yR.min) / Math.max(1e-6, yR.size || 1e-6);
+        if (partner && partner.kind === 'H' && pinfo && pinfo.gap >= 0.03 && pinfo.gap <= 0.9) {
+          type = 'slab'; used[A.id] = used[partner.id] = 1;
+          var sth = pinfo.gap, sSig = gapSigma(pinfo), sConf = pairConfidence(pinfo, A, partner);
+          dims.push(makeDim({ key: 'slab-thickness', dimension: 'thickness', label: 'Толщина плиты/перекрытия', value: sth, sigma: sSig, method: 'planes', how: 'две горизонтальные грани', confidence: sConf, a: pinfo.a, b: pinfo.b }));
+        } else {
+          type = (yR.size < 0.12) ? (up[1] >= 0 ? 'floor' : 'ceiling') : (rel <= 0.22 ? 'floor' : rel >= 0.78 ? 'ceiling' : 'slab');
+          used[A.id] = 1;
+          if (cover < 0.45) return;   // фоновая плоскость, а не объект в рамке
+        }
+      } else { type = 'panel'; used[A.id] = 1; }
+      var qFac = clamp(1 - A.rms / (0.006 + 2 * (S.noise || 0.001)), 0, 1);
+      var score = (CLS_PRIOR[type] || 0.6) * (0.28 + 0.72 * Math.min(1, cover / 0.8)) * (0.55 + 0.45 * qFac);
+      if ((type === 'floor' || type === 'ceiling') && cover < 0.55) score *= 0.7;
+      out.push({
+        type: type, shape: 'plane', score: score, rms: A.rms, inlier: cover, center: [A.c[0], A.c[1], A.c[2]],
+        points: Math.round(cover * n), dims: dims, notes: notes, planes: [A.id, partner ? partner.id : null],
+        planeKind: A.kind, normal: A.n, axes: { u: A.u, v: A.v }, ext: { u: eu, v: ev }
+      });
+    });
+    return out;
+  }
+
+  /* ---------- Гипотеза «прямоугольная коробка»: колонна / балка / лоток ---------- */
+  function _clsBoxHyp(S, surfaces, ctx) {
+    var P = S.P, n = S.n, sp = Math.max(S.spacing || 0.01, 0.004), yR = _clsYRange(P, n);
+    var hs = [];
+    function addH(nv) {
+      var l = Math.hypot(nv[0], nv[2]);
+      if (l < 0.1) return;
+      var h = [nv[0] / l, 0, nv[2] / l];
+      for (var i = 0; i < hs.length; i++) if (angleBetween(hs[i], h) < 6 * DEG) return;
+      hs.push(h);
+    }
+    surfaces.forEach(function (sf) { if (sf.kind === 'V' && sf.count >= Math.max(50, 0.02 * n)) addH(sf.n); });
+    (S.dirs || []).forEach(function (d) { if (Math.abs(d.dir[1]) < 0.5) addH(d.dir); });
+    addH([1, 0, 0]); addH([0, 0, 1]);
+    var minCnt = Math.max(50, Math.round(0.008 * n));
+    var binw = Math.max(2.4 * sp, 0.0035), minSep = Math.max(0.03, 3.5 * sp);
+    var tol = Math.max(3 * sp, 3 * (S.noise || 0.001), 0.005);
+    var best = null;
+    hs.forEach(function (h1) {
+      var h2 = unit(cross(UP, h1)), axes = [h1, h2, UP];
+      var pks = axes.map(function (ax) { return _clsPeaks(_clsProj(P, n, ax), minCnt, binw, minSep, 1.45); });
+      var faces = [], faceInfo = [], refWin = Math.max(0.006, 1.4 * sp, 8 * (S.noise || 0.001));
+      for (var ai = 0; ai < 3; ai++) {
+        var cand = pks[ai].slice().sort(function (a, b) { return b.count - a.count || a.pos - b.pos; });
+        var chosen = [];
+        if (cand.length) {
+          chosen.push(cand[0]);
+          for (var cj = 1; cj < cand.length; cj++) {
+            if (Math.abs(cand[cj].pos - chosen[0].pos) >= Math.max(minSep, 1.5 * binw)) { chosen.push(cand[cj]); break; }
+          }
+        }
+        // уточняем позиции граней по всем точкам в узком окне
+        chosen = chosen.map(function (f) { return { pos: _clsRefineFace(P, n, axes[ai], f.pos, refWin), count: f.count, axis: ai }; });
+        if (chosen.length >= 2) {
+          var s0 = Math.min(chosen[0].pos, chosen[1].pos), s1 = Math.max(chosen[0].pos, chosen[1].pos);
+          faceInfo[ai] = { pair: true, size: s1 - s0 };
+          faces.push({ axis: ai, pos: s0, count: chosen[0].count }, { axis: ai, pos: s1, count: chosen[1].count });
+        } else if (chosen.length === 1) {
+          faceInfo[ai] = { pair: false, size: null };
+          faces.push({ axis: ai, pos: chosen[0].pos, count: chosen[0].count });
+        }
+      }
+      var nPairs = 0, nAxis = 0;
+      for (var ai2 = 0; ai2 < 3; ai2++) { if (!faceInfo[ai2]) continue; nAxis++; if (faceInfo[ai2].pair) nPairs++; }
+      if (faces.length < 3 || nPairs < 1) return;
+      // какая доля точек лежит на найденных гранях
+      var explained = 0, ss = 0;
+      for (var i2 = 0; i2 < n; i2++) {
+        var q2 = i2 * 3, bd = Infinity;
+        for (var f = 0; f < faces.length; f++) {
+          var ax2 = axes[faces[f].axis], dd = Math.abs(P[q2] * ax2[0] + P[q2 + 1] * ax2[1] + P[q2 + 2] * ax2[2] - faces[f].pos);
+          if (dd < bd) bd = dd;
+        }
+        if (bd <= tol) { explained++; ss += bd * bd; }
+      }
+      var cover = explained / n;
+      if (cover < 0.42 || explained < 80) return;
+      var rms = Math.sqrt(ss / explained);
+      var qFac = clamp(1 - rms / (0.008 + 3 * (S.noise || 0.001)), 0, 1);
+      var ext = axes.map(function (ax) { return _clsExtend(P, n, ax); });
+      var hExt = [ext[0].size, ext[1].size], vExt = ext[2].size;
+      // высоту точнее брать по боковым граням: их рёбра идут точно вдоль вертикали
+      // (шум «гуляет» по нормали, а не по высоте), а точки снизу/сверху добавляют выбросы
+      var yLo = Infinity, yHi = -Infinity, yCnt = 0;
+      for (var iy = 0; iy < n; iy++) {
+        var qy = iy * 3, bdy = Infinity, side = false;
+        for (var fy = 0; fy < faces.length; fy++) {
+          var axy = axes[faces[fy].axis], dy = Math.abs(P[qy] * axy[0] + P[qy + 1] * axy[1] + P[qy + 2] * axy[2] - faces[fy].pos);
+          if (dy < bdy) { bdy = dy; side = faces[fy].axis !== 2; }
+        }
+        if (bdy <= tol && side) { var yy = P[qy + 1]; if (yy < yLo) yLo = yy; if (yy > yHi) yHi = yy; yCnt++; }
+      }
+      var vExtSide = (yCnt >= 60 && (yHi - yLo) > 0.1) ? (yHi - yLo) : vExt;
+      var longA = hExt[0] >= hExt[1] ? 0 : 1, longSize = Math.max(hExt[0], hExt[1]), crossSize = Math.min(hExt[0], hExt[1]);
+      var type, dims = [], notes = [];
+      if (vExt >= 0.45 && vExt >= 0.75 * longSize) type = 'column';
+      else if (longSize >= 0.6 && longSize >= 1.8 * Math.max(vExt, crossSize)) type = (vExt <= 0.35 && hExt[longA] >= 0.5) ? 'tray' : 'beam';
+      else return;
+      var pairSize = function (axIdx) { var fi = faceInfo[axIdx]; return fi && fi.pair ? fi.size : null; };
+      var crossA0 = 1 - longA;
+      // правдоподобие габаритов по типу: «балка 3.3×3.0 м» — это ниша/угол, а не балка
+      if (type === 'column') {
+        var cw0 = pairSize(0) != null ? pairSize(0) : hExt[0], cd0 = pairSize(1) != null ? pairSize(1) : hExt[1];
+        if (cw0 > 1.60 || cd0 > 1.60 || cw0 < 0.05 || cd0 < 0.05 || vExtSide < 0.45) return;
+      } else {
+        var bw0 = pairSize(crossA0) != null ? pairSize(crossA0) : hExt[crossA0];
+        var limW = type === 'tray' ? 1.30 : 1.60, limH = type === 'tray' ? 0.90 : 1.60;
+        if (bw0 > limW || bw0 < 0.02 || vExtSide > limH || hExt[longA] < 0.5) return;
+      }
+      var sigF = Math.max(0.5 * sp, S.noise || 0.001, 0.0006);
+      var sigExt = Math.max(sp, 2 * (S.noise || 0.001), 0.002);
+      var cen = _clsCentroid(P, null);
+      // центр по объяснённым точкам точнее (нужен для контура/фокуса)
+      var sx = 0, sy = 0, sz = 0, ce = 0;
+      for (var i3 = 0; i3 < n; i3++) {
+        var q3 = i3 * 3, bd3 = Infinity;
+        for (var f3 = 0; f3 < faces.length; f3++) { var ax3 = axes[faces[f3].axis], d3 = Math.abs(P[q3] * ax3[0] + P[q3 + 1] * ax3[1] + P[q3 + 2] * ax3[2] - faces[f3].pos); if (d3 < bd3) bd3 = d3; }
+        if (bd3 <= tol) { sx += P[q3]; sy += P[q3 + 1]; sz += P[q3 + 2]; ce++; }
+      }
+      if (ce > 30) cen = [sx / ce, sy / ce, sz / ce];
+      // размеры: у коробки две горизонтальные оси; если на оси пара граней — сечение точное
+      var secA = pairSize(0), secB = pairSize(1);
+      var columnW = secA != null ? secA : hExt[0];
+      var columnD = secB != null ? secB : hExt[1];
+      var crossA = 1 - longA;
+      if (type === 'column') {
+        dims.push(makeDim({ key: 'column-width', dimension: 'width', label: 'Ширина колонны (сечение)', value: columnW, sigma: secA != null ? sigF : sigExt, method: secA != null ? 'planes' : 'extent', how: secA != null ? 'две боковые грани' : 'по габариту (грань не видна)', confidence: secA != null ? 0.85 : 0.35 }));
+        dims.push(makeDim({ key: 'column-depth', dimension: 'depth', label: 'Глубина колонны (сечение)', value: columnD, sigma: secB != null ? sigF : sigExt, method: secB != null ? 'planes' : 'extent', how: secB != null ? 'две боковые грани' : 'по габариту (грань не видна)', confidence: secB != null ? 0.85 : 0.35 }));
+        dims.push(makeDim({ key: 'column-height', dimension: 'height', label: 'Высота колонны (видимый участок)', value: vExtSide, sigma: sigExt, method: 'extent', how: 'по боковым граням', confidence: 0.62, a: add(cen, mul(UP, -0.5 * vExtSide)), b: add(cen, mul(UP, 0.5 * vExtSide)), notes: ['Края — границы выделения, а не обязательно торцы колонны.'] }));
+        notes.push('Квадратное/прямоугольное сечение: ' + Math.round(1000 * columnW) + '×' + Math.round(1000 * columnD) + ' мм по ' + (nPairs >= 2 ? 'двум парам граней' : 'видимым граням') + '.');
+      } else {
+        var width = pairSize(crossA) != null ? pairSize(crossA) : hExt[crossA];
+        var hgt = vExtSide;
+        var len = hExt[longA];
+        var widthKey = type === 'tray' ? 'tray-width' : 'beam-width';
+        var heightKey = type === 'tray' ? 'tray-height' : 'beam-height';
+        var lengthKey = type === 'tray' ? 'tray-length' : 'beam-length';
+        dims.push(makeDim({ key: widthKey, dimension: 'width', label: (type === 'tray' ? 'Ширина лотка' : 'Ширина балки') + ' (сечение)', value: width, sigma: pairSize(crossA) != null ? sigF : sigExt, method: pairSize(crossA) != null ? 'planes' : 'extent', how: pairSize(crossA) != null ? 'две грани сечения' : 'по габариту', confidence: pairSize(crossA) != null ? 0.82 : 0.35 }));
+        dims.push(makeDim({ key: heightKey, dimension: 'height', label: (type === 'tray' ? 'Высота лотка' : 'Высота балки') + ' (сечение)', value: hgt, sigma: sigExt, method: 'extent', how: 'по боковым граням', confidence: 0.62 }));
+        dims.push(makeDim({ key: lengthKey, dimension: 'length', label: (type === 'tray' ? 'Длина лотка' : 'Длина балки') + ' (видимый участок)', value: len, sigma: sigExt, method: 'extent', how: 'по видимой части', confidence: 0.6, a: add(cen, mul(axes[longA], -0.5 * len)), b: add(cen, mul(axes[longA], 0.5 * len)), notes: ['Края — границы видимого участка, не обязательно торцы.'] }));
+        notes.push('Открытые/невидимые грани: ' + (3 - nPairs) + ' из 6 — сечение по видимым граням.');
+      }
+      var score = (CLS_PRIOR[type] || 0.9) * (0.42 + 0.58 * Math.min(1, cover / 0.85)) * (0.55 + 0.45 * qFac) * (1 - 0.10 * (2 - Math.min(2, nPairs)));
+      var hyp = {
+        type: type, shape: 'box', score: score, rms: rms, inlier: cover, center: cen, points: explained,
+        dims: dims, notes: notes, axes: axes, sizes: { h: hExt, v: vExtSide }, facePairs: nPairs, faces: faces.length
+      };
+      if (!best || hyp.score > best.score) best = hyp;
+    });
+    return best;
+  }
+
+  /* ---------- Гипотеза «угол из двух смежных граней»: частично видимая колонна ----------
+     Часто в рамку попадают только 1–2 грани колонны (остальные закрыты или вне кадра).
+     Две смежные узкие вертикальные грани с общей вертикальной осью — это сечение колонны;
+     для стен такой угол шире и его отбрасывает ограничение по ширине. */
+  function _clsCornerHyp(S, surfaces, ctx) {
+    var P = S.P, n = S.n, vs = [], i, j, best = null;
+    surfaces.forEach(function (sf) { if (sf.kind === 'V' && sf.count >= Math.max(80, 0.02 * n)) vs.push(sf); });
+    if (vs.length < 2) return null;
+    var cosMax = Math.cos(70 * DEG);
+    for (i = 0; i < Math.min(vs.length, 8); i++) for (j = i + 1; j < Math.min(vs.length, 8); j++) {
+      var A = vs[i], B = vs[j];
+      if (Math.abs(dot(A.n, B.n)) > cosMax) continue;             // грани должны быть «смежными», не параллельными
+      var peA = _clsPlaneExtent(P, n, A, Math.max(3 * (S.noise || 0.001), 1.5 * (S.spacing || 0.01), 0.004));
+      var peB = _clsPlaneExtent(P, n, B, Math.max(3 * (S.noise || 0.001), 1.5 * (S.spacing || 0.01), 0.004));
+      var euA = peA ? peA.u : _clsExtend(P, n, A.u, A.ids), evA = peA ? peA.v : _clsExtend(P, n, A.v, A.ids);
+      var euB = peB ? peB.u : _clsExtend(P, n, B.u, B.ids), evB = peB ? peB.v : _clsExtend(P, n, B.v, B.ids);
+      var wA = euA.size, wB = euB.size, hA = evA.size, hB = evB.size;
+      if (!(wA >= 0.10 && wA <= 1.40 && wB >= 0.10 && wB <= 1.40)) continue;   // стены — шире
+      if (Math.min(hA, hB) < 0.35) continue;
+      var hExt = Math.max(hA, hB), wMax = Math.max(wA, wB);
+      if (hExt < 1.1 * wMax) continue;                              // колонна выше, чем шире
+      // куски должны примыкать друг к другу (общая вертикальная ось угла)
+      var dmin = Infinity, stp = Math.max(1, Math.floor(A.ids.length / 200));
+      for (var k = 0; k < A.ids.length; k += stp) {
+        var q = A.ids[k] * 3, dd = distPointPatch(B, [P[q], P[q + 1], P[q + 2]]);
+        if (dd < dmin) dmin = dd;
+      }
+      if (!(dmin <= Math.max(0.12, 4 * (S.spacing || 0.01)))) continue;
+      // общая линия угла должна быть подтверждена точками (у цилиндра «угол» из хорд —
+      // фикция: на линии пересечения плоскостей-хорд точек нет)
+      var edgeTol = Math.max(2 * (S.spacing || 0.01), 3 * (S.noise || 0.001), 0.004);
+      var edgeNeed = Math.max(20, Math.round(0.004 * n));
+      var edgeCnt = 0;
+      for (var k2 = 0; k2 < n; k2++) {
+        var q2 = k2 * 3;
+        var rA = Math.abs(A.n[0] * P[q2] + A.n[1] * P[q2 + 1] + A.n[2] * P[q2 + 2] - A.d);
+        if (rA > edgeTol) continue;
+        var rB = Math.abs(B.n[0] * P[q2] + B.n[1] * P[q2 + 1] + B.n[2] * P[q2 + 2] - B.d);
+        if (rB <= edgeTol) { edgeCnt++; if (edgeCnt >= edgeNeed) break; }
+      }
+      if (edgeCnt < edgeNeed) continue;
+      var cover = (A.count + B.count) / n;
+      if (cover < 0.18) continue;
+      var wDif = Math.abs(wA - wB) / Math.max(1e-6, wMax);
+      var rms = Math.max(A.rms, B.rms);
+      var qFac = clamp(1 - rms / (0.006 + 2 * (S.noise || 0.001)), 0, 1);
+      var score = CLS_PRIOR.column * (0.55 + 0.45 * Math.min(1, cover / 0.45)) * (1 - 0.20 * Math.min(1, wDif)) * (0.6 + 0.4 * qFac);
+      if (best && score <= best.score) continue;
+      var sig = Math.max(0.5 * (S.spacing || 0.01), S.noise || 0.001, 0.0008);
+      var mg = [A.c[0], A.c[1], A.c[2]];
+      var dims = [
+        makeDim({ key: 'column-width', dimension: 'width', label: 'Ширина колонны (видимая грань)', value: wA, sigma: sig, method: 'extent', how: 'по видимой грани', confidence: 0.55, a: add(mg, mul(A.u, -0.5 * wA)), b: add(mg, mul(A.u, 0.5 * wA)) }),
+        makeDim({ key: 'column-depth', dimension: 'depth', label: 'Глубина колонны (вторая грань)', value: wB, sigma: sig, method: 'extent', how: 'по второй видимой грани', confidence: wDif < 0.2 ? 0.55 : 0.35, a: add([B.c[0], B.c[1], B.c[2]], mul(B.u, -0.5 * wB)), b: add([B.c[0], B.c[1], B.c[2]], mul(B.u, 0.5 * wB)) }),
+        makeDim({ key: 'column-height', dimension: 'height', label: 'Высота колонны (видимый участок)', value: hExt, sigma: Math.max(S.spacing || 0.01, 2 * (S.noise || 0.001), 0.002), method: 'extent', how: 'по граням', confidence: 0.55, a: add(mg, mul(UP, -0.5 * hExt)), b: add(mg, mul(UP, 0.5 * hExt)), notes: ['Края — границы выделения, не обязательно торцы колонны.'] })
+      ];
+      best = {
+        type: 'column', shape: 'corner', score: score, rms: rms, inlier: cover, center: mg, points: A.count + B.count,
+        dims: dims, notes: ['Видны две смежные грани — сечение колонны по видимым граням; для полного сечения обведите все грани.'], corner: { A: A.id, B: B.id }
+      };
+    }
+    return best;
+  }
+
+  /* ---------- Гипотеза «цилиндр»: труба / круглая колонна ---------- */
+  function _clsCylHyp(S, ctx) {
+    var P = S.P, n = S.n, sp = Math.max(S.spacing || 0.01, 0.004);
+    var axInfo = _clsAxisFromNormals(S.ln, S.flat);
+    if (!axInfo) return null;
+    var axis = axInfo.axis;
+    var step = Math.max(1, Math.floor(n / 30000)), ids = [];
+    for (var i = 0; i < n; i += step) ids.push(i);
+    if (ids.length < 400) return null;
+    var c0 = _clsCentroid(P, ids);
+    var dist = new Float64Array(ids.length), dmax = 0, k;
+    for (k = 0; k < ids.length; k++) {
+      var q = ids[k] * 3, wx = P[q] - c0[0], wy = P[q + 1] - c0[1], wz = P[q + 2] - c0[2], t = wx * axis[0] + wy * axis[1] + wz * axis[2];
+      var rx = wx - t * axis[0], ry = wy - t * axis[1], rz = wz - t * axis[2], d = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      dist[k] = d; if (d > dmax) dmax = d;
+    }
+    if (!(dmax > 0.02)) return null;
+    var rPeaks = _clsPeaks(dist, Math.max(12, Math.round(0.01 * ids.length)), Math.max(2 * sp, 0.004), Math.max(0.03, 3 * sp));
+    var r0 = rPeaks.length ? rPeaks[0].pos : dmax * 0.5;
+    if (!(r0 > 0.008 && r0 < 3)) return null;
+    var fit = null;
+    try { fit = fitCylinder3D(P, ids, ids.length, axis, c0, r0); } catch (e) { fit = null; }
+    if (!fit || !(fit.r > 0.008) || fit.r > 5) return null;
+    // метрики по всем точкам
+    var tol = Math.max(3 * sp, 4 * (S.noise || 0.001), 0.006);
+    var bs = planeBasis(fit.a), bins = new Int32Array(36), explained = 0, ss = 0, tmin = Infinity, tmax = -Infinity, rads = [];
+    for (i = 0; i < n; i++) {
+      q = i * 3; wx = P[q] - fit.c[0]; wy = P[q + 1] - fit.c[1]; wz = P[q + 2] - fit.c[2];
+      var tt = wx * fit.a[0] + wy * fit.a[1] + wz * fit.a[2];
+      var qx = wx - tt * fit.a[0], qy = wy - tt * fit.a[1], qz = wz - tt * fit.a[2];
+      var dd = Math.sqrt(qx * qx + qy * qy + qz * qz), res = Math.abs(dd - fit.r);
+      if (res > tol) continue;
+      explained++; ss += res * res; rads.push(dd);
+      if (tt < tmin) tmin = tt; if (tt > tmax) tmax = tt;
+      var ang = Math.atan2(qx * bs.v[0] + qy * bs.v[1] + qz * bs.v[2], qx * bs.u[0] + qy * bs.u[1] + qz * bs.u[2]);
+      var bi = Math.floor((ang + Math.PI) / (2 * Math.PI) * 36); if (bi < 0) bi = 0; if (bi > 35) bi = 35; bins[bi]++;
+    }
+    var cover = explained / n;
+    if (explained < 250 || cover < 0.04) return null;
+    var rms = Math.sqrt(ss / Math.max(1, explained)), relRms = rms / fit.r;
+    if (relRms > 0.10) return null;   // квадратная колонна/стена: окружность не описывает точки
+    var occ = 0; for (k = 0; k < 36; k++) if (bins[k] >= 2) occ++;
+    var arc = occ * 10, length = tmax - tmin;
+    if (arc < 80 || length < 0.03) return null;
+    var qFac = clamp(1 - relRms / 0.07, 0, 1), arcFac = 0.55 + 0.45 * Math.min(1, arc / 300);
+    var vertical = Math.abs(fit.a[1]) >= 0.75;
+    var type = (vertical && fit.r >= 0.07 && length >= 0.4) ? 'column' : 'pipe';
+    var sigR = Math.sqrt(Math.pow(0.5 * (S.noise || 0.001), 2) + Math.pow(0.3 * rms, 2) + Math.pow(SIGMA_SYS, 2));
+    if (fit.cov) { try { sigR = Math.sqrt(Math.max(sigR * sigR, 6 * Math.max(0, fit.cov[4][4]) * rms * rms + Math.pow(0.3 * rms, 2) + SIGMA_SYS * SIGMA_SYS)); } catch (e2) { } }
+    var dims = [], notes = [], d2 = 2 * fit.r;
+    if (type === 'column') {
+      dims.push(makeDim({ key: 'diameter', dimension: 'diameter', label: 'Диаметр круглой колонны', value: d2, sigma: 2 * sigR, method: 'fit', how: 'по окружности (наружный)', confidence: clamp(0.55 + 0.4 * qFac * Math.min(1, arc / 300), 0.2, 0.95), a: add(fit.c, mul(bs.u, -fit.r)), b: add(fit.c, mul(bs.u, fit.r)) }));
+      dims.push(makeDim({ key: 'column-height', dimension: 'height', label: 'Высота колонны (видимый участок)', value: length, sigma: Math.max(sp, 2 * (S.noise || 0.001), 0.002), method: 'extent', how: 'по видимой части оси', confidence: 0.6, a: add(fit.c, mul(fit.a, tmin)), b: add(fit.c, mul(fit.a, tmax)), notes: ['Края — границы выделения, не обязательно торцы.'] }));
+      notes.push('Круглое сечение: точки лежат на окружности (СКО ' + (1000 * rms).toFixed(1) + ' мм).');
+    } else {
+      dims.push(makeDim({ key: 'diameter', dimension: 'diameter', label: 'Диаметр трубы', value: d2, sigma: 2 * sigR, method: 'fit', how: 'по окружности (наружный)', confidence: clamp(0.55 + 0.4 * qFac * Math.min(1, arc / 300), 0.2, 0.95), a: add(fit.c, mul(bs.u, -fit.r)), b: add(fit.c, mul(bs.u, fit.r)) }));
+      if (length >= 0.2) dims.push(makeDim({ key: 'length', dimension: 'length', label: 'Видимая длина трубы', value: length, sigma: Math.max(sp, 2 * (S.noise || 0.001), 0.002), method: 'extent', how: 'по видимой части оси', confidence: 0.45, a: add(fit.c, mul(fit.a, tmin)), b: add(fit.c, mul(fit.a, tmax)), notes: ['Длина — видимый участок, ограничен выделением.'] }));
+      if (arc < 200) notes.push('Видна часть окружности (' + arc + '°) — диаметр менее надёжен.');
+    }
+    var score = (CLS_PRIOR[type] || 1) * (0.30 + 0.70 * Math.min(1, cover / 0.55)) * (0.45 + 0.55 * qFac) * arcFac;
+    return {
+      type: type, shape: 'cylinder', score: score, rms: rms, inlier: cover, center: add(fit.c, mul(fit.a, 0.5 * (tmin + tmax))),
+      points: explained, dims: dims, notes: notes, cylinder: { a: fit.a, c: fit.c, r: fit.r, sigmaR: sigR, rms: rms, count: explained, arc: arc, t0: tmin, t1: tmax, length: length, basis: bs },
+      relRms: relRms, arc: arc, length: length
+    };
+  }
+
+  /* ---------- Гипотеза «проём» (используем существующий детектор) ---------- */
+  function _clsOpeningHyps(ctx, evidence) {
+    var objs = evidence && evidence.openings;
+    if (!objs) {
+      objs = [];
+      try {
+        var ops = findOpenings(ctx).map(function (op) { var ob = openingObject(op, ctx); ob.raw = op; return ob; });
+        objs = dedupeOpenings(ops);
+      } catch (e) { objs = []; }
+      if (!objs.length) { try { holeOpenings(ctx).forEach(function (ho) { objs.push(holeObject(ho, ctx)); }); } catch (e2) { } }
+    }
+    var out = [];
+    (objs || []).forEach(function (ob) {
+      var dims = ob.dims || [], width = null, height = null, conf = 0.5;
+      dims.forEach(function (d) {
+        if (d.confidence > conf) conf = d.confidence;
+        if (d.key === 'width') width = d.value;
+        if (d.key === 'height') height = d.value;
+      });
+      // отбраковка вырожденных «проёмов» на гранях колонн/стен (ширина = толщине и т.п.)
+      if (!(width >= 0.55 && width <= 5.0)) return;
+      if (height != null && !(height >= 0.8 && height <= 4.5)) return;
+      var score = (CLS_PRIOR.opening || 1) * (0.55 + 0.45 * conf);
+      out.push({ type: 'opening', shape: 'opening', score: score, rms: null, inlier: 1, center: ob.center || [0, 0, 0], points: ob.pointsUsed || 0, dims: dims, notes: ob.notes || [], openingObj: ob });
+    });
+    return out;
+  }
+
+  /* ---------- Гипотеза «ребро/угол»: облако линейное (одно измерение много больше) ---------- */
+  function _clsEdgeHyp(S) {
+    var P = S.P, n = S.n;
+    if (n < 300) return null;
+    var cx = 0, cy = 0, cz = 0, i;
+    for (i = 0; i < n; i++) { cx += P[i * 3]; cy += P[i * 3 + 1]; cz += P[i * 3 + 2]; }
+    cx /= n; cy /= n; cz /= n;
+    var xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0;
+    for (i = 0; i < n; i++) { var ax = P[i * 3] - cx, ay = P[i * 3 + 1] - cy, az = P[i * 3 + 2] - cz; xx += ax * ax; xy += ax * ay; xz += ax * az; yy += ay * ay; yz += ay * az; zz += az * az; }
+    var e = eig3([xx / n, xy / n, xz / n, yy / n, yz / n, zz / n]);
+    var l0 = Math.sqrt(Math.max(0, e.values[0])), l1 = Math.sqrt(Math.max(0, e.values[1])), l2 = Math.sqrt(Math.max(0, e.values[2]));
+    if (!(l2 > 0.10 && l2 > 3.5 * l1 && l1 < 0.6 * l2)) return null;
+    var ext = _clsExtend(P, n, e.vectors[2]);
+    return { type: 'edge', shape: 'edge', score: CLS_PRIOR.edge * (0.3 + 0.5 * Math.min(1, (l2 - 3.5 * l1) / l2)), rms: l1, inlier: 1, center: [cx, cy, cz], points: n, dims: [makeDim({ key: 'edge-length', dimension: 'length', label: 'Длина ребра (видимый участок)', value: ext.size, sigma: Math.max(S.spacing || 0.01, 2 * (S.noise || 0.001), 0.002), method: 'extent', how: 'по линейному облаку', confidence: 0.4, a: [cx + e.vectors[2][0] * ext.lo, cy + e.vectors[2][1] * ext.lo, cz + e.vectors[2][2] * ext.lo], b: [cx + e.vectors[2][0] * ext.hi, cy + e.vectors[2][1] * ext.hi, cz + e.vectors[2][2] * ext.hi] })], notes: ['Облако вытянуто в линию: это может быть ребро/стык, а не отдельный элемент.'] };
+  }
+
+  function _clsRuTitle(hyp) {
+    var d = {};
+    (hyp.dims || []).forEach(function (x) { d[x.key] = x.value; });
+    var mm = function (v) { return Math.round(1000 * v); };
+    switch (hyp.type) {
+      case 'wall':
+        return 'Стена' + (d['wall-thickness'] != null ? ' ' + mm(d['wall-thickness']) + ' мм' : '') + (d['wall-length'] != null ? ' · ' + d['wall-length'].toFixed(2) + ' м' : '') + (d['wall-height'] != null ? ' × ' + d['wall-height'].toFixed(2) + ' м' : '');
+      case 'column':
+        if (d['column-width'] != null) return 'Колонна ' + mm(d['column-width']) + '×' + mm(d['column-depth'] || d['column-width']) + ' мм' + (d['column-height'] != null ? ' · H ' + d['column-height'].toFixed(2) + ' м' : '');
+        return 'Колонна' + (d.diameter != null ? ' Ø' + mm(d.diameter) + ' мм' : '') + (d['column-height'] != null ? ' · H ' + d['column-height'].toFixed(2) + ' м' : '');
+      case 'beam': return 'Балка ' + (d['beam-width'] != null ? mm(d['beam-width']) : '?') + '×' + (d['beam-height'] != null ? mm(d['beam-height']) : '?') + ' мм' + (d['beam-length'] != null ? ' · L ' + d['beam-length'].toFixed(2) + ' м' : '');
+      case 'tray': return 'Лоток ' + (d['tray-width'] != null ? mm(d['tray-width']) : '?') + '×' + (d['tray-height'] != null ? mm(d['tray-height']) : '?') + ' мм';
+      case 'pipe': return 'Труба' + (d.diameter != null ? ' Ø' + mm(d.diameter) + ' мм' : '') + (d.length != null ? ' · ' + d.length.toFixed(2) + ' м' : '');
+      case 'opening': return (hyp.openingObj && hyp.openingObj.title) || 'Проём';
+      case 'floor': return 'Пол (плоскость)';
+      case 'ceiling': return 'Потолок (плоскость)';
+      case 'slab': return 'Перекрытие/плита' + (d['slab-thickness'] != null ? ' ' + mm(d['slab-thickness']) + ' мм' : '');
+      case 'panel': return 'Панель/плоскость';
+      case 'edge': return 'Ребро/угол' + (d['edge-length'] != null ? ' ' + d['edge-length'].toFixed(2) + ' м' : '');
+      default: return CLS_DEF[hyp.type] ? CLS_DEF[hyp.type].ru : 'объект';
+    }
+  }
+  /* Контур для показа на облаке: рамка стены/грани или рёбра коробки (пары точек). */
+  function _clsOutline(hyp) {
+    var out = [], k, j, q;
+    var c = hyp.center || [0, 0, 0];
+    if (hyp.shape === 'plane' && hyp.ext && hyp.axes) {
+      var u = hyp.axes.u, v = hyp.axes.v, eu = hyp.ext.u, ev = hyp.ext.v;
+      var mu = eu.mid, mv = ev.mid;
+      // центр куска в координатах осей
+      var pc = mul(u, mu), qv = mul(v, mv);
+      var cs = [];
+      [[eu.lo, ev.lo], [eu.hi, ev.lo], [eu.hi, ev.hi], [eu.lo, ev.hi]].forEach(function (uv) { cs.push(add(add(mul(u, uv[0]), mul(v, uv[1])), [c[0], c[1], c[2]])); });
+      for (k = 0; k < 4; k++) { out.push(cs[k], cs[(k + 1) % 4]); }
+    } else if (hyp.shape === 'box' && hyp.axes && hyp.sizes) {
+      var ax = hyp.axes, hs = hyp.sizes.h, vs = hyp.sizes.v;
+      var half = [0.5 * hs[0], 0.5 * hs[1], 0.5 * vs];
+      var corners = [];
+      for (k = 0; k < 8; k++) {
+        var sg = [k & 1 ? 1 : -1, k & 2 ? 1 : -1, k & 4 ? 1 : -1];
+        corners.push(add(add(add(c, mul(ax[0], sg[0] * half[0])), mul(ax[1], sg[1] * half[1])), mul(UP, sg[2] * half[2])));
+      }
+      var edges = [[0, 1], [1, 3], [3, 2], [2, 0], [4, 5], [5, 7], [7, 6], [6, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+      edges.forEach(function (e) { out.push(corners[e[0]], corners[e[1]]); });
+    } else if (hyp.shape === 'cylinder' || hyp.shape === 'opening' || hyp.shape === 'edge') {
+      (hyp.dims || []).forEach(function (d) { if (d.a && d.b) out.push(d.a, d.b); });
+    }
+    return out;
+  }
+  function _clsMakeObject(hyp) {
+    if (!hyp || !hyp.dims || !hyp.dims.length) return null;
+    var def = CLS_DEF[hyp.type] || CLS_DEF.panel;
+    var obType = hyp.type === 'wall' ? 'wall' : (hyp.type === 'column' || hyp.type === 'beam' || hyp.type === 'tray') ? 'column' : (hyp.type === 'pipe') ? 'cylinder' : (hyp.type === 'opening') ? 'opening' : 'plane';
+    if (hyp.type === 'column' && hyp.shape === 'cylinder') obType = 'column';
+    if (hyp.type === 'beam') obType = 'beam';
+    if (hyp.type === 'tray') obType = 'tray';
+    var ob = {
+      type: obType, clsType: hyp.type, title: _clsRuTitle(hyp), dims: hyp.dims, notes: (hyp.notes || []).slice(),
+      center: hyp.center, pointsUsed: hyp.points, score: Math.min(1.25, 0.55 + 0.65 * (hyp.prob || 0.6)),
+      family: def.family, clsRole: def.role, clsShape: hyp.shape, clsOutline: _clsOutline(hyp)
+    };
+    if (hyp.shape === 'cylinder') ob.cylinder = hyp.cylinder;
+    if (hyp.type === 'opening' && hyp.openingObj) { ob.type = 'opening'; ob.raw = hyp.openingObj.raw; }
+    return ob;
+  }
+
+  /* Вероятности top-3: softmax по score + фоновая «не уверен», чтобы не выдавать 100 %.
+     Гипотезы одного типа (например, колонна-коробка и колонна-угол) агрегируются: в top-3
+     попадают РАЗНЫЕ типы, а их вероятности складываются. */
+  function _clsProbabilities(hyps) {
+    if (!hyps.length) return null;
+    hyps.sort(function (a, b) { return b.score - a.score; });
+    var groups = {}, types = [];
+    hyps.forEach(function (h) {
+      if (!groups[h.type]) { groups[h.type] = { type: h.type, best: h, score: h.score, count: 0, prob: 0, rms: h.rms, inlier: h.inlier, title: h.title }; types.push(groups[h.type]); }
+      var g = groups[h.type];
+      g.count++;
+      g.prob += 1;
+      if (h.score > g.score) { g.score = h.score; g.best = h; g.rms = h.rms; g.inlier = h.inlier; g.title = h.title; }
+    });
+    types.sort(function (a, b) { return b.score - a.score; });
+    var maxS = types[0].score, sum = 0, i;
+    for (i = 0; i < types.length; i++) { types[i]._e = Math.exp((types[i].score - maxS) / CLS_T); sum += types[i]._e; }
+    var bg = Math.exp((0.30 - maxS) / CLS_T), tot = sum + bg;
+    for (i = 0; i < types.length; i++) types[i].prob = types[i]._e / tot;
+    // каждой гипотезе — вероятность её типа
+    hyps.forEach(function (h) { var g = groups[h.type]; h.prob = g.prob; });
+    types[0].best.prob = types[0].prob;
+    var probs = types.slice(0, 3).map(function (g) {
+      return { type: g.type, kind: (CLS_DEF[g.type] || {}).ru || g.type, probability: g.prob, score: +g.score.toFixed(4), rms: g.rms != null ? +g.rms.toFixed(5) : null, inlier: +(g.inlier || 0).toFixed(3), title: g.title || null, shapes: g.count };
+    });
+    return { type: types[0].type, confidence: types[0].prob, probabilities: probs, otherProbability: bg / tot, groups: groups, types: types };
+  }
+
+  /* Ядро классификации: S — подготовленное облако, surfaces — куски плоскостей,
+     ctx — {P,S,surfaces,floor,c0}, opts.evidence — уже найденные объекты (в analyze). */
+  function classifyCore(S, surfaces, ctx, opts) {
+    opts = opts || {};
+    var t0 = Date.now(), ev = opts.evidence || {}, hyps = [];
+    function add(h) { if (h) { if (h.type && !h.title) h.title = _clsRuTitle(h); hyps.push(h); } }
+    try { _clsPlaneHyps(S, surfaces, ctx).forEach(add); } catch (e1) { }
+    try { add(_clsBoxHyp(S, surfaces, ctx)); } catch (e2) { }
+    try { add(_clsCornerHyp(S, surfaces, ctx)); } catch (e6) { }
+    var cylHyp = null;
+    try { cylHyp = _clsCylHyp(S, ctx); add(cylHyp); } catch (e3) { }
+    try { _clsOpeningHyps(ctx, ev).forEach(add); } catch (e4) { }
+    try { add(_clsEdgeHyp(S)); } catch (e5) { }
+    if (!hyps.length) return null;
+    // сильный проём «объясняет» свои же откосы/перемычку/пол лучше, чем коробка/угол из них:
+    // дверная ниша — это не «балка» и не «колонна», поэтому таким гипотезам понижаем score
+    var strongOpening = null;
+    hyps.forEach(function (h) {
+      if (h.type !== 'opening') return;
+      var wConf = 0;
+      (h.dims || []).forEach(function (d) { if (d.key === 'width' && d.method === 'planes' && d.confidence > wConf) wConf = d.confidence; });
+      if (wConf >= 0.70 && (!strongOpening || h.score > strongOpening.score)) strongOpening = h;
+    });
+    if (strongOpening) {
+      hyps.forEach(function (h) { if (h.shape === 'box' || h.shape === 'corner') h.score *= 0.62; });
+    }
+    // dedupe: один тип/форма — несколько почти одинаковых гипотез оставляем лучшую
+    var keep = [];
+    hyps.sort(function (a, b) { return b.score - a.score; });
+    hyps.forEach(function (h) {
+      for (var i = 0; i < keep.length; i++) {
+        var k = keep[i];
+        if (k.type !== h.type || k.shape !== h.shape) continue;
+        var dd = len(sub(k.center, h.center));
+        if (k.shape === 'cylinder' && k.cylinder && h.cylinder && len(sub(k.cylinder.c, h.cylinder.c)) > 0.5) continue;
+        if (dd < 0.35 || (k.type === h.type && k.shape === 'plane' && dd < 0.6)) return;
+      }
+      keep.push(h);
+    });
+    var prob = _clsProbabilities(keep);
+    if (!prob) return null;
+    var best = prob.types[0].best;
+    best.prob = prob.probabilities[0].probability;
+    var obj = _clsMakeObject(best);
+    var cylValid = !!(cylHyp && cylHyp.relRms <= 0.07 && cylHyp.arc >= 160 && cylHyp.points >= 250);
+    return {
+      ok: true, type: best.type, kind: (CLS_DEF[best.type] || {}).ru || best.type,
+      family: (CLS_DEF[best.type] || {}).family || 'panel', role: (CLS_DEF[best.type] || {}).role || 'other',
+      confidence: prob.confidence, probabilities: prob.probabilities, otherProbability: prob.otherProbability,
+      title: best.title, dims: best.dims, notes: best.notes || [], object: obj,
+      hypotheses: keep.slice(0, 6).map(function (h) { return { type: h.type, kind: (CLS_DEF[h.type] || {}).ru || h.type, shape: h.shape, score: +h.score.toFixed(4), probability: +h.prob.toFixed(4), rms: h.rms != null ? +h.rms.toFixed(5) : null, inlier: +(h.inlier || 0).toFixed(3), points: h.points || 0 }; }),
+      info: { points: S.n, spacing: S.spacing, noise: S.noise, surfaces: surfaces.length, ms: Date.now() - t0, cylinderValid: cylValid, cylinderRelRms: cylHyp ? +cylHyp.relRms.toFixed(4) : null, cylinderArc: cylHyp ? cylHyp.arc : null }
+    };
+  }
+
+  /* Публичный вход: pos — Float32Array/Float64Array/Array x,y,z…; opts.kind/focus не обязательны. */
+  function classify(pos, opts) {
+    opts = opts || {};
+    try {
+      var pre = prepare(pos, opts.maxPoints || 200000);
+      if (pre.n < 300) return { ok: false, error: 'В выделении слишком мало точек (' + Math.floor(pos.length / 3) + ') для классификации.', info: { points: Math.floor(pos.length / 3) } };
+      var S = detectSurfaces(pre, opts), surfaces = buildSurfaces(S, opts);
+      S.surfaces = surfaces;
+      var floor = findFloor(surfaces, S.P, S.n);
+      var ctx = { P: S.P, S: S, surfaces: surfaces, floor: floor, c0: pre.c0 };
+      var res = classifyCore(S, surfaces, ctx, opts);
+      if (!res) return { ok: false, error: 'Не удалось построить ни одной гипотезы формы.', info: { points: pre.n, spacing: S.spacing, noise: S.noise } };
+      // координаты — обратно в систему облака
+      var c0 = pre.c0;
+      function back(p) { return p ? [p[0] + c0[0], p[1] + c0[1], p[2] + c0[2]] : p; }
+      if (res.object) {
+        res.object.center = back(res.object.center);
+        res.object.dims.forEach(function (d) { d.a = back(d.a); d.b = back(d.b); });
+        if (res.object.clsOutline) res.object.clsOutline = res.object.clsOutline.map(back);
+        if (res.object.cylinder) res.object.cylinder.c = back(res.object.cylinder.c);
+      }
+      res.dims = res.object ? res.object.dims : res.dims;
+      res.info.c0 = c0;
+      return res;
+    } catch (e) {
+      return { ok: false, error: 'Классификация не удалась: ' + (e && e.message || e), stack: e && e.stack };
+    }
+  }
+
   /* ---------- Главный вход ---------- */
   /* Типы объектов из инспектора → семейство гипотез. Тип, выбранный человеком, поднимает «свои» находки и опускает чужие (но не прячет). */
   var KIND_FAMILY = { 'проём': 'opening', 'дверь': 'opening', 'окно': 'opening', 'труба': 'pipe', 'воздуховод': 'pipe', 'стена': 'panel', 'перекрытие': 'panel', 'пол': 'panel', 'потолок': 'panel', 'колонна': 'box', 'балка': 'box', 'оборудование': 'box', 'лоток': 'box' };
-  function familyOf(ob) { return ob.type === 'opening' ? 'opening' : (ob.type === 'cylinder' || ob.type === 'pipes' || ob.type === 'duct') ? 'pipe' : 'panel'; }
+  function familyOf(ob) {
+    if (ob.clsRole && CLS_DEF[ob.clsType]) return CLS_DEF[ob.clsType].family;
+    if (ob.type === 'wall' || ob.type === 'plane') return 'panel';
+    if (ob.type === 'column' || ob.type === 'beam' || ob.type === 'tray' || ob.type === 'box') return 'box';
+    if (ob.type === 'edge') return 'edge';
+    return ob.type === 'opening' ? 'opening' : (ob.type === 'cylinder' || ob.type === 'pipes' || ob.type === 'duct') ? 'pipe' : 'panel';
+  }
 
   function findFloor(surfaces, P, n) {
     var ymin = Infinity, ymax = -Infinity, i;
@@ -1874,6 +2609,53 @@
       dobj.forEach(function (ob) { objects.push(ob); });
       pipePairs(cobj, cobj).slice(0, 6).forEach(function (ob) { objects.push(ob); });
       pairObjects(ctx, usedPairs).sort(function (a, b) { return b.score - a.score; }).slice(0, 6).forEach(function (ob) { objects.push(ob); });
+      // r169: КЛАССИФИКАЦИЯ ВЫДЕЛЕНИЯ — до выбора главного объекта. Раньше тип брался из
+      // готовых находок, и цилиндр («Труба Ø…») с максимальным рангом выигрывал у колонны,
+      // стены или балки. Теперь по форме облака определяется тип, добавляется типизированный
+      // объект с правильными размерами, а ложные цилиндры/проёмы понижаются.
+      var classification = null;
+      if (!opts.kind) {
+        try {
+          classification = classifyCore(S, surfaces, ctx, { evidence: { openings: objects.filter(function (ob) { return ob.type === 'opening'; }), cylinders: cobj, ducts: dobj } });
+        } catch (ec) { info.clsError = String(ec && ec.message || ec); }
+      }
+      if (classification) {
+        info.classification = {
+          type: classification.type, kind: classification.kind,
+          shape: classification.object && classification.object.clsShape,
+          confidence: +classification.confidence.toFixed(3),
+          probabilities: classification.probabilities,
+          otherProbability: +classification.otherProbability.toFixed(3),
+          hypotheses: classification.hypotheses, title: classification.title,
+          ms: classification.info.ms, cylinderValid: classification.info.cylinderValid,
+          cylinderRelRms: classification.info.cylinderRelRms
+        };
+        var clsHyp = classification.hypotheses || [], clsCyl = null, clsOther = null;
+        clsHyp.forEach(function (h) {
+          if (h.shape === 'cylinder' && (!clsCyl || h.score > clsCyl.score)) clsCyl = h;
+          if (h.shape !== 'cylinder' && (!clsOther || h.score > clsOther.score)) clsOther = h;
+        });
+        // ложная труба: лучшая нецилиндрическая гипотеза заметно сильнее цилиндра
+        var cylBadTypes = { wall: 1, column: 1, beam: 1, opening: 1, edge: 1, panel: 1, tray: 1 };
+        var cylBad = !!clsOther && cylBadTypes[classification.type] && (!clsCyl || clsOther.score > 1.35 * Math.max(1e-6, clsCyl.score));
+        if (cylBad && classification.type !== 'pipe') {
+          cobj.forEach(function (ob) {
+            ob.clsPenalty = 0.22;
+            ob.notes = (ob.notes || []).concat(['Классификатор определил «' + classification.kind + '» (уверенность ' + Math.round(100 * classification.confidence) + '%), а не трубу: подгонка цилиндра — ложная.']);
+          });
+          info.clsGhosts = cobj.length;
+        }
+        // ложный проём на гранях колонны/стены: детектор «нашёл дыру» там, где её нет
+        if (classification.type !== 'opening' && classification.confidence >= 0.55) {
+          objects.forEach(function (ob) { if (ob.type === 'opening' && ob.clsPenalty == null) ob.clsPenalty = 0.5; });
+        }
+        // типизированный объект классификатора — в находки (он же главный, если уверенно)
+        var clsOb = classification.object;
+        if (clsOb && classification.confidence >= 0.45) {
+          var dup = objects.some(function (ob) { return ob.clsType === classification.type; });
+          if (!dup) { clsOb.clsType = classification.type; objects.push(clsOb); }
+        }
+      }
       // Чьи это размеры. 1) Тип, выбранный человеком, пропускает только свои находки (остальные — «другое в рамке», не главные и не сохраняются).
       // 2) Указанная точка (клик по объекту) поднимает находки рядом с ней и опускает далёкие. 3) Контур объекта — чтобы видеть, что измерено.
       var kind = opts.kind || '', c0 = pre.c0;
@@ -1882,7 +2664,7 @@
       objects.forEach(function (ob) {
         ob.family = familyOf(ob); ob.role = roleOf(ob); ob.onType = matchesKind(ob, kind); roleSet[ob.role] = 1;
         ob.focusDist = fpt ? distToObject(ob, fpt, ctx) : null;
-        ob.rank = ob.score * (kind ? (ob.onType ? 3 : 0.7) : 1) * (fpt ? focusFactor(ob.focusDist) : 1);
+        ob.rank = ob.score * (kind ? (ob.onType ? 3 : 0.7) : 1) * (fpt ? focusFactor(ob.focusDist) : 1) * (ob.clsPenalty || 1);
         try { ob.outline = outlineOf(ob, ctx); } catch (eo) { ob.outline = []; }
       });
       objects.sort(function (a, b) { return ((b.onType ? 1 : 0) - (a.onType ? 1 : 0)) || (b.rank - a.rank); });
@@ -1910,13 +2692,16 @@
   }
 
   return {
-    version: 2, analyze: analyze, toMeasurement: toMeasurement, nearestStandard: nearestStandard, KIND_FAMILY: KIND_FAMILY, KIND_ROLES: KIND_ROLES, roleOf: roleOf, level: level,
+    version: 3, analyze: analyze, classify: classify, toMeasurement: toMeasurement, nearestStandard: nearestStandard, KIND_FAMILY: KIND_FAMILY, KIND_ROLES: KIND_ROLES, roleOf: roleOf, level: level,
+    CLS_DEF: CLS_DEF, CLS_PRIOR: CLS_PRIOR,
     _dedupeCylinders: dedupeCylinders, _consensusPipes: consensusPipes, _implausibleCylinders: implausibleCylinders, _hollowStats: hollowStats, _distToObject: distToObject, _floorIsReal: floorIsReal, _outlineOf: outlineOf, _focusFactor: focusFactor,
     _eig3: eig3, _prepare: prepare, _buildGrid: buildGrid, _neighbors: neighbors, _estimateSpacing: estimateSpacing, _localNormals: localNormals, _clusterDirections: clusterDirections,
     _planesFromDirection: planesFromDirection, _mergePlanes: mergePlanes, _fitPlane: fitPlane, _detectSurfaces: detectSurfaces, _splitPatches: splitPatches, _planeBasis: planeBasis,
     _buildSurfaces: buildSurfaces, _pairInfo: pairInfo, _footBasis: footBasis, _findOpenings: findOpenings, _sigmaAt: sigmaAt, _detectHoles: detectHoles,
     _slabSilhouette: slabSilhouette, _holeEdges: holeEdges, _holeOpenings: holeOpenings, _holeObject: holeObject, _guidedJambs: guidedJambs, _fitTilted: fitTilted,
     _detectCylinders: detectCylinders, _fitCylinder3D: fitCylinder3D, _fitCircle2D: fitCircle2D, _slabCircles: slabCircles, _houghPeaks: houghPeaks,
-    _openingObject: openingObject, _pairObjects: pairObjects, _cylinderObject: cylinderObject, _pipePairs: pipePairs, _findFloor: findFloor, _alignDeg: alignDeg, _buildingAxes: buildingAxes
+    _openingObject: openingObject, _pairObjects: pairObjects, _cylinderObject: cylinderObject, _pipePairs: pipePairs, _findFloor: findFloor, _alignDeg: alignDeg, _buildingAxes: buildingAxes,
+    _classifyCore: classifyCore, _clsPeaks: _clsPeaks, _clsPlaneHyps: _clsPlaneHyps, _clsBoxHyp: _clsBoxHyp, _clsCornerHyp: _clsCornerHyp, _clsCylHyp: _clsCylHyp, _clsProbabilities: _clsProbabilities,
+    _clsExtend: _clsExtend, _clsPlaneExtent: _clsPlaneExtent, _clsPt: function (P, i) { return [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]]; }, _distPointPatch: function (sf, p) { return distPointPatch(sf, p); }
   };
 });

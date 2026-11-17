@@ -1801,14 +1801,22 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       (document.body || document.documentElement).appendChild(el);
       this._snapTip = el; return el;
     }
-    _hideSnapTip() { if (this._snapTip) this._snapTip.hidden = true; }
+    _hideSnapTip() {
+      if (this._snapTip) this._snapTip.hidden = true;
+      // r169: не оставляем в углу статуса чужой текст после выхода курсора/окончания измерения
+      try {
+        var info = document.getElementById('lxInfo');
+        if (info && this._snapStatusPrev != null) { info.textContent = this._snapStatusPrev; info.removeAttribute('title'); this._snapStatusPrev = null; }
+      } catch (e) {}
+    }
     _showSnapTip(cx, cy, snap) {
+      // r169: плавающая подсказка, бегающая за курсором, убрана — та же информация выводится в углу статуса (#lxInfo).
       if (!this.measuring || !snap || !this.measureSnap) { this._hideSnapTip(); return; }
-      const el = this._snapTipEl(), f = v => (v * 1000).toFixed(v * 1000 < 10 ? 1 : 0).replace('.', ',');
+      const f = v => (v * 1000).toFixed(v * 1000 < 10 ? 1 : 0).replace('.', ',');
       const kind = snap.kind || 'raw', name = snap.preparing ? 'Привязка готовится' : (SNAP_RU[kind] || kind);
       let l2 = '';
       if (snap.preparing) l2 = 'индекс облака: ' + Math.round((snap.progress || 0) * 100) + ' %';
-      else if (kind === 'corner') l2 = snap.weak ? '3 плоскости · оценка грубая' : '3 плоскости';   // weak: третья плоскость держится на нескольких точках (полоска откоса, скругление)
+      else if (kind === 'corner') l2 = snap.weak ? '3 плоскости · оценка грубая' : '3 плоскости';
       else if (kind === 'edge') l2 = '2 плоскости';
       else if (kind === 'plane') l2 = 'вписана плоскость';
       else if (kind === 'curve') l2 = snap.cylinder ? 'Ø ' + f(snap.cylinder.radius * 2) + ' мм' : 'круглая поверхность';
@@ -1816,13 +1824,15 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       else l2 = 'рядом нет ровной поверхности';
       let l3 = '';
       if (snap.refined && snap.count) l3 = (snap.grown ? 'по ' + snap.count.toLocaleString('ru-RU') + ' точкам' : 'уточняется…') + ' · шум ' + f(snap.rms) + ' мм' + (snap.grown && snap.sigma ? ' · ±' + f(Math.max(snap.sigma, 0.0001)) + ' мм' : '');
-      el.className = 'meas-snap-tip k-' + kind + (snap.quality ? ' q-' + snap.quality : '');
-      el.innerHTML = '<b>' + name + '</b><span>' + l2 + '</span>' + (l3 ? '<span>' + l3 + '</span>' : '');
-      el.hidden = false;
-      let lx = cx + 20, ly = cy + 22; const w = el.offsetWidth || 190, h = el.offsetHeight || 60;
-      if (lx + w + 8 > window.innerWidth) lx = cx - w - 20;
-      if (ly + h + 8 > window.innerHeight) ly = cy - h - 20;
-      el.style.left = Math.max(4, lx) + 'px'; el.style.top = Math.max(4, ly) + 'px';
+      try {
+        const info = document.getElementById('lxInfo');
+        if (info) {
+          if (this._snapStatusPrev == null) this._snapStatusPrev = info.textContent || '';
+          info.textContent = 'Привязка: ' + name + ' · ' + l2 + (l3 ? ' · ' + l3 : '');
+          info.setAttribute('title', 'Точность привязки при измерении — обновляется в углу статуса, без плавающей метки у курсора');
+        }
+      } catch (e) {}
+      if (this._snapTip) this._snapTip.hidden = true;
     }
     // ---------- Лупа-увеличитель для точного прицеливания при измерении (как AccuSnap/CloudCompare) ----------
     _ensureLoupe() {

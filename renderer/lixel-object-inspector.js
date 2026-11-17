@@ -281,7 +281,17 @@
   /* ---------- Автоматический замер ---------- */
   var LVL_RU = { high: 'высокая', medium: 'средняя', low: 'низкая' };
   function Me() { return window.Measure || null; }
-  function autoVal(d) { var m = Me(); return m && m.autoValue ? m.autoValue(d) : String(d.value); }
+  function autoVal(d) {
+    var m = Me();
+    var v = m && m.autoValue ? m.autoValue(d) : (d && d.value);
+    // r169: в карточке автозамера не должно появляться «false» вместо значения — при неудачном/пустом
+    // значении показываем подпись размера или прочерк.
+    if (v == null || v === false || v === true) return (d && d.text) || '—';
+    if (typeof v === 'number' && !isFinite(v)) return (d && d.text) || '—';
+    var s = String(v);
+    if (/^(false|true|undefined|null|NaN)$/.test(s)) return (d && d.text) || '—';
+    return s;
+  }
   function autoSig(d) { var m = Me(); return m && m.autoSigma ? m.autoSigma(d).trim() : ''; }
   /** Устойчивый ключ размера: при повторном замере того же облака запись в проекте обновляется, а не дублируется. */
   function autoKey(ob, d) { var c = ob.center || [0, 0, 0]; return [ob.title, d.key, Math.round(c[0] * 10), Math.round(c[1] * 10), Math.round(c[2] * 10)].join('|'); }

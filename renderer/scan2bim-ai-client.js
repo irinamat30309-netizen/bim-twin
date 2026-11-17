@@ -356,6 +356,35 @@
   }
 
   // v1182: postroenie cherez avtozapuschennyy AI-server. Pri lyuboy oshibke - otkat na vstroennyy dvizhok.
+  // r169: peredaaem serveru strukturnyy kontekst prilozheniya (oblako/proekt/EYa-model), chtoby on ponimal,
+  // chto imenno stroim, i mog vernut bolee oscmyslennyy otvet. Bez konteksta rabotaet kak ranshe.
+  function s2bContextPack() {
+    try {
+      var C = window.AiContext;
+      if (C && C.build) {
+        var p = C.build(window), c = C.compact ? C.compact(p) : null;
+        if (c) return c;
+      }
+    } catch (e) { }
+    try {
+      var v = mainV(), bo = v && v.base && v.base[0];
+      var path = window.__bimCurrentCloudPath || (v && v._cloudRecord && v._cloudRecord.sourceName) || null;
+      return { schema: 'ai-context/1', cloud: bo && bo.pos ? { name: String(path || 'cloud').replace(/^.*[\\/]/, ''), points: Math.round(bo.pos.length / 3) } : null, project: window.__bimProjectName || null };
+    } catch (e2) { return null; }
+  }
+  function getModelSummary() {
+    var m = lastModel;
+    try { if (!m && window.__lxScan2BIM && window.__lxScan2BIM.state) m = window.__lxScan2BIM.state.model; } catch (e) { }
+    if (!m || m.ok === false) return null;
+    return {
+      open: true, source: 'scan2bim-ai',
+      storeys: (m.storeys || []).length || (m.storey ? 1 : 0),
+      walls: (m.walls || []).length, slabs: (m.slabs || []).length, rooms: (m.rooms || []).length,
+      openings: (m.walls || []).reduce(function (s, w) { return s + ((w && w.openings) || []).length; }, 0),
+      pipes: (m.pipes || []).length, cables: (m.cables || []).length, beams: (m.beams || []).length, objects: (m.objects || []).length,
+      name: m.name || null
+    };
+  }
   function reconstructViaServer(pts, v) {
     v = v || mainV();
     setStatus('Строю BIM через AI-сервер (Cloud2BIM + трубы + кабели + Mask3D)…');
@@ -365,6 +394,7 @@
     var fd = new FormData();
     try { fd.append('file', buildPLY(pts), 'cloud.ply'); } catch (e) {}
     fd.append('mode', 'auto'); fd.append('name', 'Scan2BIM AI');
+    try { var _ctx = s2bContextPack(); if (_ctx) fd.append('context', JSON.stringify(_ctx)); } catch (e) { }
     var fell = false;
     var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     function fallback(msg) { if (fell) return; fell = true; try { clearTimeout(tmo); } catch (e1) {} try { if (_stop) _stop(); } catch (e2) {} __s2bServerReady = false; toast('AI-сервер недоступен (' + msg + ') — строю встроенным движком', true); buildLocal(pts, v, 'ИИ не сработал: ' + msg); }
@@ -601,5 +631,5 @@
   window.addEventListener('lx-viewer-ready', boot);
   window.addEventListener('lx-pctools-ready', boot);
 
-  window.__lxScan2BIMAI = { open: open, close: close, reconstruct: reconstruct, buildLocal: buildLocal, health: health, getServer: getServer, setServer: setServer, buildPLY: buildPLY };
+  window.__lxScan2BIMAI = { open: open, close: close, reconstruct: reconstruct, buildLocal: buildLocal, health: health, getServer: getServer, setServer: setServer, buildPLY: buildPLY, getContext: s2bContextPack, getModelSummary: getModelSummary };
 })();
