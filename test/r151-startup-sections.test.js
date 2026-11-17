@@ -20,9 +20,10 @@ const APP = fs.readFileSync(path.join(R, 'app.js'), 'utf8');
 const SEC = fs.readFileSync(path.join(R, 'ui', 'sections-p2.js'), 'utf8');
 const Sec = require(path.join(R, 'ui', 'sections-p2.js'));
 
-test('r151: старт — clearCache не ждём перед стартовой страницей', () => {
-  assert.match(MAIN, /clearCache\(\)\.catch\(\(\) => \{\}\);[\s\S]{0,500}?try \{ win\.loadFile\(path\.join\(__dirname, 'renderer', 'startup\.html'\)/, 'стартовая страница должна грузиться сразу');
-  assert.ok(!/clearCache\(\)[\s\S]{0,60}\.finally\(\(\) => \{\s*win\.loadFile/.test(MAIN), 'clearCache не должен блокировать загрузку');
+test('r151/r164: старт — clearCache не блокирует стартовую страницу', () => {
+  // r164: clearCache перенесён в фоновые сервисы после рабочей области (в createWindow его нет)
+  assert.match(MAIN, /function startBackgroundServices\(\)[\s\S]{0,900}clearCache\(\)/, 'clearCache должен выполняться в фоне');
+  assert.ok(!/session\.clearCache\(\)[\s\S]{0,80}win\.loadFile/.test(MAIN), 'clearCache не должен блокировать загрузку');
 });
 
 test('r151: первый сегмент 2–5 млн — main/preload/app', () => {

@@ -6060,6 +6060,8 @@
     if (DB.rooms.length) openRoom(DB.rooms[0].id);
     maybeOnboard();
     window.dispatchEvent(new Event('bim-app-ready'));
+    // r164: ИИ/Scan2BIM-сервисы стартуют в фоне после рабочей области и первого кадра облака, не блокируя старт.
+    try { setTimeout(function () { try { if (API && typeof API.startBackgroundServices === 'function') Promise.resolve(API.startBackgroundServices()).catch(function () {}); } catch (_) {} }, 1500); } catch (_) {}
   }
   // ---------- Phase D: команда, проекты, обсуждения, отчёты, синхронизация ----------
   const NONE_ASSIGNEE = '— не назначен —';

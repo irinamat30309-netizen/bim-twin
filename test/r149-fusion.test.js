@@ -154,3 +154,26 @@ test('r162: default fusionSelect=safe (r159-профиль), strict/global — �
   const safe = mkRun('safe'); assert.strictEqual(safe.mode, 'icp', JSON.stringify(safe)); assert.ok(safe.icp.applied >= 1);
   const strict = mkRun('strict'); assert.strictEqual(strict.mode, 'hist-fallback', JSON.stringify(strict)); assert.ok(strict.icpFallback);
 });
+test('r164: pose graph LS (4DoF) — цепочка проходов восстанавливает yaw и сдвиги', () => {
+  const n = 3;
+  const priors = [{ t: [0, 0, 0], yaw: 0, w: 1000 }, { t: [0, 0, 0], yaw: 0, w: 1 }, { t: [0, 0, 0], yaw: 0, w: 1 }];
+  const d2r = Math.PI / 180;
+  const edges = [
+    { i: 0, j: 1, yaw: 0.5 * d2r, t: [0.010, 0.002, 0], w: 1 },
+    { i: 1, j: 2, yaw: 0.3 * d2r, t: [0.020, -0.001, 0.003], w: 1 },
+  ];
+  const poses = F.poseGraphSolve(n, edges, priors, {});
+  assert.ok(Math.abs(poses[0].yaw) < 1e-4 && Math.hypot(poses[0].tx, poses[0].ty) < 1e-3, JSON.stringify(poses[0]));
+  assert.ok(Math.abs(poses[1].yaw * 180 / Math.PI - 0.5) < 0.15, JSON.stringify(poses[1]));
+  assert.ok(Math.abs(poses[2].yaw * 180 / Math.PI - 0.8) < 0.2, JSON.stringify(poses[2]));
+  assert.ok(Math.abs(poses[1].tx - 0.010) < 0.004 && Math.abs(poses[2].tx - 0.030) < 0.006, JSON.stringify(poses));
+  assert.ok(Math.abs(poses[2].tz - 0.003) < 0.003, JSON.stringify(poses[2]));
+});
+
+test('r164: opt.fusion=\'icp-global\' — режим и graceful fallback без Open3D', () => {
+  assert.strictEqual(F.resolveMode('icp-global', 700, true), 'icp-global');
+  assert.strictEqual(F.resolveMode('icp-global', 700, false), 'hist');
+  assert.strictEqual(F.resolveMode('icp-global', 300, true), 'icp-global');
+  assert.match(read('xbin-fusion.js'), /poseGraphSolve/);
+  assert.match(read('xbin-fusion.js'), /mode: 'icp-global'/);
+});

@@ -690,9 +690,8 @@ function createWindow() {
       if (d) preloadedCloudHead = { path: pendingOpen, bbox: d.bbox, count: d.count, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity };
     }
   } catch (_) {}
-  // r151: НЕ ждём clearCache перед показом стартового экрана — очистка кэша на диске занимала секунды.
-  // Кэш чистим в фоне; стартовая страница грузится сразу (её ассеты — локальные файлы, кэш не критичен).
-  win.webContents.session.clearCache().catch(() => {});
+  // r164: clearCache в браузер-процессе занимает секунды и задерживал переход startup → рабочая область.
+  // Чистим кэш позже, в фоне после рабочей области (startBackgroundServices), а стартовая страница грузится сразу.
   // r151: если облако передано при запуске — стартовая страница сама входит в проект (не ждём клика),
   // это убирает гонку «клик раньше, чем загрузился startup.js» и ускоряет путь до рабочей области.
   try { win.loadFile(path.join(__dirname, 'renderer', 'startup.html'), pendingOpen ? { query: { auto: '1' } } : undefined); }
@@ -738,21 +737,24 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
-  initStore();
-  registerIpc();
-  createWindow();
-  setupAutoUpdate();
+// r164: фоновые сервисы (ИИ-ассистент, Scan2BIM-сервер) НЕ стартуют на критическом пути первого окна:
+// их запуск/регистрация занимают секунды и не нужны ни стартовой странице, ни первому кадру облака.
+// Окно само просит main через bim:startBackgroundServices после bim-app-ready (workspace готов).
+let __bgServicesStarted = false;
+function startBackgroundServices() {
+  if (__bgServicesStarted) return true;
+  __bgServicesStarted = true;
+  // r164: очистка кэша — только теперь, в фоне, когда окно и рабочая область уже показаны.
+  try { BrowserWindow.getAllWindows()[0].webContents.session.clearCache().catch(() => {}); } catch (_) {}
   // r34 — локальный ИИ-ассистент: IPC и фоновая установка модели (Ollama + Qwen) при первом запуске.
   try {
     const aiMain = require('./ai/assistant-main');
     aiMain.register(ipcMain, { isTrustedIpcEvent, getWindows: () => BrowserWindow.getAllWindows() });
     aiMain.autoStart(() => BrowserWindow.getAllWindows(), readSettings());
   } catch (e) { console.error('[ai-assistant] init failed', e); }
-  // v1162 — Scan2BIM AI сервер поднимается автоматически вместе с приложением.
+  // v1162 — Scan2BIM AI сервер поднимается фоном вместе с приложением (после рабочей области).
   try {
     const s2b = require('./scan2bim-server');
-    s2b.start();
     ipcMain.handle('bim:s2bStatus', () => { try { return s2b.status(); } catch (e) { return { running: false, error: String(e && e.message || e) }; } });
     ipcMain.handle('bim:s2bAuth', (event) => {
       if (!isTrustedIpcEvent(event)) throw new Error('untrusted_sender');
@@ -761,7 +763,18 @@ app.whenReady().then(() => {
     ipcMain.handle('bim:s2bRestart', () => { try { s2b.stop(); return s2b.start(); } catch (e) { return { running: false, error: String(e && e.message || e) }; } });
     // Явная установка опционального AI/GPU-стека (по кнопке). Режим 1:1 его НЕ требует.
     ipcMain.handle('bim:s2bInstall', () => { try { return s2b.install(); } catch (e) { return { running: false, error: String(e && e.message || e) }; } });
+    s2b.start();
   } catch (e) { console.error('[scan2bim] auto-start failed', e); }
+  return true;
+}
+
+app.whenReady().then(() => {
+  initStore();
+  registerIpc();
+  createWindow();
+  setupAutoUpdate();
+  // r164: хендлер для отложенного старта — окно вызывает его после bim-app-ready.
+  try { ipcMain.handle('bim:startBackgroundServices', () => startBackgroundServices()); } catch (_) {}
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

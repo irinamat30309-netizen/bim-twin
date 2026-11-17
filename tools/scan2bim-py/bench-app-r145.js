@@ -207,6 +207,9 @@ async function benchOne(file, label, outDir, opts) {
     result.times.startupMs = now() - tSpawn;
     // r151 lazy startup: страница появляется очень быстро (0,8 с) — ждём, пока её JS реально нарисует
     // кнопки/список проектов, иначе клик уходит в пустоту и рабочая область не открывается.
+    // r164: с быстрым авто-входом (CLI-облако) startup-страница может уйти в workspace ещё до клика.
+    // Тогда её CDP-таргет исчезает — не ждём 25 с в цикле готовности, а сразу переходим к index.html.
+    let earlyNav = false;
     for (let w = 0; w < 100; w++) {
       let ui = null;
       try {
@@ -215,21 +218,26 @@ async function benchOne(file, label, outDir, opts) {
           const cards = document.querySelectorAll('.st-card:not(.st-new)').length;
           return { ready: !!b, disabled: !!(b && b.disabled), cards, text: (document.body && document.body.innerText || '').slice(0, 120) };
         })()`, 15000);
-      } catch (_) { }
+      } catch (_) { earlyNav = true; break; }
       if (ui && ui.ready && !ui.disabled && (ui.cards > 0 || /Новый проект|Проекты/.test(ui.text || ''))) break;
       await sleep(250);
     }
-    const opened = await ev(startup.send, `(() => {
-      const btn = document.getElementById('openProject');
-      const cards = Array.from(document.querySelectorAll('.st-card:not(.st-new)'));
-      if (btn && !btn.disabled) { btn.click(); return 'openProject'; }
-      if (cards.length) { cards[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return 'card-dblclick'; }
-      const nb = document.getElementById('newProject'); if (nb) { nb.click(); return 'newProject'; }
-      return null;
-    })()`, 20000);
-    result.log.push({ t: now(), event: 'open-workspace', how: opened });
+    let opened = null;
+    if (!earlyNav) {
+      try {
+        opened = await ev(startup.send, `(() => {
+          const btn = document.getElementById('openProject');
+          const cards = Array.from(document.querySelectorAll('.st-card:not(.st-new)'));
+          if (btn && !btn.disabled) { btn.click(); return 'openProject'; }
+          if (cards.length) { cards[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return 'card-dblclick'; }
+          const nb = document.getElementById('newProject'); if (nb) { nb.click(); return 'newProject'; }
+          return null;
+        })()`, 20000);
+      } catch (_) { earlyNav = true; }
+    }
+    result.log.push({ t: now(), event: 'open-workspace', how: earlyNav ? 'auto-nav' : opened });
     try { startup.ws.close(); } catch (_) { }
-    await sleep(300);
+    await sleep(earlyNav ? 60 : 300);
     let idx;
     try {
       idx = await connect(port, /index\.html/, 25000);
@@ -251,6 +259,8 @@ async function benchOne(file, label, outDir, opts) {
     const loadTimeout = opts.loadTimeoutMs || 900000;
     const tLoop = now();
     let lastEvents = 0;
+    let lastProgressAt = now();
+    let lastProgressKey = '';
     while (now() - tLoop < loadTimeout) {
       try { st = await ev(send, STATE, 30000); } catch (e) { result.log.push({ t: now(), event: 'state-error', message: String(e.message || e) }); break; }
       if (!st) { await sleep(300); continue; }
@@ -266,6 +276,12 @@ async function benchOne(file, label, outDir, opts) {
         if (now() - lastConsent > 3000) { lastConsent = now(); await consentScan(send, result.log); }
       }
       if (st.matched) break;
+      const progressKey = [st.prog ? 1 : 0, st.count || 0, st.octN || 0, st.matched ? 1 : 0, st.panelText || ''].join('|');
+      if (progressKey !== lastProgressKey) { lastProgressKey = progressKey; lastProgressAt = now(); }
+      if (now() - lastProgressAt > 120000) {
+        result.log.push({ t: now(), event: 'stall', panel: st.panelText, toasts: st.toasts, dialog: st.dialog });
+        break;
+      }
       if (!st.prog && !st.busy && (now() - tLoop) > 45000 && !st.matched) {
         if (now() - lastConsent > 4000) {
           lastConsent = now();
@@ -363,7 +379,7 @@ async function benchOne(file, label, outDir, opts) {
     result.stderrTail = stderr.slice(-4000);
   } finally {
     sampler.stop();
-    try { child.kill(); } catch (_) { }
+    try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (_) { try { child.kill(); } catch (_) { } }
     await sleep(700);
     try { fs.writeFileSync(path.join(outDir, 'bench-' + label.replace(/[^\w.-]+/g, '_') + '.json'), JSON.stringify(result, null, 1), 'utf8'); } catch (_) { }
   }

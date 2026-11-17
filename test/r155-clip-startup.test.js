@@ -28,7 +28,7 @@ test('r155: старт — тяжёлый startup-UI (kit/ProjectStorageUI) вн
   assert.ok(!/<script src="ui\/kit\.js/.test(STARTUP_HTML), 'kit.js не должен блокировать стартовую страницу');
   assert.ok(!/<script src="project-storage-ui\.js/.test(STARTUP_HTML), 'project-storage-ui.js не должен блокировать страницу');
   assert.match(STARTUP_JS, /function loadLazyUi\(\)/, 'нет ленивой загрузки startup-UI');
-  assert.match(STARTUP_JS, /setTimeout\(loadLazyUi, 0\)/, 'ленивая загрузка не запускается после первого кадра');
+  assert.match(STARTUP_JS, /addEventListener\('pointerdown', kickLazy/, 'ленивая загрузка должна запускаться по первому действию пользователя (r164)');
   assert.match(STARTUP_JS, /'ui\/kit\.js\?v=1330'/, 'kit.js должен подключаться динамически');
   assert.match(STARTUP_JS, /function K\(\)/, 'обращения к kit должны быть отложенными');
 });

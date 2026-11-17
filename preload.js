@@ -305,6 +305,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   takePendingOpen: () => inv('bim:takePendingOpen'),
   // r155: заголовок/bbox облака из argv, предзагруженный в main до старта UI (без чтения точек)
   preloadedCloudHead: () => inv('bim:preloadedCloudHead'),
+  // r164: фоновая инициализация ИИ/Scan2BIM — окно просит после bim-app-ready, не на критическом пути старта
+  startBackgroundServices: () => inv('bim:startBackgroundServices'),
   onRefineScanProgress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => { if (!payload || payload.jobId !== jobId) return; try { callback(payload.progress, payload.label); } catch (_) {} };

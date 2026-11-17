@@ -52,6 +52,7 @@ function resolveMode(fusion, durationSec, hasIcp) {
   const avail = hasIcp === undefined ? icpAvailable() : !!hasIcp;
   if (fusion === false || fusion == null) return false;
   if (fusion === 'hist') return 'hist';
+  if (fusion === 'icp-global') return avail ? 'icp-global' : 'hist';
   if (fusion === 'icp' || fusion === true) return avail ? 'icp' : 'hist';
   if (fusion === 'auto') {
     if (!(durationSec > 600)) return false;
@@ -377,6 +378,140 @@ function evaluateIcp(M, inlier, planes, o) {
   return { applied: !reason, reason, yaw, yawDeg, tiltDeg, shiftM, overlap, planes: np };
 }
 
+/**
+ * r164: 4DoF pose graph LS (yaw + XYZ). nodes: проходы 0..n-1.
+ * edges: {i,j,yaw,t:[dx,dy,dz],w} — p_i = R(yaw) p_j + t (cloud-register ref=i, src=j).
+ * priors: {t:[dx,dy,dz], yaw, w, tw} — ожидаемая поправка (hist-сдвиг уже применён → ~0).
+ * Возвращает позы [{yaw,tx,ty,tz}] (world = R p_hist + t).
+ */
+function poseGraphSolve(n, edges, priors, opts) {
+  const o = opts || {};
+  const NV = 4 * n, A = new Float64Array(NV * NV), b = new Float64Array(NV);
+  const sYaw = o.sigmaYaw || 0.008, sT = o.sigmaT || 0.02;
+  const put = (r, c, v) => { A[r * NV + c] += v; };
+  const row = (idx, coefs, rhs, w) => {
+    let rr = idx;
+    for (const [c, v] of coefs) { put(rr, c, w * v * v); }
+    // нормальные уравнения: A^T W A — используем прямое накопление по уравнениям ниже
+  };
+  // прямое накопление A^T W A и A^T W b по одному уравнению
+  const addEq = (coefs, rhs, w) => {
+    for (let a = 0; a < coefs.length; a++) {
+      const [ca, va] = coefs[a];
+      b[ca] += w * va * rhs;
+      for (let c = 0; c < coefs.length; c++) { const [cc, vc] = coefs[c]; put(ca, cc, w * va * vc); }
+    }
+  };
+  const yw = 1 / (sYaw * sYaw), tw = 1 / (sT * sT);
+  const pYaw = 1 / ((o.priorSigmaYaw || 0.1) * (o.priorSigmaYaw || 0.1));
+  const pT = 1 / ((o.priorSigmaT || 0.2) * (o.priorSigmaT || 0.2));
+  for (let k = 0; k < n; k++) {
+    const p = priors[k] || { t: [0, 0, 0], yaw: 0, w: 1 };
+    const w = (p.w === undefined ? 1 : p.w);
+    addEq([[4 * k, 1]], p.yaw || 0, w * pYaw);
+    addEq([[4 * k + 1, 1]], p.t[0], w * pT);
+    addEq([[4 * k + 2, 1]], p.t[1], w * pT);
+    addEq([[4 * k + 3, 1]], p.t[2], w * pT);
+  }
+  for (const e of edges) {
+    const w = Math.max(0.05, Math.min(1, e.w === undefined ? 0.8 : e.w));
+    // θ_j - θ_i = yaw_T
+    addEq([[4 * e.j, 1], [4 * e.i, -1]], e.yaw || 0, w * yw);
+    // t_j - t_i = t_T (yaw мал — поворот t_T не линеаризуем отдельно, ошибка <1 мм)
+    addEq([[4 * e.j + 1, 1], [4 * e.i + 1, -1]], e.t[0], w * tw);
+    addEq([[4 * e.j + 2, 1], [4 * e.i + 2, -1]], e.t[1], w * tw);
+    addEq([[4 * e.j + 3, 1], [4 * e.i + 3, -1]], e.t[2], w * tw);
+  }
+  // Gaussian elimination с частичным выбором
+  for (let c = 0; c < NV; c++) {
+    let piv = c, mx = Math.abs(A[c * NV + c]);
+    for (let r = c + 1; r < NV; r++) { const v = Math.abs(A[r * NV + c]); if (v > mx) { mx = v; piv = r; } }
+    if (mx < 1e-12) { A[c * NV + c] = 1e-9; continue; }
+    if (piv !== c) {
+      for (let k = 0; k < NV; k++) { const t = A[c * NV + k]; A[c * NV + k] = A[piv * NV + k]; A[piv * NV + k] = t; }
+      const t = b[c]; b[c] = b[piv]; b[piv] = t;
+    }
+    const d = A[c * NV + c];
+    for (let r = 0; r < NV; r++) {
+      if (r === c) continue;
+      const f = A[r * NV + c] / d; if (!f) continue;
+      for (let k = c; k < NV; k++) A[r * NV + k] -= f * A[c * NV + k];
+      b[r] -= f * b[c];
+    }
+  }
+  const x = new Float64Array(NV);
+  for (let k = 0; k < NV; k++) x[k] = A[k * NV + k] ? b[k] / A[k * NV + k] : 0;
+  const poses = [];
+  for (let k = 0; k < n; k++) poses.push({ yaw: x[4 * k], tx: x[4 * k + 1], ty: x[4 * k + 2], tz: x[4 * k + 3] });
+  return poses;
+}
+
+function poseMatrix(p) {
+  const cy = Math.cos(p.yaw), sy = Math.sin(p.yaw);
+  return [[cy, -sy, 0, p.tx], [sy, cy, 0, p.ty], [0, 0, 1, p.tz], [0, 0, 0, 1]];
+}
+
+/** r164: pairwise ICP соседних проходов + pose graph LS. */
+function poseGraphStage(src, H, hist, o, tmpDir, prog) {
+  if (!icpAvailable() && typeof o.icpMock !== 'function') return { ok: false, reason: 'no-python-or-open3d' };
+  const py = findPython(), tool = icpToolPath();
+  const shiftOf = (t) => { const k = passIdOf(t, hist.t0, o.passSec); return k < hist.nPass ? [hist.shifts[k * 3], hist.shifts[k * 3 + 1], hist.shifts[k * 3 + 2]] : [0, 0, 0]; };
+  // 1) кропы проходов
+  const passFiles = [];
+  for (let k = 0; k < hist.nPass; k++) {
+    const file = path.join(tmpDir, 'pg-pass-' + k + '.las');
+    const w = writeWithTransform(src, file, H, { includePass: (t) => passIdOf(t, hist.t0, o.passSec) === k, shiftOf, t0: hist.t0, passSec: o.passSec });
+    if (w.points >= 2000) passFiles.push({ k, file, points: w.points });
+  }
+  if (passFiles.length < 3) return { ok: false, reason: 'few-passes' };
+  // 2) рёбра: соседние по времени (dt=1,2), перекрытие >=0.5
+  const edges = [], edgeStats = [];
+  const maxAge = o.icpTimeoutMs || 180000;
+  for (let ia = 0; ia < passFiles.length; ia++) {
+    for (const dt of (o.pgDts || [1, 2])) {
+      const ib = ia + dt; if (ib >= passFiles.length) continue;
+      const pa = passFiles[ia], pb = passFiles[ib];
+      const outJson = path.join(tmpDir, 'pg-edge-' + pa.k + '-' + pb.k + '.json');
+      let rr = null;
+      try {
+        if (typeof o.icpMock === 'function') rr = o.icpMock(pa.k, pb.k, 'edge');
+        else {
+          const r = spawnSync(py, [tool, '--ref', pa.file, '--src', pb.file, '--mode', 'icp', '--max-points', String(o.icpMaxPoints || 300000), '--out', outJson], { timeout: maxAge, windowsHide: true, encoding: 'utf8' });
+          if (r.status === 0 && fs.existsSync(outJson)) { const reg = JSON.parse(fs.readFileSync(outJson, 'utf8')); const z = reg.results && reg.results[0]; if (z && z.matrix) rr = { matrix: z.matrix, inlier: z.rms && z.rms.inlier_ratio, rmsM: z.rms && z.rms.rms_inlier_m }; }
+        }
+      } catch (_) { rr = null; }
+      if (!rr || !rr.matrix) { edgeStats.push({ i: pa.k, j: pb.k, applied: false, reason: 'no-matrix' }); continue; }
+      const M = rr.matrix;
+      const yaw = Math.atan2(M[1][0], M[0][0]);
+      const pitch = Math.asin(Math.max(-1, Math.min(1, -M[2][0]))), roll = Math.atan2(M[2][1], M[2][2]);
+      const tilt = Math.max(Math.abs(pitch), Math.abs(roll)) * 180 / Math.PI;
+      const t = [M[0][3], M[1][3], M[2][3]], shiftM = Math.hypot(t[0], t[1], t[2]);
+      const inl = Number(rr.inlier);
+      const ok = Number.isFinite(inl) && inl >= (o.pgMinOverlap || 0.5) && Math.abs(yaw) * 180 / Math.PI <= (o.pgMaxYawDeg || 2) && tilt <= 5 && shiftM <= 1.0;
+      if (ok) edges.push({ i: pa.k, j: pb.k, yaw, t, w: inl });
+      edgeStats.push({ i: pa.k, j: pb.k, applied: ok, inlier: Number.isFinite(inl) ? +inl.toFixed(3) : null, yawDeg: +(yaw * 180 / Math.PI).toFixed(3), tiltDeg: +tilt.toFixed(3), shiftM: +shiftM.toFixed(3), reason: ok ? null : 'rejected' });
+    }
+    prog(0.35 + 0.4 * (ia + 1) / passFiles.length, 'Pose graph: рёбра ' + (ia + 1) + ' из ' + passFiles.length + '…');
+  }
+  if (edges.length < 2) return { ok: false, reason: 'no-edges' };
+  // 3) приоры: hist уже применён → поправки ~0; якорь — первый проход
+  const priors = [];
+  for (let k = 0; k < hist.nPass; k++) priors.push({ t: [0, 0, 0], yaw: 0, w: 1 });
+  const anchor = passFiles[0].k; priors[anchor].w = 40;
+  // 4) LS
+  const poses = poseGraphSolve(hist.nPass, edges, priors, {});
+  const matrices = new Map();
+  let maxShift = 0, maxYaw = 0;
+  for (let k = 0; k < hist.nPass; k++) {
+    const p = poses[k];
+    matrices.set(k, poseMatrix(o.pgYaw === true ? p : { yaw: 0, tx: p.tx, ty: p.ty, tz: p.tz }));
+    maxShift = Math.max(maxShift, Math.hypot(p.tx, p.ty, p.tz));
+    maxYaw = Math.max(maxYaw, Math.abs(p.yaw) * 180 / Math.PI);
+  }
+  for (const pf of passFiles) { try { fs.unlinkSync(pf.file); } catch (_) {} }
+  return { ok: true, matrices, poses, edges: edges.length, edgeStats, passes: passFiles.length, maxShiftM: maxShift, maxYawDeg: maxYaw, icpRunner: py };
+}
+
 function icpStage(src, H, hist, o, tmpDir, prog) {
   if (!icpAvailable() && typeof o.icpMock !== 'function') return { ok: false, reason: 'no-python-or-open3d' };
   const py = findPython(), tool = icpToolPath();
@@ -472,8 +607,25 @@ function fuseLas(src, dst, opt, onProgress) {
     const sel = o.fusionSelect === 'strict' ? 'strict' : (o.fusionSelect === 'global' ? 'global' : 'safe');
     if (sel === 'strict') Object.assign(o, { icpMinOverlap: 0.6, icpMinPlanes: 3, icpMaxYawDeg: 1.5, icpMaxShiftM: 0.3 });
     if (sel === 'global') Object.assign(o, { refMode: 'global' });
-    const mode = o.mode === 'icp' ? 'icp' : 'hist';
+    const mode = o.mode === 'icp-global' ? 'icp-global' : (o.mode === 'icp' ? 'icp' : 'hist');
     o.fusionSelect = sel;
+    if (mode === 'icp-global') {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbin-fusion-'));
+      const pg = poseGraphStage(src, H, hist, o, tmpDir, prog);
+      if (pg.ok) {
+        const matrixOf = (k) => pg.matrices.get(k) || null;
+        const w = writeWithTransform(src, dst, H, { shiftOf, matrixOf, yawOnly: true, t0: hist.t0, passSec: o.passSec, onProgress: (f) => prog(0.85 + 0.15 * f, 'Pose graph: запись…') });
+        prog(1, 'Pose graph: готово');
+        const rmsArr = pg.edgeStats.filter(e => e.applied && Number.isFinite(e.inlier)).map(e => e.inlier);
+        return Object.assign(baseStats, {
+          mode: 'icp-global', points: w.points, removed: H.n - w.points,
+          poseGraph: { passes: pg.passes, edges: pg.edges, maxShiftM: +pg.maxShiftM.toFixed(3), maxYawDeg: +pg.maxYawDeg.toFixed(3), edgeStats: pg.edgeStats, runner: pg.icpRunner },
+          ms: Date.now() - t0ms
+        });
+      }
+      prog(0.35, 'Pose graph недоступен — откат на hist…');
+      baseStats.icpFallback = pg.reason || 'failed';
+    }
     if (mode === 'icp') {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbin-fusion-'));
       const icp = icpStage(src, H, hist, o, tmpDir, prog);
@@ -501,4 +653,4 @@ function fuseLas(src, dst, opt, onProgress) {
   }
 }
 
-module.exports = { fuseLas, passBounds, passIdOf, ransacVertical, horizontalPlanes, solveShift, resolveMode, evaluateIcp, icpAvailable, findPython, readSample, setIcpAvailableForTest, DEF };
+module.exports = { fuseLas, passBounds, passIdOf, ransacVertical, horizontalPlanes, solveShift, resolveMode, evaluateIcp, poseGraphSolve, icpAvailable, findPython, readSample, setIcpAvailableForTest, DEF };

@@ -341,7 +341,14 @@
     if (api && api.platform === 'darwin') ROOT.classList.add('st-mac');
     ROOT.setAttribute('data-theme', initialTheme()); paintTheme();
     // r155: список проектов и первый кадр не ждут UI-кит/выбор папки — они грузятся в фоне после отрисовки.
-    setTimeout(loadLazyUi, 0);
+    // r164: kit/ProjectStorageUI грузим ТОЛЬКО по первому действию пользователя. Их исполнение занимает
+    // секунды и не должно задерживать ни показ списка, ни авто-переход в рабочую область (CLI-облако).
+    try {
+      var kickLazy = function () { loadLazyUi(); };
+      D.addEventListener('pointerdown', kickLazy, { once: true, passive: true });
+      D.addEventListener('keydown', kickLazy, { once: true });
+      D.addEventListener('contextmenu', kickLazy, { once: true });
+    } catch (e) {}
     hydrate(D);
     $('theme').addEventListener('click', function () { setTheme(ROOT.getAttribute('data-theme') === 'light' ? 'dark' : 'light'); });
     [].forEach.call(D.querySelectorAll('[data-theme-set]'), function (b) { b.addEventListener('click', function () { setTheme(b.getAttribute('data-theme-set')); }); });
@@ -379,7 +386,9 @@
       if (!/[?&]auto=1/.test(W.location.search)) return;
       try {
         if (!selected && projects.length) { var a = projects.filter(function (x) { return x.active; })[0] || projects[0]; if (a) choose(a.id); }
-        setTimeout(function () { if (selected) openSelected(); }, 40);
+        // r164: короткая пауза, чтобы стартовое окно успело отрисоваться/принять CDP-подключение (и человек
+        // видел, что происходит), но переход остаётся быстрым; рабочая область всё равно ≤3 с.
+        setTimeout(function () { if (selected) openSelected(); }, 650);
       } catch (e) { }
     });
   }
