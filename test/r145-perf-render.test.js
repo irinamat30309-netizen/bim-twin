@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 /*
  * r145 — производительность и «как в Lixel» для больших облаков:
  *   • viewer: адаптивный размер точки 3–4 px (perspective), quality-режимы auto/high/fast,
@@ -34,7 +34,7 @@ function viewerStub() {
   v._grade = { on: false, exposure: 1.0, contrast: 1.05, saturation: 1.05, gamma: 1.0, tone: 0.9 };
   v._ptBright = 1.1;
   v._renderScale = 1; v._dynRes = true; v._dynScaleMoving = 0.85; v._qualityMode = 'auto';
-  v._interBudget = 128000000; v._autoPointSize = true; v._ptSizeMul = 1;
+  v._interBudget = 128000000; v._autoPointSize = true; v._softSplats = true; v._ptSizeMul = 1;
   return v;
 }
 
@@ -47,7 +47,7 @@ test('r145: viewer — адаптивный размер точки, качес�
   }
   assert.match(SRC, /_resize\(\)[\s\S]{0,200}\(this\._renderScale \|\| 1\)/, 'динамическое разрешение не применяется в _resize');
   assert.match(SRC, /const autoPx = isCloud && this\._autoPointSize/, 'авто-размер не учитывается в отрисовке');
-  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.8\)/, 'база 2–3 px (perspective) не задана');
+  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 3\.4\)/, 'база 3–5 px (perspective) не задана');
   assert.match(SRC, /total <= \(this\._streamCpuMaxPoints \|\| 160000000\)/, 'CPU-копии потока не ограничены 160 млн');
   assert.match(SRC, /setLixelLook\(on\)[\s\S]{0,240}setBrightness\(1\.36\)[\s\S]{0,240}saturation: 1\.29/, 'пресет «как в Lixel» не задан (1.36/1.29)');
   assert.match(SRC, /_grade\s*=\s*\{\s*on:\s*false/, 'нейтральный grade по умолчанию должен сохраниться (r145 включает его из настроек)');
@@ -98,7 +98,7 @@ test('r145: quality-режимы auto/high/fast задают бюджеты и �
   assert.ok(v._interBudget >= 1000000000);
   assert.strictEqual(v.setQualityMode('auto'), 'auto');
   assert.strictEqual(v._dynScaleMoving, 0.85, 'разрешение в движении не ниже 85 %');
-  assert.strictEqual(v._octMovePct, 65, 'авто-режим рисует при движении 65 % точек');
+  assert.strictEqual(v._octMovePct, 60, 'авто-режим рисует при движении 60 % точек');
   assert.strictEqual(v._motionSizeScale, 0.9, 'в движении точки почти не мельчают');
   assert.strictEqual(v.setQualityMode('нет-такого'), 'auto', 'неизвестный режим — авто');
   assert.strictEqual(v.qualityMode(), 'auto');
@@ -221,6 +221,9 @@ test('r145: панель (jsdom) — сворачивание/раскрытие
     assert.strictEqual(env.w.document.querySelector('[data-perf-panel]').hidden, true);
   } finally { try { env.dom.window.close(); } catch (e) { } }
 });
+
+
+
 
 
 

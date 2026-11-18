@@ -9,7 +9,7 @@ const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
 
 test('r172: detail-preset в xbin-lidar — edge/sky/balance off, step=1, maxPoints не режет', () => {
   const xl = read('xbin-lidar.js');
-  assert.match(xl, /fusion: 'auto', detail: false \};/);
+  assert.match(xl, /fusion: 'auto', detail: false, cleanOutliers: false \};/);
   assert.match(xl, /if \(o\.detail === true\) \{/);
   assert.match(xl, /o\.edge = false; o\.sky = false; o\.balance = false; o\.step = 1;/);
   assert.match(xl, /o\.maxPoints = 2000000000;/);

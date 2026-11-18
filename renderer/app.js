@@ -1,4 +1,4 @@
-/* BIM Twin — renderer v0.4 (Phase A: persistence + CRUD + uploads + backup). */
+﻿/* BIM Twin — renderer v0.4 (Phase A: persistence + CRUD + uploads + backup). */
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -270,7 +270,11 @@
       for (let k = 0; k < nParts; k++) {
         const res = await next;
         if (cancelled) break;
-        if (k + 1 < nParts) next = readPart(k + 1);   // пока эта часть уходит в видеопамять, следующая уже читается
+        if (k + 1 < nParts) {
+          // r174: не грузим следующие части во время вращения — возобновляем через ~160–300 мс после остановки
+          while (!cancelled && viewer && viewer._interacting) await new Promise(function (r) { setTimeout(r, 120); });
+          next = readPart(k + 1);   // пока эта часть уходит в видеопамять, следующая уже читается
+        }
         if (!res || res.ok === false || !res.pos) { failure = (res && res.message) || 'часть облака не прочитана'; break; }
         // открытое до этого облако заменяется только когда первая часть новой уже прочитана (отмена раньше ничего не трогает)
         if (!began) { viewer.beginCloudStream({ total, sourceTotal: opened.sourceTotal || total, bbox: opened.bbox, meta: opened.meta, hasColor: opened.hasColor, hasIntensity: opened.hasIntensity, hasClassification: opened.hasClassification, name: label }, { sourceName: filePath }); began = true; }
@@ -5972,7 +5976,7 @@
     var p = renderPrefs();
     try { if (viewer.setQualityMode) viewer.setQualityMode(p.quality); } catch (e) {}
     try { if (viewer.setAutoPointSize) viewer.setAutoPointSize(p.autoPoint); } catch (e) {}
-    try { if (viewer.setPointBasePx) viewer.setPointBasePx(2.8); } catch (e) {}
+    try { if (viewer.setPointBasePx) viewer.setPointBasePx(3.4); } catch (e) {}
     try {
       if (p.look === 'lixel') viewer.setLixelLook(true);
       else if (p.look === 'neutral') { viewer.setBrightness(1.1); viewer.setGrade(false); }
@@ -6353,4 +6357,5 @@
 
   window.addEventListener('DOMContentLoaded', init);
 })();
+
 

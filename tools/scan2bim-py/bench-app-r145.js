@@ -395,7 +395,8 @@ const child = spawn(EXE, _args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pip
           const sorted = (R.dts || []).slice().sort((a, b) => a - b);
           const pct = (p) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] : null;
           const ms = performance.now() - R.t0;
-          return { frames: R.frames, ms, avgFps: R.frames ? R.frames / (ms / 1000) : null, p95FrameMs: pct(0.95), maxFrameMs: sorted.length ? sorted[sorted.length - 1] : null,
+          const mean = sorted.length ? sorted.reduce((a,b)=>a+b,0)/sorted.length : 0; const std = sorted.length ? Math.sqrt(sorted.reduce((a,b)=>a+(b-mean)*(b-mean),0)/sorted.length) : null;
+          return { frames: R.frames, ms, avgFps: R.frames ? R.frames / (ms / 1000) : null, p50FrameMs: pct(0.5), p95FrameMs: pct(0.95), p99FrameMs: pct(0.99), frameStdMs: std, maxFrameMs: sorted.length ? sorted[sorted.length - 1] : null,
                    minFps: sorted.length ? 1000 / sorted[sorted.length - 1] : null, maxLag: R.maxLag,
                    heapMB: (performance.memory && performance.memory.usedJSHeapSize) ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null }; })()`, 30000);
       } catch (_) { rot = null; }
@@ -452,7 +453,8 @@ function table(rows) {
   add('Полная загрузка, с', (r) => fmt(r.times.fullLoadMs / 1000, 2));
   add('Успокоение после загрузки, с', (r) => fmt((r.times.settleMs || 0) / 1000, 2));
   add('FPS вращение (10 с), avg', (r) => fmt(r.fps.avgFps, 1));
-  add('FPS min / p95 кадра', (r) => fmt(r.fps.minFps, 1) + ' / ' + fmt(r.fps.p95FrameMs, 1) + ' мс');
+  add('FPS min / p50-p95-p99 кадра', (r) => fmt(r.fps.minFps, 1) + ' / ' + fmt(r.fps.p50FrameMs, 1) + '-' + fmt(r.fps.p95FrameMs, 1) + '-' + fmt(r.fps.p99FrameMs, 1) + ' мс');
+  add('Frame-time std', (r) => fmt(r.fps.frameStdMs, 2) + ' мс');
   add('Задержка event-loop, макс', (r) => fmt(r.fps.maxLag, 1) + ' мс');
   add('JS heap', (r) => fmt(r.memory.heapMB, 0) + ' МБ');
   add('RSS Electron (пик/конец)', (r) => fmt(r.memory.peakRssMB, 0) + ' / ' + fmt(r.memory.finalRssMB, 0) + ' МБ');

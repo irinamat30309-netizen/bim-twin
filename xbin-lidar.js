@@ -245,7 +245,7 @@ function lasHeader(o) {
 }
 
 const DEF = { minRange: 0.5, maxRange: 120, maxPoints: 40e6, step: 0, t0: null, t1: null, maxMotorGap: 0.05, imu: true, imuShift: 0, position: 'hermite', poseStep: 0.005,
-  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: 'auto', detail: false };
+  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: 'auto', detail: false, cleanOutliers: false };
 
 // ---------- ревизия 145: VOXEL-балансировка плотности (по умолчанию ВЫКЛ) ----------
 // Мультипроходы дают на земле/фасаде смесь плотных и разреженных участков. balance ограничивает число точек
@@ -582,10 +582,25 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
       fusionInfo = { error: String((e && e.message) || e) };
       try { fs.rmSync(outLas + '.fused', { force: true }); } catch (_) {}
     }
+    // r174: удаление спекл-шума (одинокие/изолированные точки) — опция clean-outliers.
+    // По умолчанию выключено; для «грязных» облаков/display: cleanOutliers:true|{cell,minNeighbors}.
+    let speckleInfo = null;
+    if (o.cleanOutliers) {
+      try {
+        const SC = require('./speckle-clean');
+        const ctmp = outLas + '.speckle';
+        const so = typeof o.cleanOutliers === 'object' ? o.cleanOutliers : {};
+        speckleInfo = SC.cleanLas(outLas, ctmp, so, (f, l) => prog(0.94 + 0.06 * f, l || 'Спекл-чистка…'));
+        fs.renameSync(ctmp, outLas);
+      } catch (e) {
+        speckleInfo = { error: String((e && e.message) || e) };
+        try { fs.rmSync(outLas + '.speckle', { force: true }); } catch (_) {}
+      }
+    }
     prog(1, 'Облако из .xbin: готово');
     const TR = C.TR;
     return { points: n, step, estimated: Math.round(est), estimatedKept: Math.round(estKept), keepFrac: +keepFrac.toFixed(4), bpp: +bpp.toFixed(3), attempts,
-      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, sky: W.sky, balance: W.balance || 0, fusion: fusionInfo, min: mn, max: mx,
+      t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, sky: W.sky, balance: W.balance || 0, fusion: fusionInfo, speckle: speckleInfo, min: mn, max: mx,
       lidarCh: C.S.lidarCh, motorCh: C.S.motorCh, imuCh: C.S.imuCh,
       trajectory: { imu: TR.imu, imuIntervals: TR.imuIntervals, intervals: TR.intervals, gaps: TR.gaps, position: TR.position, corrMedianDeg: TR.corrMedianDeg, refined: !!refineInfo },
       refine: refineInfo ? refineInfo.summary : null };

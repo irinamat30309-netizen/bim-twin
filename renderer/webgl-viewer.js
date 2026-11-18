@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Viewer3DGL — real WebGL2 3D engine (Phase B). Zero external libraries, fully offline.
  *
  * Drop-in replacement for the canvas-2D Viewer3D. Same public API
@@ -145,7 +145,7 @@
   in float vIntensity; in float vClassification; out vec4 frag;
   uniform vec3 uColor; uniform float uUnlit; uniform vec3 uLightDir; uniform float uAmbient;
   uniform float uClipOn; uniform float uClipDist; uniform vec3 uClipMin; uniform vec3 uClipMax; uniform float uUseVColor; uniform float uRound; uniform float uFrame;
-  uniform float uElevMode; uniform float uAttrMode; uniform float uElevMin; uniform float uElevMax; uniform float uBright;
+  uniform float uElevMode; uniform float uAttrMode; uniform float uElevMin; uniform float uElevMax; uniform float uBright; uniform float uSoft;
   uniform float uCloudPass; uniform float uCloudOpacity; uniform float uPalette;
   uniform float uGrade; uniform float uExposure; uniform float uContrast; uniform float uSaturation; uniform float uGamma; uniform float uTone;
   vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }
@@ -183,8 +183,16 @@
       c = pow(max(c,1e-5), vec3(1.0/uGamma));
     }
     c *= splat;
+    float alpha = 1.0;
+    if(uSoft>0.5){
+      vec2 sc = gl_PointCoord * 2.0 - 1.0; float rr = length(sc);
+      if(rr > 1.0) discard;
+      float edge = smoothstep(1.0, 0.45, rr);
+      alpha = 0.30 + 0.70 * edge;
+      c *= (0.72 + 0.28 * edge);
+    }
     if(uFrame>0.5){ vec2 fe=abs(gl_PointCoord*2.0-1.0); if(max(fe.x,fe.y)>0.70) c=vec3(0.0); }
-    frag=vec4(c,1.0);
+    frag=vec4(c, alpha);
   }`;
 
   // EDL (Eye-Dome Lighting) — экранный постпроцесс: подчёркивает края/глубину облака,
@@ -304,7 +312,8 @@
       this._ptBright = 1.1; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
       // r172: базовый тон «как есть» (без пересвета): небольшой gain ×1.1, grade выключен; «Как в Lixel» — пресет.
       // Адаптивный размер точки по умолчанию: 2–3 px в покое (не жирно), в движении не меньше 2 px.
-      this._autoPointSize = true; this._autoPointBasePx = 2.8; this._motionSizeScale = 0.95;
+      this._autoPointSize = true; this._autoPointBasePx = 3.4; this._softSplats = true; this._softSplatsLimit = 150000000; this._softForce = false; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
+    try { canvas.addEventListener('webglcontextlost', () => { this._softSplats = false; this._softSplatsFail = true; }); } catch (_) {}
       // r172: динамическое разрешение в движении не ниже 85 % (было 75 % → «мыло»).
       this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.9; this._qualityMode = 'auto';
       this._streamCpuMaxPoints = 60000000;   // r172: CPU-копии только для небольших облаков; 120–590 млн — без копий
@@ -345,7 +354,7 @@
       this.aClassification = gl.getAttribLocation(p, 'aClassification');
       this.aRad = gl.getAttribLocation(p, 'aRad');
       this.u = {};
-      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog', 'uQOff', 'uQScale']) this.u[k] = gl.getUniformLocation(p, k);
+      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uSoft', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog', 'uQOff', 'uQScale']) this.u[k] = gl.getUniformLocation(p, k);
       gl.uniform3f(this.u.uQScale, 1, 1, 1); gl.uniform3f(this.u.uQOff, 0, 0, 0);   // r9: обычные объекты рисуются без распаковки позиций
       gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
       const _tc = this._themeColors(); gl.clearColor(_tc.bg[0], _tc.bg[1], _tc.bg[2], 1);
@@ -1262,7 +1271,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       return { ok: true, added: n, loaded: bo._gpuCount };
     }
     // Конец чтения по частям: окончательные габариты, событие «облако загружено» (проект, метаданные).
-    endCloudStream(opts) {
+    endCloudStream(opts) { try { this._softReset(); } catch (e) {}
       const bo = this.base && this.base[0];
       if (!bo || !bo._stream) return false;
       opts = opts || {};
@@ -2731,7 +2740,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this._qualityMode = mode;
       if (mode === 'high') { this._interBudget = 2000000000; this._octMovePct = 100; this._dynScaleMoving = 1; this._dynRes = false; this._motionSizeScale = 1; this._autoPointBasePx = 3.0; }
       else if (mode === 'fast') { this._interBudget = 96000000; this._octMovePct = 60; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.85; this._autoPointBasePx = 2.8; }
-      else { this._interBudget = 128000000; this._octMovePct = 65; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.9; this._autoPointBasePx = 2.8; }
+      else { this._interBudget = 128000000; this._octMovePct = 60; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.9; this._autoPointBasePx = 3.4; }
       if (!this._interacting) { this._renderScale = 1; }
       // r173: бюджет отрисовки по режиму: «Высокое» — без потолка, «Авто» — 300M (детализация ≥ Lixel), «Быстрое» — 80M.
       try {
@@ -2924,6 +2933,11 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this._scW = w; this._scH = h; this._scRev = -1;
     }
     // Рисует список объектов в два прохода: тела (с обрезкой по срезу), затем линии (без обрезки) — как в обычном кадре
+    _combineDrawList() {
+      this._dlBuf = this._dlBuf || []; const out = this._dlBuf; out.length = 0;
+      for (let i = 0; i < arguments.length; i++) { const a = arguments[i]; if (!a) continue; for (let j = 0; j < a.length; j++) out.push(a[j]); }
+      return out;
+    }
     _drawList(list) {
       const gl = this.gl;
       for (const o of list) {
@@ -2959,7 +2973,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       gl.bindVertexArray(null); gl.depthFunc(gl.LESS); gl.activeTexture(gl.TEXTURE0);
       st.present++;
       this._setFrameUniforms(vp);
-      this._drawList(this.overlay.concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []));
+      this._drawList(this._combineDrawList(this.overlay, this._hoverObj ? [this._hoverObj] : null, this._hoverLines ? [this._hoverLines] : null));
       if (this.measuring && this._measLabels && this._measLabels.length) this._renderMeasLabels();
     }
     // ревизия 8: адаптивное число точек при движении камеры. Раз в два кадра взаимодействия замеряем, сколько кадр занимает у видеокарты (gl.finish),
@@ -2985,6 +2999,11 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         else if (fps < 45 && pct > 60) this._octMovePct = Math.max(60, pct - 2);
       }
       this._interMs = ms;
+      // r174 fallback: если с мягкими сплатами стабильно медленно/контекст деградировал — hard-точки 3–4 px
+      if (this._qualityMode === 'auto' && this._interacting) {
+        if (ms > 34 && this._softSplats && !this._softSplatsFail) { if (++this._softPerfBad >= 6) { this._softSplats = false; this._softSplatsFail = true; } }
+        else if (this._softPerfBad > 0) this._softPerfBad--;
+      }
     }
     // ревизия 19: до первого замера кадра при движении рисуется не больше 12 млн точек (а не всё облако): первый же поворот огромного облака не «залипает»
     interactivePointBudget(total) { return this._interPts ? Math.min(total, Math.round(this._interPts)) : Math.min(total, 12000000); }
@@ -3025,8 +3044,9 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         gl.uniform1f(this.u.uUnlit, 1); gl.uniform1f(this.u.uUseVColor, o.col ? 1 : 0);
         // Чёткие квадратные точки (как в CloudCompare) для самого облака — резче и без лишнего
         // fragment-discard; круглые сплэты только для маркеров/выбора и фото-режима.
-        const roundPt = (o._isStation || o._isSel) ? 1 : ((this._roundPoints && !this._frameBox) ? 1 : 0);
+        const roundPt = (!(o._isStation || o._isSel)) ? 1 : ((o._isStation || o._isSel) ? 1 : ((this._roundPoints && !this._frameBox) ? 1 : 0));
         gl.uniform1f(this.u.uRound, roundPt); gl.uniform1f(this.u.uAmbient, 1);
+        const softOn = !(o._isStation || o._isSel) && this._softSplats !== false && !this._softSplatsFail && (this._softForce || (o.count || 0) <= (this._softSplatsLimit || 150000000)); if (softOn) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(true); } gl.uniform1f(this.u.uSoft, softOn ? 1 : 0);
         // Атрибутивные цветовые режимы — только для основного облака.
         const isMainCloud = o === (this.base && this.base[0]) && !o._isStation && !o._isSel;
         const colorMode = isMainCloud ? this.getColorMode() : 'rgb';
@@ -3049,8 +3069,10 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
           const vhA = (gl.canvas && gl.canvas.height) || 1080;
           const dprA = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2) * (this._renderScale || 1);
           const hCss = vhA / Math.max(0.5, dprA);
-          const auto = Math.max(2.0, Math.min(4.0, hCss / 1200 * (this._autoPointBasePx || 2.8))) * (this._ptSizeMul || 1);
-          const moving = this._interacting ? Math.max(2.0, auto * (this._motionSizeScale || 0.9)) : auto;
+          const auto = Math.max(3.0, Math.min(5.0, hCss / 1200 * (this._autoPointBasePx || 3.4))) * (this._ptSizeMul || 1);
+          const softCap = this._softSplats && !this._softSplatsFail ? 5.0 : 4.0;
+          const autoH = Math.min(softCap, auto);
+          const moving = this._interacting ? Math.max(2.5, autoH * (this._motionSizeScale || 0.9)) : autoH;
           baseSize = Math.max(1.2, Math.min(6.0, moving));
         }
         // ревизия 8: при движении рисуем только часть точек (адаптивно по времени кадра); размер точек растёт на корень из доли пропущенного, чтобы поверхность не рассыпалась
@@ -3084,14 +3106,14 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         gl.uniform1f(this.u.uRadOn, radOn);
         gl.uniform1f(this.u.uFrame, (isCloud && this._frameBox) ? 1 : 0);
         gl.uniform1f(this.u.uPointSize, baseSize);
-        if (!o.col) gl.uniform3fv(this.u.uColor, new Float32Array(o.color || [0.82, 0.86, 0.93]));
+        if (!o.col) { o._uColorCache = o._uColorCache || new Float32Array(o.color || [0.82, 0.86, 0.93]); gl.uniform3fv(this.u.uColor, o._uColorCache); }
         if (o._lod) { this._drawLod(o); }
         else {
           let dc = dcI;
           if (o._segs) dc = this._drawPointSegs(o, dc, attrMode, plan); else gl.drawArrays(gl.POINTS, 0, dc);
           if (isCloud && (this._interacting || this._probeIdle)) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + (plan ? Math.max(dc, plan.visible) : o.count); }
         }
-        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); gl.bindVertexArray(null); return;
+        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uSoft, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); if (isCloud) gl.disable(gl.BLEND); gl.bindVertexArray(null); return;
       }
       gl.uniform1f(this.u.uCloudPass,0);
       let col = o.color; let amb = 0.4;
@@ -4324,6 +4346,9 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this.render();
       return true;
     }
+    setSoftSplatsForce(on) { this._softForce = !!on; if (on) { this._softSplatsFail = false; this._softSplats = true; } this.render(); return this._softForce; }
+    softSplatsState() { return { soft: !!this._softSplats, force: !!this._softForce, fail: !!this._softSplatsFail, limit: this._softSplatsLimit || 0 }; }
+    _softReset() { this._softSplatsFail = false; this._softPerfBad = 0; this._softSplats = !!(this._softSplatsLimit && this._softSplatsLimit > 0); }
     clearOctreeStream(restoreColorMode) {
       const gl = this.gl;
       if (this._octCache && gl) { this._octCache.forEach(e => { if (e.buf) { gl.deleteVertexArray(e.buf.vao); gl.deleteBuffer(e.buf.pb); if (e.buf.cb) gl.deleteBuffer(e.buf.cb); if (e.buf.ib) gl.deleteBuffer(e.buf.ib); if (e.buf.kb) gl.deleteBuffer(e.buf.kb); } }); }
@@ -4780,4 +4805,5 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
   if (typeof window !== 'undefined') window.Viewer3DGL = Viewer3DGL;
   if (typeof module !== 'undefined' && module.exports) module.exports = { Viewer3DGL: Viewer3DGL, cloudQuality: cloudQuality };
 })();
+
 

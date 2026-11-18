@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /*
  * r172 — качество рендера на больших облаках (589.9M/401.7M):
  *  • размер точки по умолчанию 2–3 px (адаптивный, не жирный), в движении не меньше 2 px;
@@ -18,12 +18,12 @@ const SRC = read('renderer/webgl-viewer.js');
 const APP = read('renderer/app.js');
 const PANEL = read('renderer/ui/perf-panel.js');
 
-test('r172: размер точки — авто 2–3 px по умолчанию, в движении ≥2 px', () => {
-  assert.match(SRC, /this\._autoPointSize = true; this\._autoPointBasePx = 2\.8; this\._motionSizeScale = 0\.95;/, 'дефолт авто-точки 2.8 px');
-  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.8\)/, 'формула адаптивной точки');
-  assert.match(SRC, /Math\.max\(2\.0, Math\.min\(4\.0, hCss \/ 1200/, 'клэмп базы 2–4 px');
-  assert.match(SRC, /Math\.max\(2\.0, auto \* \(this\._motionSizeScale \|\| 0\.9\)\)/, 'в движении не меньше 2 px');
-  assert.match(APP, /viewer\.setPointBasePx\) viewer\.setPointBasePx\(2\.8\)/, 'приложение задаёт базу 2.8 px');
+test('r172/r174: размер точки — авто 3–5 px, в движении ≥2.5 px', () => {
+  assert.match(SRC, /this\._autoPointSize = true; this\._autoPointBasePx = 3\.4; this\._softSplats = true; this\._softSplatsLimit = 150000000/, 'дефолт авто-точки 3.4 px');
+  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 3\.4\)/, 'формула адаптивной точки');
+  assert.match(SRC, /Math\.max\(3\.0, Math\.min\(5\.0, hCss \/ 1200/, 'клэмп базы 3–5 px');
+  assert.match(SRC, /Math\.max\(2\.5, autoH \* \(this\._motionSizeScale \|\| 0\.9\)\)/, 'в движении не меньше 2.5 px');
+  assert.match(APP, /viewer\.setPointBasePx\) viewer\.setPointBasePx\(3\.4\)/, 'приложение задаёт базу 3.4 px');
 });
 
 test('r172: базовый тон без пересвета, «Как в Lixel» — пресет', () => {
@@ -41,9 +41,9 @@ test('r172: динамическое качество — разрешение �
   assert.match(SRC, /_dynScaleMoving = 0\.85/, 'авто: разрешение 85 %');
   assert.match(SRC, /Math\.max\(0\.85, Math\.min\(1, this\._dynScaleMoving/, 'пол динамического разрешения 85 %');
   assert.match(SRC, /setRenderScale\(s\)[\s\S]{0,160}Math\.max\(0\.85, Math\.min\(1, s\)\)/, 'setRenderScale не ниже 85 %');
-  assert.match(SRC, /this\._interBudget = 128000000; this\._octMovePct = 65/, 'авто: 65 % точек в движении');
+  assert.match(SRC, /this\._interBudget = 128000000; this\._octMovePct = 60/, 'авто: 60 % точек в движении');
   assert.match(SRC, /this\._interBudget = 96000000; this\._octMovePct = 60/, 'быстро: не ниже 60 %');
-  assert.match(SRC, /this\._motionSizeScale = 0\.95/, 'дефолт движения 0.95 (авто-режим 0.9)');
+  assert.match(SRC, /this\._motionSizeScale = 0\.9/, 'дефолт движения 0.9');
 });
 
 test('r172/r173: GPU-бюджет 300M (быстро 80M), show-all явно, CPU-копии только для небольших облаков', () => {
@@ -60,6 +60,9 @@ test('r172: качество в покое — полное (1:1), динами�
   assert.match(SRC, /moving \? Math\.max\(0\.85, Math\.min\(1, this\._dynScaleMoving/, 'покой — 1:1');
   assert.match(SRC, /mode === 'high'[\s\S]{0,180}this\._dynRes = false/, '«высокое» не режет разрешение вообще');
 });
+
+
+
 
 
 

@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /*
  * r173 — детализация при 589.9M: LOD_DRAW_BUDGET 80M→300M по режимам качества,
  * «Авто» адаптивно по FPS (≥60 → до 100 % точек), «Быстрое» 80M, «Высокое» без потолка;
@@ -44,3 +44,4 @@ test('r173: «Показать все точки файла» — явный ф�
   assert.match(APP, /if \(extra && extra\.allPoints\) pre = \{ maxPoints: 0 \}/);
   assert.match(APP, /__bimShowAllPoints[\s\S]{0,900}allPoints: true/);
 });
+
