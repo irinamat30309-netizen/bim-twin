@@ -1245,7 +1245,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
           try { console.warn('[big] копии частей в памяти не сохранены, остаётся режим r16', e); } catch (_) {}
         }
       }
-      bo._segs.push(sg); bo._gpuCount = start + n; bo.count = bo._gpuCount;
+      bo._segs.push(sg); bo._gpuCount = Math.min(start + n, (bo._stream && bo._stream.total) || (start + n)); bo.count = bo._gpuCount;
       if (bo._segs.length === 1) { bo._vao = vao; bo._pb = pb; bo._cb = cb; }
       // выборка для процессора: каждая every-я точка облака
       const every = st.every, hasC = !!seg.col, I = seg.intensity, K = seg.classification;
@@ -1275,7 +1275,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       const bo = this.base && this.base[0];
       if (!bo || !bo._stream) return false;
       opts = opts || {};
-      const loaded = bo._gpuCount | 0, total = bo._stream.total;
+      const loadedRaw = bo._gpuCount | 0, total = bo._stream.total;
+      const loaded = Math.min(loadedRaw || 0, total || loadedRaw || 0);
       if (loaded > 0) {
         if (bo._stream.ub) bo.aabb = { mn: bo._stream.ub.mn.slice(), mx: bo._stream.ub.mx.slice() };   // окончательная рамка — по прочитанным точкам
         this._recomputeBBox();
@@ -1284,7 +1285,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const area = 2 * (bw * bd + bw * bh + bd * bh) || 1, diag = Math.sqrt(bw * bw + bh * bh + bd * bd) || 8;
         bo._spacing = Math.min(Math.sqrt(area / Math.max(1, loaded)), diag * 0.02);
       }
-      if (this._cloudRecord) { this._cloudRecord.loadedCount = loaded; this._cloudRecord.sourceCount = Math.max(total, bo._stream.srcTotal || 0); }
+      if (this._cloudRecord) { this._cloudRecord.loadedCount = loaded; this._cloudRecord.sourceCount = Math.max(loaded, total, bo._stream.srcTotal || 0); }
       if (loaded >= 20000) { try { this._startSegSpacing(bo); } catch (_) {} }
       this.modelDims = this._computeCloudDims(this._srcMeta || {}, loaded);
       this._notifyCloudChanged();
@@ -2657,10 +2658,17 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     getCloudInfo() {
       const r=this._cloudRecord;if(!r || !(this.base.some(o=>o.points)||this._octActive))return null;
       const streamed = !!this._octActive && this._octIndex;
+      // r177: счётчик «показано» — только основное облако (base[0]) и никогда больше sourceCount.
+      // Раньше сумма по всем объектам base при повторной подгрузке/soft-переключении давала 845M при файле 589.9M.
+      const ptsObjs = this.base.filter(o => o.points);
+      const mainObj = (ptsObjs[0] === this.base[0] ? ptsObjs[0] : ptsObjs.find(o => o === this.base[0])) || ptsObjs[0] || null;
+      let loadedCount = mainObj ? (Number(mainObj._gpuCount) || Number(mainObj.count) || 0) : 0;
+      const srcCount = Number(r.sourceCount);
+      if (Number.isSafeInteger(srcCount) && srcCount > 0) loadedCount = Math.min(loadedCount, srcCount);
       return Object.assign({},r,{
         hasIntensity: streamed ? this._octIndex.hasIntensity === true : !!r.hasIntensity,
         hasClassification: streamed ? this._octIndex.hasClassification === true : !!r.hasClassification,
-        loadedCount:this.base.filter(o=>o.points).reduce((n,o)=>n+o.count,0),
+        loadedCount: loadedCount,
         bounds:{mn:this.bbox.mn.slice(),mx:this.bbox.mx.slice()},
         visible:this.cloudVisible!==false,streaming:!!this._octActive,gpuThinned:!!(this.base&&this.base[0]&&this.base[0]._stream&&this.base[0]._stream.srcTotal>this.base[0]._stream.total),
         display:Object.assign({},this._cloudDisplay,{mode:this.getColorMode()}),
