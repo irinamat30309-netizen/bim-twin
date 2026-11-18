@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Viewer3DGL — real WebGL2 3D engine (Phase B). Zero external libraries, fully offline.
  *
  * Drop-in replacement for the canvas-2D Viewer3D. Same public API
@@ -312,7 +312,7 @@
       this._ptBright = 1.1; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
       // r172: базовый тон «как есть» (без пересвета): небольшой gain ×1.1, grade выключен; «Как в Lixel» — пресет.
       // Адаптивный размер точки по умолчанию: 2–3 px в покое (не жирно), в движении не меньше 2 px.
-      this._autoPointSize = true; this._autoPointBasePx = 3.4; this._softSplats = true; this._softSplatsLimit = 150000000; this._softForce = false; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
+      this._autoPointSize = true; this._autoPointBasePx = 3.4; this._softSplats = true; this._softSplatsLimit = 150000000; this._softForce = true; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
     try { canvas.addEventListener('webglcontextlost', () => { this._softSplats = false; this._softSplatsFail = true; }); } catch (_) {}
       // r172: динамическое разрешение в движении не ниже 85 % (было 75 % → «мыло»).
       this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.9; this._qualityMode = 'auto';
@@ -2741,6 +2741,11 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       if (mode === 'high') { this._interBudget = 2000000000; this._octMovePct = 100; this._dynScaleMoving = 1; this._dynRes = false; this._motionSizeScale = 1; this._autoPointBasePx = 3.0; }
       else if (mode === 'fast') { this._interBudget = 96000000; this._octMovePct = 60; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.85; this._autoPointBasePx = 2.8; }
       else { this._interBudget = 128000000; this._octMovePct = 60; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.9; this._autoPointBasePx = 3.4; }
+      // r175: «Высокое» принудительно включает мягкие сплаты и для больших облаков (FPS проверен: 129 на 300M);
+      // «Авто»/«Быстрое» — hard для >150M (плюс fallback сохраняется).
+      // r176: «Авто» и «Высокое» — мягкие сплаты для всех размеров; fallback на hard остаётся. «Быстрое» — hard.
+      if (mode === 'fast') { this._softForce = false; }
+      else { this._softForce = true; this._softSplats = true; this._softSplatsFail = false; }
       if (!this._interacting) { this._renderScale = 1; }
       // r173: бюджет отрисовки по режиму: «Высокое» — без потолка, «Авто» — 300M (детализация ≥ Lixel), «Быстрое» — 80M.
       try {
@@ -3000,7 +3005,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       }
       this._interMs = ms;
       // r174 fallback: если с мягкими сплатами стабильно медленно/контекст деградировал — hard-точки 3–4 px
-      if (this._qualityMode === 'auto' && this._interacting) {
+      if ((this._qualityMode === 'auto' || this._softForce) && this._interacting) {
         if (ms > 34 && this._softSplats && !this._softSplatsFail) { if (++this._softPerfBad >= 6) { this._softSplats = false; this._softSplatsFail = true; } }
         else if (this._softPerfBad > 0) this._softPerfBad--;
       }
