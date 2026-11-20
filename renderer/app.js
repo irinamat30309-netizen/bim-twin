@@ -6014,6 +6014,11 @@
       document.head.appendChild(s);
     } catch (e) {}
   }
+  // r178: вспомогательные слои r145+ (рейка, дерево/свойства, P1/P2/P3-полосы, панель FPS) НЕ грузятся
+  // по умолчанию: рабочее пространство — только облако и лента. Включаются через localStorage/#extra=1.
+  function extraUiWanted() { try { return localStorage.getItem('bim.extraUi') === '1' || localStorage.getItem('bim.extraUi.all') === '1'; } catch (e) { return false; } }
+  window.__bimEnableExtraUi = function () { try { localStorage.setItem('bim.extraUi', '1'); } catch (e) {} location.reload(); };
+  window.__bimDisableExtraUi = function () { try { localStorage.removeItem('bim.extraUi'); } catch (e) {} location.reload(); };
   function ensureP1Tools() {
     try {
       if (window.__lxP1 || document.getElementById('lxP1Script')) return;
@@ -6042,7 +6047,8 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); ensureClipP3(); } catch (e) { console.warn('r145 render prefs', e); }
+    try { applyRenderPrefs(); } catch (e) { console.warn('render prefs', e); }
+    try { if (extraUiWanted()) { ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); ensureClipP3(); } } catch (e) { console.warn('extra ui', e); }
     // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.
     try { startPendingCloudOpen(); } catch (e) { console.warn('r149 pending cloud', e); }
     try { window.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { try { applyRenderPrefs(); } catch (e) {} }, 120); }); } catch (e) {}

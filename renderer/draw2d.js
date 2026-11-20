@@ -30,6 +30,7 @@
   function dist2d(a, b) { var dx = a[0] - b[0], dy = a[1] - b[1]; return Math.sqrt(dx * dx + dy * dy); }
   function dist3d(a, b) { var dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2]; return Math.sqrt(dx * dx + dy * dy + dz * dz); }
   // Формат длины для подписи размера (метры, латинское 'm' для совместимости с CAD)
+  function safeTextOut(v) { if (v == null || v === false || v === true) return ''; var t = String(v); return /^(false|true|undefined|null|NaN)$/i.test(t.trim()) ? '' : t; }
   function formatLen(m) { return (Math.round((m || 0) * 1000) / 1000).toString() + ' m'; }
 
   // 4 угла прямоугольника в 3D по двум противоположным углам (в плоскости проекции)
@@ -211,12 +212,12 @@
       else if (e.type === 'polyline') out.push({ type: 'polyline', layer: lyr, closed: !!e.closed, points: e.points.map(flatten) });
       else if (e.type === 'point') out.push({ type: 'point', layer: lyr, p: flatten(e.p) });
       else if (e.type === 'circle') out.push({ type: 'circle', layer: lyr, c: flatten(e.c), r: e.r });
-      else if (e.type === 'text') out.push({ type: 'text', layer: lyr, p: flatten(e.p), h: e.h || 0.3, text: e.text || '' });
+      else if (e.type === 'text') out.push({ type: 'text', layer: lyr, p: flatten(e.p), h: e.h || 0.3, text: safeTextOut(e.text) });
       else if (e.type === 'dim') {
         var pa = flatten(e.a), pb = flatten(e.b);
         out.push({ type: 'line', layer: lyr, a: pa, b: pb });
         var mp = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, 0];
-        out.push({ type: 'text', layer: lyr, p: mp, h: (e.h || Math.max(0.15, (e.len || 1) * 0.06)), text: e.text != null ? e.text : formatLen(e.len || 0) });
+        out.push({ type: 'text', layer: lyr, p: mp, h: (e.h || Math.max(0.15, (e.len || 1) * 0.06)), text: safeTextOut(e.text != null ? e.text : formatLen(e.len || 0)) });
       }
     });
     return out;

@@ -75,7 +75,11 @@
         s.tool = drawing && drawing.tool || 'polyline';
         s.projection = drawing && drawing.projection || 'top';
         s.layer = drawing && drawing.layer || 'DRAW';
-        s.entities = drawing && Array.isArray(drawing.entities) ? drawing.entities : [];
+        s.entities = (drawing && Array.isArray(drawing.entities) ? drawing.entities : []).map(function (e) {
+      if (!e || typeof e !== 'object') return e;
+      if (e.type === 'text' || e.type === 'dim') { var t = safeDimText(e.text); if (e.text != null && t !== String(e.text)) e = Object.assign({}, e, { text: t }); }
+      return e;
+    });
         s.draft = drawing && Array.isArray(drawing.draft) && drawing.draft.length ? drawing.draft : null;
         hiddenLayers = drawing && drawing.hiddenLayers && typeof drawing.hiddenLayers === 'object' ? drawing.hiddenLayers : {};
         lastTool = s.tool;
@@ -1010,7 +1014,13 @@
   function mkLine(a, b, cls) { var l = document.createElementNS(SVGNS, 'line'); l.setAttribute('x1', a.x); l.setAttribute('y1', a.y); l.setAttribute('x2', b.x); l.setAttribute('y2', b.y); l.setAttribute('class', cls); return l; }
   function mkPoly(pts, cls) { var pl = document.createElementNS(SVGNS, 'polyline'); pl.setAttribute('points', pts.map(function (p) { return p.x + ',' + p.y; }).join(' ')); pl.setAttribute('class', cls); return pl; }
   function mkDot(p, cls, r) { var c = document.createElementNS(SVGNS, 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', r || 3); c.setAttribute('class', cls); return c; }
-  function mkText(p, txt, cls, dy) { var t = document.createElementNS(SVGNS, 'text'); t.setAttribute('x', p.x); t.setAttribute('y', p.y - (dy || 0)); t.setAttribute('class', cls); t.textContent = txt; return t; }
+  function safeDimText(v) {
+    if (v == null || v === false || v === true) return '';
+    var t = String(v);
+    if (/^(false|true|undefined|null|NaN)$/i.test(t.trim())) return '';
+    return t;
+  }
+  function mkText(p, txt, cls, dy) { var t = document.createElementNS(SVGNS, 'text'); t.setAttribute('x', p.x); t.setAttribute('y', p.y - (dy || 0)); t.setAttribute('class', cls); t.textContent = safeDimText(txt); return t; }
   function mkRect(p, sz, cls) { var rc = document.createElementNS(SVGNS, 'rect'); rc.setAttribute('x', p.x - sz); rc.setAttribute('y', p.y - sz); rc.setAttribute('width', sz * 2); rc.setAttribute('height', sz * 2); rc.setAttribute('class', cls); return rc; }
 
   function draw() {
@@ -1029,13 +1039,13 @@
         if (sp.length >= 2) { var pts = e.closed ? sp.concat([sp[0]]) : sp; overlay.appendChild(mkPoly(pts, 'lx-dl' + (e.closed ? ' closed' : '') + (e.layer === 'SECTION' ? ' lx-sect' : ''))); }
         sp.forEach(function (p) { overlay.appendChild(mkDot(p, 'lx-vtx', 2.4)); });
       } else if (e.type === 'point') { var q = w2s(e.p); if (q) overlay.appendChild(mkDot(q, 'lx-pt', 3.4)); }
-      else if (e.type === 'text') { var tp = w2s(e.p); if (tp) overlay.appendChild(mkText(tp, e.text || '', 'lx-dimtxt', 0)); }
+      else if (e.type === 'text') { var tp = w2s(e.p); if (tp) overlay.appendChild(mkText(tp, safeDimText(e.text), 'lx-dimtxt', 0)); }
       else if (e.type === 'dim') {
         var da = w2s(e.a), db = w2s(e.b); if (!da || !db) return;
         overlay.appendChild(mkLine(da, db, 'lx-dim'));
         overlay.appendChild(mkDot(da, 'lx-vtx', 2.2)); overlay.appendChild(mkDot(db, 'lx-vtx', 2.2));
         var mp = { x: (da.x + db.x) / 2, y: (da.y + db.y) / 2 };
-        overlay.appendChild(mkText(mp, e.text || '', 'lx-dimtxt', 5));
+        overlay.appendChild(mkText(mp, safeDimText(e.text), 'lx-dimtxt', 5));
       }
       else if (e.type === 'circle') {
         var c = w2s(e.c); if (!c) return;
