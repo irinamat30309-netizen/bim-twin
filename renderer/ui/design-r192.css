@@ -1,0 +1,193 @@
+/* BIM Twin — r192 design layer (anti-slop, graphite industrial + violet accent).
+ * Загружается последним: нормализует акцент, радиусы, типографику, тени и состояния,
+ * не меняя layout/функциональность (r130/r178/r191 сохраняются).
+ * Принципы: ENERGY 1, RHYTHM 2, MOTION 1; один primary-акцент; границы вместо теней;
+ * радиусы 4/6/8; шкала 11/12/13/14/16/20/24; focus-visible 2px accent. */
+
+:root { --r-pill: 999px; }
+
+/* ---------- Типографика: без uppercase+широкого трекинга, табличные цифры ---------- */
+html, body, button, input, select, textarea, .lx-status, .tb-title, .lx-tab, .lx-cell-label {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "cv11" 1;
+}
+.sb-title, .lx-glabel, .lx-pop-title, .onboard-steps-title, .lx-win-h, .lx-obj-h,
+.vf-hd, .vf-sub, .set-h, .cmp-alternatives-title, .finding .src, .lx-type-badge,
+.lx-sec-title, .lx-panel-title, .panel-title {
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 600;
+  font-size: var(--fs-xs);
+  color: var(--txt-2);
+}
+.lx-tab { font-size: var(--fs-sm); font-weight: 500; letter-spacing: 0; }
+.floor { text-transform: none; letter-spacing: normal; font-size: var(--fs-2xs); font-weight: 600; color: var(--txt-2); }
+.lx-tab[aria-selected="true"] { font-weight: 600; }
+.lx-glabel { color: var(--txt-3); font-weight: 500; }
+h1, .lx-h1 { font-size: var(--fs-xl); line-height: var(--lh-tight); font-weight: 600; letter-spacing: -.01em; }
+h2, .lx-h2 { font-size: var(--fs-lg); line-height: var(--lh-tight); font-weight: 600; }
+h3, .lx-h3 { font-size: var(--fs-md); line-height: var(--lh-tight); font-weight: 600; }
+small, .lx-small { font-size: var(--fs-2xs); }
+.lx-mono, code, pre, .coords, .lx-coord { font-variant-numeric: tabular-nums; }
+/* вторичный текст — не светлее AA на своём фоне (цвета подняты в tokens.css) */
+.muted, .txt-2, .lx-muted, .lx-sub, .fpanel-sub, .sb-sub { color: var(--txt-2); }
+.txt-3, .lx-dim { color: var(--txt-3); }
+
+/* ---------- Радиусы 4/6/8: убираем «всё pill» ---------- */
+.btn, .btn-sm, button.chip, .chip, .fchip, .badge, .lx-cell, .lx-tab, .icon-btn, .tb-btn,
+.nav-btn, .tgl, .seg-group, .seg-btn, .lx-input, input, select, textarea, .lx-pop, .fpanel,
+.hud, .lx-toast, .lx-card, .card, .st-card, .lx-boot-card {
+  border-radius: var(--r-2);
+}
+.btn.xs, .icon-btn.xs, .badge { border-radius: var(--r-1); }
+.fpanel, .lx-modal, .lx-pop, .hud, dialog { border-radius: var(--r-3); }
+.badge { border-radius: 4px; }
+.lx-type-badge { border-radius: var(--r-1); }
+.chip, .fchip { border-radius: var(--r-2); }
+/* статус-чипы остаются pill — функционально (короткий статус/счётчик) */
+.lx-status-chip, .status-pill, .lx-pill-status { border-radius: var(--r-pill); }
+
+/* ---------- Один primary-акцент: violet только у ключевого действия ---------- */
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+.btn.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+.btn.primary:active { background: var(--accent-hi); }
+/* второстепенные кнопки — нейтральные, акцент только на hover/focus */
+.btn:not(.primary):not(.danger):not(.ok):not(.ghost),
+.btn-sm:not(.primary):not(.danger):not(.ok):not(.ghost) {
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  color: var(--txt);
+  box-shadow: none;
+}
+.btn:not(.primary):not(.danger):not(.ok):not(.ghost):hover,
+.btn-sm:not(.primary):not(.danger):not(.ok):not(.ghost):hover {
+  background: var(--bg-3);
+  border-color: var(--accent-line);
+  color: var(--txt);
+}
+.btn.ghost { background: transparent; border-color: transparent; color: var(--txt-2); }
+.btn.ghost:hover { background: var(--bg-3); color: var(--txt); }
+/* активное состояние — граница/нейтральный фон, не violet-заливка */
+.btn.on, .btn-sm.on, .btn[aria-pressed="true"],
+.chip.sel, .fchip.active, .icon-btn[aria-pressed="true"], .tb-btn[aria-pressed="true"],
+.nav-btn[aria-pressed="true"], .nav-btn.on, .seg-btn.on, .seg-btn[aria-pressed="true"] {
+  background: var(--bg-3);
+  border-color: var(--accent-line);
+  color: var(--txt);
+  box-shadow: none;
+}
+.icon-btn:hover, .tb-btn:hover, .nav-btn:hover { background: var(--bg-3); color: var(--txt); }
+.icon-btn, .tb-btn, .nav-btn { color: var(--txt-2); }
+
+/* лента: primary — только иконка акцентная, без violet-заливки плашки */
+.lx-cell { background: transparent; border: 1px solid transparent; color: var(--txt); }
+.lx-cell:hover { background: var(--bg-3); border-color: var(--line); }
+.lx-cell.lx-primary, .lx-primary { background: transparent; color: var(--txt); }
+.lx-cell.lx-primary .lx-ico, .lx-primary .lx-ico {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: none;
+}
+.lx-cell.lx-primary:hover .lx-ico { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.lx-tab { color: var(--txt-2); }
+.lx-tab[aria-selected="true"] { color: var(--txt); }
+.lx-tab::after { background: var(--accent); height: 2px; }
+/* бренд-марки — нейтральная графитовая плашка, акцент только в иконке */
+.tb-mark, .lx-boot-mark, .st-mark, .brand-mark {
+  background: var(--bg-3);
+  color: var(--accent);
+  box-shadow: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-2);
+}
+.lx-boot-mark svg { color: var(--accent); }
+
+/* семантика — только success/warn/danger, нейтральные бейджи */
+.badge { background: var(--bg-3); color: var(--txt-2); }
+.badge.ok { background: var(--ok-soft); color: var(--ok); }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge.err { background: var(--err-soft); color: var(--err); }
+.lx-type-badge, .lx-chip-iso { background: var(--bg-3); color: var(--txt-2); }
+
+/* переключатели — функциональный статус, допустимый акцент */
+.tgl.on .tgl-sw, .tgl[aria-pressed="true"] .tgl-sw,
+input[type="checkbox"].lx-switch:checked, input[type="checkbox"].set-ctl-chk:checked {
+  background: var(--accent-fill);
+}
+.tgl-sw, input[type="checkbox"].lx-switch { border-radius: var(--r-pill); }
+.tgl-sw::after, input[type="checkbox"].lx-switch::after { border-radius: 50%; }
+
+/* ---------- Тени только для приподнятых слоёв, разделение — границы ---------- */
+.fpanel, .hud, .lx-modal, .lx-pop, dialog[open], .lx-command, .lx-toast, .menu-popup {
+  box-shadow: var(--shadow-2);
+  border: 1px solid var(--line-strong);
+}
+.lx-panel, .side-panel, .insp-pane, .sb-panel, .card, .lx-card, .st-card { box-shadow: none; }
+.lx-ribbon, .lx-tabs, .titlebar, .lx-status { box-shadow: none; }
+.lx-status { border-top: 1px solid var(--line); }
+
+/* ---------- Focus ring 2px accent везде, клавиатура ---------- */
+:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+  box-shadow: none !important;
+}
+button:focus:not(:focus-visible), a:focus:not(:focus-visible), input:focus:not(:focus-visible),
+select:focus:not(:focus-visible), textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) {
+  outline: none !important;
+}
+button, a[href], [role="button"], [role="tab"], select, label[for], summary { cursor: pointer; }
+button:disabled, [aria-disabled="true"], input:disabled, select:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+/* Баннер «нет цвета» — нейтральная плашка, акцент только у primary-кнопки */
+#lxNoColorBanner {
+  background: var(--bg-2) !important;
+  border: 1px solid var(--accent-line) !important;
+  color: var(--txt) !important;
+  box-shadow: var(--shadow-2) !important;
+  border-radius: var(--r-3) !important;
+  font-size: var(--fs-sm) !important;
+}
+#lxNoColorBanner button { border-radius: var(--r-2) !important; }
+#lxNoColorBanner button:not(:last-child) {
+  background: var(--accent) !important;
+  color: var(--on-accent) !important;
+}
+
+/* ---------- Статус-бар: ровные ряды, без дублей/перекрытий ---------- */
+.lx-status {
+  font-size: var(--fs-2xs);
+  line-height: var(--h-status);
+  color: var(--txt-2);
+  gap: 8px;
+  min-height: var(--h-status);
+}
+.lx-status > * { margin: 0; white-space: nowrap; }
+.lx-status .st-info, .lx-status #lxSaveState { color: var(--txt-2); }
+.lx-status .st-sep { width: 1px; height: 12px; background: var(--line-strong); margin: 0 2px; }
+.lx-status .lx-status-right { display: flex; align-items: center; gap: 8px; }
+#lxVramHud { font-variant-numeric: tabular-nums; }
+
+/* ---------- Плотность/сетка: 8px, без «случайных» отступов ---------- */
+.fpanel, .hud, .lx-modal { border-radius: var(--r-3); }
+.lx-ribbon { background: var(--bg-1); border-bottom: 1px solid var(--line); }
+.lx-tabs { background: var(--bg-1); border-bottom: 1px solid var(--line); }
+.titlebar { background: var(--bg-1); border-bottom: 1px solid var(--line); }
+
+/* ---------- Reduced motion: только функциональные hover/focus ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

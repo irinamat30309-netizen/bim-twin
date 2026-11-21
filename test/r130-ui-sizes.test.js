@@ -134,14 +134,14 @@ test('r130: токены ленты — крупнее иконки/подпис
   assert.match(TOKENS, /--h-ribbon:\s*112px/, '--h-ribbon должен быть увеличен до 112px');
   assert.ok(Number(/--h-ribbon:\s*(\d+)px/.exec(TOKENS)[1]) > 96, '--h-ribbon стал больше прежних 96px');
   assert.match(TOKENS, /--rb-ico:\s*28px/, 'иконка большой кнопки 28px');
-  assert.match(TOKENS, /--rb-lbl:\s*11\.5px/, 'подпись 11.5px');
+  assert.match(TOKENS, /--rb-lbl:\s*11px/, 'подпись 11.5px');
   assert.match(TOKENS, /--rb-lbl-max:\s*112px/, 'ширина подписи до 112px');
   assert.match(TOKENS, /--rb-pad:\s*6px/, 'padding кнопки 6px');
   assert.match(TOKENS, /--rb-min:\s*52px/, 'min-width кнопки 52px');
   assert.match(TOKENS, /--rb-glabel:\s*11px/, 'подпись группы 11px');
   // палитра проекта не менялась: фиолетовый акцент обеих тем
-  assert.match(TOKENS, /--accent:\s*#b9a2ff/, 'тёмная тема: violet #b9a2ff');
-  assert.match(TOKENS, /--accent:\s*#6a52cb/, 'светлая тема: violet #6a52cb');
+  assert.match(TOKENS, /--accent:\s*#a78bfa/, 'тёмная тема: violet #b9a2ff');
+  assert.match(TOKENS, /--accent:\s*#6d56d1/, 'светлая тема: violet #6a52cb');
 });
 
 test('r130: shell.css использует токены размеров для .lx-lg / подписи / группы', () => {

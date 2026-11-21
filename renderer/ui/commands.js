@@ -75,8 +75,8 @@
         I('vtQuality', 'palette', 'Вид облака', { sel: '#vtQuality', needs: 'cloud', tip: 'Цвет, яркость, размер точки, EDL и фотореализм' })
       ]),
       G('clean', 'Очистка', [
-        I('opAutoClean', 'sparkles', 'Автоочистка', { call: OPS_T + 'opAutoClean', needs: 'cloud', tip: 'Шум, «облачка» в пустоте, прохожие и «волоски» у стен убираются, стены, пол и потолок становятся ровными. Перед применением — предпросмотр красным' }),
-        I('opDeepClean', 'sparkles', 'Чистка до мелочей', { call: OPS_T + 'opDeepClean', needs: 'cloud', tip: 'Всё, что делает автоочистка, и ещё: точные дубли, неверные точки, «летающие» обрывки (туман, отражения, пыль в воздухе) и далёкие выбросы. Удаляемое — красным перед применением; Ctrl+Z — отмена' }),
+        I('opAutoClean', 'brush-cleaning', 'Автоочистка', { call: OPS_T + 'opAutoClean', needs: 'cloud', tip: 'Шум, «облачка» в пустоте, прохожие и «волоски» у стен убираются, стены, пол и потолок становятся ровными. Перед применением — предпросмотр красным' }),
+        I('opDeepClean', 'scan-search', 'Чистка до мелочей', { call: OPS_T + 'opDeepClean', needs: 'cloud', tip: 'Всё, что делает автоочистка, и ещё: точные дубли, неверные точки, «летающие» обрывки (туман, отражения, пыль в воздухе) и далёкие выбросы. Удаляемое — красным перед применением; Ctrl+Z — отмена' }),
         I('opDynClean', 'route', 'Движущиеся объекты', { call: OPS_T + 'opDynClean', needs: 'cloud', tip: 'Прохожие, машины и их «следы» по времени точек LAS, точнее — с траекторией poses.csv. Перед удалением — предпросмотр красным' }),
         I('opPhotoColor', 'camera', 'Цвет по фото камер', { call: OPS_T + 'opPhotoColor', needs: 'cloud', tip: 'Настоящий цвет точек по кадрам камер сканера из .xbin — для серого облака из лидара (RGB = яркость отражения). Результат — новый LAS «…-color.las»' }),
         I('opRefineScan', 'file-output', 'Чистовая обработка', { call: OPS_T + 'opRefineScan', needs: 'cloud', tip: 'Без прохожих и шума, с тонкими чёткими стенами и полом — для файла любого размера. Обновляет открытый файл (копия исходника остаётся) или сохраняет новый' }),
@@ -234,7 +234,7 @@
         I('tsSplatTop', 'orbit', '3DGS-тур', { sel: '#tsSplatTop', primary: 1, tip: 'Открыть .ply / .splat: ходьба по сцене, маршрут, экспорт видео с титрами и логотипом' }),
         I('tsSplatLcc2', 'folder-open', 'LCC2', { sel: '#tsSplatLcc2', tip: 'Войдите внутрь lcc2-result и нажмите «Загрузить»' }),
         I('tsMesh', 'hexagon', 'Меш', { sel: '#tsMesh', tip: 'Треугольный меш glTF / GLB / PLY. ЛКМ — осмотр, WASD — ходьба' }),
-        I('tsConv3dgs', 'wand-sparkles', 'PLY → 3DGS', { sel: '#tsConv3dgs', tip: 'Превратить LiDAR-облако в 3D Gaussian Splatting' })
+        I('tsConv3dgs', 'layers-2', 'PLY → 3DGS', { sel: '#tsConv3dgs', tip: 'Превратить LiDAR-облако в 3D Gaussian Splatting' })
       ]),
       G('stations', 'Станции сканера', [
         I('vtTour', 'route', null, { sel: '#vtTour', toggle: 1, tip: 'Экскурсия по станциям сканера: импорт E57 или JSON, расстановка вручную, экспорт' })
@@ -247,7 +247,7 @@
     { id: 'qa', label: 'Контроль', groups: [
       G('ai', 'Нейросеть', [
         I('aiAssistant', 'message-circle', 'ИИ-ассистент', { call: 'BimAssistantUI.toggle', keys: 'Ctrl Shift A', tip: 'Локальная модель Qwen: ответы по результатам контроля, нормам и командам, расчёты; без интернета' }),
-        I('btnAI', 'sparkles', null, { sel: '#btnAI' }),
+        I('btnAI', 'message-circle', null, { sel: '#btnAI' }),
         I('btnVerify', 'shield-check', null, { sel: '#btnVerify', primary: 1 })
       ]),
       G('geom', 'Геометрия', [
