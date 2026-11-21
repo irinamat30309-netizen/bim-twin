@@ -47,16 +47,21 @@ function parseMotorMsg(b, a, e) {
   const n = Math.hypot(c, s); if (!(n > 0)) return null;
   return { t, c: c / n, s: s / n, norm: n };
 }
-// IMU: {t, ax, ay, az (м/с²), gx, gy, gz (рад/с)} или null; в L2 Pro поля 2–4 — ускорение (1e-4 м/с²), 5–7 — гироскоп (1e-4 рад/с)
+// IMU: {t, ax, ay, az (м/с²), gx, gy, gz (рад/с), period (с)} или null; в L2 Pro поля 2–4 — ускорение (1e-4 м/с²), 5–7 — гироскоп (1e-4 рад/с)
+// r187: заголовок содержит поле 3 — период выборки (мкс, zigzag); температуры/статуса в сообщении L2 Pro нет.
 function parseImuMsg(b, a, e) {
-  let t = null; const v = [null, null, null, null, null, null, null, null];
+  let t = null, period = null; const v = [null, null, null, null, null, null, null, null];
   for (const x of fieldsOf(b, a, e)) {
-    if (x.f === 1 && x.wt === 2) { for (const y of fieldsOf(b, x.a, x.e)) if (y.f === 2 && y.wt === 0) t = zz(y.v) / 1e6; }
-    else if (x.wt === 0 && x.f >= 2 && x.f <= 7) v[x.f] = zz(x.v);
+    if (x.f === 1 && x.wt === 2) {
+      for (const y of fieldsOf(b, x.a, x.e)) {
+        if (y.f === 2 && y.wt === 0) t = zz(y.v) / 1e6;
+        else if (y.f === 3 && y.wt === 0) period = zz(y.v) / 1e6;
+      }
+    } else if (x.wt === 0 && x.f >= 2 && x.f <= 7) v[x.f] = zz(x.v);
     else if (x.wt === 2) return null;
   }
   if (t == null || v.slice(2, 8).some(q => q == null)) return null;
-  return { t, ax: v[2] / 1e4, ay: v[3] / 1e4, az: v[4] / 1e4, gx: v[5] / 1e4, gy: v[6] / 1e4, gz: v[7] / 1e4 };
+  return { t, ax: v[2] / 1e4, ay: v[3] / 1e4, az: v[4] / 1e4, gx: v[5] / 1e4, gy: v[6] / 1e4, gz: v[7] / 1e4, period };
 }
 // пакет лидара похож на настоящий: ≥ 50 точек, у точек поля 1..6, кольцо 0..127
 function looksLidar(b, a, e) {
@@ -101,7 +106,7 @@ function scan(file, onProgress) {
     const calib = XB.parseCalib(head) || {};
     const first = XB.findFirstRecord(head); if (first < 0) throw new Error('в файле .xbin не найдены записи данных');
     const kind = new Map();   // ch → 'lidar' | 'motor' | 'other'
-    const lidar = [], mt = [], mc = [], ms = [], it = [], ig = [];
+    const lidar = [], mt = [], mc = [], ms = [], it = [], ig = [], ia = [];
     const readSeq = makeSeqReader(fd, size);
     let p = first, last = 0, lidarBytes = 0;
     while (p + HDR <= size) {
@@ -124,7 +129,7 @@ function scan(file, onProgress) {
           kind.set(r.ch, k);
         }
         if (k === 'motor') for (const x of msgs) { const m = parseMotorMsg(body, x.a, x.e); if (m) { mt.push(m.t); mc.push(m.c); ms.push(m.s); } }
-        if (k === 'imu') for (const x of msgs) { const m = parseImuMsg(body, x.a, x.e); if (m) { it.push(m.t); ig.push(m.gx, m.gy, m.gz); } }
+        if (k === 'imu') for (const x of msgs) { const m = parseImuMsg(body, x.a, x.e); if (m) { it.push(m.t); ig.push(m.gx, m.gy, m.gz); ia.push(m.ax, m.ay, m.az); } }
       }
       if (k === 'lidar') { lidar.push({ off: p + HDR, len: r.L - HDR, t: r.t0 / 1e6 }); lidarBytes += r.L - HDR; }
       p += r.L;
@@ -142,9 +147,9 @@ function scan(file, onProgress) {
     let lidarCh = null, motorCh = null, imuCh = null; for (const [ch, k] of kind) { if (k === 'lidar') lidarCh = ch; else if (k === 'motor') motorCh = ch; else if (k === 'imu') imuCh = ch; }
     lidar.sort((a, b) => a.t - b.t);
     const io = it.map((_, i) => i).sort((a, b) => it[a] - it[b]);
-    const IT = new Float64Array(io.length), IG = new Float64Array(io.length * 3);
-    io.forEach((i, j) => { IT[j] = it[i]; IG[j * 3] = ig[i * 3]; IG[j * 3 + 1] = ig[i * 3 + 1]; IG[j * 3 + 2] = ig[i * 3 + 2]; });
-    return { size, calib, first, lidarCh, motorCh, imuCh, lidar, motor: { t: T, phi: PHI }, imu: { t: IT, g: IG }, bytes: lidarBytes,
+    const IT = new Float64Array(io.length), IG = new Float64Array(io.length * 3), IA = new Float64Array(io.length * 3);
+    io.forEach((i, j) => { IT[j] = it[i]; IG[j * 3] = ig[i * 3]; IG[j * 3 + 1] = ig[i * 3 + 1]; IG[j * 3 + 2] = ig[i * 3 + 2]; IA[j * 3] = ia[i * 3]; IA[j * 3 + 1] = ia[i * 3 + 1]; IA[j * 3 + 2] = ia[i * 3 + 2]; });
+    return { size, calib, first, lidarCh, motorCh, imuCh, lidar, motor: { t: T, phi: PHI }, imu: { t: IT, g: IG, a: IA, temp: null }, bytes: lidarBytes,
       t0: lidar.length ? lidar[0].t : null, t1: lidar.length ? lidar[lidar.length - 1].t : null };
   } finally { fs.closeSync(fd); }
 }
