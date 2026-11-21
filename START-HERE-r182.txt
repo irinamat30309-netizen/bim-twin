@@ -1,0 +1,6 @@
+﻿BIM Twin — ФИНАЛЬНАЯ СБОРКА r182 (2026-11-21)
+==============================================
+ЗАПУСК: cd bim-twin; npm install; npm start
+Приёмка: CLOSING-r182.md. Отчёты: RECOLOR-SPEED-r180.md, CLEAN-SPEED-r180.md, XBIN-BUILD-SPEED-r179.md,
+COLOR-REPAIR-r181.md, UI-REPAIR-r181.md, RENDER-QUALITY-r172.md, CLOUD-SPECKLE-r174.md.
+Модель: deliverables/py2-final-v5.json + .ifc (A 8/8, 0 ERROR). Тесты: 1891/1887 pass/0 fail.
