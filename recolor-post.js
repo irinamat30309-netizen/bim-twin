@@ -244,6 +244,7 @@ function postColor(grayPath, colorIn, colorOut, opt, log) { return runPost(grayP
 // + запас соседей (margin), пишет только свои — затем куски склеиваются в исходном порядке.
 async function postParallel(cfg) {
   const { gray, colorIn, colorOut, ranges, workers, opt, log } = cfg;
+  const onProgress = typeof cfg.onProgress === 'function' ? cfg.onProgress : null;
   const w = Math.max(1, Math.min(32, workers | 0));
   const head = (() => { const fd = fs.openSync(colorIn, 'r'); try { return readHead(fd); } finally { fs.closeSync(fd); } })();
   const pieces = ranges.map((r, i) => ({ start: r.start | 0, count: r.count | 0, margin: Math.max(20000, r.margin | 0), path: colorOut + '.p' + i, i }));
@@ -262,6 +263,7 @@ async function postParallel(cfg) {
       wk.on('error', (e) => { err = e; });
       wk.on('exit', () => {
         active--; done++;
+        if (onProgress) { try { onProgress(done / pieces.length); } catch (_) {} }
         if (err) reject(err);
         else pump();
       });

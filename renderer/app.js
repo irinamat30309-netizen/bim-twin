@@ -820,7 +820,9 @@
       if (r && r.ok) {
         const ph = r.photo || {};
         toast('Цвет по фото: ' + (ph.points ? Math.round(100 * (ph.colored || 0) / ph.points) + ' % точек' : 'готово') + (ph.frames ? ', кадров ' + ph.frames : '') + ', файл ' + r.name);
-        return window.__bimOpenCloudPath(r.path, { fresh: true });
+        // r181: результат сразу открываем без диалога «предпросмотр/загрузить N млн» — иначе старое серое
+        // облако остаётся на экране, и кажется, что раскраска не сработала (регрессия «облако осталось серым»).
+        return window.__bimOpenCloudPath(r.path, { fresh: true, skipPreview: true, noAllAsk: true });
       }
       if (r && r.needXbin && typeof API.pickXbin === 'function') {
         toast(r.message || 'Выберите файл сканера .xbin');

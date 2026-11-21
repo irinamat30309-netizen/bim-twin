@@ -1337,7 +1337,9 @@ function registerIpc() {
   // Ревизия 36: настоящий цвет облаку из лидара .xbin — перекраска по кадрам камер того же .xbin в новый LAS рядом.
   // У облака из лидара RGB — серая яркость отражения; здесь каждая точка получает цвет из кадров обеих камер (recolor-core.js).
   // Результат пишется во временную папку рядом и переименовывается в dst только после успеха; при ошибке или отмене исходник не тронут.
-  function photoColorNeed(srcSize, points) { return srcSize * 1.05 + Math.max(0, points || srcSize / 34) * 21; }
+  // r181: при параллельной раскраске пиковый объём временных LAS ≈ 2× исходника (тайлы + склейка/пост),
+  // поэтому оценка свободного места должна это учитывать — иначе на 600+ млн точек операция падала в конце.
+  function photoColorNeed(srcSize, points) { return srcSize * 2.25 + Math.max(0, points) * 2; }
   // r179: цвет по фото параллельно — облако режется на тайлы по времени, каждый тайл красит своё окно
   async function photoColorAuto(srcAbs, dstAbs, xbinAbs, posesText, onProgress, job, opt) {
     opt = opt && typeof opt === 'object' ? opt : {};
@@ -1355,13 +1357,27 @@ function registerIpc() {
         const r = await RP.parallelRecolor({
           src: srcAbs, dst: dstAbs, xbin: xbinAbs, posesText, tmpDir: path.dirname(dstAbs), opt: tileOpt, workers,
           runOne: (cfg, onProg) => runPhotoRecolor(cfg, onProg, job),
-          onProgress: (f, label) => { try { onProgress(f, label); } catch (_) {} },
+          onProgress: (f, label) => { try { if (f < 0.86) onProgress(f * 0.86, label); } catch (_) {} },
           job, log: () => {}
         });
         if (r && r.ok && opt.post !== false) {
           try {
             const postTmp = dstAbs + '.post.tmp';
-            const post = await require('./recolor-post').postColor(srcAbs, dstAbs, postTmp, tileOpt, () => {});
+            const PP = require('./recolor-post');
+            const tiles = (r.stats && r.stats.tiles) || [];
+            let post;
+            if (tiles.length > 1) {
+              // r181: пост-обработка (заполнение/денойз) идёт в worker_threads, а не в main-процессе —
+              // иначе на 600+ млн точек окно зависает на десятки минут (регрессия «облако осталось серым»).
+              const ppWorkers = Math.max(1, Math.min(workers, tiles.length));
+              const ranges = tiles.map(T => ({ start: T.rows, count: T.count, margin: Math.max(20000, Math.round(T.count * 0.06)) }));
+              try { onProgress(0.86, 'Цвет по фото: заполнение серых зон и денойз…'); } catch (_) {}
+              post = await PP.postParallel({ gray: srcAbs, colorIn: dstAbs, colorOut: postTmp, ranges, workers: ppWorkers, opt: tileOpt,
+                onProgress: (q) => { try { onProgress(0.87 + 0.1 * Math.max(0, Math.min(1, q)), 'Цвет по фото: заполнение серых зон и денойз… ' + Math.round(100 * Math.max(0, Math.min(1, q))) + '%'); } catch (_) {} },
+                log: () => { try { onProgress(0.98, 'Цвет по фото: склейка…'); } catch (_) {} } });
+            } else {
+              post = await PP.postColor(srcAbs, dstAbs, postTmp, tileOpt, () => {});
+            }
             try { fs.rmSync(dstAbs, { force: true }); } catch (_) {}
             fs.renameSync(postTmp, dstAbs);
             r.stats.post = post; r.stats.colored = post.colored; r.stats.filled = (post.fill && post.fill.filled) || 0;
@@ -1431,7 +1447,7 @@ function registerIpc() {
       try { fileGrants.grantExistingFile(sender.id, target, { read: true }); } catch (_) { return { ok: false, error: 'grant_failed' }; }
       try { const k = path.resolve(target); scanFolderPoses.set(process.platform === 'win32' ? k.toLowerCase() : k, posesAbs); } catch (_) {}
       const s0 = r.stats || {};
-      return { ok: true, path: target, name: path.basename(target), inProjectFolder: !!projectOutputDir(a.projectId), xbin: path.basename(xbinAbs), photo: { points: s0.points, colored: s0.colored, frames: s0.frames, cameras: s0.cameras, seconds: Math.round((s0.ms || 0) / 1000) } };
+      return { ok: true, path: target, name: path.basename(target), inProjectFolder: !!projectOutputDir(a.projectId), xbin: path.basename(xbinAbs), photo: { points: s0.points, colored: Math.min(s0.points || s0.colored || 0, s0.colored || 0), frames: s0.frames, cameras: s0.cameras, seconds: Math.round((s0.ms || 0) / 1000) } };
     } catch (e) { return { ok: false, error: 'photo_failed', message: String((e && e.message) || e) }; }
   });
   ipcMain.on('bim:cancelPhotoColor', (event, payload) => {
