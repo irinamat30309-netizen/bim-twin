@@ -237,7 +237,7 @@ async function runPost(grayPath, colorIn, colorOut, opt, range, log) {
             const dev = Math.max(Math.abs(r - rr), Math.abs(g - gg), Math.abs(b - bb2));
             const cnt = dN[k2];
             const thr = cnt >= 12 ? (opt.denoiseNoisyHi || 26) : cnt >= 6 ? (opt.denoiseNoisyMid || 18) : (opt.denoiseNoisyLo || 12);
-            if (edgeCell[k2]) { if (dev > (opt.denoiseEdgePoint || 140)) edgeKept++; else { r = rr; g = gg; b = bb2; replaced++; } }
+            if (edgeCell[k2]) { if (dev > (opt.denoiseEdgePoint || 100)) edgeKept++; else { r = rr; g = gg; b = bb2; replaced++; } }
             else if (!opt.denoiseAdaptive || dev > thr) { r = rr; g = gg; b = bb2; replaced++; }
             else sharpKept++;
           }
@@ -269,7 +269,7 @@ async function postParallel(cfg) {
   const { gray, colorIn, colorOut, ranges, workers, opt, log } = cfg;
   const onProgress = typeof cfg.onProgress === 'function' ? cfg.onProgress : null;
   const t0 = Date.now();
-  const useDenoise = !(opt && opt.denoise === false);
+  const useDenoise = !(opt && (opt.denoise === false || opt.postGlobal === false));
   if (!useDenoise || !(ranges && ranges.length > 1)) return postParallelFill(cfg);
   const fillTmp = colorOut + '.filltmp.las';
   try {
@@ -404,7 +404,7 @@ function gridApply(wd) {
         const dev = Math.max(Math.abs(r - mr), Math.abs(g - mg), Math.abs(b - mb));
         const edgeCell2 = !!gf[k * 8 + 7];
         const thr = n >= 12 ? hd : n >= 6 ? md : ld;
-        if (edgeCell2) { if (dev > (opt.denoiseEdgePoint || 140)) { edgeKept++; continue; } }
+        if (edgeCell2) { if (dev > (opt.denoiseEdgePoint || 100)) { edgeKept++; continue; } }
         else if (opt.denoiseAdaptive && dev <= thr) { kept++; continue; }
         setC(bufC, q, RGB, mr, c16); setC(bufC, q, RGB + 2, mg, c16); setC(bufC, q, RGB + 4, mb, c16); replaced++;
       }

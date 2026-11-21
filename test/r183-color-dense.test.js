@@ -21,7 +21,7 @@ test('r183: postParallel делает ГЛОБАЛЬНЫЙ денойз (2 фа�
 
 test('r183: адаптивные параметры денойза зависят от локальной плотности, края защищены', () => {
   const src = read('recolor-post.js');
-  assert.match(src, /denoiseEdgePoint \|\| 200/, 'выбросы в краевых ячейках не трогаем (guard)');
+  assert.match(src, /denoiseEdgePoint \|\| 100/, 'выбросы в краевых ячейках не трогаем (guard)');
   assert.match(src, /denoiseNoisyHi \|\| 26/, 'порог для плотных ячеек (12+)');
   assert.match(src, /denoiseNoisyMid \|\| 18/, 'порог 6-11 точек');
   assert.match(src, /denoiseNoisyLo \|\| 12/, 'порог 3-5 точек');
