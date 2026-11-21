@@ -6053,6 +6053,7 @@
   }
   function ensureVramHud() {
     try {
+      const dup = document.querySelectorAll('#lxVramHud'); for (let i = 1; i < dup.length; i++) try { dup[i].remove(); } catch (e) {}
       if (document.getElementById('lxVramHud')) { updateVramHud(); return; }
       const st = document.getElementById('lxStatus'); if (!st) return;
       const el = document.createElement('span'); el.id = 'lxVramHud'; el.className = 'st-info'; el.textContent = 'VRAM ~…';
@@ -6062,7 +6063,7 @@
       updateVramHud();
     } catch (e) {}
   }
-  function ensurePerfPanel() {
+  function ensurePerfPanel() { if (!extraUiWanted()) return;
     try {
       if (window.__lxPerf || document.getElementById('lxPerfScript')) return;
       var s = document.createElement('script');
@@ -6072,7 +6073,7 @@
   }
   // r145: Lixel-подобный слой (левая панель инструментов, дерево данных, свойства) — только новый файл,
   // shell/ribbon/index.html не правим, r130-решения сохраняются.
-  function ensureLxDesign() {
+  function ensureLxDesign() { if (!extraUiWanted()) return;
     try {
       if (window.__lxDesign145 && window.__lxDesign145.mount) { window.__lxDesign145.mount(); return; }
       if (document.getElementById('lx145Script')) return;
@@ -6082,7 +6083,7 @@
       document.head.appendChild(s);
     } catch (e) {}
   }
-  function ensureSectionsP2() {
+  function ensureSectionsP2() { if (!extraUiWanted()) return;
     try {
       if (window.__lxSections || document.getElementById('lxSecScript')) return;
       var s = document.createElement('script');
@@ -6093,10 +6094,31 @@
   }
   // r178: вспомогательные слои r145+ (рейка, дерево/свойства, P1/P2/P3-полосы, панель FPS) НЕ грузятся
   // по умолчанию: рабочее пространство — только облако и лента. Включаются через localStorage/#extra=1.
+  // r191: миграция — старый флаг bim.extraUi (включался ранее) однократно удаляем; панели только по явному выбору.
+  function migrateUiPrefs() {
+    try {
+      const rev = Number(localStorage.getItem('bim.uiRev') || 0);
+      if (!(rev >= 191)) {
+        localStorage.removeItem('bim.extraUi'); localStorage.removeItem('bim.extraUi.all');
+        localStorage.setItem('bim.uiRev', '191');
+      }
+    } catch (e) {}
+  }
+  try { migrateUiPrefs(); } catch (e) {}
   function extraUiWanted() { try { return localStorage.getItem('bim.extraUi') === '1' || localStorage.getItem('bim.extraUi.all') === '1'; } catch (e) { return false; } }
-  window.__bimEnableExtraUi = function () { try { localStorage.setItem('bim.extraUi', '1'); } catch (e) {} location.reload(); };
+  window.__bimSetExtraUi = function (on) { try { localStorage.setItem('bim.uiRev', '191'); if (on) localStorage.setItem('bim.extraUi', '1'); else { localStorage.removeItem('bim.extraUi'); localStorage.removeItem('bim.extraUi.all'); } } catch (e) {} location.reload(); };
+  window.__bimToggleExtraUiConfirm = async function () {
+    const on = !extraUiWanted();
+    const kit = window.__lxKit;
+    if (kit && kit.ask) {
+      const go = await kit.ask({ title: on ? 'Включить дополнительные панели?' : 'Выключить дополнительные панели?', message: on ? 'Экспериментальные панели r145 (левая рейка, «Управление данными», нижние плашки, FPS) не входят в стандартный интерфейс. Включайте только если они действительно нужны.' : 'Дополнительные панели будут выключены, рабочий стол вернётся к облаку и ленте.', okLabel: on ? 'Включить' : 'Выключить', cancelLabel: 'Отмена' });
+      if (!go) return false;
+    }
+    window.__bimSetExtraUi(on); return true;
+  };
+  window.__bimEnableExtraUi = function () { window.__bimSetExtraUi(true); };
   window.__bimDisableExtraUi = function () { try { localStorage.removeItem('bim.extraUi'); } catch (e) {} location.reload(); };
-  function ensureP1Tools() {
+  function ensureP1Tools() { if (!extraUiWanted()) return;
     try {
       if (window.__lxP1 || document.getElementById('lxP1Script')) return;
       var s = document.createElement('script');
@@ -6105,7 +6127,7 @@
       document.head.appendChild(s);
     } catch (e) {}
   }
-  function ensureClipP3() {
+  function ensureClipP3() { if (!extraUiWanted()) return;
     try {
       if (window.__lxClipP3 || document.getElementById('lxClipP3Script')) return;
       var s = document.createElement('script');

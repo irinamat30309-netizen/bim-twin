@@ -223,6 +223,9 @@
         I('btnSection', 'square-split-vertical', null, { sel: '#btnSection', toggle: 1 }),
         I('btnIsolate', 'focus', null, { sel: '#btnIsolate', toggle: 1 }),
         I('btnLOD', 'gauge', null, { sel: '#btnLOD', toggle: 1 })
+      ]),
+      G('extra', 'Дополнительно', [
+        I('extraUiToggle', 'layout-panel-top', 'Доп. панели (опыт)', { call: '__bimToggleExtraUiConfirm', toggle: 1, tip: 'Показать/скрыть экспериментальные панели r145: рейка, «Управление данными», нижние плашки, FPS. По умолчанию выключены' })
       ])
     ] },
 
