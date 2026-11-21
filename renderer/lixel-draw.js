@@ -75,9 +75,10 @@
         s.tool = drawing && drawing.tool || 'polyline';
         s.projection = drawing && drawing.projection || 'top';
         s.layer = drawing && drawing.layer || 'DRAW';
+        var __sanitized = false;
         s.entities = (drawing && Array.isArray(drawing.entities) ? drawing.entities : []).map(function (e) {
       if (!e || typeof e !== 'object') return e;
-      if (e.type === 'text' || e.type === 'dim') { var t = safeDimText(e.text); if (e.text != null && t !== String(e.text)) e = Object.assign({}, e, { text: t }); }
+      if (e.type === 'text' || e.type === 'dim') { var t = safeDimText(e.text); if (e.text != null && t !== String(e.text)) { __sanitized = true; e = Object.assign({}, e, { text: t }); } }
       return e;
     });
         s.draft = drawing && Array.isArray(drawing.draft) && drawing.draft.length ? drawing.draft : null;
@@ -88,6 +89,8 @@
       projectDrawingReady = true;
       try { lastDrawingStateJson = JSON.stringify(drawingSnapshot()); } catch (_) { lastDrawingStateJson = ''; }
       refreshLayers(); draw();
+      // r181: если в сохранённом проекте был мусор («false»/true/undefined в подписях) — перезапишем очищенный чертёж
+      if (__sanitized && s) { try { lastDrawingStateJson = ''; scheduleDrawingSave(s); } catch (_) {} }
     }
     ps.ready.then(function (data) { apply(data, ps.revision); })
       .catch(function (e) { projectDrawingReady = true; try { console.warn('[drawing] restore failed', e); } catch (_) {} });
