@@ -19,7 +19,7 @@
     mounted: false, view: '', batchOpen: false, running: false, cancelled: false, stage: -1, status: '',
     busy: false, jobId: '', log: [], merged: null, classified: null, accuracy: null,
     refPath: '', srcPath: '', pairsPath: '', mode: 'manual-points', xbinPath: '',
-    status2: null
+    status2: null, storage: null, storageBusy: false
   };
   var CLASS_LABELS = { ground_floor: 'Пол', wall: 'Стены', roof: 'Крыша', vegetation: 'Растительность', people: 'Люди', clutter: 'Мебель', other: 'Прочее' };
   var ASPRS = { ground_floor: 2, wall: 6, roof: 6, vegetation: 5, people: 18, clutter: 7, other: 1 };
@@ -102,7 +102,14 @@
     '.lx-p1-badge.ok { background: var(--ok-soft); color: var(--ok); }',
     '.lx-p1-badge.fail { background: rgba(140,74,74,.25); color: #f0b0b0; }',
     '.lx-p1-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }',
-    '@media (max-width: 1100px) { .lx-p1-bar { display: none; } }'
+    '.lx-p1-storage-bar { position: fixed; left: 14px; bottom: 34px; z-index: 519; display: flex; align-items: center; gap: 6px; max-width: min(560px, calc(100vw - 470px)); padding: 5px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--glass); box-shadow: var(--shadow-2); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font: 9.5px/1.35 var(--font); color: var(--txt-3); }',
+    '.lx-p1-storage-bar[hidden] { display: none; }',
+    '.lx-p1-storage-bar .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+    '.lx-p1-storage-bar .t b { color: var(--txt-2); font-weight: 600; }',
+    '.lx-p1-storage-bar.warn { border-color: #8c6a3a; }',
+    '.lx-p1-storage-bar button { height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); color: var(--txt-2); font: 600 9.5px/1 var(--font); cursor: pointer; white-space: nowrap; }',
+    '.lx-p1-storage-bar button.primary { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }',
+    '@media (max-width: 1100px) { .lx-p1-bar { display: none; } .lx-p1-storage-bar { display: none; } }'
   ].join('\n');
   function styles() { if (D.getElementById('lxP1Styles')) return; var s = D.createElement('style'); s.id = 'lxP1Styles'; s.textContent = CSS; (D.head || D.documentElement).appendChild(s); }
 
@@ -136,6 +143,82 @@
     return b;
   }
   function setStatus(t) { var p = panel(); var s = p.querySelector('[data-p1-status]'); if (s) s.textContent = t || ''; }
+  // ---------- r184: где сохраняются результаты + старые папки AppData ----------
+  function fmtBytes(b) {
+    var n = Number(b) || 0;
+    if (n >= 1024 * 1024 * 1024) return (n / 1073741824).toFixed(1).replace('.', ',') + ' ГБ';
+    if (n >= 1024 * 1024) return (n / 1048576).toFixed(1).replace('.', ',') + ' МБ';
+    if (n >= 1024) return Math.round(n / 1024) + ' КБ';
+    return n + ' Б';
+  }
+  function storageBar() {
+    var b = $('lxP1StorageBar'); if (b) return b;
+    styles();
+    b = D.createElement('div'); b.className = 'lx-p1-storage-bar'; b.id = 'lxP1StorageBar'; b.hidden = true; b.setAttribute('data-p1-storage-bar', '1');
+    b.addEventListener('click', function (e) {
+      var t = e.target && e.target.closest ? e.target.closest('[data-p1storage]') : null; if (!t) return;
+      e.preventDefault(); e.stopPropagation();
+      var a = t.getAttribute('data-p1storage');
+      if (a === 'choose') chooseStorage();
+      else if (a === 'clean') cleanLegacyStorage();
+    });
+    D.body.appendChild(b);
+    return b;
+  }
+  function renderStorage() {
+    var b = storageBar(), s = st.storage;
+    if (!s || !s.ok) { b.hidden = true; return; }
+    b.hidden = false;
+    var parts = [];
+    if (s.projectSelected && s.projectRoot) {
+      parts.push('<span class="t">Результаты: <b title="' + esc(s.projectRoot) + '">' + esc(baseName(s.projectRoot)) + '</b>' + (s.outputRoot ? ' → output/' : '') + '</span>');
+      parts.push('<button type="button" data-p1storage="choose" title="Сменить папку проекта">Папка…</button>');
+    } else {
+      parts.push('<span class="t">Папка проекта не выбрана — результаты пишутся только в неё</span>');
+      parts.push('<button type="button" class="primary" data-p1storage="choose">Выбрать папку</button>');
+    }
+    var legacyBytes = Number(s.legacyBytes) || (s.legacy && s.legacy.bytes) || 0;
+    if (legacyBytes > 0) {
+      b.classList.add('warn');
+      parts.push('<span class="t">Старые результаты в AppData: <b>' + fmtBytes(legacyBytes) + '</b></span>');
+      parts.push('<button type="button" data-p1storage="clean" title="Удалить только папки p1-r151 и p2p3-r155 после подтверждения">Удалить</button>');
+    } else b.classList.remove('warn');
+    b.innerHTML = parts.join('');
+  }
+  function loadStorage() {
+    var B = bridge(); if (!B || typeof B.p1Storage !== 'function') { renderStorage(); return Promise.resolve(null); }
+    return Promise.resolve(B.p1Storage({ action: 'info' })).then(function (s) {
+      st.storage = s || null; renderStorage(); return st.storage;
+    }).catch(function () { renderStorage(); return null; });
+  }
+  function chooseStorage() {
+    var B = bridge(); if (!B || typeof B.p1Storage !== 'function') return;
+    if (st.storageBusy) return; st.storageBusy = true;
+    Promise.resolve(B.p1Storage({ action: 'choose' })).then(function (r) {
+      st.storageBusy = false;
+      if (r && r.canceled) return;
+      if (r && r.ok) { toast('Папка проекта выбрана: результаты инструментов будут сохраняться в неё'); loadStorage(); }
+      else toast((r && r.error) || 'Не удалось выбрать папку проекта', 'err');
+    }).catch(function (e) { st.storageBusy = false; toast(String((e && e.message) || e), 'err'); });
+  }
+  async function cleanLegacyStorage() {
+    var B = bridge(); if (!B || typeof B.p1Storage !== 'function' || st.storageBusy) return;
+    var sz = fmtBytes((st.storage && (st.storage.legacyBytes || (st.storage.legacy && st.storage.legacy.bytes))) || 0);
+    var ok = false;
+    try {
+      if (W.__lxKit && W.__lxKit.ask) ok = await W.__lxKit.ask({ title: 'Удалить старые результаты?', message: 'В AppData (папка приложения) остались результаты старых версий инструментов: ' + sz + '. Удалить только папки p1-r151 и p2p3-r155? Новые результаты лежат в папке проекта.', okLabel: 'Удалить', cancelLabel: 'Оставить' });
+      else if (W.confirm) ok = W.confirm('Удалить старые результаты инструментов в AppData (' + sz + ')?');
+    } catch (_) { ok = false; }
+    if (!ok) return;
+    st.storageBusy = true;
+    Promise.resolve(B.p1Storage({ action: 'cleanLegacy', confirm: true })).then(function (r) {
+      st.storageBusy = false;
+      if (r && r.ok) toast('Старые результаты удалены: ' + ((r.removed || []).filter(function (x) { return x.existed; }).length) + ' папок, ' + fmtBytes((r.removed || []).reduce(function (a, x) { return a + (x.bytes || 0); }, 0)));
+      else toast((r && r.error) || 'Не удалось удалить старые результаты', 'err');
+      loadStorage();
+    }).catch(function (e) { st.storageBusy = false; toast(String((e && e.message) || e), 'err'); });
+  }
+
   function setHint(t) { var p = panel(); var h = p.querySelector('[data-p1-hint]'); if (h) h.textContent = t || ''; }
   function setProgress(f, text) {
     var p = panel();
@@ -857,21 +940,24 @@
       mounted: st.mounted, view: st.view, batchOpen: st.batchOpen, running: st.running, stage: st.stage, cancelled: st.cancelled,
       path: currentPath(), count: cloudCount(), busy: st.busy, ref: st.refPath, src: st.srcPath, mode: st.mode,
       bridge: !!bridge(), merged: !!st.merged, classified: !!st.classified, accuracy: !!st.accuracy,
+      storage: st.storage,
       stages: (bridge() ? STAGES : STAGES_LEGACY).map(function (s) { return { id: s.id, label: s.label, available: s.id !== 'build' || !!bridge() }; })
     };
   }
   var API = {
-    version: '151', mount: mount, openBatch: openBatch, closeBatch: closePanel, runBatch: runBatch, cancelBatch: cancelBatch,
+    version: '184', mount: mount, openBatch: openBatch, closeBatch: closePanel, runBatch: runBatch, cancelBatch: cancelBatch,
     mergeClouds: mergeClouds, classify: classify, openMerge: openMerge, openClassify: openClassify, openAccuracy: openAccuracy,
     runMerge: runMerge, runClassify: runClassify, runAccuracy: runAccuracy, saveAccuracyPdf: saveAccuracyPdf,
     applyClasses: applyClasses, state: state, STAGES: (bridge() ? STAGES : STAGES_LEGACY).slice(),
-    bridge: bridge, setFiles: setFiles, _available: available, _setStatus: setStatus
+    bridge: bridge, setFiles: setFiles, _available: available, _setStatus: setStatus,
+    storage: loadStorage, chooseStorage: chooseStorage, cleanLegacyStorage: cleanLegacyStorage
   };
   W.__lxP1 = API;
   function mount() {
     if (st.mounted) return true;
     st.mounted = true;
     try { bar(); } catch (e) { }
+    try { storageBar(); loadStorage(); } catch (e) { }
     try { W.addEventListener('lx-cloud-loaded', function () { if (st.view === 'batch' && !st.running) { var p = panel(); var stEl = p.querySelector('[data-p1-status]'); if (stEl) stEl.textContent = 'Облако загружено (' + Math.round(cloudCount() / 1e6) + ' млн) — можно запускать очередь.'; } }); } catch (e) { }
     return true;
   }

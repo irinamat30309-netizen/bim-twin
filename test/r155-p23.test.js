@@ -96,12 +96,17 @@ function fakeBridge(opts) {
   const ipcMain = { handle: (ch, fn) => { handlers[ch] = fn; } };
   const app = { getPath: () => tmp };
   const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) };
+  const projectDir = path.join(tmp, 'project'); fs.mkdirSync(projectDir, { recursive: true });
   BRIDGE.register({
     ipcMain, app, dialog, rootDir: opts.rootDir || ROOT, python: null,
     fileGrants: { grantExistingFile: () => { } },
     ipcSender: (event) => (event && event.sender) || { id: 1, send: () => { } },
     resolveAuthorizedFile: (event, p) => (p && fs.existsSync(p) ? path.resolve(p) : null),
-    grantExistingOutput: () => true
+    grantExistingOutput: () => true,
+    // r184: результаты — только в папку проекта (иначе мост не пишет в AppData)
+    projectFolder: () => ({ ok: true, path: projectDir, own: true }),
+    chooseProjectFolder: async () => ({ ok: true, path: projectDir }),
+    userData: path.join(tmp, 'userData')
   });
   return { handlers, tmp };
 }

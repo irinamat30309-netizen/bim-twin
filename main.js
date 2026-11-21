@@ -162,8 +162,26 @@ function storageCtx(projectId) {
   let settings = {}, userData;
   try { userData = app.getPath('userData'); } catch (_) { userData = require('os').tmpdir(); }
   try { settings = store && store.getSettings ? store.getSettings() || {} : {}; } catch (_) {}
-  return { settings, projectId: projectId || activeProjectIdFast(), userData };
+  const pid = projectId || activeProjectIdFast();
+  // r184: без выбранной папки проекта служебные файлы/кэш идут в папку проекта по умолчанию, не в userData (C:)
+  try {
+    const m = Object.assign({}, settings.projectDirs || {});
+    if (!m[pid || 'default']) m[pid || 'default'] = defaultProjectDir();
+    settings = Object.assign({}, settings, { projectDirs: m });
+  } catch (_) {}
+  return { settings, projectId: pid, userData };
 }
+function defaultProjectDir() {
+  // r184: если папка проекта не выбрана — папка проекта по умолчанию в Документах (НЕ папка приложения/userData)
+  const env = process.env.BIM_PROJECT_DIR;
+  if (env && storagePaths.isAbsDir(env)) { try { fs.mkdirSync(env, { recursive: true }); } catch (_) {} return path.resolve(env); }
+  let docs = null; try { docs = app.getPath('documents'); } catch (_) {}
+  if (!docs) docs = require('os').homedir();
+  const base = path.join(docs, 'BIM Twin Проекты', 'Проект');
+  try { fs.mkdirSync(base, { recursive: true }); } catch (_) {}
+  return base;
+}
+function projectTempDir() { const d = path.join(defaultProjectDir(), 'temp'); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} return d; }
 function workDir(kind) { return storagePaths.workDir(kind, storageCtx()); }
 // Ревизия 72: результаты обработки (облако из .xbin, цвет по фото, чистовая) складываем в папку проекта,
 // если она выбрана; иначе — рядом с исходным файлом, как раньше.
@@ -171,11 +189,11 @@ function projectOutputDir(projectId) {
   try {
     const pid = projectId == null || projectId === '' ? null : vId(projectId);
     const w = storagePaths.workRoot(storageCtx(pid));
-    const dir = w && w.source === 'project' ? w.projectDir : null;   // только папка, выбранная для проекта
-    if (!dir) return null;
-    fs.mkdirSync(dir, { recursive: true });
-    return dir;
-  } catch (_) { return null; }
+    const dir = w && w.source === 'project' ? w.projectDir : null;   // папка, выбранная для проекта
+    if (dir) { fs.mkdirSync(dir, { recursive: true }); return dir; }
+    // r184: папка не выбрана — НЕ рядом с исходником и НЕ в папке приложения, а папка проекта по умолчанию
+    return defaultProjectDir();
+  } catch (_) { return defaultProjectDir(); }
 }
 function workRootsAll(kind) { return storagePaths.allRoots(storageCtx()).map(r => path.join(r, kind)); }
 // временные файлы разбора (PCD LZF и т. п.) — тоже в папку проекта, если она задана
@@ -1348,6 +1366,7 @@ function registerIpc() {
     let workers = opt.workers != null ? Math.max(1, opt.workers | 0) : Math.max(1, Math.min(6, cores - 1));
     if (opt.parallel === false || workers <= 1 || pts < (opt.parallelMinPoints || 200000)) workers = 1;
     const tileOpt = Object.assign({}, opt, { improve: opt.improve !== false });
+    const userDenoise = opt.denoise !== false;   // r183: денойз в посте должен включаться, хотя в тайлах он выключен
     if (workers > 1) {
       tileOpt.decodePool = Math.max(1, Math.min(6, Math.floor(Math.max(1, cores - 1) / workers)));
       tileOpt.pilotFrames = Math.max(32, Math.min(opt.pilotFrames || 160, Math.round(160 / workers)));
@@ -1372,11 +1391,11 @@ function registerIpc() {
               const ppWorkers = Math.max(1, Math.min(workers, tiles.length));
               const ranges = tiles.map(T => ({ start: T.rows, count: T.count, margin: Math.max(20000, Math.round(T.count * 0.06)) }));
               try { onProgress(0.86, 'Цвет по фото: заполнение серых зон и денойз…'); } catch (_) {}
-              post = await PP.postParallel({ gray: srcAbs, colorIn: dstAbs, colorOut: postTmp, ranges, workers: ppWorkers, opt: tileOpt,
+              post = await PP.postParallel({ gray: srcAbs, colorIn: dstAbs, colorOut: postTmp, ranges, workers: ppWorkers, opt: Object.assign({}, tileOpt, { denoise: userDenoise }),
                 onProgress: (q) => { try { onProgress(0.87 + 0.1 * Math.max(0, Math.min(1, q)), 'Цвет по фото: заполнение серых зон и денойз… ' + Math.round(100 * Math.max(0, Math.min(1, q))) + '%'); } catch (_) {} },
                 log: () => { try { onProgress(0.98, 'Цвет по фото: склейка…'); } catch (_) {} } });
             } else {
-              post = await PP.postColor(srcAbs, dstAbs, postTmp, tileOpt, () => {});
+              post = await PP.postColor(srcAbs, dstAbs, postTmp, Object.assign({}, tileOpt, { denoise: userDenoise }), () => {});
             }
             try { fs.rmSync(dstAbs, { force: true }); } catch (_) {}
             fs.renameSync(postTmp, dstAbs);
@@ -1914,6 +1933,9 @@ function registerIpc() {
       const opened = cloudSegments.openSegmentSource(abs);
       if (!opened.ok) return { ok: false, unsupported: true, message: opened.message || 'формат читается целиком' };
       const d = opened.desc;
+      // r183: окно может попросить более крупные сегменты (меньше IPC/аплоадов, быстрее загрузка)
+      const reqSeg = Math.floor(Number(payload && payload.segPoints) || 0);
+      if (reqSeg >= 4000000 && reqSeg <= 64000000) d.segPoints = reqSeg;
       const minPts = Number(APP_CFG.CLOUD_PARTS_MIN_POINTS) || 48000000;
       // ревизия 29: E57 частями — начало координат карты «Перед загрузкой» (фильтр области и маршрута — в её координатах)
       const cachedE57 = d.kind === 'e57' ? overviewCache.get(overviewKey(sender, abs)) : null;
@@ -4608,7 +4630,7 @@ function registerIpc() {
     const scope = (a && a.scope) || { type: 'project' };
     const format = (a && a.format) || 'csv';
     const out = report.build(data, scope, format, meta);
-    const dir = safePath(['documents', 'userData']);
+    const dir = projectOutputDir() || defaultProjectDir();
     const res = await dialog.showSaveDialog({ title: 'Сохранить отчёт', defaultPath: path.join(dir, 'otchet-' + Date.now() + '.' + out.ext), filters: [{ name: out.ext.toUpperCase(), extensions: [out.ext] }] });
     if (res.canceled || !res.filePath) return { canceled: true };
     fs.writeFileSync(res.filePath, out.encoding === 'binary' ? out.content : Buffer.from(out.content, 'utf8'));
@@ -4619,7 +4641,7 @@ function registerIpc() {
   ipcMain.handle('bim:exportSync', async (event) => {
     let tempPath = null;
     try {
-      const dir = safePath(['documents', 'userData']);
+      const dir = projectOutputDir() || defaultProjectDir();
       const res = await dialog.showSaveDialog({
         title: 'Экспорт рабочего пространства',
         defaultPath: path.join(dir, 'workspace-' + Date.now() + '.bimsync'),
@@ -4744,12 +4766,63 @@ function registerIpc() {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   });
 
+  // r184: куда инструменты P1/P2/P3 сохраняют результаты. Только папка проекта:
+  //   <Project>/output/<tool>-<stamp>/ (результаты), <Project>/temp — временные с очисткой.
+  // Если у проекта нет своей папки — спрашиваем у пользователя и привязываем к активному проекту.
+  // Ни при каких условиях не пишем в userData/AppData приложения.
+  function toolProjectFolderInfo() {
+    try {
+      const envDir = process.env.BIM_PROJECT_DIR;
+      if (envDir && storagePaths.isAbsDir(envDir)) {
+        const p = path.resolve(envDir);
+        try { fs.mkdirSync(p, { recursive: true }); } catch (_) { }
+        return { ok: true, path: p, own: true, root: path.dirname(p), env: true };
+      }
+      const inf = projectFolderInfo(false);
+      if (!inf) return null;
+      return { ok: inf.ok !== false, path: inf.path, own: !!inf.own, root: inf.root };
+    } catch (_) { return null; }
+  }
+  async function chooseToolProjectFolder(event) {
+    const sender = ipcSender(event);
+    if (!sender) return { ok: false, error: 'нет доступа' };
+    try {
+      const owner = BrowserWindow.fromWebContents(sender);
+      const pid = activeProjectIdFast();
+      let pname = 'Проект';
+      try { const p = store.listProjects().find((x) => x.id === pid); if (p && p.name) pname = p.name; } catch (_) { }
+      const inf = projectFolderInfo(false);
+      const opts = { title: 'Папка проекта для результатов инструментов (LAS/PLY/JSON/PDF)', defaultPath: inf && inf.path ? inf.path : undefined, properties: ['openDirectory', 'createDirectory'] };
+      const r = owner ? await dialog.showOpenDialog(owner, opts) : await dialog.showOpenDialog(opts);
+      if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+      const picked = path.resolve(r.filePaths[0]);
+      if (pid) {
+        const dir = assignProjectDir(pid, picked, pname);
+        return { ok: true, path: dir, projectDir: dir };
+      }
+      try { fs.mkdirSync(picked, { recursive: true }); } catch (_) { }
+      return { ok: true, path: picked, projectDir: null, temporary: true };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  }
+  const toolStorageUserData = (() => { try { return app.getPath('userData'); } catch (_) { return null; } })();
+
   // r151: P1/P2-мост к готовым Python-инструментам (совмещение/классификация/точность).
   // Отдельный модуль, чтобы не раздувать main.js; окно получает понятные ошибки и прогресс.
   try {
     require('./p1-bridge').register({
       ipcMain, app, dialog, rootDir: __dirname, fileGrants,
-      ipcSender, resolveAuthorizedFile, grantExistingOutput
+      ipcSender, resolveAuthorizedFile, grantExistingOutput,
+      projectFolder: toolProjectFolderInfo,
+      chooseProjectFolder: chooseToolProjectFolder,
+      userData: toolStorageUserData,
+      setProjectDirForTests: (p) => {
+        try {
+          if (!storagePaths.isAbsDir(p)) return { ok: false, error: 'нужен абсолютный путь' };
+          const pid = activeProjectIdFast(); if (!pid) return { ok: false, error: 'нет активного проекта' };
+          const dir = assignProjectDir(pid, path.dirname(path.resolve(p)), path.basename(path.resolve(p)));
+          return { ok: true, path: dir };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      }
     });
   } catch (e) { console.warn('[p1-bridge] не зарегистрирован:', (e && e.message) || e); }
 
@@ -4758,7 +4831,18 @@ function registerIpc() {
   try {
     require('./p23-bridge').register({
       ipcMain, app, dialog, rootDir: __dirname, fileGrants,
-      ipcSender, resolveAuthorizedFile, grantExistingOutput
+      ipcSender, resolveAuthorizedFile, grantExistingOutput,
+      projectFolder: toolProjectFolderInfo,
+      chooseProjectFolder: chooseToolProjectFolder,
+      userData: toolStorageUserData,
+      setProjectDirForTests: (p) => {
+        try {
+          if (!storagePaths.isAbsDir(p)) return { ok: false, error: 'нужен абсолютный путь' };
+          const pid = activeProjectIdFast(); if (!pid) return { ok: false, error: 'нет активного проекта' };
+          const dir = assignProjectDir(pid, path.dirname(path.resolve(p)), path.basename(path.resolve(p)));
+          return { ok: true, path: dir };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      }
     });
   } catch (e) { console.warn('[p23-bridge] не зарегистрирован:', (e && e.message) || e); }
 }

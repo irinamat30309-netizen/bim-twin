@@ -69,6 +69,18 @@
     if (maxC === 0) return { hasColor: false, colDiv: 65535 };
     return { hasColor: true, colDiv: maxC > 255 ? 65535 : 255 };
   }
+  /* r183: серое облако лидара часто пишет RGB = яркость (R=G=B), и maxC>0 ошибочно считался цветом.
+   * Если в выборке почти нет точек с R!=G или G!=B — это серая яркость, а не цвет.
+   * Для настоящего 8-бит RGB (R!=G) доля цветных точек большая — ложного «цвета нет» не будет. */
+  function decideColorSample(maxC, diffCount, sampleCount, minShare) {
+    const base = decideColorDivisor(maxC);
+    if (!base.hasColor) return base;
+    const n = Number(sampleCount) || 0, d = Number(diffCount) || 0;
+    const share = n > 0 ? d / n : 0;
+    const limit = Number.isFinite(minShare) ? minShare : 0.01;
+    if (n > 200 && share < limit) return { hasColor: false, colDiv: base.colDiv };
+    return base;
+  }
 
   /*
    * Джиттер-выборка точек при прореживании.
@@ -158,6 +170,7 @@
     elevationRamp: elevationRamp,
     parseLasHeader: parseLasHeader,
     decideColorDivisor: decideColorDivisor,
+    decideColorSample: decideColorSample,
     sampleOffset: sampleOffset,
     keepSampledIndex: keepSampledIndex,
     plyUpAxis: plyUpAxis,

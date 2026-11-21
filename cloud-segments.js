@@ -57,14 +57,16 @@ function openLas(abs, fd, fileSize) {
   const readRec = (q) => { const rd = fs.readSync(fd, rec, 0, H.recLen, H.offToPts + q * H.recLen); return rd === H.recLen; };
   if (hasColor) {
     // глубина цвета — по выборке РАВНОМЕРНО по всему файлу (как в обычном чтении)
-    const step = Math.max(1, Math.floor(count / SCAN_N)); let maxC = 0;
+    const step = Math.max(1, Math.floor(count / SCAN_N)); let maxC = 0, diffC = 0, sampleN = 0;
     for (let q = 0; q < count; q += step) {
       if (!readRec(q)) break;
       const rr = rec.readUInt16LE(H.colorOff), gg = rec.readUInt16LE(H.colorOff + 2), bb = rec.readUInt16LE(H.colorOff + 4);
       if (rr > maxC) maxC = rr; if (gg > maxC) maxC = gg; if (bb > maxC) maxC = bb;
+      if (rr !== gg || gg !== bb) diffC++;
+      sampleN++;
       if (maxC > 255) break;
     }
-    const dc = core.decideColorDivisor(maxC); hasColor = dc.hasColor; colDiv = dc.colDiv;
+    const dc = core.decideColorSample(maxC, diffC, sampleN); hasColor = dc.hasColor; colDiv = dc.colDiv;
   }
   // габариты: из заголовка (быстро), проверка и дополнение — по выборке записей
   const hb = { mx: [head.readDoubleLE(179), head.readDoubleLE(195), head.readDoubleLE(211)], mn: [head.readDoubleLE(187), head.readDoubleLE(203), head.readDoubleLE(219)] };

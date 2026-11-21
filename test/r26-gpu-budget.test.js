@@ -96,7 +96,7 @@ test('r26: связка — предел из окна в main, выборка �
   assert.match(pl, /cloudPartsOpen: \(p, jobId, opts\) => inv\('bim:cloudPartsOpen', \{ path: p, jobId, maxPoints:/);
   assert.match(w, /keepPer: d\.keepPer/); assert.match(s, /keepPer: Math\.floor\(Number\(opts\.keepPer\) \|\| 0\)/);
   assert.match(a, /const GPU_POINT_BUDGET = 300000000;/); assert.match(a, /localStorage\.getItem\('bim\.gpuPointBudget'\)/);
-  assert.match(a, /API\.cloudPartsOpen\(filePath, makeCloudParseJobId\(\), (?:pre \? \{[^}]*\} : )?\{ maxPoints: gpuPointBudget\(\), force: !!\(extra && extra\.forceParts\), firstSegPoints: 3000000 \}\)/);
+  assert.match(a, /API\.cloudPartsOpen\(filePath, makeCloudParseJobId\(\), (?:pre \? \{[^}]*\} : )?\{ maxPoints: gpuPointBudget\(\), force: !!\(extra && extra\.forceParts\), firstSegPoints: 2000000, segPoints: 32000000 \}\)/);
   assert.match(a, /sourceTotal: opened\.sourceTotal \|\| total/);
   assert.match(a, /addEventListener\('bim-gl-lost'/); assert.match(a, /localStorage\.setItem\('bim\.gpuPointBudget'/); assert.match(a, /sessionStorage\.setItem\('bim\.reopenCloud'/); assert.match(a, /location\.reload\(\)/);
   const gl = a.slice(a.indexOf("addEventListener('bim-gl-lost'"), a.indexOf('(function setupStreamPrefs'));

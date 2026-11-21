@@ -349,6 +349,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   p1Accuracy: (a) => inv('bim:p1Accuracy', a || {}),
   p1Export: (a) => inv('bim:p1Export', a || {}),
   p1Cancel: (jobId) => inv('bim:p1Cancel', { jobId: typeof jobId === 'string' ? jobId : '' }),
+  // r184: пути результатов инструментов — только папка проекта; очистка старых p1-r151/p2p3-r155.
+  p1Storage: (a) => inv('bim:p1Storage', a || {}),
   onP1Progress: (jobId, callback) => {
     if (typeof jobId !== 'string' || typeof callback !== 'function' || typeof ipcRenderer.on !== 'function') return () => {};
     const listener = (_event, payload) => {
@@ -365,6 +367,7 @@ contextBridge.exposeInMainWorld('bimAPI', {
   },
   // r155: P2/P3 — CRS/координаты, Mesh-инструменты, сохранение фрагмента клип-бокса.
   p23Status: () => inv('bim:p23Status'),
+  p23Storage: (a) => inv('bim:p23Storage', a || {}),
   p23PickMesh: () => inv('bim:p23PickMesh'),
   p23GrantMesh: (a) => inv('bim:p23GrantMesh', a || {}),
   p23CrsRun: (a) => inv('bim:p23CrsRun', a || {}),

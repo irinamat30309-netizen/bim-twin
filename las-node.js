@@ -459,16 +459,18 @@ function prepareLasOctreeFile(sourcePath, canonicalPath, maxPoints, onProgress, 
     if (hasRgbFields) {
       const sampleStep = Math.max(1, Math.floor(H.count / SCAN_N));
       const record = Buffer.alloc(H.recLen);
-      let maxChannel = 0;
+      let maxChannel = 0, diffChannel = 0, sampleN = 0;
       for (let index = 0; index < H.count; index += sampleStep) {
         readExactAt(sourceFd, record, H.recLen, H.offToPts + index * H.recLen,
           'truncated LAS RGB sample');
         const c = H.colorOff;
-        maxChannel = Math.max(maxChannel, record.readUInt16LE(c),
-          record.readUInt16LE(c + 2), record.readUInt16LE(c + 4));
+        const rv = record.readUInt16LE(c), gv = record.readUInt16LE(c + 2), bv = record.readUInt16LE(c + 4);
+        maxChannel = Math.max(maxChannel, rv, gv, bv);
+        if (rv !== gv || gv !== bv) diffChannel++;
+        sampleN++;
         if (maxChannel > 255) break;
       }
-      const decision = core.decideColorDivisor(maxChannel);
+      const decision = core.decideColorSample(maxChannel, diffChannel, sampleN);
       colored = decision.hasColor;
       colorDiv = decision.colDiv;
     }

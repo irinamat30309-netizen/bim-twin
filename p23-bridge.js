@@ -16,6 +16,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
+const toolStorage = require('./tool-storage');
 
 const CRS_SCRIPT = 'crs-tools.py';
 const MESH_SCRIPT = 'mesh-tools.py';
@@ -23,7 +24,6 @@ const CRS_OPS = { info: 1, reproject: 1, georef: 1, corners: 1 };
 const MESH_OPS = { 'fill-holes': 1, laplacian: 1, 'remove-class': 1, 'remove-color': 1, simplify: 1 };
 const MESH_EXT = new Set(['.ply', '.obj', '.stl']);
 const CLOUD_EXT = new Set(['.las', '.laz', '.ply']);
-const OUT_ROOT = 'p2p3-r155';
 const FRAG_MAX_POINTS = 5_000_000;
 const FRAG_MAX_BYTES = 300 * 1024 * 1024;
 
@@ -229,8 +229,15 @@ function register(deps) {
   }
   function hasOpen3d() { return !!open3dPython(); }
 
-  function outRoot() { const d = path.join(app.getPath('userData'), OUT_ROOT); try { fs.mkdirSync(d, { recursive: true }); } catch (_) { } return d; }
-  function jobDir(tool) { const d = path.join(outRoot(), tool + '-' + stamp() + '-' + Math.random().toString(36).slice(2, 6)); fs.mkdirSync(d, { recursive: true }); return d; }
+  // r184: результаты CRS/Mesh/фрагментов клип-бокса — только в папку проекта:
+  // <Project>/output/<tool>-<stamp>/ , временные — <Project>/temp (очищаются после операции).
+  // В userData/AppData мост не пишет.
+  function storageDeps() { return deps; }
+  async function prepareJob(event, tool) {
+    try { return { job: await toolStorage.beginJob(storageDeps(), event, tool) }; }
+    catch (e) { return { error: toolStorage.storageError(e) }; }
+  }
+  function storageDescribe() { try { return toolStorage.describe(storageDeps()); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } }
   function sender(event) { return typeof ipcSender === 'function' ? ipcSender(event) : (event && event.sender); }
   function authorize(event, p, exts) {
     const s = sender(event); if (!s) return null;
@@ -297,6 +304,7 @@ function register(deps) {
     const crsScript = scriptPath(rootDir, CRS_SCRIPT), meshScript = scriptPath(rootDir, MESH_SCRIPT);
     const crsHelp = helpFor(crsScript), meshHelp = helpFor(meshScript);
     const has = (h, flag) => new RegExp('(^|[\\s,=])' + flag.replace(/[-]/g, '\\-') + '([\\s,=]|$)').test(h);
+    const storage = storageDescribe();
     return {
       ok: true, python: python || null, open3d: hasOpen3d(),
       tools: { crs: fileExists(crsScript), mesh: fileExists(meshScript) },
@@ -320,8 +328,29 @@ function register(deps) {
           removeTriangles: has(meshHelp, '--remove-triangles'), decimate: has(meshHelp, '--decimate')
         } : null
       },
-      root: outRoot()
+      root: storage && storage.outputRoot ? storage.outputRoot : null,
+      storage
     };
+  });
+
+  /* ---------- r184: путь результатов (для панелей) ---------- */
+  ipcMain.handle('bim:p23Storage', async (event, a) => {
+    try {
+      a = a && typeof a === 'object' ? a : {};
+      const action = typeof a.action === 'string' ? a.action : 'info';
+      if (action === 'info') return Object.assign({ ok: true }, storageDescribe());
+      if (action === 'choose') {
+        if (typeof deps.chooseProjectFolder !== 'function') return { ok: false, error: 'Выбор папки проекта доступен в настольной версии' };
+        const r = await deps.chooseProjectFolder(event);
+        if (!r || r.canceled) return { ok: false, canceled: true };
+        return Object.assign({ ok: true }, storageDescribe());
+      }
+      if (action === 'cleanLegacy') {
+        const res = toolStorage.cleanLegacy(deps.userData, { confirm: a.confirm === true, names: a.names });
+        return Object.assign({ ok: !!res.ok, storage: storageDescribe() }, res);
+      }
+      return { ok: false, error: 'неизвестное действие' };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
   /* ---------- программный грант mesh-файлов (скрипты/автотесты) ---------- */
@@ -373,7 +402,11 @@ function register(deps) {
     const cloud = authorize(event, a.cloud, CLOUD_EXT);
     if (!cloud) return { ok: false, error: 'Не выбрано облако (LAS/PLY) — откройте облако точек, чтобы читать/пересчитывать его СК.' };
     if (op === 'reproject' && !a.to) return { ok: false, error: 'Не указана целевая система координат (EPSG:4326/32636/25836 или local).' };
-    const dir = jobDir('crs');
+    const prep = await prepareJob(event, 'crs');
+    if (prep.error) return prep.error;
+    const job = prep.job;
+    const dir = job.outDir;
+    try {
     const outLas = (op === 'reproject' || op === 'georef') ? path.join(dir, op === 'reproject' ? 'reprojected.las' : 'georef-header.las') : null;
     const jsonPath = path.join(dir, 'crs-' + op + '.json');
     const georefFile = op === 'georef' ? path.join(dir, 'georef.json') : null;
@@ -405,6 +438,7 @@ function register(deps) {
       source: result && result.source ? result.source : null,
       elapsedMs: run.elapsedMs, log: run.lines || []
     };
+    } finally { try { job.finalize(); } catch (_) { } }
   });
 
   /* ---------- Mesh ---------- */
@@ -420,7 +454,11 @@ function register(deps) {
     const input = authorize(event, a.input, MESH_EXT);
     if (!input) return { ok: false, error: 'Не выбран mesh-файл (PLY/OBJ/STL).' };
     if (!a.output && !/\.(ply|obj|stl)$/i.test(input)) return { ok: false, error: 'Формат mesh не поддерживается для записи.' };
-    const dir = jobDir('mesh');
+    const prep = await prepareJob(event, 'mesh');
+    if (prep.error) return prep.error;
+    const job = prep.job;
+    const dir = job.outDir;
+    try {
     const ext = path.extname(input).toLowerCase() || '.ply';
     const output = a.output || path.join(dir, 'mesh-' + op + ext);
     const jsonPath = path.join(dir, 'mesh-' + op + '.json');
@@ -435,6 +473,7 @@ function register(deps) {
       return { ok: false, error: errText, needOpen3D: /open3d/i.test(errText), cliMismatch: /unrecognized|invalid choice/i.test(run.stderr || ''), result, files, log: run.lines || [] };
     }
     return { ok: true, op, result, output: fileExists(output) ? output : null, files, elapsedMs: run.elapsedMs, log: run.lines || [] };
+    } finally { try { job.finalize(); } catch (_) { } }
   });
 
   /* ---------- фрагмент клип-бокса ---------- */
@@ -445,7 +484,11 @@ function register(deps) {
       const fmt = /^(ply|pcd|xyz)$/i.test(String(a.format || '')) ? String(a.format).toLowerCase() : 'ply';
       const { P, C, n } = normalizeFragment(a);
       if (n * (12 + (C ? 3 : 0)) > FRAG_MAX_BYTES) return { ok: false, error: 'Фрагмент слишком большой для сохранения (' + n + ' точек)' };
-      const dir = jobDir('clip');
+      const prep = await prepareJob(event, 'clip');
+      if (prep.error) return prep.error;
+      const job = prep.job;
+      try {
+      const dir = job.outDir;
       const file = path.join(dir, 'clip-fragment.' + fmt);
       let wr;
       if (fmt === 'ply') wr = writePly(file, P, C);
@@ -453,6 +496,7 @@ function register(deps) {
       else wr = writeXyz(file, P, C);
       grant(event, file);
       return { ok: true, path: file, count: n, format: fmt, bytes: wr.bytes, bbox: a.bbox || null };
+      } finally { try { job.finalize(); } catch (_) { } }
     } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
   });
 

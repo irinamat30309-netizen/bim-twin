@@ -443,7 +443,7 @@ function table(rows) {
   lines.push('| Метрика | ' + rows.map((r) => r.label).join(' | ') + ' |');
   lines.push('|---|---|' + rows.map(() => '---|').join(''));
   const add = (name, fn) => lines.push('| ' + name + ' | ' + rows.map((r) => { try { return fn(r); } catch (_) { return '—'; } }).join(' | ') + ' |');
-  add('Файл', (r) => path.basename(r.file));
+  add('Файл', (r) => path.basename(r.file) + (r.colorized ? ' (цветной)' : ' (исходный/серый)'));
   add('Размер файла', (r) => r.fileSize ? (r.fileSize / 1e9).toFixed(2) + ' ГБ' : '—');
   add('Точек загружено', (r) => r.load.loadedPoints ? r.load.loadedPoints.toLocaleString('ru-RU') : '—');
   add('Старт приложения, с', (r) => fmt(r.times.startupMs / 1000, 2));
@@ -481,9 +481,17 @@ function table(rows) {
   }
   const rows = [];
   for (const j of jobs) {
-    console.log('=== бенчмарк:', j.label, '|', j.file, '| порт', j.port);
+    // r183: если рядом есть цветная версия *-color.las — открываем её (скриншоты цвета);
+    // в отчёте явно пишем серый/цветной. Отключается --no-color-auto.
+    let colorAuto = false;
+    if (!has('no-color-auto') && /\.las$/i.test(j.file)) {
+      const cand = j.file.replace(/\.las$/i, '-color.las');
+      try { if (fs.existsSync(cand) && fs.statSync(cand).isFile()) { j.file = cand; colorAuto = true; } } catch (_) {}
+    }
+    console.log('=== бенчмарк:', j.label, '|', j.file, '| порт', j.port, colorAuto ? '| ЦВЕТНОЙ файл' : '| серый/исходный');
     if (!fs.existsSync(j.file)) { console.error('ФАЙЛ НЕ НАЙДЕН:', j.file); continue; }
     const r = await benchOne(j.file, j.label, outDir, Object.assign({ port: j.port }, j.opts));
+    r.colorized = colorAuto;
     rows.push(r);
     console.log(r.ok ? '  PASS: загрузка ' + fmt(r.times.fullLoadMs / 1000, 1) + ' с, FPS ' + fmt(r.fps.avgFps, 1) + ', HUD ' + r.screenshots.hud : '  FAIL: ' + r.error);
   }

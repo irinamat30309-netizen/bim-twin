@@ -18,7 +18,7 @@
     mounted: false, status: null, busy: false, view: '', log: [], jobId: '', cancelFn: null,
     crsInfo: null, crsResult: null, crsForm: { op: 'reproject', from: '', to: 'EPSG:32636', wkt: '' },
     meshFile: '', meshOp: 'fill-holes', meshParams: {}, meshResult: null,
-    clipBox: null, clipActive: false, clipCount: 0
+    clipBox: null, clipActive: false, clipCount: 0, storage: null
   };
   var CRS_PRESETS = [
     { v: 'EPSG:4326', l: 'EPSG:4326 — WGS84 (широта/долгота)' },
@@ -122,6 +122,12 @@
     var B = bridge(); if (!B || typeof B.onP23Progress !== 'function') return function () { };
     try { return B.onP23Progress(jobKey, function (p) { if (p && p.phase === 'log' && p.line) logLine(p.line); }); } catch (e) { return function () { }; }
   }
+  function storageText() {
+    var s = st.storage;
+    if (!s) return '';
+    if (s.projectSelected && s.projectRoot) return ' · Результаты: ' + baseName(s.projectRoot) + '/output';
+    return ' · Папка проекта не выбрана (спросим перед сохранением)';
+  }
   function statusText() {
     var s = st.status;
     if (!s) return 'проверяю инструменты…';
@@ -130,13 +136,23 @@
     t.push('mesh-tools.py: ' + (s.tools && s.tools.mesh ? 'есть' : 'нет'));
     t.push('Open3D: ' + (s.open3d ? 'есть' : 'нет'));
     if (s.python) t.push('Python: ' + s.python); else t.push('Python не найден');
-    return t.join(' · ');
+    return t.join(' · ') + storageText();
+  }
+  function updateStorageNote() {
+    try {
+      var p = D.querySelector('.lx-p23-panel:not([hidden])');
+      if (!p) return;
+      var n = p.querySelector('.lx-p23-note');
+      if (n) n.textContent = statusText();
+    } catch (e) { }
   }
   function loadStatus() {
     var B = bridge();
     if (!B || typeof B.p23Status !== 'function') { st.status = { tools: {}, python: null, missingBridge: true }; return Promise.resolve(st.status); }
     return Promise.resolve(B.p23Status()).then(function (s) {
       st.status = s || { tools: {} };
+      if (s && s.storage) st.storage = s.storage;
+      else if (B && typeof B.p23Storage === 'function') { try { B.p23Storage({ action: 'info' }).then(function (x) { if (x) { st.storage = x; updateStorageNote(); } }).catch(function () { }); } catch (e) { } }
       // статус пришёл — обновляем открытую панель (кнопки запуска/подсказки об отсутствии CLI)
       try {
         var crs = D.getElementById('lxCrsPanel'), mesh = D.getElementById('lxMeshPanel');
@@ -657,7 +673,7 @@
   }
 
   /* ---------------- публичный API ---------------- */
-  function state() { return { mounted: st.mounted, view: st.view, busy: st.busy, status: st.status, crs: st.crsInfo, meshFile: st.meshFile, meshResult: st.meshResult || null, clip: clipState() }; }
+  function state() { return { mounted: st.mounted, view: st.view, busy: st.busy, status: st.status, crs: st.crsInfo, meshFile: st.meshFile, meshResult: st.meshResult || null, clip: clipState(), storage: st.storage }; }
   function mount() {
     if (st.mounted) return true;
     st.mounted = true;

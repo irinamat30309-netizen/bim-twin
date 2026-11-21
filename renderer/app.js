@@ -205,7 +205,17 @@
   const GPU_VRAM_TARGET_MB = 5120;
   function qualityPointBudget() {
     let q = 'auto'; try { q = localStorage.getItem('bim.perf.quality') || 'auto'; } catch (_) {}
-    return q === 'fast' ? GPU_POINT_BUDGET_FAST : GPU_POINT_BUDGET;
+    if (q === 'fast') return GPU_POINT_BUDGET_FAST;
+    // r183: бюджет из реального объёма VRAM (12 ГБ): «Все точки»/«Высокое» — до 85% памяти, «Авто» — до 78%; резерв ОС/приложениям.
+    try {
+      const cap = window.__bimPcCapacity, gpu = cap && cap.gpu;
+      const total = Number(gpu && gpu.vramTotal) || 0;
+      if (total > 0) {
+        const frac = q === 'high' ? 0.85 : 0.78;
+        return Math.max(10000000, Math.min(2000000000, Math.floor(total * frac / 16)));
+      }
+    } catch (e) {}
+    return GPU_POINT_BUDGET;
   }
   function gpuPointBudget() {
     // r145/r173: разовый сброс старых «пределов после сброса GPU» на VRAM-бюджет.
@@ -225,6 +235,12 @@
     try { const rc = window.__bimPcCapacity && window.__bimPcCapacity.recommendation; if (rc && rc.points >= 10000000) return Math.floor(Math.min(rc.points, qb)); } catch (_) {}
     return qb;
   }
+  try {
+    window.__bimPcCapacityReady = (async function () {
+      try { const r = await API.systemCapacity({}); if (r && r.ok) { window.__bimPcCapacity = r; window.__bimGpuVramTargetMB = Math.round((r.gpu && r.gpu.vramTotal || 0) / 1048576) || GPU_VRAM_TARGET_MB; } } catch (e) {}
+      return window.__bimPcCapacity || null;
+    })();
+  } catch (e) { window.__bimPcCapacityReady = Promise.resolve(null); }
   try { window.__bimEffectiveBudget = gpuPointBudget; window.__bimGpuVramTargetMB = GPU_VRAM_TARGET_MB; } catch (e) {}
   window.__bimGpuPointBudget = gpuPointBudget;
   async function tryPartsLoad(filePath, label, extra) {
@@ -232,7 +248,7 @@
     if (!API || typeof API.cloudPartsOpen !== 'function' || typeof API.cloudPartsRead !== 'function' || !viewer || typeof viewer.beginCloudStream !== 'function' || !window.CloudChunks) return null;
     let opened = null;
     const pre = extra.pre && !extra.pre.cancelled ? extra.pre : null;   // ревизия 27: выбор окна «Перед загрузкой» (предел, область, высоты, маршрут, шум)
-    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), pre ? { maxPoints: pre.maxPoints, filter: pre.filter || null, estimate: pre.estimate, force: true, firstSegPoints: 3000000 } : { maxPoints: gpuPointBudget(), force: !!(extra && extra.forceParts), firstSegPoints: 3000000 }); } catch (e) { return null; }
+    try { opened = await API.cloudPartsOpen(filePath, makeCloudParseJobId(), pre ? { maxPoints: pre.maxPoints, filter: pre.filter || null, estimate: pre.estimate, force: true, firstSegPoints: 2000000, segPoints: 32000000 } : { maxPoints: gpuPointBudget(), force: !!(extra && extra.forceParts), firstSegPoints: 2000000, segPoints: 32000000 }); } catch (e) { return null; }
     if (!opened || !opened.ok || !opened.token) return null;
     // Ревизия 55: если предел видеокарты срезал точки, а окна «Перед загрузкой» не было (открытие из командной строки,
     // перетаскиванием, ярлыком) — спрашиваем один раз, показать ли все. Иначе человек видит часть облака без выбора.
@@ -266,14 +282,15 @@
     };
     try {
       panel.update({ phase: 'header', fraction: 0 });
-      let next = readPart(0);
+      // r183: держим 3 чтения в полёте (worker_threads в main читают параллельно); в движении новые не стартуем.
+      const READ_AHEAD = 3; const reads = [];
+      for (let w = 0; w < Math.min(READ_AHEAD, nParts); w++) reads[w] = readPart(w);
       for (let k = 0; k < nParts; k++) {
-        const res = await next;
+        const res = await reads[k];
         if (cancelled) break;
-        if (k + 1 < nParts) {
-          // r174: не грузим следующие части во время вращения — возобновляем через ~160–300 мс после остановки
+        if (k + READ_AHEAD < nParts) {
           while (!cancelled && viewer && viewer._interacting) await new Promise(function (r) { setTimeout(r, 120); });
-          next = readPart(k + 1);   // пока эта часть уходит в видеопамять, следующая уже читается
+          reads[k + READ_AHEAD] = readPart(k + READ_AHEAD);
         }
         if (!res || res.ok === false || !res.pos) { failure = (res && res.message) || 'часть облака не прочитана'; break; }
         // открытое до этого облако заменяется только когда первая часть новой уже прочитана (отмена раньше ничего не трогает)
@@ -684,7 +701,8 @@
     : Promise.resolve(null);
   function startPendingCloudOpen() {
     if (window.__bimPendingCloudStarted) return;
-    __pendingCloudP.then(function (p) {
+    var capWait = Promise.race([window.__bimPcCapacityReady || Promise.resolve(null), new Promise(function (r) { setTimeout(function () { r(null); }, 1600); })]);
+    capWait.then(function () { return __pendingCloudP; }).then(function (p) {
       if (!p || window.__bimPendingCloudStarted) return;
       window.__bimPendingCloudStarted = 1;
       // r149: пропускаем предварительную карту «Перед загрузкой» (она сканировала файл и давала +16 с до первого кадра)
@@ -797,12 +815,13 @@
   };
   // Ревизия 36: «Раскрасить по фото камер» — открытое облако LAS (например, серое облако из лидара .xbin) получает настоящий цвет
   // по кадрам камер сканера из .xbin. Результат — «<имя>-color.las» рядом, исходный файл не меняется.
-  window.__bimPhotoColor = async function (p) {
+  window.__bimPhotoColor = async function (p, optsIn) {
+    const auto = !!(optsIn && optsIn.auto);
     p = p || lastCloudPath;
     if (!API || typeof API.photoColorCloud !== 'function') { toast('Цвет по фото камер — в десктоп-версии'); return false; }
     if (!p || !/\.las$/i.test(String(p))) { toast('Откройте облако LAS со временем точек (из .xbin или со сканера Lixel)'); return false; }
     const kit = window.__lxKit, nm = String(p).split(/[\\/]/).pop();
-    if (kit && kit.ask) {
+    if (!auto && kit && kit.ask) {
       const go = await kit.ask({ title: 'Раскрасить по фото камер', okLabel: 'Раскрасить', cancelLabel: 'Отмена', wide: true,
         message: 'Каждая точка облака ' + nm + ' получит цвет с кадра камеры сканера, снятого в момент её съёмки (кадры — из файла .xbin, положение — по траектории poses.csv). Результат — новый файл ' + nm.replace(/\.las$/i, '') + '-color.las рядом, исходное облако не меняется.',
         hint: 'Идёт в фоне: около 1 минуты на 10–15 млн точек (400 млн — 30–40 минут, 670 млн — около часа). Нужно свободное место: размер облака плюс около 21 байта на точку. Цвет сразу улучшенный, как в Lixel Studio: на каждую точку — лучший кадр (резкий, без усреднения), выравнивание экспозиции и баланса белого по кадрам, заполнение серых зон цветом соседей, ярче/насыщеннее.' });
@@ -5989,6 +6008,60 @@
     try { var qb = $('qBright'); if (qb) qb.value = String(p.look === 'lixel' ? 1.36 : p.brightness); var qg = $('qGrade'); if (qg) qg.classList.toggle('on', p.look !== 'neutral'); } catch (e) {}
     return p;
   }
+  // r183-color: заметный баннер «Облако без цвета» + автозапуск раскраски по фото камер
+  function updateNoColorBanner() {
+    try {
+      const el = document.getElementById('lxNoColorBanner'); if (!el) return;
+      let info = null; try { info = viewer && viewer.getCloudInfo && viewer.getCloudInfo(); } catch (e) {}
+      const noColor = !!(info && info.hasRGB === false && info.visible !== false);
+      el.style.display = noColor ? 'flex' : 'none';
+      if (noColor) {
+        const nm = info.sourceName ? String(info.sourceName) : 'облако';
+        const txt = el.querySelector('.lx-nc-text'); if (txt) txt.textContent = 'Облако без цвета (' + nm + ') — раскрасить по фото камер';
+      }
+    } catch (e) {}
+  }
+  function ensureNoColorBanner() {
+    try {
+      if (document.getElementById('lxNoColorBanner')) { updateNoColorBanner(); return; }
+      const el = document.createElement('div'); el.id = 'lxNoColorBanner';
+      el.style.cssText = 'position:fixed;left:50%;top:96px;transform:translateX(-50%);z-index:9000;display:none;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;background:#2a2140;border:1px solid #8b5cf6;color:#f3e8ff;font:13px/1.3 Inter,system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.35)';
+      const t = document.createElement('span'); t.className = 'lx-nc-text'; t.textContent = 'Облако без цвета — раскрасить по фото камер'; el.appendChild(t);
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Раскрасить по фото камер';
+      b.style.cssText = 'border:0;border-radius:8px;padding:6px 10px;background:#8b5cf6;color:#fff;font:600 12px Inter,system-ui,sans-serif;cursor:pointer';
+      b.addEventListener('click', function () { try { if (window.__bimPhotoColor) window.__bimPhotoColor(lastCloudPath, { auto: true }); } catch (e) {} });
+      el.appendChild(b);
+      const x = document.createElement('button'); x.type = 'button'; x.textContent = '×'; x.title = 'Скрыть до следующего облака';
+      x.style.cssText = 'border:0;background:transparent;color:#c4b5fd;font:16px Inter,system-ui,sans-serif;cursor:pointer';
+      x.addEventListener('click', function () { el.style.display = 'none'; }); el.appendChild(x);
+      document.body.appendChild(el);
+      window.addEventListener('bim-cloud-change', updateNoColorBanner);
+      window.addEventListener('lx-cloud-loaded', function () { setTimeout(updateNoColorBanner, 250); });
+    } catch (e) {}
+  }
+  // r183: индикатор VRAM в HUD (эффективный бюджет/занято по точке 16 Б + резерв)
+  function updateVramHud() {
+    try {
+      const el = document.getElementById('lxVramHud'); if (!el) return;
+      const cap = window.__bimPcCapacity, gpu = cap && cap.gpu;
+      const total = Number(gpu && gpu.vramTotal) || 0;
+      let n = 0; try { const ci = viewer && viewer.getCloudInfo && viewer.getCloudInfo(); n = ci && ci.loadedCount || 0; } catch (e) {}
+      const bytes = n * 16 + 512 * 1048576;
+      el.textContent = total > 0 ? ('VRAM ~' + (bytes / 1073741824).toFixed(1) + ' / ' + (total / 1073741824).toFixed(0) + ' ГБ') : ('VRAM ~' + (bytes / 1073741824).toFixed(1) + ' ГБ');
+      el.title = 'Оценка занятой VRAM: ' + n.toLocaleString('ru-RU') + ' точек × 16 Б + резерв 0,5 ГБ; бюджет: ' + (window.__bimEffectiveBudget ? window.__bimEffectiveBudget() : 0).toLocaleString('ru-RU') + ' точек';
+    } catch (e) {}
+  }
+  function ensureVramHud() {
+    try {
+      if (document.getElementById('lxVramHud')) { updateVramHud(); return; }
+      const st = document.getElementById('lxStatus'); if (!st) return;
+      const el = document.createElement('span'); el.id = 'lxVramHud'; el.className = 'st-info'; el.textContent = 'VRAM ~…';
+      st.insertBefore(el, document.getElementById('lxSaveState') || null);
+      window.addEventListener('bim-cloud-change', updateVramHud);
+      window.addEventListener('lx-cloud-loaded', function () { setTimeout(updateVramHud, 200); });
+      updateVramHud();
+    } catch (e) {}
+  }
   function ensurePerfPanel() {
     try {
       if (window.__lxPerf || document.getElementById('lxPerfScript')) return;
@@ -6051,7 +6124,7 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); } catch (e) { console.warn('render prefs', e); }
+    try { applyRenderPrefs(); ensureVramHud(); ensureNoColorBanner(); } catch (e) { console.warn('render prefs', e); }
     try { if (extraUiWanted()) { ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); ensureClipP3(); } } catch (e) { console.warn('extra ui', e); }
     // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.
     try { startPendingCloudOpen(); } catch (e) { console.warn('r149 pending cloud', e); }

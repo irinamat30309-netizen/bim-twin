@@ -256,7 +256,7 @@ test('окно: большой LAS/PLY читается частями (конв
   const a = read('renderer/app.js');
   const t = a.slice(a.indexOf('async function tryPartsLoad'), a.indexOf('async function parseCloudWithProgressOnce'));
   assert.match(t, /API\.cloudPartsOpen\(filePath/); assert.match(t, /viewer\.beginCloudStream\(/); assert.match(t, /viewer\.addCloudStreamSegment\(res\)/); assert.match(t, /viewer\.endCloudStream\(/);
-  assert.match(t, /next = readPart\(k \+ 1\)/, 'пока часть уходит в видеопамять, читается следующая');
+  assert.match(t, /reads\[k \+ READ_AHEAD\] = readPart\(k \+ READ_AHEAD\)/, 'пока часть уходит в видеопамять, читается следующая');
   assert.match(t, /window\.CloudChunks\.resolve\(_rawAPI, light\)/); assert.match(t, /cloudPartsClose/); assert.match(t, /viewerLoaded: true/);
   assert.match(t, /return null;/, 'малые облака и прочие форматы — прежний путь');
   assert.match(t, /viewer\.clearCloud\(\)/, 'отмена убирает частично загруженное облако');

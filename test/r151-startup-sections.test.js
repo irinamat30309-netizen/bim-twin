@@ -32,7 +32,7 @@ test('r151: первый сегмент 2–5 млн — main/preload/app', () =
   assert.match(MAIN, /firstSegPoints: useFirst \? firstLen : 0/, 'firstSegPoints не возвращается окну');
   assert.match(MAIN, /const from = k === 0 \? 0 : \(firstLen \+ \(k - 1\) \* d\.segPoints\)/, 'чтение частей не учитывает маленькую первую');
   assert.match(PRELOAD, /firstSegPoints: opts && opts\.firstSegPoints > 0/, 'preload не передаёт firstSegPoints');
-  assert.match(APP, /firstSegPoints: 3000000/, 'app не просит первый сегмент 3 млн');
+  assert.match(APP, /firstSegPoints: 2000000/, 'app не просит первый сегмент 3 млн');
   assert.match(APP, /function startPendingCloudOpen\(\)/, 'pending-облако должно стартовать после viewer');
   assert.match(APP, /progressive: true/, 'нет прогрессивного первого кадра');
 });

@@ -13,6 +13,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
+const toolStorage = require('./tool-storage');
 
 const TOOLS = ['register', 'classify', 'quality', 'diff'];
 const SCRIPTS = {
@@ -23,7 +24,6 @@ const SCRIPTS = {
 };
 const MODES = new Set(['icp', 'manual-points', 'gcp']);
 const CLOUD_EXT = new Set(['.las', '.laz', '.ply']);
-const OUTPUT_ROOT = 'p1-r151';
 const LOG_LIMIT = 120;
 
 function scriptPath(rootDir, tool) {
@@ -121,8 +121,15 @@ function register(deps) {
   const jobs = new Map();
   let pythonChecked = false, open3dCache = null;
 
-  function outRoot() { const d = path.join(app.getPath('userData'), OUTPUT_ROOT); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} return d; }
-  function jobDir(tool) { const d = path.join(outRoot(), tool + '-' + stamp() + '-' + Math.random().toString(36).slice(2, 6)); fs.mkdirSync(d, { recursive: true }); return d; }
+  // r184: результаты инструментов — ТОЛЬКО в папку проекта (<Project>/output/<tool>-<stamp>,
+  // временные — <Project>/temp с очисткой). В userData/AppData инструменты больше не пишут.
+  // deps: projectFolder()/chooseProjectFolder(event)/userData (передаёт main.js).
+  function storageDeps() { return deps; }
+  async function prepareJob(event, tool) {
+    try { return { job: await toolStorage.beginJob(storageDeps(), event, tool) }; }
+    catch (e) { return { error: toolStorage.storageError(e) }; }
+  }
+  function storageDescribe() { try { return toolStorage.describe(storageDeps()); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } }
   function sender(event) { return typeof ipcSender === 'function' ? ipcSender(event) : (event && event.sender); }
   function authorize(event, p, exts) {
     const s = sender(event);
@@ -199,12 +206,49 @@ function register(deps) {
     if (!pythonChecked) pythonChecked = true;
     const tools = {};
     for (const t of TOOLS) tools[t] = fileExists(scriptPath(rootDir, t));
+    const storage = storageDescribe();
     return {
       ok: true, python: python || null, open3d: hasOpen3d(), tools,
-      root: outRoot(),
+      root: storage && storage.outputRoot ? storage.outputRoot : null,
+      storage,
       register: { modes: ['icp', 'manual-points', 'gcp'], strict: { icp: 0.05, 'manual-points': 0.15, gcp: 0.15 } },
       classify: { classes: ['ground_floor', 'wall', 'roof', 'vegetation', 'people', 'clutter', 'other'], asprs: { ground_floor: 2, wall: 6, roof: 6, vegetation: 5, people: 18, clutter: 7, other: 1 } }
     };
+  });
+
+  // ---- r184: пути результатов и старые папки в AppData ----
+  ipcMain.handle('bim:p1Storage', async (event, a) => {
+    try {
+      a = a && typeof a === 'object' ? a : {};
+      const action = typeof a.action === 'string' ? a.action : 'info';
+      if (action === 'info') return Object.assign({ ok: true }, storageDescribe());
+      if (action === 'choose') {
+        if (typeof deps.chooseProjectFolder !== 'function') return { ok: false, error: 'Выбор папки проекта доступен в настольной версии' };
+        const r = await deps.chooseProjectFolder(event);
+        if (!r || r.canceled) return { ok: false, canceled: true };
+        return Object.assign({ ok: true }, storageDescribe());
+      }
+      if (action === 'cleanLegacy') {
+        const res = toolStorage.cleanLegacy(deps.userData, { confirm: a.confirm === true, names: a.names });
+        return Object.assign({ ok: !!res.ok, storage: storageDescribe() }, res);
+      }
+      // тестовый хук (только при BIM_TWIN_E2E=1): привязать папку проекта программно,
+      // чтобы E2E мог проверить сохранение без нативного диалога. В обычном запуске запрещён.
+      if (action === 'assignProjectDir') {
+        if (process.env.BIM_TWIN_E2E !== '1') return { ok: false, error: 'действие доступно только в тестовом режиме' };
+        if (typeof deps.setProjectDirForTests !== 'function') return { ok: false, error: 'тестовый хук недоступен' };
+        const p = a.path;
+        if (typeof p !== 'string' || !path.isAbsolute(p)) return { ok: false, error: 'нужен абсолютный путь папки проекта' };
+        const r = deps.setProjectDirForTests(p);
+        if (!r || r.ok === false) return { ok: false, error: (r && r.error) || 'не удалось привязать папку' };
+        return Object.assign({ ok: true }, storageDescribe());
+      }
+      if (action === 'snapshot') {
+        // снимок userData (для E2E): какие файлы есть в старых папках инструментов
+        return { ok: true, legacy: toolStorage.legacyInfo(deps.userData), userData: deps.userData || null };
+      }
+      return { ok: false, error: 'неизвестное действие' };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
   // ---- выбор файлов ----
@@ -267,7 +311,11 @@ function register(deps) {
     if (mode === 'icp' && !hasOpen3d()) {
       return { ok: false, needOpen3D: true, error: 'ICP требует Open3D в Python-движке. Установите движок (Настройки → Python/Open3D) или используйте режимы «Пары точек» / «GCP» — они работают без Open3D.' };
     }
-    const dir = jobDir('register');
+    const prep = await prepareJob(event, 'register');
+    if (prep.error) return prep.error;
+    const job = prep.job;
+    const dir = job.outDir;
+    try {
     const outLas = path.join(dir, 'src-registered.las');
     const reportPath = path.join(dir, 'register.json');
     const args = buildRegisterArgs({ ref, src: srcs, mode, pairs, autoInit: a.autoInit !== false, strict: a.strict !== false, maxIter: a.maxIter, maxPoints: a.maxPoints, crop: a.crop, out: reportPath, outLas });
@@ -301,6 +349,7 @@ function register(deps) {
       summary.error = 'Строгий порог не пройден: RMS ' + (chk != null ? (Math.round(chk * 1000) / 1000) + ' м' : '—') + ' > ' + bad.strictThreshold + ' м. Облако не совмещено с нужной точностью — проверьте пары/начальную ориентацию или уменьшите шум.';
     }
     return summary;
+    } finally { try { job.finalize(); } catch (_) {} }
   });
 
   // ---- классификация ----
@@ -309,7 +358,11 @@ function register(deps) {
     const cloud = authorize(event, a.cloud, CLOUD_EXT);
     if (!cloud) return { ok: false, error: 'Сначала откройте облако точек (LAS/PLY), чтобы классифицировать его.' };
     const isLas = /\.las$/i.test(cloud);
-    const dir = jobDir('classify');
+    const prep = await prepareJob(event, 'classify');
+    if (prep.error) return prep.error;
+    const job = prep.job;
+    const dir = job.outDir;
+    try {
     const jsonPath = path.join(dir, 'classify.json');
     const previewPath = path.join(dir, 'classify-preview.png');
     const outLas = isLas && a.outLas !== false ? path.join(dir, 'classified.las') : null;
@@ -326,6 +379,7 @@ function register(deps) {
       if (fileExists(previewPath) && fs.statSync(previewPath).size <= 4 * 1024 * 1024) previewDataUrl = 'data:image/png;base64,' + fs.readFileSync(previewPath).toString('base64');
     } catch (_) {}
     return { ok: true, stats, jsonPath, previewPath, previewDataUrl, outLas: outLas && fileExists(outLas) ? outLas : null, outBin: outBin && fileExists(outBin) ? outBin : null, inputIsLas: isLas, elapsedMs: run.elapsedMs, log: run.lines || [] };
+    } finally { try { job.finalize(); } catch (_) {} }
   });
 
   // ---- P2: отчёт о точности (quality-compare + cloud-diff) ----
@@ -335,7 +389,11 @@ function register(deps) {
     const ref = authorize(event, a.ref, CLOUD_EXT);
     if (!our) return { ok: false, error: 'Не облако для сравнения — откройте облако или выберите файл.' };
     if (!ref) return { ok: false, error: 'Не выбран эталон — нажмите «Эталон…» и выберите LAS/PLY.' };
-    const dir = jobDir('accuracy');
+    const prep = await prepareJob(event, 'accuracy');
+    if (prep.error) return prep.error;
+    const job = prep.job;
+    const dir = job.outDir;
+    try {
     const qJson = path.join(dir, 'quality.json');
     const diffJson = path.join(dir, 'diff.json');
     const heatDir = path.join(dir, 'heatmaps');
@@ -365,20 +423,26 @@ function register(deps) {
       heatmaps: dataUrls, elapsedMs: (qRun.elapsedMs || 0) + (dRun.elapsedMs || 0),
       logs: { quality: qRun.lines || [], diff: dRun.lines || [] }
     };
+    } finally { try { job.finalize(); } catch (_) {} }
   });
 
-  // ---- экспорт результата (без диалога, в папку p1-export) ----
+  // ---- экспорт результата (без диалога, в папку проекта) ----
   ipcMain.handle('bim:p1Export', async (event, a) => {
     try {
       a = a || {};
       const src = authorize(event, a.sourcePath, CLOUD_EXT);
       if (!src) return { ok: false, error: 'Нет файла для экспорта.' };
-      const dir = path.join(outRoot(), 'export-' + stamp()); fs.mkdirSync(dir, { recursive: true });
+      const prep = await prepareJob(event, 'export');
+      if (prep.error) return prep.error;
+      const job = prep.job;
+      try {
+      const dir = job.outDir;
       const ext = path.extname(src).toLowerCase();
       const target = path.join(dir, (a.name ? String(a.name).replace(/[^\w.\-]+/g, '_') : baseName(src).replace(/\.[^.]+$/, '')) + ext);
       fs.copyFileSync(src, target);
       grant(event, target);
       return { ok: true, path: target, bytes: fs.statSync(target).size, source: src };
+      } finally { try { job.finalize(); } catch (_) {} }
     } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
   });
 

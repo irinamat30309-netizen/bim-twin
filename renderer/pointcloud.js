@@ -111,14 +111,16 @@
     var colDiv = 65535;
     if (hasColor) {
       // равномерная выборка цвета по всему файлу (а не первые 4000 точек) — иначе серый рендер. (r9)
-      var maxC = 0, scanN = Math.min(count, 4000), scanStep = Math.max(1, Math.floor(count / scanN));
+      var maxC = 0, diffC = 0, sampleN = 0, scanN = Math.min(count, 4000), scanStep = Math.max(1, Math.floor(count / scanN));
       for (var q = 0; q < count; q += scanStep) {
         var b0 = offToPts + q * recLen + colorOff;
         if (b0 + 6 > buf.byteLength) break;
         var rr = dv.getUint16(b0, true), gg = dv.getUint16(b0 + 2, true), bb = dv.getUint16(b0 + 4, true);
         if (rr > maxC) maxC = rr; if (gg > maxC) maxC = gg; if (bb > maxC) maxC = bb;
+        if (rr !== gg || gg !== bb) diffC++; sampleN++;
       }
-      if (maxC === 0) hasColor = false;         // colour fields empty -> use elevation ramp
+      // r183: серый лидар пишет R=G=B (яркость) — это не цвет; настоящий RGB (R!=G) остаётся цветным.
+      if (maxC === 0 || (sampleN > 200 && diffC / sampleN < 0.01)) hasColor = false; // empty/gray fields -> elevation ramp
       else colDiv = maxC > 255 ? 65535 : 255;
     }
 
