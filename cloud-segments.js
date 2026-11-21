@@ -89,11 +89,11 @@ function openLas(abs, fd, fileSize) {
   return {
     kind: 'las', path: abs, fileSize, count,
     offToPts: H.offToPts, recLen: H.recLen, fmt: H.fmt, colorOff: H.colorOff, intensityOff: H.intensityOff, classificationOff: H.classificationOff,
-    hasColor, colDiv, hasIntensity, hasClassification,
+    hasColor, hasRGB: !!(H.hasColor && H.colorOff + 6 <= H.recLen), colDiv, hasIntensity, hasClassification,
     scale: [H.scale.x, H.scale.y, H.scale.z], offset: [H.offset.x, H.offset.y, H.offset.z],
     cx, cy, cz: mnz, h,
     bbox: { mn: [-(w / 2), 0, -(d / 2)], mx: [w / 2, h, d / 2] },
-    meta: { kind: 'points', points: count, total: count, w, d, h, format: 'LAS fmt ' + H.fmt, colored: hasColor, hasIntensity, hasClassification,
+    meta: { kind: 'points', points: count, total: count, w, d, h, format: 'LAS fmt ' + H.fmt, colored: hasColor, hasRGB: !!(H.hasColor && H.colorOff + 6 <= H.recLen), hasIntensity, hasClassification,
       crsWkt: parsed.crsWkt || null, offset: { cx, cy, mnz }, srcXform: { axis: 'zup', t: [cx, cy, mnz] } }
   };
 }
@@ -181,7 +181,7 @@ function openPly(abs, fd, fileSize) {
   const up = I.commentUp(meta0.comments, core.plyUpAxis ? core.plyUpAxis(meta0.comments, [shX, shY, shZ], axisRanges) : 'y');
   const zup = up === 'z';
   const w = smx[0] - smn[0];
-  const common = { crsWkt: crsWkt || null, units: units || null, colored: L.hasColor, hasIntensity: !!L.intensity, hasClassification: !!L.classification };
+  const common = { crsWkt: crsWkt || null, units: units || null, colored: L.hasColor, hasRGB: !!L.hasColor, hasIntensity: !!L.intensity, hasClassification: !!L.classification };
   let cx, cy, cz, h, d, bbox, mt;
   if (zup) {
     // Z-вверх (съёмка): центр по X/Y, основание на земле

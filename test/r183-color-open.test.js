@@ -21,7 +21,7 @@ test('r183c: детектор цвета — серый R=G=B (даже при m
 test('r183c: баннер «Облако без цвета» + автозапуск раскраски по фото', () => {
   assert.match(APP, /function ensureNoColorBanner\(\)/);
   assert.match(APP, /Облако без цвета/);
-  assert.match(APP, /info\.hasRGB === false/);
+  assert.match(APP, /info\.hasColor === false/);
   assert.match(APP, /__bimPhotoColor\(lastCloudPath, \{ auto: true \}\)/);
   assert.match(APP, /const auto = !!\(optsIn && optsIn\.auto\)/);
 });

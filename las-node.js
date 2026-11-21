@@ -169,6 +169,7 @@ function parseLASFile(fd, fileSize, maxPoints, onProgress) {
   const hasClassification = H.hasClassification && classificationOff + 1 <= recLen;
   const sx = H.scale.x, sy = H.scale.y, sz = H.scale.z, ox = H.offset.x, oy = H.offset.y, oz = H.offset.z;
   let count = H.count;
+  const hasRGBattr = !!H.hasColor;
   let hasColor = H.hasColor;
   if (!Number.isSafeInteger(count) || count <= 0) throw new Error('LAS содержит ноль точек или небезопасный point count');
   if (!recLen || offToPts <= 0) throw new Error('повреждённый заголовок LAS');
@@ -274,7 +275,7 @@ function parseLASFile(fd, fileSize, maxPoints, onProgress) {
     intensity: intensity ? trimExact(intensity, outN) : null,
     classification: classification ? trimExact(classification, outN) : null,
     count: outN,
-    meta: { kind: 'points', points: outN, total: count, w, d, h, format: 'LAS fmt ' + fmt, colored: hasColor,
+    meta: { kind: 'points', points: outN, total: count, w, d, h, format: 'LAS fmt ' + fmt, colored: hasColor, hasRGB: hasRGBattr,
       hasIntensity: !!intensity, hasClassification: !!classification, crsWkt: crsWkt || null,
       offset: { cx: cx + shX, cy: cy + shY, mnz: mnz + shZ },
       srcXform: { axis: 'zup', t: [cx + shX, cy + shY, mnz + shZ] } }

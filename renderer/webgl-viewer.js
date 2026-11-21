@@ -1075,7 +1075,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         if (typeof this.onQualityChange === 'function') { try { this.onQualityChange(); } catch (e) {} }
       }
       if (!preserve) { this._cloudDisplay.min = this.bbox.mn[1]; this._cloudDisplay.max = this.bbox.mx[1]; }
-      this._cloudRecord={ sourceName:named || (preserve && previous.sourceName) || cloud.name || meta.name || 'Облако без имени', sourceCount:preserve?previous.sourceCount:(Number.isSafeInteger(meta.total)&&meta.total>=0?meta.total:null), loadedCount:n, format:meta.format || (preserve && previous.format) || '', hasRGB:(preserve && meta.colored==null)?previous.hasRGB:(meta.colored !== false && !!cloud.col), hasIntensity:!!this._intensityValues, hasClassification:!!this._classificationLabels, revision:((previous&&previous.revision)||0)+1 };
+      this._cloudRecord={ sourceName:named || (preserve && previous.sourceName) || cloud.name || meta.name || 'Облако без имени', sourceCount:preserve?previous.sourceCount:(Number.isSafeInteger(meta.total)&&meta.total>=0?meta.total:null), loadedCount:n, format:meta.format || (preserve && previous.format) || '', hasRGB:(preserve && meta.colored==null && meta.hasRGB==null)?previous.hasRGB:(meta.hasRGB !== undefined ? !!meta.hasRGB : (meta.colored !== false && !!cloud.col)),
+        hasColor: meta.colored !== false && !!cloud.col, hasIntensity:!!this._intensityValues, hasClassification:!!this._classificationLabels, revision:((previous&&previous.revision)||0)+1 };
       if (!this.getAvailableColorModes().includes(this.getColorMode())) {
         this._cloudColorMode = 'rgb';
         this._ptElev = false;
@@ -1191,7 +1192,9 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this._cloudDisplay.min = this.bbox.mn[1]; this._cloudDisplay.max = this.bbox.mx[1];
       if (!this._edlAutoTried) { this._edlAutoTried = true; this._edl = false; if (typeof this.onQualityChange === 'function') { try { this.onQualityChange(); } catch (e) {} } }
       this._cloudRecord = { sourceName: opts.sourceName || info.name || meta.name || 'Облако без имени', sourceCount: Number.isSafeInteger(srcTotal) ? srcTotal : null, loadedCount: 0,
-        format: meta.format || '', hasRGB: meta.colored !== false, hasIntensity: !!info.hasIntensity, hasClassification: !!info.hasClassification, revision: 1 };
+        format: meta.format || '',
+        hasRGB: info.hasRGB !== undefined ? !!info.hasRGB : (meta.hasRGB !== undefined ? !!meta.hasRGB : meta.colored !== false),
+        hasColor: info.hasColor !== undefined ? !!info.hasColor : (meta.colored !== false), hasIntensity: !!info.hasIntensity, hasClassification: !!info.hasClassification, revision: 1 };
       this.modelDims = this._computeCloudDims(meta, total);
       this._notifyCloudChanged();
       this._frame(); this.render();
@@ -2655,9 +2658,37 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       if (this._cloudEventPending || typeof window==='undefined') return;
       this._cloudEventPending=true;queueMicrotask(()=>{this._cloudEventPending=false;window.dispatchEvent(new Event('bim-cloud-change'));});
     }
+    // r190: отдельно «RGB-атрибут есть» (hasRGB) и «реальный цвет» (hasColor). Серый лидар пишет R=G=B — атрибут есть, цвета нет.
+    _sampleCloudColor(o) {
+      try {
+        const col = o && o.col; if (!col || col.length < 300) return null;
+        const total = Math.floor(col.length / 3); if (total < 100) return null;
+        const step = Math.max(1, Math.floor(total / 50000)); let seen = 0, colored = 0;
+        for (let i = 0; i < total && seen < 50000; i += step) {
+          const r = col[i*3], g = col[i*3+1], b = col[i*3+2];
+          if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) continue;
+          const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
+          const diff = Math.abs(r-g) + Math.abs(g-b); const sat = mx > 0.02 ? (mx-mn)/mx : 0;
+          if (diff > 0.08 || sat > 0.15) colored++;
+          seen++;
+        }
+        return seen >= 200 ? (colored / seen >= 0.02) : null;
+      } catch (e) { return null; }
+    }
     getCloudInfo() {
       const r=this._cloudRecord;if(!r || !(this.base.some(o=>o.points)||this._octActive))return null;
       const streamed = !!this._octActive && this._octIndex;
+      const ptsMain = (this.base || []).find(o => o && o.points) || null;
+      const hasRGBrec = r.hasRGB !== undefined ? !!r.hasRGB : (r.hasColor !== undefined ? !!r.hasColor : true);
+      let hasColorReal;
+      if (!hasRGBrec) hasColorReal = false;
+      else if (r.hasColor === false) hasColorReal = false;   // парсер уже сказал: серый RGB-атрибут
+      else {
+        // r190: атрибут есть, но реальный цвет проверяем по фактическим цветам облака (50k).
+        // st.col у серых без RGB заполнен elevation-рампой — поэтому hasRGB=false отсекаем выше.
+        const sampled = this._sampleCloudColor(ptsMain);
+        hasColorReal = sampled === null ? (r.hasColor !== undefined ? !!r.hasColor : true) : sampled;
+      }
       // r177: счётчик «показано» — только основное облако (base[0]) и никогда больше sourceCount.
       // Раньше сумма по всем объектам base при повторной подгрузке/soft-переключении давала 845M при файле 589.9M.
       const ptsObjs = this.base.filter(o => o.points);
@@ -2668,7 +2699,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       return Object.assign({},r,{
         hasIntensity: streamed ? this._octIndex.hasIntensity === true : !!r.hasIntensity,
         hasClassification: streamed ? this._octIndex.hasClassification === true : !!r.hasClassification,
-        loadedCount: loadedCount,
+        loadedCount: loadedCount, hasRGB: hasRGBrec, hasColor: hasColorReal,
         bounds:{mn:this.bbox.mn.slice(),mx:this.bbox.mx.slice()},
         visible:this.cloudVisible!==false,streaming:!!this._octActive,gpuThinned:!!(this.base&&this.base[0]&&this.base[0]._stream&&this.base[0]._stream.srcTotal>this.base[0]._stream.total),
         display:Object.assign({},this._cloudDisplay,{mode:this.getColorMode()}),

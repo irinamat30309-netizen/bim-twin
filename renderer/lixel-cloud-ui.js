@@ -1,4 +1,4 @@
-﻿/* Свойства активного облака точек и его запись в дереве сцены.
+/* Свойства активного облака точек и его запись в дереве сцены.
  * Одно резидентное облако: без мнимого менеджера нескольких облаков.
  * Панель живёт на вкладке «Сцена» справа, меню действий — общий всплывающий список ui/kit.js. */
 (function () {
@@ -258,7 +258,7 @@
   function colorNote(v, info) {
     const el = $('cpColorNote'); if (!el) return;
     if (!info.hasRGB) { el.textContent = 'В исходнике нет RGB: используется цвет парсера. Доступна окраска по высоте.'; return; }
-    const src = String(info.sourceName || ''), gray = cloudIsGray(v, info);
+    const src = String(info.sourceName || ''), gray = info.hasColor === false ? true : cloudIsGray(v, info);
     if (!gray) { if (el.textContent) el.textContent = ''; return; }
     if (el.dataset.gray === src && el.firstChild) return;
     el.textContent = ''; el.dataset.gray = src;

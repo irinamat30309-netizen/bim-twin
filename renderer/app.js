@@ -294,7 +294,7 @@
         }
         if (!res || res.ok === false || !res.pos) { failure = (res && res.message) || 'часть облака не прочитана'; break; }
         // открытое до этого облако заменяется только когда первая часть новой уже прочитана (отмена раньше ничего не трогает)
-        if (!began) { viewer.beginCloudStream({ total, sourceTotal: opened.sourceTotal || total, bbox: opened.bbox, meta: opened.meta, hasColor: opened.hasColor, hasIntensity: opened.hasIntensity, hasClassification: opened.hasClassification, name: label }, { sourceName: filePath }); began = true; }
+        if (!began) { viewer.beginCloudStream({ total, sourceTotal: opened.sourceTotal || total, bbox: opened.bbox, meta: opened.meta, hasColor: opened.hasColor, hasRGB: opened.hasRGB, hasIntensity: opened.hasIntensity, hasClassification: opened.hasClassification, name: label }, { sourceName: filePath }); began = true; }
         const r = viewer.addCloudStreamSegment(res);
         if (!r || r.ok === false) { short = !!(r && r.short); if (!short) failure = (r && r.error) || 'часть облака не добавлена'; break; }
         loaded = r.loaded;
@@ -6013,7 +6013,7 @@
     try {
       const el = document.getElementById('lxNoColorBanner'); if (!el) return;
       let info = null; try { info = viewer && viewer.getCloudInfo && viewer.getCloudInfo(); } catch (e) {}
-      const noColor = !!(info && info.hasRGB === false && info.visible !== false);
+      const noColor = !!(info && info.hasColor === false && info.visible !== false);
       el.style.display = noColor ? 'flex' : 'none';
       if (noColor) {
         const nm = info.sourceName ? String(info.sourceName) : 'облако';

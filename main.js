@@ -1974,7 +1974,7 @@ function registerIpc() {
       try { sender.once('destroyed', () => { const ss = cloudPartSessions.get(token); if (ss) { try { ss.controller.abort(); } catch (_) {} cloudPartSessions.delete(token); if (ss.key) activeCloudParseJobs.delete(ss.key); } }); } catch (_) {}
       return { ok: true, token, total: shown, sourceTotal: d.count, thinned: keepPer < d.chunkPoints ? { keepPer, chunkPoints: d.chunkPoints, budget: gpuBudget } : (filter && filter.ratio < 1 ? { ratio: filter.ratio, budget: gpuBudget } : null),
         filtered: filter ? { rect: !!filter.rect, area: !!filter.area, h: !!filter.h, route: !!filter.mask, noise: !!filter.noise, ratio: filter.ratio } : null, estimated: !!filter,
-        segPoints: d.segPoints, firstSegPoints: useFirst ? firstLen : 0, chunkPoints: keepPer, segments: segCount, bbox: d.bbox, meta: d.meta, hasColor: d.hasColor, hasIntensity: d.hasIntensity, hasClassification: d.hasClassification };
+        segPoints: d.segPoints, firstSegPoints: useFirst ? firstLen : 0, chunkPoints: keepPer, segments: segCount, bbox: d.bbox, meta: d.meta, hasColor: d.hasColor, hasRGB: d.hasRGB !== undefined ? !!d.hasRGB : !!d.hasColor, hasIntensity: d.hasIntensity, hasClassification: d.hasClassification };
     } catch (e) { let ab = null; try { ab = resolveAuthorizedFile(event, String((payload && payload.path) || payload || ''), CLOUD_EXT_ALLOW); } catch (_) {} return { ok: false, message: ruCloudMessage(String((e && e.message) || e), ab) }; }
   });
   ipcMain.handle('bim:cloudPartsRead', async (event, req) => {
