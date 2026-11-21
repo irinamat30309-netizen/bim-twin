@@ -634,25 +634,37 @@ def _neighbor_agreement(X, cls, opt):
 
 # ----------------------------------------------------------------------------- writers
 def write_las_filtered(src, X, cls, conf, dst, remove_mask=None, src_meta=None):
-    """Копия LAS с новым classification byte (и, при remove_mask, без удалённых точек)."""
+    """Копия LAS с новым classification byte (и, при remove_mask, без удалённых точек).
+
+    r189: при --max-points read_las читает только первые N точек, а в заголовке исходника
+    по-прежнему n0 (полное число) — раньше цикл шёл по n0 и падал с IndexError на cls[i+j].
+    Теперь пишем/классифицируем ровно min(n0, len(cls)) исходных записей.
+    """
     if not src_meta or 'header375' not in src_meta:
         raise ValueError('нет метаданных LAS для записи')
+    n_cls = int(len(cls))
+    if n_cls == 0:
+        raise ValueError('пустой массив classification')
     with open(src, 'rb') as f, open(dst, 'wb') as o:
         h = f.read(375)
         off = struct.unpack_from('<I', h, 96)[0]
         rl = struct.unpack_from('<H', h, 105)[0]
         fmt = h[104] & 0x3f
         n0 = struct.unpack_from('<I', h, 107)[0]
+        n_src = int(min(n0, n_cls))          # r189: не выходим за пределы усечённого массива
         minor = h[25]
         class_off = LAS_CLASS_OFF[fmt]
         f.seek(0)
         header = bytearray(f.read(off))
         o.write(bytes(header))
-        keep = np.ones(n0, bool) if remove_mask is None else (~remove_mask)
+        if remove_mask is None:
+            keep = np.ones(n_src, bool)
+        else:
+            keep = ~np.asarray(remove_mask, bool)[:n_src].copy()
         written = 0
         CH = 1 << 20
-        for i in range(0, n0, CH):
-            c = min(CH, n0 - i)
+        for i in range(0, n_src, CH):
+            c = min(CH, n_src - i)
             raw = bytearray(f.read(c * rl))
             for j in range(c):
                 if not keep[i + j]:
@@ -666,7 +678,7 @@ def write_las_filtered(src, X, cls, conf, dst, remove_mask=None, src_meta=None):
         if minor >= 4:
             struct.pack_into('<Q', header, 247, written)
         o.write(bytes(header))
-    return {'written': int(written), 'removed': int(n0 - written)}
+    return {'written': int(written), 'removed': int(n_src - written)}
 
 
 def write_bin_filtered(src, X, rgb, cls, conf, dst, remove_mask=None, src_meta=None):
