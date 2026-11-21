@@ -23,11 +23,32 @@ function pickThreads(opt, nTiles, maxTile) {
   return Math.max(1, Math.min(Math.max(2, cpu - 1), cpu, byMem, 16, nTiles));   // одно ядро — интерфейсу, если ядер больше двух
 }
 function liteOpt(opt) {
-  const o = {}; for (const k of ['noise', 'noiseLevel', 'thin', 'thinIters', 'thinCell', 'planar', 'maxThinShift', 'alignOpt', 'color', 'colorClamp', 'colorBalance', 'passEq', 'passEqOpt', 'fillNoColor', 'fillNoColorOpt', 'toneLate', 'degrain', 'degrainOpt', 'icicles', 'iciclesOpt', 'glass', 'glassOpt', 'fringeOpt']) if (opt[k] !== undefined) o[k] = opt[k];
+  const o = {}; for (const k of ['_stageTimings', 'noise', 'noiseLevel', 'thin', 'thinIters', 'thinCell', 'planar', 'maxThinShift', 'alignOpt', 'color', 'colorClamp', 'colorBalance', 'passEq', 'passEqOpt', 'fillNoColor', 'fillNoColorOpt', 'toneLate', 'degrain', 'degrainOpt', 'icicles', 'iciclesOpt', 'glass', 'glassOpt', 'fringeOpt']) if (opt[k] !== undefined) o[k] = opt[k];
   return o;
+}
+/**
+ * r180: профиль чистки для плотных облаков (>50M точек, как r146 cleanProfile):
+ * thin по умолчанию выключен (на плотных сборках он не улучшает стены, но дорог), денойз цвета не включаем.
+ * Возвращает {thin, degrain, n, dense}.
+ */
+function denseCleanProfile(n, opt) {
+  const o = opt || {};
+  const dense = Number(n) > (o.denseThreshold > 0 ? o.denseThreshold : 50e6);
+  const wantThin = o.thin !== undefined ? !!o.thin : true;
+  // r180: для плотных облаков денойз цвета не включаем (дорого и по заданию не нужен), для небольших — как раньше
+  const wantDegrain = dense ? o.degrain === true : o.degrain !== false;
+  return { dense, n: Number(n) || 0, thin: dense ? false : wantThin, degrain: wantDegrain };
 }
 async function refineParallel(src, dst, opt, onProgress) {
   opt = Object.assign({ noise: true, thin: true, color: true, tileMax: 4000000, halo: 0.2, thinCell: 0.04, planar: 0.06 }, opt || {});
+  // r180: профиль плотных облаков и дефолт «без денойза цвета»; заголовок читаем сразу (дешёво)
+  try {
+    const fd0 = fs.openSync(src, 'r'); const H0 = R.readHeader(fd0); fs.closeSync(fd0);
+    const prof = denseCleanProfile(H0 && H0.n, opt);
+    if (opt.denseProfile !== false && prof.dense) { opt.thin = false; opt.denseProfileUsed = true; }
+    if (opt.degrain === undefined) opt.degrain = prof.degrain;
+    opt._denseProfile = prof;
+  } catch (_) {}
   // Ревизия 56: плитки под размер облака. Раньше облако до 4 млн точек всегда было одной плиткой — один поток, и
   // чистовая не ускорялась. Если точек немного на поток, режем мельче (не меньше 0,6 млн на плитку), чтобы работали все
   // ядра: на окне 120 с (3,08 млн) это 35,9 → 14,2 с. Качество то же: в 25 плотных кубах 1 м — столько же точек и та же
@@ -44,7 +65,9 @@ async function refineParallel(src, dst, opt, onProgress) {
     } catch (_) {}
   }
   const prog = typeof onProgress === 'function' ? onProgress : () => {};
+  const tPrep = Date.now();
   const P = R.refine(src, dst, Object.assign({}, opt, { _prepareOnly: true }), prog);
+  const prepareMs = Date.now() - tPrep;
   const { H, tiles, tmp, N, t0 } = P; let ofd = P.ofd; const workers = [];
   try {
     const jobs = []; let maxTile = 0;
@@ -53,15 +76,20 @@ async function refineParallel(src, dst, opt, onProgress) {
       alignSol: P.alignSol, alignTraj: P.alignTraj, cbSol: P.cbSol, dynSets: P.dynSets,
       poses: P.alignTraj ? (opt.poses || null) : null, posesText: P.alignTraj && !opt.poses ? (opt.posesText || null) : null };
     const threads = pickThreads(opt, jobs.length, maxTile);
-    let wpos = P.wpos, out = 0, done = 0, nDyn = 0, nNoise = 0, nMoved = 0, nColor = 0, nNoC = 0, nNoCL = 0, nGrain = 0;
+    const tTiles = Date.now(); let workerMs = 0;
+    let wpos = P.wpos, out = 0, done = 0, nDyn = 0, nNoise = 0, nMoved = 0, nColor = 0, nNoC = 0, nNoCL = 0, nGrain = 0; const stageMs = {};
     const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
     const take = (r) => {
       const f = path.join(tmp, r.t + '.out');
       if (r.w) { const B = fs.readFileSync(f); if (B.length !== r.w) throw new Error('плитка ' + r.t + ': неполный результат'); fs.writeSync(ofd, B, 0, r.w, wpos); }
       try { fs.unlinkSync(f); } catch (_) {}
-      wpos += r.w; out += r.k; done += r.n0; nDyn += r.nDyn; nNoise += r.nNoise; nMoved += r.nMoved; nColor += r.nColor; nNoC += r.noColor || 0; nNoCL += r.noColorLeft || 0; nGrain += r.degrain || 0;
+      workerMs += r.ms || 0;
+      wpos += r.w; out += r.k; done += r.n0; nDyn += r.nDyn; nNoise += r.nNoise; nMoved += r.nMoved; nColor += r.nColor; nNoC += r.noColor || 0; nNoCL += r.noColorLeft || 0; nGrain += r.degrain || 0; if (r.stageMs) for (const k in r.stageMs) stageMs[k] = (stageMs[k] || 0) + r.stageMs[k];
       for (let a = 0; a < 3; a++) { if (r.bb[a] < bb[a]) bb[a] = r.bb[a]; if (r.bb[a + 3] > bb[a + 3]) bb[a + 3] = r.bb[a + 3]; }
-      prog(0.45 + 0.55 * done / N, 'Обработка плиток…');
+            const frac = N ? done / N : 1;
+      const el = (Date.now() - tTiles) / 1000;
+      const eta = frac > 0.02 && frac < 1 ? Math.max(1, Math.round(el / frac - el)) : 0;
+      prog(0.45 + 0.55 * frac, 'Обработка плиток… ' + Math.round(frac * 100) + '%' + (eta ? ' (~' + Math.max(1, Math.round(eta / 60)) + ' мин)' : ''));
     };
     if (threads <= 1) { const ctx = TW.makeCtx(data); for (const t of jobs) take(TW.runTile(ctx, tmp, t, tiles[t])); }
     else {
@@ -88,11 +116,12 @@ async function refineParallel(src, dst, opt, onProgress) {
       });
     }
     R.finishLas(ofd, H, out, bb, wpos); fs.closeSync(ofd); ofd = null;
-    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: P.c16, align: P.align, colorBalance: P.colorBalance, noColor: { found: nNoC, left: nNoCL }, degrain: nGrain, threads };
+    const tilesMs = Date.now() - tTiles;
+    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: P.c16, align: P.align, colorBalance: P.colorBalance, noColor: { found: nNoC, left: nNoCL }, degrain: nGrain, threads, stageMs, prepareMs, tilesMs, workerMs, denseProfile: opt._denseProfile || null };
   } finally {
     for (const w of workers) { try { await w.terminate(); } catch (_) {} }
     if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
   }
 }
-module.exports = { refineParallel, pickThreads, BYTES_PER_POINT };
+module.exports = { refineParallel, pickThreads, denseCleanProfile, BYTES_PER_POINT };

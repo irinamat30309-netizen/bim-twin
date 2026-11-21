@@ -159,7 +159,7 @@ test('r22: связка — main (поиск .xbin, скрытое окно бе
   assert.match(win, /setWindowOpenHandler\(\(\) => \(\{ action: 'deny' \}\)\)/); assert.match(win, /will-navigate/);
   assert.match(win, /e\.sender === win\.webContents/, 'сообщения окна принимаются только от него самого');
   const ref = main.slice(main.indexOf("ipcMain.handle('bim:refineScan'"), main.indexOf("ipcMain.on('bim:cancelRefineScan'"));
-  assert.match(ref, /runPhotoRecolor\(/); assert.match(ref, /srcForRefine/); assert.match(ref, /photoWarning/);
+  assert.match(ref, /(runPhotoRecolor|photoColorAuto)\(/); assert.match(ref, /srcForRefine/); assert.match(ref, /photoWarning/);
   assert.match(main.slice(main.indexOf("ipcMain.on('bim:cancelRefineScan'")), /job\.recolorStop/);
   const html = read('recolor-host.html'); assert.match(html, /default-src 'none'/); assert.doesNotMatch(html, /<script/);
   const pre = read('recolor-host-preload.js'); assert.match(pre, /new VideoDecoder/); assert.match(pre, /EncodedVideoChunk\(\{ type: 'key'/); assert.match(pre, /recolor:done/);

@@ -1,4 +1,4 @@
-﻿/* BIM Twin — renderer v0.4 (Phase A: persistence + CRUD + uploads + backup). */
+/* BIM Twin — renderer v0.4 (Phase A: persistence + CRUD + uploads + backup). */
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -750,6 +750,8 @@
     if (!info.poses || !info.poses.n) { toast('Рядом с .xbin не найдена траектория project_data/poses.csv — без неё облако не собрать'); return false; }
     const kit = window.__lxKit, mins = Math.max(1, Math.round((info.poses.duration || 0) / 60));
     const allMln = Math.max(1, Math.round((info.poses.duration || 0) * 0.36));   // L2 Pro: ~360 тыс. точек/с после фильтра дальности
+    // r179: для очень длинных сканов (>30 мин) уточнение по умолчанию выключено — иначе сборка 35-мин скана
+    // с refine идёт ~22+ мин; пользователь может включить галку, если нужно качество.
     let density = 'all', refine = true, fast = true, color = x.photoReady ? 'photo' : 'gray', edge = true, finish = true;
     if (kit && kit.form) {
       const v = await kit.form({ title: 'Облако из сырого лидара (.xbin)', okLabel: 'Собрать облако', wide: true,

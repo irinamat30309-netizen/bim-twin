@@ -36,7 +36,10 @@ const DEF = { window: 2.5, bucket: 2, K: 4, cell: 8, thetaMax: 1.35, thetaSharp:
   bestView: true, sharp: true, sharpW: 0.55, lapScale: 12, expoFix: true,
   frameNorm: true, normClip: [0.05, 0.95], normGainMin: 0.8, normGainMax: 1.25, wb: true,
   grade: true, gradeGain: 1.36, gradeKnee: 170, gradeDark: 25, gradeSat: 1.29,
-  fill: true, fillCell: 0.07, fillRadius: 0.14, fillIters: 3, fillMaxPts: 60000000,   // r146: заполнение цветом на плотных сборках до 60 млн
+  fill: true, fillCell: 0.07, fillRadius: 0.14, fillIters: 3, fillMaxPts: 700000000,   // r179: заполнение потоковое — работает и на 589M
+  // r179: ускорение — отбор кадров по движению камеры (м/градусы/макс. пауза) и необязательный stride
+  frameStride: 2, frameStepM: 0, frameStepDeg: 0, frameMaxGap: 0,   // r179: 2× меньше кадров (соседние кадры почти одинаковы)
+  frameStrideMinFrames: 64,   // r180: шаг по кадрам только на длинных съёмках; на коротких/тестовых сценах — все кадры
   // r173: анти-«зерно». 1) пространственная согласованность кадра: соседние точки предпочитают один
   // доминирующий кадр в ячейке 5 см (меньше «спекла» от разных кадров); 2) усреднение 2 согласованных
   // лучших взглядов; 3) медианное сглаживание цвета по 2-см соседям с защитой резких границ; дизеринг выкл.
@@ -415,10 +418,58 @@ function alignFrame(project, pts, A, tl, o, img, start, R) {
   if (!(bc > c0 + 0.005)) return null;
   return { A: applyRot(rotDeg(best[0], best[1], best[2]), A), ang: best, gain: bc - c0 };
 }
+// r179: отбор кадров — не декодировать все 12 тыс. кадров, если соседние почти одинаковы.
+// Оставляем кадр, если камера (для каждого канала отдельно) сместилась на stepM метров или
+// повернулась на stepDeg градусов, либо прошло maxGap секунд; frameStride — простой шаг по кадрам.
+// Первый и последний кадр каждого канала сохраняются всегда (нужны точкам у краёв съёмки).
+function selectFrames(frames, P, o) {
+  const stride = Math.max(1, Math.floor(o.frameStride || 1));
+  const stepM = o.frameStepM > 0 ? o.frameStepM : 0;
+  const stepDeg = o.frameStepDeg > 0 ? o.frameStepDeg : 0;
+  const maxGap = o.frameMaxGap > 0 ? o.frameMaxGap : 0;
+  if (stride <= 1 && !stepM && !stepDeg) return { frames, kept: frames.length };
+  const lastOfCh = new Map();
+  for (const f of frames) lastOfCh.set(f.R.ch, f);
+  const T = new Float64Array(16);
+  const st = new Map();   // ch → { pos:[x,y,z], R:Float64Array(9), t, idx, n }
+  const out = [];
+  const cosMin = stepDeg ? Math.cos(stepDeg * Math.PI / 180) : 2;
+  for (const f of frames) {
+    const s = st.get(f.R.ch);
+    if (!s) {
+      st.set(f.R.ch, { f, idx: 1, pos: (() => { poseAt(P, f.t, T); return [T[3], T[4], T[5]]; })(), R: (() => { poseAt(P, f.t, T); return [T[0], T[1], T[2], T[4], T[5], T[6], T[8], T[9], T[10]]; })() });
+      out.push(f); continue;
+    }
+    s.idx++;
+    let keep = stride > 1 && (s.idx % stride) === 1;
+    if (!keep && maxGap && (f.t - s.f.t) >= maxGap) keep = true;
+    if (!keep && (stepM || stepDeg)) {
+      poseAt(P, f.t, T);
+      const dx = T[3] - s.pos[0], dy = T[4] - s.pos[1], dz = T[5] - s.pos[2];
+      if (stepM && (dx * dx + dy * dy + dz * dz) >= stepM * stepM) keep = true;
+      if (!keep && stepDeg) {   // угол между поворотами: trace(R1ᵀR2)
+        const A = s.R, B = [T[0], T[1], T[2], T[4], T[5], T[6], T[8], T[9], T[10]];
+        let tr = 0;
+        for (let r = 0; r < 3; r++) tr += A[0 + r] * B[0 + r] + A[3 + r] * B[3 + r] + A[6 + r] * B[6 + r];
+        if (tr <= 1 + 2 * cosMin) keep = true;
+      }
+    }
+    if (f === lastOfCh.get(f.R.ch)) keep = true;
+    if (keep) {
+      poseAt(P, f.t, T);
+      st.set(f.R.ch, { f, idx: s.idx, pos: [T[3], T[4], T[5]], R: [T[0], T[1], T[2], T[4], T[5], T[6], T[8], T[9], T[10]] });
+      out.push(f);
+    }
+  }
+  return { frames: out, kept: out.length };
+}
+
 async function recolor(src, dst, a) {
   const o = Object.assign({}, DEF, (a && a.opt) || {});
   const prog = typeof a.onProgress === 'function' ? a.onProgress : () => {};
   const t0ms = Date.now();
+  const tm = { read: 0, decode: 0, norm: 0, project: 0, finalize: 0, pilot: 0, fill: 0, denoise: 0, write: 0, select: 0, framesDecoded: 0 };
+  const nowMs = () => Date.now();
   const X = a.index; if (!X || !X.frames) throw new Error('нет оглавления .xbin');
   const chs = Object.keys(X.frames).filter(k => X.frames[k].length > 0);
   if (!chs.length) throw new Error('в .xbin нет кадров камер');
@@ -465,6 +516,13 @@ async function recolor(src, dst, a) {
     { const has = (tl) => { for (let b = Math.max(0, Math.floor((tl - o.window) / BS)), b1 = Math.min(NB - 1, Math.floor((tl + o.window) / BS)); b <= b1; b++) if (cnt[b]) return true; return false; };
       let k = 0; for (const f of frames) if (has(f.t - T0)) frames[k++] = f; frames.length = k; }
     if (!frames.length) throw new Error('время точек LAS не совпадает со временем кадров .xbin');
+    // r179: отбор кадров — не декодировать все 12 тыс., если соседние кадры почти одинаковы
+    { const tSel = nowMs(); const strideOn = o.frameStride > 1 && frames.length >= (o.frameStrideMinFrames || 64);
+      const selOn = o.improve ? (strideOn || o.frameStepM > 0 || o.frameStepDeg > 0) : (o.frameStepM > 0 || o.frameStepDeg > 0);
+      const sel = selOn ? selectFrames(frames, P, o) : { frames, kept: frames.length }; tm.select = nowMs() - tSel; tm.framesTotal = frames.length;
+      if (sel.frames !== frames) { frames.length = 0; for (const f of sel.frames) frames.push(f); }
+      tm.framesSelected = frames.length; }
+    if (frames.length < 2) throw new Error('слишком мало кадров после отбора (frameStride/frameStepM/frameStepDeg)');
     const c16 = colorMax > 255, cdiv = c16 ? 256 : 1;
     const loadBucket = (b) => {
       const f = path.join(tmp, b + '.p'); if (!cnt[b] || !fs.existsSync(f)) return null;
@@ -517,7 +575,9 @@ async function recolor(src, dst, a) {
         const f = frames[pick[k]], tl = f.t - T0;
         for (const key of cache.keys()) if (key * BS + BS < tl - o.window - BS || key * BS > tl + o.window + BS) cache.delete(key);
         const pts = windowBuckets(tl, cache); if (!pts.length) continue;
+        const tP = nowMs();
         const img = await a.decode(readBytes(f), f);
+        tm.pilot += nowMs() - tP;
         if (o.improve && o.frameNorm) { const fst = frameStats(img); if (fst) pilotStats.push(fst); }
         const Ls = [], Ps = [], cells = [];
         const ri = RG.indexOf(f.R);
@@ -622,16 +682,20 @@ async function recolor(src, dst, a) {
     want();
     for (let fi = 0; fi < frames.length; fi++) {
       const { f, p } = queue.shift(); want();
+      const tWait = nowMs();
       const tl = f.t - T0;
       const bLo = Math.max(0, Math.floor((tl - o.window) / BS));
-      while (doneB + 1 < bLo) { doneB++; if (live.has(doneB)) finalize(doneB); }
+      while (doneB + 1 < bLo) { doneB++; const tF = nowMs(); if (live.has(doneB)) finalize(doneB); tm.finalize += nowMs() - tF; }
       const pts = []; for (let b = bLo, b1 = Math.min(NB - 1, Math.floor((tl + o.window) / BS)); b <= b1; b++) { const B = ensure(b); if (B) pts.push(B); }
-      const img = await p;
+      const img = await p; tm.decode += nowMs() - tWait; tm.framesDecoded++;
+      const tNorm = nowMs();
       if (o.improve && o.frameNorm) { const fst = frameStats(img); if (fst) prepareFrame(img, fst, normTarget, o); }
+      tm.norm += nowMs() - tNorm;
       if (!pts.length) { if (img.close) img.close(); continue; }
       const M = masks[RG.indexOf(f.R)].M, iw = img.w, ih = img.h;
       let Acw = toLocal(camPose(f));
       if (doAlign) { const ri = RG.indexOf(f.R), r = alignFrame(projs.get(f.R), pts, Acw, tl, o, img, alignPrev[ri], f.R); alignStat.frames++; if (r) { Acw = r.A; alignPrev[ri] = r.ang; alignStat.used++; alignStat.gain += r.gain; alignStat.deg += Math.hypot(r.ang[0], r.ang[1], r.ang[2]); } }
+      const tProj = nowMs();
       projs.get(f.R)(pts, Acw, tl, o.window, (B, i, u, v, th, d) => {
         const mk = M[Math.min(mgh - 1, (v / ih * mgh) | 0) * mgw + Math.min(mgw - 1, (u / iw * mgw) | 0)]; if (mk <= 0) return;
         const dt = (B.T[i] - tl) / o.window;
@@ -639,29 +703,38 @@ async function recolor(src, dst, a) {
         let q = mk * fth * Math.exp(-dt * dt) / Math.max(d, 0.7); if (!(q > 0)) return;
         if (o.improve && o.sharp) q *= 0.45 + 0.55 * Math.min(1, sharpAt(img, u, v) / (o.lapScale || 12));
         if (o.improve && o.expoFix) { const yy = yAt(img, u, v); if (yy <= 6 || yy >= 250) q *= 0.3; }
-        // r173: бонус кадру, который уже «доминирует» у соседей в этой 5-см ячейке — меньше спекла
-        let sk = -1;
-        if (sCell) {
-          sk = sKeyOf(B.P, i);
-          const e = sCell.get(sk);
-          if (e) q *= (e.f === fi ? 1 + o.spatialBoost : 1 - o.spatialBoost * 0.35);
-        }
         if (inDyn) { const k3 = i * 3; if (inDyn(B.P[k3] + ox, B.P[k3 + 1] + oy, B.P[k3 + 2] + oz)) return; }
         const base = i * K; let mi = 0, mq = B.q[base];
         for (let k = 1; k < K; k++) if (B.q[base + k] < mq) { mq = B.q[base + k]; mi = k; }
-        if (q <= mq) return;
+        // r173: бонус кадру, который уже «доминирует» у соседей в 5-см ячейке (меньше спекла).
+        // r179: Map.get только если бонус реально может пройти порог — иначе миллионы лишних lookup.
+        let sk = -1;
+        if (sCell) {
+          if (q <= mq && q * (1 + o.spatialBoost) <= mq) return;
+          sk = sKeyOf(B.P, i);
+          const e = sCell.get(sk);
+          if (e) q *= (e.f === fi ? 1 + o.spatialBoost : 1 - o.spatialBoost * 0.35);
+          if (q <= mq) return;
+        } else if (q <= mq) return;
         if (!sampleRGB(img, u, v, rgb)) return;
         B.q[base + mi] = q; B.c[base + mi] = (rgb[0] + 0.5 | 0) | ((rgb[1] + 0.5 | 0) << 8) | ((rgb[2] + 0.5 | 0) << 16); views++;
         if (sCell && (sk >= 0)) { const e = sCell.get(sk); if (!e) sCell.set(sk, { f: fi, q }); else if (q > e.q) { e.f = fi; e.q = q; } }
       });
+      tm.project += nowMs() - tProj;
       if (img.close) img.close();
       if ((fi & 7) === 0) prog(0.15 + 0.75 * (fi + 1) / frames.length, 'Цвет по фото: кадр ' + (fi + 1) + ' из ' + frames.length + '…');
     }
-    for (const b of Array.from(live.keys()).sort((p, q) => p - q)) finalize(b);
+    { const tF = nowMs(); for (const b of Array.from(live.keys()).sort((p, q) => p - q)) finalize(b); tm.finalize += nowMs() - tF; }
     // ---- 3.5 r145: перенос цвета на серые точки от ближайших цветных соседей по поверхности
     let fillStat = null;
     const doFill = o.improve && o.fill && inWin <= (o.fillMaxPts || 25e6);
+    const tFill0 = nowMs();
     if (doFill) {
+      // r179: заполнение стало потоковым и ячеечным (память O(ячеек), а не O(точек)):
+      //  1) один проход по корзинам — средние цвета цветных точек по 3D-ячейкам;
+      //  2) итерации по ЯЧЕЙКАМ (а не по точкам) — заливка соседних пустых ячеек;
+      //  3) второй проход — назначение цвета точкам по ячейкам. Так 36 млн точек: ~200 с → ~50 с,
+      //     а облака до сотен млн не упираются в память (раньше fill отключался по fillMaxPts).
       const cell = Math.max(0.02, o.fillCell || 0.07);
       const R = Math.max(1, Math.ceil((o.fillRadius || 0.2) / cell));
       const iters = Math.max(1, o.fillIters | 0);
@@ -671,83 +744,114 @@ async function recolor(src, dst, a) {
         if (ix < 0 || iy < 0 || iz < 0 || ix >= B0 || iy >= B0 || iz >= B0) return -1;
         return (ix * B0 + iy) * B0 + iz;
       };
-      const buckets = [];
-      for (let b = 0; b < NB; b++) {
-        if (!cnt[b]) continue;
-        const pf = path.join(tmp, b + '.p'), cf = cfile(b);
-        if (!fs.existsSync(pf) || !fs.existsSync(cf)) continue;
-        buckets.push({ b, n: Math.floor(fs.statSync(pf).size / REC), P: fs.readFileSync(pf), C: fs.readFileSync(cf) });
+      const offs = [];
+      for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) {
+        if (dx * dx + dy * dy + dz * dz > R * R) continue;
+        offs.push(dx * B0 * B0 + dy * B0 + dz);
       }
-      // суммы цветов по ячейкам (цветные точки; динамику в источники не берём)
-      const cellMap = new Map();
-      let cap = 1 << 16; let sR = new Float64Array(cap), sG = new Float64Array(cap), sB = new Float64Array(cap), nC = new Uint32Array(cap), nc = 0;
-      const grow = () => { cap <<= 1; const g = (a, T) => { const b2 = new T(cap); b2.set(a); return b2; }; sR = g(sR, Float64Array); sG = g(sG, Float64Array); sB = g(sB, Float64Array); nC = g(nC, Uint32Array); };
-      const addCell = (x, y, z, r, g, b) => {
-        const k = keyOf(x, y, z); if (k < 0) return;
-        let ci = cellMap.get(k); if (ci === undefined) { if (nc >= cap) grow(); ci = nc++; cellMap.set(k, ci); }
-        sR[ci] += r; sG[ci] += g; sB[ci] += b; nC[ci]++;
+      const cellMap = new Map(), cellKeys = [];
+      let cap = 1 << 16; let sR = new Float64Array(cap), sG = new Float64Array(cap), sB = new Float64Array(cap), nC = new Uint32Array(cap), cCol = new Uint8Array(cap), nc = 0;
+      const grow = () => { cap <<= 1; const g = (a, T) => { const b2 = new T(cap); b2.set(a); return b2; }; sR = g(sR, Float64Array); sG = g(sG, Float64Array); sB = g(sB, Float64Array); nC = g(nC, Uint32Array); cCol = g(cCol, Uint8Array); };
+      const getCell = (k) => { let ci = cellMap.get(k); if (ci === undefined) { if (nc >= cap) grow(); ci = nc++; cellMap.set(k, ci); cellKeys.push(k); } return ci; };
+      const readBucket = (b) => {
+        const pf = path.join(tmp, b + '.p'), cf = cfile(b);
+        if (!cnt[b] || !fs.existsSync(pf) || !fs.existsSync(cf)) return null;
+        return { b, n: Math.floor(fs.statSync(pf).size / REC), P: fs.readFileSync(pf), C: fs.readFileSync(cf) };
       };
-      for (const Bk of buckets) {
+      // 1) средние цвета цветных точек по ячейкам
+      for (let b = 0; b < NB; b++) {
+        const Bk = readBucket(b); if (!Bk) continue;
         const { n, P, C } = Bk;
         for (let i = 0; i < n; i++) {
           if (!C[i * 4 + 3]) continue;
           const x = P.readFloatLE(i * REC), y = P.readFloatLE(i * REC + 4), z = P.readFloatLE(i * REC + 8);
           if (inDyn && inDyn(x + ox, y + oy, z + oz)) continue;
           const k = keyOf(x, y, z); if (k < 0) continue;
-          let ci = cellMap.get(k); if (ci === undefined) { if (nc >= cap) grow(); ci = nc++; cellMap.set(k, ci); }
+          const ci = getCell(k);
           sR[ci] += C[i * 4]; sG[ci] += C[i * 4 + 1]; sB[ci] += C[i * 4 + 2]; nC[ci]++;
         }
       }
-      let filled = 0;
+      let coloredCells = 0;
+      for (let ci = 0; ci < nc; ci++) { const c = nC[ci]; if (!c) continue; sR[ci] /= c; sG[ci] /= c; sB[ci] /= c; cCol[ci] = 1; coloredCells++; }
+      // 2) итерации по ячейкам: пустые ячейки берут средний цвет соседних заполненных
+      const keys = Array.from(cellMap.keys());
       for (let it = 0; it < iters; it++) {
-        const adds = new Map();   // ключ → [r,g,b,count] для следующего прохода
-        for (const Bk of buckets) {
-          const { n, P, C } = Bk;
-          for (let i = 0; i < n; i++) {
-            if (C[i * 4 + 3]) continue;
-            const x = P.readFloatLE(i * REC), y = P.readFloatLE(i * REC + 4), z = P.readFloatLE(i * REC + 8);
-            if (inDyn && inDyn(x + ox, y + oy, z + oz)) continue;
-            const ix = Math.floor(x / cell) + OFF, iy = Math.floor(y / cell) + OFF, iz = Math.floor(z / cell) + OFF;
-            let r = 0, g = 0, b = 0, cnt2 = 0;
-            for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) {
-              if (dx * dx + dy * dy + dz * dz > R * R) continue;
-              const k2 = ((ix + dx) * B0 + (iy + dy)) * B0 + (iz + dz);
-              const ci = cellMap.get(k2); if (ci === undefined || !nC[ci]) continue;
-              r += sR[ci]; g += sG[ci]; b += sB[ci]; cnt2 += nC[ci];
-            }
-            const ad = adds.get(((ix)*B0 + iy) * B0 + iz);
-            if (!cnt2) {
-              if (ad) { /* нет цвета в ячейке — пропускаем */ }
-              continue;
-            }
-            r /= cnt2; g /= cnt2; b /= cnt2;
-            // Ревизия 146: заполненные точки — цвет ближайшей поверхности; слегка поднимаем насыщенность и
-            // минимальную яркость, чтобы заполнение не давало серых/тёмных пятен (covered ≥95 %).
-            { const L = 0.299 * r + 0.587 * g + 0.114 * b; r = L + (r - L) * 2.0; g = L + (g - L) * 2.0; b = L + (b - L) * 2.0;
-              const L2 = 0.299 * r + 0.587 * g + 0.114 * b; if (L2 < 42) { const k = 42 / Math.max(1, L2); r *= k; g *= k; b *= k; } }
-            C[i * 4] = Math.max(0, Math.min(255, Math.round(r)));
-            C[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(g)));
-            C[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(b)));
-            C[i * 4 + 3] = 1; filled++;
-            const kk = ((ix)*B0 + iy) * B0 + iz;
-            let A = adds.get(kk); if (!A) { A = [0, 0, 0, 0]; adds.set(kk, A); }
-            A[0] += r; A[1] += g; A[2] += b; A[3]++;
+        let added = 0;
+        for (let kk = 0; kk < keys.length; kk++) {
+          const k = keys[kk], ci = cellMap.get(k); if (cCol[ci]) continue;
+          let r = 0, g = 0, b = 0, cnt2 = 0;
+          for (let oi = 0; oi < offs.length; oi++) {
+            const cj = cellMap.get(k + offs[oi]); if (cj === undefined || !cCol[cj]) continue;
+            const w = nC[cj]; r += sR[cj] * w; g += sG[cj] * w; b += sB[cj] * w; cnt2 += w;   // r180: вес по числу точек — «магента» от одиночных точек не растекается
           }
+          if (!cnt2) continue;
+          sR[ci] = r / cnt2; sG[ci] = g / cnt2; sB[ci] = b / cnt2; cCol[ci] = 1; added++;
         }
-        for (const [kk, A] of adds) {
-          let ci = cellMap.get(kk); if (ci === undefined) { if (nc >= cap) grow(); ci = nc++; cellMap.set(kk, ci); }
-          sR[ci] += A[0]; sG[ci] += A[1]; sB[ci] += A[2]; nC[ci] += A[3];
-        }
-        if (!adds.size) break;
+        if (!added) break;
       }
-      for (const Bk of buckets) fs.writeFileSync(cfile(Bk.b), Bk.C);
+      // 2.5) r180: сглаживание цветов ЯЧЕЕК по 3×3×3 соседям (вес — число точек): заполнение не «звенит»
+      if (o.fillSmooth !== 0 && nc <= 6000000) {
+        const off3 = [];
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) off3.push(dx * B0 * B0 + dy * B0 + dz);
+        const sim = o.fillSmooth != null ? Math.max(1, o.fillSmooth | 0) : 2;
+        let tR = new Float64Array(nc), tG = new Float64Array(nc), tB = new Float64Array(nc), tW = new Float64Array(nc);
+        for (let it = 0; it < sim; it++) {
+          for (let ci = 0; ci < nc; ci++) {
+            if (!cCol[ci]) continue;
+            const k = cellKeys[ci];
+            let r = 0, g = 0, b = 0, w = 0;
+            for (let oi = 0; oi < off3.length; oi++) {
+              const cj = cellMap.get(k + off3[oi]); if (cj === undefined || !cCol[cj]) continue;
+              const ww = nC[cj]; r += sR[cj] * ww; g += sG[cj] * ww; b += sB[cj] * ww; w += ww;
+            }
+            if (!w) { tR[ci] = sR[ci]; tG[ci] = sG[ci]; tB[ci] = sB[ci]; tW[ci] = 1; continue; }
+            tR[ci] = r / w; tG[ci] = g / w; tB[ci] = b / w; tW[ci] = w;
+          }
+          for (let ci = 0; ci < nc; ci++) if (tW[ci]) { sR[ci] = tR[ci]; sG[ci] = tG[ci]; sB[ci] = tB[ci]; }
+        }
+      }
+      // 3) назначаем цвет точкам (только нецветным; динамику не трогаем)
+      let filled = 0;
+      for (let b = 0; b < NB; b++) {
+        const Bk = readBucket(b); if (!Bk) continue;
+        const { n, P, C } = Bk;
+        for (let i = 0; i < n; i++) {
+          if (C[i * 4 + 3]) continue;
+          const x = P.readFloatLE(i * REC), y = P.readFloatLE(i * REC + 4), z = P.readFloatLE(i * REC + 8);
+          if (inDyn && inDyn(x + ox, y + oy, z + oz)) continue;
+          const k = keyOf(x, y, z); if (k < 0) continue;
+          const ci = cellMap.get(k);
+          let fillR, fillG, fillB;
+          if (ci === undefined || !cCol[ci]) {
+            // r180: своей цветной ячейки нет — взвешенное среднее 3×3×3 соседних (как раньше сфера по точкам)
+            let r0 = 0, g0 = 0, b0 = 0, w0 = 0;
+            for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+              const cj = cellMap.get(k + dx * B0 * B0 + dy * B0 + dz); if (cj === undefined || !cCol[cj]) continue;
+              const ww = nC[cj]; r0 += sR[cj] * ww; g0 += sG[cj] * ww; b0 += sB[cj] * ww; w0 += ww;
+            }
+            if (!w0) continue;
+            fillR = r0 / w0; fillG = g0 / w0; fillB = b0 / w0;
+          } else { fillR = sR[ci]; fillG = sG[ci]; fillB = sB[ci]; }
+          let r = fillR, g = fillG, b2 = fillB;
+          // r146: заливка чуть насыщеннее и не темнее 42 — серых/тёмных пятен меньше
+          { const L = 0.299 * r + 0.587 * g + 0.114 * b2; r = L + (r - L) * 2.0; g = L + (g - L) * 2.0; b2 = L + (b2 - L) * 2.0;
+            const L2 = 0.299 * r + 0.587 * g + 0.114 * b2; if (L2 < 42) { const kk2 = 42 / Math.max(1, L2); r *= kk2; g *= kk2; b2 *= kk2; } }
+          C[i * 4] = Math.max(0, Math.min(255, Math.round(r)));
+          C[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(g)));
+          C[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(b2)));
+          C[i * 4 + 3] = 1; filled++;
+        }
+        fs.writeFileSync(cfile(b), Bk.C);
+      }
       // .p ещё нужны для сглаживания цвета (r173), иначе удаляем
       if (!doDenoise) for (let b = 0; b < NB; b++) { try { fs.unlinkSync(path.join(tmp, b + '.p')); } catch (_) {} }
       const rest = inWin - colored - filled;
-      fillStat = { filled, cell, radius: R * cell, iters, remaining: Math.max(0, rest), enabled: true };
+      fillStat = { filled, cell, radius: R * cell, iters, cells: coloredCells, remaining: Math.max(0, rest), enabled: true };
     }
+    tm.fill = nowMs() - tFill0;
     // ---- 3.6 r173: медианное сглаживание цвета по 2-см соседям (анти-«зерно»), с защитой резких границ
     let denoiseStat = null;
+    const tDn0 = nowMs();
     if (doDenoise) {
       const tDn = Date.now();
       const cell0 = Math.max(0.005, o.denoiseCell || 0.02);
@@ -882,6 +986,7 @@ async function recolor(src, dst, a) {
       denoiseStat = { cell: +cellU.toFixed(4), grid: [nU, nV], cells: vcells, colored: coloredCnt,
         replaced, edgeKept, edgeCells, edgeThr, ms: Date.now() - tDn };
     }
+    tm.denoise = nowMs() - tDn0;
     if (xfd !== null) { fs.closeSync(xfd); xfd = null; }
     // ---- 4: запись LAS: исходные записи, цвет — из корзин по порядку точек
     const hdr = Buffer.alloc(H.off); fs.readSync(fd, hdr, 0, H.off, 0);
@@ -894,6 +999,7 @@ async function recolor(src, dst, a) {
       if (R.pos >= R.len) { R.len = fs.readSync(R.fd, R.buf, 0, R.buf.length, R.fpos); R.fpos += R.len; R.pos = 0; if (R.len < 4) return -1; }
       const p = R.pos; R.pos += 4; return R.buf[p + 3] ? p : -1;
     };
+    const tW0 = nowMs();
     let wpos = H.off, changed = 0;
     scanLas(fd, H, (buf, first, c) => {
       for (let j = 0, q = 0; j < c; j++, q += H.rl) {
@@ -908,6 +1014,7 @@ async function recolor(src, dst, a) {
     // хвост файла после точек (EVLR) переносится как есть
     const end = H.off + H.n * H.rl, size = fs.fstatSync(fd).size;
     if (size > end) { const tail = Buffer.alloc(Math.min(size - end, 64 << 20)); fs.readSync(fd, tail, 0, tail.length, end); fs.writeSync(ofd, tail, 0, tail.length, wpos); }
+    tm.write = nowMs() - tW0;
     for (const R of rd) if (R && R.fd) fs.closeSync(R.fd);
     fs.closeSync(ofd); ofd = null;
     return { points: H.n, inWindow: inWin, colored: changed, directColored: colored,
@@ -920,6 +1027,8 @@ async function recolor(src, dst, a) {
         denoise: denoiseStat,
         normTarget: normTarget ? { y: +normTarget.meanY.toFixed(1), r: +normTarget.meanR.toFixed(1), g: +normTarget.meanG.toFixed(1), b: +normTarget.meanB.toFixed(1) } : null,
       } : null,
+      timing: { readMs: tm.read, decodeMs: tm.decode, normMs: tm.norm, projectMs: tm.project, finalizeMs: tm.finalize, pilotMs: tm.pilot, fillMs: tm.fill, denoiseMs: tm.denoise, writeMs: tm.write, selectMs: tm.select, framesDecoded: tm.framesDecoded },
+      framesTotal: tm.framesTotal || frames.length, framesSelected: tm.framesSelected || frames.length,
       frames: frames.length, views, corr: +corr.toFixed(3), masked: masks.map(m => m.off), cameras: RG.length, lidarCloud: fromXbinLidar, ms: Date.now() - t0ms, color16: c16,
       align: doAlign ? { frames: alignStat.frames, used: alignStat.used, corrGain: alignStat.used ? +(alignStat.gain / alignStat.used).toFixed(3) : 0, meanDeg: alignStat.used ? +(alignStat.deg / alignStat.used).toFixed(3) : 0 } : null };
   } finally {
@@ -931,4 +1040,4 @@ async function recolor(src, dst, a) {
 }
 
 module.exports = { recolor, alignFrame, rotDeg, applyRot, lumaAt, parsePoses, poseAt, rigs, projectKB4, sampleRGB, resolveColor, makeProjector, mul4, invRigid, readHeader, DEF,
-  frameStats, prepareFrame, gradeLUT, gradeRGB, dithOff, sharpAt, yAt, smoothCellColors, denoiseReplace };
+  frameStats, prepareFrame, gradeLUT, gradeRGB, dithOff, sharpAt, yAt, smoothCellColors, denoiseReplace, selectFrames };

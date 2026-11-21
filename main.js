@@ -1246,6 +1246,8 @@ function registerIpc() {
       // ревизия 143: fast — быстрое уточнение (2 итерации, regRate 12000, ранний выход); по умолчанию включено,
       // как рекомендовано для длинных сканов; для коротких явное fast=false даёт прежние 3 итерации/20000
       const opt = { maxPoints: XBIN_DENSITY[density] || 0, step: density === 'all' ? 1 : 0, refine: a.refine === true, fast: a.fast !== false, edge: a.edge !== false };
+      opt.durationSec = Number((info && info.poses && info.poses.duration) || 0);
+      opt.fusion = a.fusion === true ? 'auto' : false;
       // ревизия 36: цвет точек — по фото камер (настоящий цвет, по умолчанию, если в .xbin есть камеры) или серый (яркость отражения лидара)
       const photo = a.color !== 'gray' && !!(info.xbin && info.xbin.photoReady);
       const W0 = photo ? 0.5 : 1;   // доля прогресса на сборку
@@ -1316,7 +1318,10 @@ function registerIpc() {
       const onDone = (e, m) => { if (mine(e)) finish(m && typeof m === 'object' ? m : { ok: false, error: 'no_result' }); };
       const onReady = (e) => { if (mine(e)) { try { win.webContents.send('recolor:start', Object.assign({ appDir: __dirname }, cfg)); } catch (err) { finish({ ok: false, error: String((err && err.message) || err) }); } } };
       ipcMain.on('recolor:progress', onProg); ipcMain.on('recolor:done', onDone); ipcMain.on('recolor:ready', onReady);
-      job.recolorStop = () => finish({ ok: false, cancelled: true, error: 'cancelled' });
+      job.recolorStops = job.recolorStops || [];
+    const myStop = () => finish({ ok: false, cancelled: true, error: 'cancelled' });
+    job.recolorStops.push(myStop);
+    job.recolorStop = () => { for (const s of job.recolorStops) { try { s(); } catch (_) {} } };
       try {
         win = new BrowserWindow({ show: false, width: 320, height: 240, skipTaskbar: true, title: 'BIM Twin: цвет по фото',
           webPreferences: { preload: path.join(__dirname, 'recolor-host-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false,
@@ -1333,7 +1338,43 @@ function registerIpc() {
   // У облака из лидара RGB — серая яркость отражения; здесь каждая точка получает цвет из кадров обеих камер (recolor-core.js).
   // Результат пишется во временную папку рядом и переименовывается в dst только после успеха; при ошибке или отмене исходник не тронут.
   function photoColorNeed(srcSize, points) { return srcSize * 1.05 + Math.max(0, points || srcSize / 34) * 21; }
-  async function photoColorLas(srcAbs, dstAbs, xbinAbs, posesText, onProgress, job) {
+  // r179: цвет по фото параллельно — облако режется на тайлы по времени, каждый тайл красит своё окно
+  async function photoColorAuto(srcAbs, dstAbs, xbinAbs, posesText, onProgress, job, opt) {
+    opt = opt && typeof opt === 'object' ? opt : {};
+    let pts = 0; { let fd = null; try { fd = fs.openSync(srcAbs, 'r'); pts = require('./recolor-core').readHeader(fd).n || 0; } catch (_) { pts = 0; } finally { if (fd != null) { try { fs.closeSync(fd); } catch (_) {} } } }
+    const cores = (() => { try { const os = require('os'); return os.availableParallelism ? os.availableParallelism() : os.cpus().length; } catch (_) { return 4; } })();
+    let workers = opt.workers != null ? Math.max(1, opt.workers | 0) : Math.max(1, Math.min(6, cores - 1));
+    if (opt.parallel === false || workers <= 1 || pts < (opt.parallelMinPoints || 200000)) workers = 1;
+    const tileOpt = Object.assign({}, opt, { improve: opt.improve !== false });
+    if (workers > 1) {
+      tileOpt.decodePool = Math.max(1, Math.min(6, Math.floor(Math.max(1, cores - 1) / workers)));
+      tileOpt.pilotFrames = Math.max(32, Math.min(opt.pilotFrames || 160, Math.round(160 / workers)));
+      tileOpt.fill = false; tileOpt.denoise = false;   // r179: глобальный post после склейки тайлов
+      try {
+        const RP = require('./recolor-parallel');
+        const r = await RP.parallelRecolor({
+          src: srcAbs, dst: dstAbs, xbin: xbinAbs, posesText, tmpDir: path.dirname(dstAbs), opt: tileOpt, workers,
+          runOne: (cfg, onProg) => runPhotoRecolor(cfg, onProg, job),
+          onProgress: (f, label) => { try { onProgress(f, label); } catch (_) {} },
+          job, log: () => {}
+        });
+        if (r && r.ok && opt.post !== false) {
+          try {
+            const postTmp = dstAbs + '.post.tmp';
+            const post = await require('./recolor-post').postColor(srcAbs, dstAbs, postTmp, tileOpt, () => {});
+            try { fs.rmSync(dstAbs, { force: true }); } catch (_) {}
+            fs.renameSync(postTmp, dstAbs);
+            r.stats.post = post; r.stats.colored = post.colored; r.stats.filled = (post.fill && post.fill.filled) || 0;
+          } catch (e) { r.postWarning = String((e && e.message) || e); }
+        }
+        return r;
+      } catch (e) { return { ok: false, error: 'parallel_failed', message: String((e && e.message) || e) }; }
+    }
+    const pr = await runPhotoRecolor({ src: srcAbs, dst: dstAbs, xbin: xbinAbs, posesText, tmpDir: path.dirname(dstAbs), opt: tileOpt }, onProgress, job);
+    return pr;
+  }
+
+  async function photoColorLas(srcAbs, dstAbs, xbinAbs, posesText, onProgress, job, opt) {
     const dir = path.dirname(dstAbs);
     let st = null; try { st = fs.statSync(srcAbs); } catch (e) { return { ok: false, error: 'no_source', message: 'облако не найдено' }; }
     let pts = 0; { let fd = null; try { fd = fs.openSync(srcAbs, 'r'); pts = require('./recolor-core').readHeader(fd).n || 0; } catch (_) { pts = 0; } finally { if (fd != null) { try { fs.closeSync(fd); } catch (_) {} } } }
@@ -1343,7 +1384,7 @@ function registerIpc() {
     try {
       tmp = fs.mkdtempSync(path.join(dir, '.bimtwin-color-'));
       const out = path.join(tmp, 'color.las');
-      const pr = await runPhotoRecolor({ src: srcAbs, dst: out, xbin: xbinAbs, posesText, tmpDir: tmp, opt: { improve: true } }, onProgress, job);
+      const pr = await photoColorAuto(srcAbs, out, xbinAbs, posesText, onProgress, job, opt);
       if (job.cancelled || (pr && pr.cancelled)) return { ok: false, cancelled: true, error: 'cancelled' };
       if (!pr || !pr.ok) return { ok: false, error: 'photo_failed', message: String((pr && (pr.message || pr.error)) || 'ошибка перекраски') };
       if (!(pr.stats && pr.stats.colored > 0)) return { ok: false, error: 'photo_none', message: 'ни одна точка не получила цвет с кадров камер (кадры не совпали по времени с облаком)' };
@@ -1594,8 +1635,8 @@ function registerIpc() {
           const onGone0 = () => { job.cancelled = true; try { if (job.recolorStop) job.recolorStop(); } catch (_) {} };
           try { sender.once('destroyed', onGone0); } catch (_) {}
           const photoOut = path.join(workDir, 'photo.las');
-          const pr = await runPhotoRecolor({ src: abs, dst: photoOut, xbin: xbinAbs, posesText, tmpDir: workDir, opt: a.photoOpt && typeof a.photoOpt === 'object' ? a.photoOpt : {} },
-            (f, label) => sendProg(0.45 * f, label), job);
+          const pr = await photoColorAuto(abs, photoOut, xbinAbs, posesText, (f, label) => sendProg(0.45 * f, label), job,
+            a.photoOpt && typeof a.photoOpt === 'object' ? a.photoOpt : {});
           try { sender.removeListener('destroyed', onGone0); } catch (_) {}
           activeRefineJobs.delete(key);
           if (job.cancelled || (pr && pr.cancelled)) { cleanup(); return { ok: false, cancelled: true, error: 'cancelled' }; }

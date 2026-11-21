@@ -73,6 +73,25 @@ function looksLidar(b, a, e) {
  * scan(file) → { size, calib, first, lidarCh, motorCh, lidar: [{off, len, t}], motor: {t, phi} (φ без скачков), bytes, t0, t1 }
  * Каналы лидара и мотора определяются по содержимому первых записей (в L2 Pro — 3 и 4).
  */
+// r179: последовательное буферизованное чтение (вместо fs.readSync на каждую запись/пакет).
+// Сканы 20+ ГБ содержат миллионы записей; по-записные readSync давали тяжесть на I/O-вызовах.
+const SEQ_BS = 32 << 20;
+function makeSeqReader(fd, size, bs) {
+  const B = bs || SEQ_BS;
+  const buf = Buffer.allocUnsafe(B);
+  let base = -1, len = 0;
+  return (abs, need) => {
+    if (abs >= base && abs + need <= base + len) return buf.subarray(abs - base, abs - base + need);
+    const want = Math.min(B, size - abs);
+    const n = fs.readSync(fd, buf, 0, want, abs);
+    base = abs; len = n;
+    if (need <= len) return buf.subarray(0, need);
+    const big = Buffer.allocUnsafe(need);
+    fs.readSync(fd, big, 0, need, abs);
+    return big;
+  };
+}
+
 function scan(file, onProgress) {
   const fd = fs.openSync(file, 'r');
   try {
@@ -83,13 +102,15 @@ function scan(file, onProgress) {
     const first = XB.findFirstRecord(head); if (first < 0) throw new Error('в файле .xbin не найдены записи данных');
     const kind = new Map();   // ch → 'lidar' | 'motor' | 'other'
     const lidar = [], mt = [], mc = [], ms = [], it = [], ig = [];
-    const hb = Buffer.allocUnsafe(HDR); let p = first, last = 0, lidarBytes = 0;
+    const readSeq = makeSeqReader(fd, size);
+    let p = first, last = 0, lidarBytes = 0;
     while (p + HDR <= size) {
-      if (fs.readSync(fd, hb, 0, HDR, p) !== HDR) break;
+      const hb = readSeq(p, HDR);
       const r = XB.recordAt(hb, 0); if (!r || p + r.L > size) break;
       let k = kind.get(r.ch);
       if (k === undefined || k === 'motor' || k === 'imu') {
-        const body = XB.readAt(fd, p + HDR, Math.min(r.L - HDR, k === 'motor' || k === 'imu' ? 1 << 20 : 2 << 20));
+        const cap = Math.min(r.L - HDR, k === 'motor' || k === 'imu' ? 1 << 20 : 2 << 20);
+        const body = cap > 0 ? readSeq(p + HDR, cap) : Buffer.alloc(0);
         const msgs = messages(body);
         if (k === undefined) {
           k = 'other';
@@ -245,7 +266,7 @@ function lasHeader(o) {
 }
 
 const DEF = { minRange: 0.5, maxRange: 120, maxPoints: 40e6, step: 0, t0: null, t1: null, maxMotorGap: 0.05, imu: true, imuShift: 0, position: 'hermite', poseStep: 0.005,
-  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: 'auto', detail: false, cleanOutliers: false };
+  refine: false, selfRadius: 0.6, edge: true, edgeMin: 0.15, edgeRel: 0.02, edgeGap: 0.0003, sky: false, balance: false, fusion: false, detail: false, cleanOutliers: false };
 
 // ---------- ревизия 145: VOXEL-балансировка плотности (по умолчанию ВЫКЛ) ----------
 // Мультипроходы дают на земле/фасаде смесь плотных и разреженных участков. balance ограничивает число точек
@@ -334,6 +355,7 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
   const s2 = o.selfRadius > 0 ? o.selfRadius * o.selfRadius : 0;   // «самомаска»: отражения от корпуса сканера (≤ 0,5 м от IMU, в мёртвой зоне лидара 0,5–1,2 м точек нет)
   let cnt = 0, skipped = 0, empty = 0, packets = 0, self = 0;
   let buf = Buffer.allocUnsafe(1 << 20);
+  let readSeq = null;   // r179: буферизованное чтение пакетов
   // ревизия 37: фильтр «смешанных отражений» и одиночных скачков дальности по кольцу лидара (как у Lixel Studio и драйверов Hesai).
   // Соседи точки — предыдущие и следующие отражения ТОГО ЖЕ кольца (через ~50 мкс, 0,36° по азимуту); пустое отражение — «бесконечность».
   // Удаляется точка, у которой дальность отличается от обоих соседей больше чем на max(edgeMin, edgeRel·r) и при этом это
@@ -399,9 +421,9 @@ function walk(fd, C, o, w0, w1, step, cb, onBytes) {
   for (const r of C.recs) {
     if (r.t < T0 - 1.5 || r.t > T1 + 0.1) continue;
     packets++;
-    if (buf.length < r.len) buf = Buffer.allocUnsafe(r.len * 2);
-    let got = 0; while (got < r.len) { const k = fs.readSync(fd, buf, got, r.len - got, r.off + got); if (!k) break; got += k; }
-    const b = buf; const end = got;
+    // r179: буферизованное последовательное чтение пакетов лидара (раньше — fs.readSync на каждый пакет)
+    if (!readSeq) readSeq = makeSeqReader(fd, fs.fstatSync(fd).size);
+    const b = readSeq(r.off, r.len); const end = b.length;
     let p = 0;
     while (p < end) {
       let tag = b[p++]; if (tag & 0x80) { [tag, p] = XB.varint(b, p - 1); }
@@ -485,7 +507,16 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
     if (!(Number(o.maxPoints) > 0)) o.maxPoints = 2000000000;
   }
   const prog = typeof onProgress === 'function' ? onProgress : () => {};
+  // r179: ETA по стадиям — прогресс в UI показывает честную стадию и примерное оставшееся время
+  const etaLabel = (start, frac, label) => {
+    if (!(frac > 0.02)) return label;
+    const el = Date.now() - start, rem = el / frac - el;
+    return label + ' ~' + Math.max(1, Math.round(rem / 60000)) + ' мин';
+  };
+  const tStart = Date.now();
   const C = prepare(xbinPath, posesText, o, prog);
+  const tPrep = Date.now() - tStart;
+  let tRefine = 0, tWrite = 0;
   const { recs, T0, T1, P } = C;
   const fd = fs.openSync(xbinPath, 'r');
   const tmp = outLas + '.part';
@@ -524,18 +555,27 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
     const estKept = est * keepFrac;
     let step = o.step > 0 ? Math.floor(o.step) : Math.max(1, Math.ceil(estKept / o.maxPoints));
     let pw = 0.1, refineInfo = null;
-    if (o.refine) {
+    if (o.refineKnots && o.refineKnots.knots) {
+      // r179: готовые поправки траектории (параллельный refine в xbin-refine-parallel.js) — без повторного уточнения
+      const XR = require('./xbin-refine');
+      refineInfo = { knots: o.refineKnots.knots, summary: Object.assign({ parallel: true }, o.refineKnots.summary || {}) };
+      C.TR = XR.correctedTrajectory(C.TR, refineInfo.knots);
+      pw = 0.65;
+    } else if (o.refine) {
       const XR = require('./xbin-refine');
       // Ревизия 143: fast/iterations/regRate можно задать прямо в opt сборки (галочка «Быстрое уточнение»);
       // явные значения важнее профиля по длине скана. refineOpt.prog — прогресс.
       const ro = Object.assign({}, o.refineOpt || {});
       for (const k of ['fast', 'iterations', 'regRate', 'longScan', 'iterationsLong', 'regRateLong']) if (o[k] !== undefined) ro[k] = o[k];
-      refineInfo = XR.refine(fd, C, Object.assign({}, o, { refineOpt: ro }), (f, label) => prog(0.1 + 0.55 * f, label || 'Облако из .xbin: уточнение траектории по облаку…'), walk);
+      const trRef = Date.now();
+      refineInfo = XR.refine(fd, C, Object.assign({}, o, { refineOpt: ro }), (f, label) => prog(0.1 + 0.55 * f, etaLabel(trRef, f, label || 'Облако из .xbin: уточнение траектории…')), walk);
       C.TR = XR.correctedTrajectory(C.TR, refineInfo.knots);
+      tRefine = Date.now() - trRef;
       pw = 0.65;
     }
     const ox = Math.round(P.p[0]), oy = Math.round(P.p[1]), oz = Math.round(P.p[2]);
     let n = 0, mn = [0, 0, 0], mx = [0, 0, 0], W = null, attempts = 0;
+    const twWrite = Date.now();
     for (;;) {   // ревизия 132: один авто-повтор с большим step, если точек вышло >10 % сверх maxPoints
       attempts++;
       ofd = fs.openSync(tmp, 'w');
@@ -555,7 +595,7 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
         // определение цвета во внешних инструментах и делали цветное облако «тёмным» при чтении с colDiv=65535.
         const g = I > 255 ? 255 : I; out.writeUInt16LE(g, fill + 28); out.writeUInt16LE(g, fill + 30); out.writeUInt16LE(g, fill + 32);
         fill += 34; cnt++;
-      }, (bytes) => { done += bytes; if (done - lastProg > (64 << 20)) { lastProg = done; prog(pw + (1 - pw) * done / total, 'Облако из .xbin: точки лидара…'); } });
+      }, (bytes) => { done += bytes; if (done - lastProg > (64 << 20)) { lastProg = done; const fr = done / total; prog(pw + (1 - pw) * fr, etaLabel(twWrite, fr, 'Облако из .xbin: точки лидара ' + Math.round(fr * 100) + '%')); } });
       flush();
       if (cnt < 100) throw new Error('из пакетов лидара получилось слишком мало точек');
       fs.writeSync(ofd, lasHeader({ n: cnt, ox, oy, oz, min: lmn, max: lmx }), 0, 227, 0);
@@ -567,6 +607,7 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
       try { fs.rmSync(tmp, { force: true }); } catch (_) {}
     }
     fs.renameSync(tmp, outLas);
+    tWrite = Date.now() - twWrite;
     // r149/r155: scan-matching повторных проходов + fusion. auto: для сканов >10 мин — ICP-fusion (r155),
     // если cloud-register.py/Python/Open3D недоступны — hist-вариант; короткие сканы не трогаем.
     let fusionInfo = null;
@@ -600,6 +641,7 @@ function build(xbinPath, posesText, outLas, opt, onProgress) {
     prog(1, 'Облако из .xbin: готово');
     const TR = C.TR;
     return { points: n, step, estimated: Math.round(est), estimatedKept: Math.round(estKept), keepFrac: +keepFrac.toFixed(4), bpp: +bpp.toFixed(3), attempts,
+      prepMs: tPrep, refineMs: tRefine, writeMs: tWrite, totalMs: Date.now() - tStart,
       t0: T0, t1: T1, seconds: T1 - T0, packets: W.packets, skipped: W.skipped, empty: W.empty, self: W.self, edge: W.edge || 0, sky: W.sky, balance: W.balance || 0, fusion: fusionInfo, speckle: speckleInfo, min: mn, max: mx,
       lidarCh: C.S.lidarCh, motorCh: C.S.motorCh, imuCh: C.S.imuCh,
       trajectory: { imu: TR.imu, imuIntervals: TR.imuIntervals, intervals: TR.intervals, gaps: TR.gaps, position: TR.position, corrMedianDeg: TR.corrMedianDeg, refined: !!refineInfo },

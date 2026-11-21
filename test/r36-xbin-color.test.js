@@ -102,7 +102,8 @@ test('r36: серое облако распознаётся (R = G = B — яр�
 test('r36: цвет по фото — результат пишется во временную папку и переименовывается; при отмене и ошибке исходник не тронут', async () => {
   const src = read('main.js');
   const need = src.match(/function photoColorNeed\([\s\S]*?\n/)[0], fn = src.match(/  async function photoColorLas\([\s\S]*?\n  \}\n/)[0];
-  const make = (stub) => new Function('fs', 'path', 'require', 'runPhotoRecolor', need + fn + '; return { photoColorLas, photoColorNeed };')(fs, path, (m) => require(path.join(ROOT, m)), stub);
+  const make = (stub) => new Function('fs', 'path', 'require', 'photoColorAuto', need + fn + '; return { photoColorLas, photoColorNeed };')(fs, path, (m) => require(path.join(ROOT, m)),
+    (src2, dst2, xbin2, posesText2, onProg) => stub({ src: src2, dst: dst2, xbin: xbin2, posesText: posesText2, tmpDir: path.dirname(dst2) }, onProg));
   const las = path.join(TMP, 'cloud.las'); writeNoisyLas(las, 5000, false);
   const orig = fs.readFileSync(las);
   let seen = null;

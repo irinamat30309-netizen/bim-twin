@@ -25,12 +25,13 @@ function makeCtx(d) {
 
 /** Обработать плитку t из временного файла: результат — в <t>.out, итоги без самих точек. */
 function runTile(ctx, tmp, t, T) {
+  const __t = Date.now();
   const f = path.join(tmp, t + '.bin');
   const B = fs.readFileSync(f); fs.unlinkSync(f);
   const r = R.processTile(B, T, ctx);
   const g = degrainTile(ctx, r);
   fs.writeFileSync(path.join(tmp, t + '.out'), r.O.subarray(0, r.w));
-  return { t, w: r.w, k: r.k, n0: r.n0, nDyn: r.nDyn, nNoise: r.nNoise, nMoved: r.nMoved, nColor: r.nColor + g, bb: r.bb, noColor: r.noColor || 0, noColorLeft: r.noColorLeft || 0, degrain: g };
+  return { t, ms: Date.now() - __t, w: r.w, k: r.k, n0: r.n0, nDyn: r.nDyn, nNoise: r.nNoise, nMoved: r.nMoved, nColor: r.nColor + g, bb: r.bb, noColor: r.noColor || 0, noColorLeft: r.noColorLeft || 0, degrain: g, stageMs: r.stageMs };
 }
 
 /**

@@ -858,6 +858,9 @@ function filterVoxels(src, dst, det, onProgress) {
  */
 function processTile(B, T, ctx) {
   const { H, RS, CS, x0, y0, c16, opt, corr, cfix, DV, tfix } = ctx, rl = H.rl;
+  // r180: стадийные тайминги плитки (включаются opt._stageTimings, агрегируются в scan-refine-parallel)
+  const st = opt && opt._stageTimings ? {} : null;
+  let st0 = st ? Date.now() : 0;
   const n = Math.floor(B.length / RS), X = new Float64Array(n * 3), alive = new Uint8Array(n).fill(1), own = new Uint8Array(n);
   const RGB = H.rgb !== undefined ? new Float32Array(n * 3) : null;
   const cxm = x0 + (T.a + T.c) / 2 * CS, cym = y0 + (T.b + T.d) / 2 * CS;
@@ -878,12 +881,14 @@ function processTile(B, T, ctx) {
     }
   }
   const zm = n ? zs / n : 0; for (let i = 0; i < n; i++) X[i * 3 + 2] -= zm;
+  if (st) { st.read = Date.now() - st0; st0 = Date.now(); }
   if (opt.noise) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); denoise(X, n, alive, opt.noiseLevel || 'strong'); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
   // ревизия 55: «сосульки» под кромками навесов и окон (по умолчанию выключено — опция icicles)
   if (opt.icicles) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); fixIcicles(X, n, alive, opt.iciclesOpt || {}); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
   // ревизия 55: тонкая плёнка за стеклом (опытное, по умолчанию выключено — опция glass)
   if (opt.glass) { const before = alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); fixGlass(X, n, alive, opt.glassOpt || {}); nNoise += before - alive.reduce((a, v, i) => a + (v && own[i] ? 1 : 0), 0); }
   if (opt.thin) { for (let it = 0; it < (opt.thinIters || 1); it++) nMoved += thinSurfaces(X, n, alive, { cell: opt.thinCell, planar: opt.planar, maxShift: opt.maxThinShift }); }
+  if (st) { st.noiseThin = Date.now() - st0; st0 = Date.now(); }
   // ревизия 46: цвет для точек без цвета — от соседей (до очистки цвета: чёрные не тянут медианы); после очистки — местное
   // выравнивание проходов (по уже очищенному цвету разброс в ячейке — это перепад проходов, а не шум камеры)
   let peq = null, nNoColorLeft = 0;
@@ -894,8 +899,10 @@ function processTile(B, T, ctx) {
   // ревизия 55: «сиреневая кайма» — тонкая полоса на резком краю (хроматическая аберрация камеры). Точка фиолетовая
   // (R и B заметно выше G), но вокруг неё таких мало — это кайма, а не фиолетовый предмет: цвет берётся у соседей.
   if (opt.color && RGB) nColor += fixFringe(X, RGB, n, alive, opt.fringeOpt || {});
+  if (st) { st.color = Date.now() - st0; st0 = Date.now(); }
   if (peqOn) peq = passEqualize(X, RGB, TT, n, alive, Object.assign({}, opt.passEqOpt || {}, { off: [cxm, cym, zm], skip: nc0 }));
   if (tfix && RGB) for (let i = 0; i < n; i++) if (alive[i] && own[i]) tfix(RGB, i * 3);   // тоновая кривая — последней
+  if (st) { st.passEq = Date.now() - st0; st0 = Date.now(); }
   // запись своих живых точек: исходная запись с новыми координатами и цветом
   let k = 0; for (let i = 0; i < n; i++) if (alive[i] && own[i]) k++;
   const O = Buffer.allocUnsafe(k * rl), bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; let w = 0;
@@ -908,7 +915,7 @@ function processTile(B, T, ctx) {
     if (x < bb[0]) bb[0] = x; if (x > bb[3]) bb[3] = x; if (y < bb[1]) bb[1] = y; if (y > bb[4]) bb[4] = y; if (z < bb[2]) bb[2] = z; if (z > bb[5]) bb[5] = z;
     w += rl;
   }
-  return { O, w, k, n0: T.n, nDyn, nNoise, nMoved, nColor, bb, noColor: nNoColorOwn, noColorLeft: nNoColorLeft, peqBlocks: peq ? peq.blocks : 0 };
+  return { O, w, k, n0: T.n, nDyn, nNoise, nMoved, nColor, bb, noColor: nNoColorOwn, noColorLeft: nNoColorLeft, peqBlocks: peq ? peq.blocks : 0, stageMs: st };
 }
 
 /**
