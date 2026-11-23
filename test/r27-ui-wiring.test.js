@@ -122,7 +122,7 @@ test('связи: main ↔ preload ↔ окно, упаковка, размет�
   assert.match(app, /if \(pre && pre\.cancelled\) return \{ ok: false, cancelled: true/);
   assert.match(app, /parseCloudWithProgress\(lastCloudPath, progressLabel, \{ skipPreview: true \}\)/, 'перечитывание не открывает окно снова');
   assert.match(app, /window\.__bimLastCloudPath = \(\) => lastCloudPath/);
-  assert.match(app, /window\.__bimPcCapacity && window\.__bimPcCapacity\.recommendation/, 'предел точек по умолчанию — по мощности ПК');
+  assert.match(app, /GPU_BYTES_PER_POINT = 24/, 'предел точек по умолчанию — по реальным атрибутам VRAM');
   const order = ['export-hub.js', 'auto-plan.js', 'cloud-report.js', 'cloud-preview.js', 'history-panel.js', 'project-workspace.js'].map(f => html.indexOf('src="' + f + '?v='));
   order.forEach((at, i) => { assert.ok(at > 0, 'подключён ' + i); if (i) assert.ok(at > order[i - 1], 'порядок ' + i); });
   assert.ok(html.indexOf('href="ui/cloud-tools.css?v=') > html.indexOf('href="ui/motion.css?v='), 'стили окон после системы');

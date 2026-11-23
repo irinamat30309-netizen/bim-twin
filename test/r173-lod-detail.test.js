@@ -25,10 +25,10 @@ test('r173: LOD_DRAW_BUDGET 300M, режимы качества 80/300/без п
 test('r173: GPU-бюджет авто/высокое 300M, быстро 80M, стенд-переопределение', () => {
   assert.match(APP, /GPU_POINT_BUDGET = 300000000/);
   assert.match(APP, /GPU_POINT_BUDGET_FAST = 80000000/);
-  assert.match(APP, /const frac = q === 'high' \? 0\.85 : 0\.78;/);
+  assert.match(APP, /const byVram = gpuBudgetPoints\(q === 'high' \? 0\.80 : 0\.78\);/);
   assert.match(APP, /API\.renderBudgetOverride/);
   assert.match(PRE, /BIM_RENDER_BUDGET/);
-  assert.match(APP, /bim\.gpuBudgetRev'\) !== '173'/);
+  assert.match(APP, /bim\.gpuBudgetRev'\) !== '196'/);
 });
 
 test('r173: «Авто» адаптивно поднимает точки при ≥60 FPS и не опускает ниже 60 %', () => {
@@ -42,6 +42,6 @@ test('r173: «Показать все точки файла» — явный ф�
   assert.match(APP, /localStorage\.setItem\('bim\.gpuShowAll', '1'\)/);
   assert.match(APP, /opts\.allPoints \? \{ allPoints: true \}/);
   assert.match(APP, /if \(extra && extra\.allPoints\) pre = \{ maxPoints: 0 \}/);
-  assert.match(APP, /__bimShowAllPoints[\s\S]{0,900}allPoints: true/);
+  assert.match(APP, /__bimShowAllPoints[\s\S]{0,4000}allPoints: true/);
 });
 

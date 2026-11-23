@@ -188,8 +188,9 @@
       vec2 sc = gl_PointCoord * 2.0 - 1.0; float rr = length(sc);
       if(rr > 1.0) discard;
       float edge = smoothstep(1.0, 0.45, rr);
-      alpha = 0.30 + 0.70 * edge;
-      c *= (0.72 + 0.28 * edge);
+      // r195: energy-preserving soft (опция «Высокое»): мягкий край без alpha-накопления/пересвета
+      alpha = 1.0;
+      c *= (0.55 + 0.45 * edge);
     }
     if(uFrame>0.5){ vec2 fe=abs(gl_PointCoord*2.0-1.0); if(max(fe.x,fe.y)>0.70) c=vec3(0.0); }
     frag=vec4(c, alpha);
@@ -309,17 +310,17 @@
       // Качество облака (Патч 30): цветовой режим, яркость, множитель размера точки, EDL
       this._cloudDisplay = { pointSize: 1, opacity: 1, min: 0, max: 1, palette: 0, hideOutside: false };
       this._ptElev = false; this._cloudColorMode = 'rgb';
-      this._ptBright = 1.1; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
+      this._ptBright = 1.0; this._ptSizeMul = 1; this._roundPoints = false; this._attenuate = false;
       // r172: базовый тон «как есть» (без пересвета): небольшой gain ×1.1, grade выключен; «Как в Lixel» — пресет.
       // Адаптивный размер точки по умолчанию: 2–3 px в покое (не жирно), в движении не меньше 2 px.
-      this._autoPointSize = true; this._autoPointBasePx = 3.4; this._softSplats = true; this._softSplatsLimit = 150000000; this._softForce = true; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
+      this._autoPointSize = true; this._autoPointBasePx = 2.8; this._softSplats = false; this._softSplatsLimit = 150000000; this._softForce = false; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
     try { canvas.addEventListener('webglcontextlost', () => { this._softSplats = false; this._softSplatsFail = true; }); } catch (_) {}
       // r172: динамическое разрешение в движении не ниже 85 % (было 75 % → «мыло»).
       this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.9; this._qualityMode = 'auto';
       this._streamCpuMaxPoints = 60000000;   // r172: CPU-копии только для небольших облаков; 120–590 млн — без копий
       this._denseFill = false; this._frameBox = false; // плотная заливка при приближении; чёрные рамки точек
       // Фотореалистичная цветокоррекция (тонмаппинг) — по умолчанию ВЫКЛ: убирает «пересвет/вымытость».
-      this._grade = { on: false, exposure: 1.0, contrast: 1.05, saturation: 1.05, gamma: 1.0, tone: 0.9 };
+      this._grade = { on: false, exposure: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, tone: 0.0 };
       this._edl = false; this._edlReady = false; this._edlStrength = 1.0; this._edlRadius = 1.4;
       this._pickReady = false; // GPU-проход выбора видимых точек (ленивая инициализация)
       this._photo = false; this._photoSaved = null;   // фото-качество экскурсии
@@ -2772,19 +2773,19 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     // r145: адаптивный (перспективный) размер точки, как в Lixel. Слайдер размера остаётся (множитель базы).
     setAutoPointSize(on) { this._autoPointSize = on !== false; if (this._autoPointSize) { this._cloudDisplay.pointSize = null; this._attenuate = false; this._denseFill = false; } this.render(); this._notifyCloudChanged(); return this._autoPointSize; }
     autoPointSizeOn() { return !!this._autoPointSize; }
-    setPointBasePx(px) { const v = +px; if (isFinite(v)) this._autoPointBasePx = Math.max(2.0, Math.min(4.0, v)); this.render(); return this._autoPointBasePx; }
+    setPointBasePx(px) { const v = +px; if (isFinite(v)) this._autoPointBasePx = Math.max(2.0, Math.min(3.2, v)); this.render(); return this._autoPointBasePx; }
     // r172: качество рендера auto/high/fast — не режем точки в 3D ниже 60–70 % и разрешение ниже 85 %.
     setQualityMode(mode) {
       mode = (mode === 'high' || mode === 'fast') ? mode : 'auto';
       this._qualityMode = mode;
       if (mode === 'high') { this._interBudget = 2000000000; this._octMovePct = 100; this._dynScaleMoving = 1; this._dynRes = false; this._motionSizeScale = 1; this._autoPointBasePx = 3.0; }
       else if (mode === 'fast') { this._interBudget = 96000000; this._octMovePct = 60; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.85; this._autoPointBasePx = 2.8; }
-      else { this._interBudget = 128000000; this._octMovePct = 60; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.9; this._autoPointBasePx = 3.4; }
+      else { this._interBudget = 128000000; this._octMovePct = 60; this._dynScaleMoving = 0.85; this._dynRes = true; this._motionSizeScale = 0.9; this._autoPointBasePx = 2.8; }
       // r175: «Высокое» принудительно включает мягкие сплаты и для больших облаков (FPS проверен: 129 на 300M);
       // «Авто»/«Быстрое» — hard для >150M (плюс fallback сохраняется).
       // r176: «Авто» и «Высокое» — мягкие сплаты для всех размеров; fallback на hard остаётся. «Быстрое» — hard.
-      if (mode === 'fast') { this._softForce = false; }
-      else { this._softForce = true; this._softSplats = true; this._softSplatsFail = false; }
+      if (mode === 'high') { this._softForce = true; this._softSplats = true; this._softSplatsFail = false; }
+      else { this._softForce = false; this._softSplats = false; }
       if (!this._interacting) { this._renderScale = 1; }
       // r173: бюджет отрисовки по режиму: «Высокое» — без потолка, «Авто» — 300M (детализация ≥ Lixel), «Быстрое» — 80M.
       try {
@@ -3113,10 +3114,10 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
           const vhA = (gl.canvas && gl.canvas.height) || 1080;
           const dprA = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2) * (this._renderScale || 1);
           const hCss = vhA / Math.max(0.5, dprA);
-          const auto = Math.max(3.0, Math.min(5.0, hCss / 1200 * (this._autoPointBasePx || 3.4))) * (this._ptSizeMul || 1);
-          const softCap = this._softSplats && !this._softSplatsFail ? 5.0 : 4.0;
+          const auto = Math.max(2.0, Math.min(3.0, hCss / 1200 * (this._autoPointBasePx || 2.8))) * (this._ptSizeMul || 1);
+          const softCap = this._softSplats && !this._softSplatsFail ? 3.2 : 3.0;
           const autoH = Math.min(softCap, auto);
-          const moving = this._interacting ? Math.max(2.5, autoH * (this._motionSizeScale || 0.9)) : autoH;
+          const moving = this._interacting ? Math.max(2.0, autoH * (this._motionSizeScale || 0.9)) : autoH;
           baseSize = Math.max(1.2, Math.min(6.0, moving));
         }
         // ревизия 8: при движении рисуем только часть точек (адаптивно по времени кадра); размер точек растёт на корень из доли пропущенного, чтобы поверхность не рассыпалась

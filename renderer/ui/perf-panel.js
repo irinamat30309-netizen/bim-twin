@@ -104,9 +104,9 @@
     function g(k, d) { try { var v = W.localStorage.getItem(Wkey + k); return v == null ? d : v; } catch (e) { return d; } }
     var q = g('quality', 'auto'); if (['auto', 'high', 'fast'].indexOf(q) < 0) q = 'auto';
     var look = g('look', 'neutral'); if (['lixel', 'neutral', 'custom'].indexOf(look) < 0) look = 'neutral';
-    var b = Number(g('brightness', 1.1)); if (!isFinite(b)) b = 1.1;
-    var c = Number(g('contrast', 1.05)); if (!isFinite(c)) c = 1.05;
-    var s = Number(g('saturation', 1.05)); if (!isFinite(s)) s = 1.05;
+    var b = Number(g('brightness', 1.0)); if (!isFinite(b)) b = 1.0;
+    var c = Number(g('contrast', 1.0)); if (!isFinite(c)) c = 1.0;
+    var s = Number(g('saturation', 1.0)); if (!isFinite(s)) s = 1.0;
     return { quality: q, look: look, autoPoint: g('autoPoint', '1') !== '0', brightness: b, contrast: c, saturation: s };
   }
   function applyPrefs() {
@@ -116,7 +116,7 @@
     try { if (v.setAutoPointSize) v.setAutoPointSize(p.autoPoint); } catch (e) { }
     try {
       if (p.look === 'lixel') { if (v.setLixelLook) v.setLixelLook(true); }
-      else if (p.look === 'neutral') { if (v.setBrightness) v.setBrightness(1.1); if (v.setGrade) v.setGrade(false); }
+      else if (p.look === 'neutral') { if (v.setBrightness) v.setBrightness(1.0); if (v.setGrade) v.setGrade(false); }
       else {
         if (v.setBrightness) v.setBrightness(p.brightness);
         if (v.setGrade) v.setGrade({ on: true, exposure: 1, contrast: p.contrast, saturation: p.saturation, gamma: 1, tone: 0 });
@@ -226,7 +226,7 @@
     if (act === 'lixel') { savePrefs({ look: 'lixel', brightness: 1.36, saturation: 1.29, contrast: 1, autoPoint: true }); applyPrefs(); syncInputs(); paint(); return; }
     if (act === 'neutral') { savePrefs({ look: 'neutral' }); applyPrefs(); syncInputs(); paint(); return; }
     if (act === 'reset') {
-      savePrefs({ quality: 'auto', look: 'neutral', autoPoint: true, brightness: 1.1, contrast: 1.05, saturation: 1.05 });
+      savePrefs({ quality: 'auto', look: 'neutral', autoPoint: true, brightness: 1.0, contrast: 1.0, saturation: 1.0 });
       applyPrefs(); syncInputs(); paint();
     }
   }

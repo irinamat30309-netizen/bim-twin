@@ -8,9 +8,9 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const SRC = fs.readFileSync(path.join(ROOT, 'renderer/webgl-viewer.js'), 'utf8');
 
-test('r176: «Авто» и «Высокое» — мягкие сплаты для всех размеров, быстро — hard', () => {
-  assert.match(SRC, /if \(mode === 'fast'\) \{ this\._softForce = false; \}/);
-  assert.match(SRC, /else \{ this\._softForce = true; this\._softSplats = true; this\._softSplatsFail = false; \}/);
+test('r195: «Высокое» — мягкие сплаты (опция), «Авто»/«Быстрое» — hard по умолчанию', () => {
+  assert.match(SRC, /if \(mode === 'high'\) \{ this\._softForce = true; this\._softSplats = true; this\._softSplatsFail = false; \}/);
+  assert.match(SRC, /else \{ this\._softForce = false; this\._softSplats = false; \}/);
   assert.match(SRC, /this\._softForce \|\| \(o\.count \|\| 0\) <= \(this\._softSplatsLimit \|\| 150000000\)/);
 });
 

@@ -13,8 +13,8 @@ const CFG = require('../app-config.js');
 
 test('r183: бюджет из реальной VRAM (12 ГБ): Авто 78 %, Высокое 85 %, полный файл по capacity', () => {
   assert.match(APP, /window\.__bimPcCapacityReady = \(async function/);
-  assert.match(APP, /const frac = q === 'high' \? 0\.85 : 0\.78;/);
-  assert.match(APP, /Math\.floor\(total \* frac \/ 16\)/);
+  assert.match(APP, /const byVram = gpuBudgetPoints\(q === 'high' \? 0\.80 : 0\.78\)/);
+  assert.match(APP, /GPU_BYTES_PER_POINT = 24/);
   assert.match(APP, /window\.__bimPcCapacity = r/);
   assert.match(APP, /API\.systemCapacity\(\{\}\)/);
 });
@@ -34,6 +34,7 @@ test('r183: индикатор VRAM в HUD обновляется по обла�
   assert.match(APP, /function ensureVramHud\(\)/);
   assert.match(APP, /function updateVramHud\(\)/);
   assert.match(APP, /lxVramHud/);
-  assert.match(APP, /n \* 16 \+ 512 \* 1048576/);
+  assert.match(APP, /n \* GPU_BYTES_PER_POINT \+ 512 \* 1048576/);
+  assert.match(APP, /бюджет ' \+ \(budget \/ 1e6\)\.toFixed\(0\)/);
   assert.match(APP, /ensureVramHud\(\);/);
 });

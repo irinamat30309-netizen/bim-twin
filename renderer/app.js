@@ -203,26 +203,36 @@
   const GPU_POINT_BUDGET = 300000000;
   const GPU_POINT_BUDGET_FAST = 80000000;
   const GPU_VRAM_TARGET_MB = 5120;
+  // r196: реальная стоимость точки в GPU = pos 12 + col 3 + intensity 2 + class 1 = 18, с выравниванием/служебными буферами — 24 Б/точку;
+  // резерв ОС/драйвера и framebuffer — 1 ГБ; целевая доля VRAM: Авто 78%, Высокое 80%.
+  const GPU_BYTES_PER_POINT = 24;
+  const GPU_RESERVE_MB = 1024;
+  function gpuBudgetPoints(frac) {
+    try {
+      const cap = window.__bimPcCapacity, gpu = cap && cap.gpu;
+      const totalMB = Number(gpu && gpu.vramTotal) / 1048576 || 0;
+      if (totalMB > 0) {
+        const usableMB = Math.max(0, totalMB * (frac || 0.78) - GPU_RESERVE_MB);
+        return Math.max(10000000, Math.floor(usableMB * 1048576 / GPU_BYTES_PER_POINT));
+      }
+    } catch (e) {}
+    return 0;
+  }
+  function gpuBytesFor(points) { return Math.max(0, Math.round(points)) * GPU_BYTES_PER_POINT; }
   function qualityPointBudget() {
     let q = 'auto'; try { q = localStorage.getItem('bim.perf.quality') || 'auto'; } catch (_) {}
     if (q === 'fast') return GPU_POINT_BUDGET_FAST;
-    // r183: бюджет из реального объёма VRAM (12 ГБ): «Все точки»/«Высокое» — до 85% памяти, «Авто» — до 78%; резерв ОС/приложениям.
-    try {
-      const cap = window.__bimPcCapacity, gpu = cap && cap.gpu;
-      const total = Number(gpu && gpu.vramTotal) || 0;
-      if (total > 0) {
-        const frac = q === 'high' ? 0.85 : 0.78;
-        return Math.max(10000000, Math.min(2000000000, Math.floor(total * frac / 16)));
-      }
-    } catch (e) {}
+    // r196: бюджет из реального объёма атрибутов (24 Б/точку) + резерв 1 ГБ; для 12 ГБ ≈356–367 млн, не 530M.
+    const byVram = gpuBudgetPoints(q === 'high' ? 0.80 : 0.78);
+    if (byVram > 0) return Math.min(2000000000, byVram);
     return GPU_POINT_BUDGET;
   }
   function gpuPointBudget() {
     // r145/r173: разовый сброс старых «пределов после сброса GPU» на VRAM-бюджет.
     try {
-      if (localStorage.getItem('bim.gpuBudgetRev') !== '173') {
-        localStorage.removeItem('bim.gpuPointBudget'); localStorage.removeItem('bim.gpuResetAt');
-        localStorage.setItem('bim.gpuBudgetRev', '173');
+      if (localStorage.getItem('bim.gpuBudgetRev') !== '196') {
+        localStorage.removeItem('bim.gpuPointBudget'); localStorage.removeItem('bim.gpuResetAt'); localStorage.removeItem('bim.gpuShowAll');
+        localStorage.setItem('bim.gpuBudgetRev', '196');
       }
     } catch (e) {}
     // стенд r173: BIM_RENDER_BUDGET переопределяет бюджет (80/200/300/600 млн)
@@ -230,10 +240,9 @@
     let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {}
     let allowAll = false; try { allowAll = localStorage.getItem('bim.gpuShowAll') === '1'; } catch (_) {}
     const qb = qualityPointBudget();
-    if (allowAll) return Math.floor(Math.min(Math.max(v, qb), 600000000));   // «Показать все точки файла» — явная кнопка
+    if (allowAll) return Math.floor(qb);   // r196: «все точки» не обходят безопасный VRAM-бюджет
     if (v >= 10000000) return Math.floor(Math.min(v, qb));
-    try { const rc = window.__bimPcCapacity && window.__bimPcCapacity.recommendation; if (rc && rc.points >= 10000000) return Math.floor(Math.min(rc.points, qb)); } catch (_) {}
-    return qb;
+    return qb;   // r196: только реальный расчёт по 24 Б/точку (не консервативная рекомендация 16 Б)
   }
   try {
     window.__bimPcCapacityReady = (async function () {
@@ -252,20 +261,10 @@
     if (!opened || !opened.ok || !opened.token) return null;
     // Ревизия 55: если предел видеокарты срезал точки, а окна «Перед загрузкой» не было (открытие из командной строки,
     // перетаскиванием, ярлыком) — спрашиваем один раз, показать ли все. Иначе человек видит часть облака без выбора.
-    if (!extra.noAllAsk && opened.thinned && !pre && Number(opened.sourceTotal) > Number(opened.total) && window.__lxKit && window.__lxKit.ask) {
-      let all = false;
-      try {
-        all = await window.__lxKit.ask({
-          title: 'Показать все точки?',
-          message: 'В файле ' + fmtMln(opened.sourceTotal) + ' млн точек. Сейчас видеокарта покажет ' + fmtMln(opened.total) + ' млн — это её предел после сбросов изображения.\n\nМожно показать все: видеопамяти хватит (у вашей карты запас есть), но если картинка «моргнёт», предел снова снизится сам.',
-          okLabel: 'Показать все', cancelLabel: 'Оставить ' + fmtMln(opened.total) + ' млн'
-        });
-      } catch (_) { all = false; }
-      if (all) {
-        try { await API.cloudPartsClose({ token: opened.token }); } catch (_) {}
-        try { localStorage.setItem('bim.gpuPointBudget', String(Math.min(Number(opened.sourceTotal) || 0, 600000000))); localStorage.setItem('bim.gpuShowAll', '1'); localStorage.removeItem('bim.gpuResetAt'); } catch (_) {}
-        return await tryPartsLoad(filePath, label, Object.assign({}, extra, { noAllAsk: true, pre: null }));
-      }
+    // r196: не спрашиваем блокирующим диалогом при каждом открытии — безопасный VRAM-бюджет уже выбран,
+    // «Показать все» доступно отдельной кнопкой с оценкой VRAM и подтверждением.
+    if (opened.thinned && !pre && Number(opened.sourceTotal) > Number(opened.total) && !extra.noAllAsk) {
+      try { toast('Файл ' + fmtMln(opened.sourceTotal) + ' млн точек: на экране безопасный VRAM-бюджет ' + fmtMln(opened.total) + ' млн (≈' + (gpuBytesFor(opened.total) / 1073741824).toFixed(1) + ' ГБ). «Все точки» — отдельной кнопкой с подтверждением.'); } catch (e) {}
     }
     const token = opened.token, nParts = Math.max(1, opened.segments | 0), total = Number(opened.total) || 0;
     const closeSession = () => { try { return Promise.resolve(API.cloudPartsClose({ token })).catch(() => {}); } catch (_) { return Promise.resolve(); } };
@@ -289,7 +288,8 @@
         const res = await reads[k];
         if (cancelled) break;
         if (k + READ_AHEAD < nParts) {
-          while (!cancelled && viewer && viewer._interacting) await new Promise(function (r) { setTimeout(r, 120); });
+          // r196: пауза подгрузки при вращении — не дольше 600 мс, иначе непрерывное вращение останавливает загрузку навсегда
+          { let paused = 0; while (!cancelled && viewer && viewer._interacting && paused < 600) { await new Promise(function (r) { setTimeout(r, 120); }); paused += 120; } }
           reads[k + READ_AHEAD] = readPart(k + READ_AHEAD);
         }
         if (!res || res.ok === false || !res.pos) { failure = (res && res.message) || 'часть облака не прочитана'; break; }
@@ -686,8 +686,21 @@
       } catch (_) { ok = false; }
     }
     if (!ok) return false;
+    // r196: «все точки» не грузим вслепую. Оцениваем VRAM по 24 Б/точку; если >80% — предупреждаем и грузим безопасный бюджет.
+    let totalPts = 0; try { totalPts = Number((viewer && viewer._cloudRecord && viewer._cloudRecord.sourceCount) || lastCloudCount || 0); } catch (e) {}
+    const budgetPts = gpuPointBudget();
+    const vramBytes = (() => { try { const cap = window.__bimPcCapacity; return Number(cap && cap.gpu && cap.gpu.vramTotal) || 0; } catch (e) { return 0; } })();
+    const allBytes = gpuBytesFor(totalPts), over = vramBytes > 0 && allBytes > vramBytes * 0.8;
+    if (vramBytes > 0 && totalPts > 0 && over) {
+      const k = window.__lxKit; let go = false;
+      if (k && k.ask) { try { go = await k.ask({ title: 'Все точки не поместятся в видеопамять', message: 'В файле ' + fmtMln(totalPts) + ' млн точек. По реальным атрибутам это ≈' + (allBytes / 1073741824).toFixed(1) + ' ГБ VRAM — больше 80% доступной (' + (vramBytes / 1073741824).toFixed(1) + ' ГБ). Загрузить все = риск сброса видеокарты и «вымытой» картинки.\n\nПоказать безопасный максимум: ' + fmtMln(budgetPts) + ' млн (≈' + (gpuBytesFor(budgetPts) / 1073741824).toFixed(1) + ' ГБ)?', okLabel: 'Безопасный максимум', cancelLabel: 'Отмена', wide: true }); } catch (_) { go = false; } }
+      if (!go) return false;
+      try { localStorage.setItem('bim.gpuPointBudget', String(budgetPts)); localStorage.removeItem('bim.gpuShowAll'); localStorage.removeItem('bim.gpuResetAt'); } catch (_) {}
+      toast('Показано ' + fmtMln(budgetPts) + ' млн из ' + fmtMln(totalPts) + ' — безопасный VRAM-бюджет (≈' + (gpuBytesFor(budgetPts) / 1073741824).toFixed(1) + ' ГБ). Все точки остаются в файле.');
+      return window.__bimOpenCloudPath(p, { fresh: true, skipPreview: true, noAllAsk: true });
+    }
     try {
-      localStorage.setItem('bim.gpuPointBudget', '600000000');
+      localStorage.setItem('bim.gpuPointBudget', String(Math.max(10000000, Math.min(totalPts || budgetPts, 2000000000))));
       localStorage.setItem('bim.gpuShowAll', '1');
       localStorage.removeItem('bim.gpuResetAt');
     } catch (_) {}
@@ -2439,18 +2452,38 @@
     if (qFrame) qFrame.addEventListener('click', () => { if (!viewer || !viewer.setFrame) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setFrame(!qFrame.classList.contains('on')); qFrame.classList.toggle('on', on); toast(on ? 'Чёрные рамки точек включены' : 'Чёрные рамки точек выключены'); });
     // Ревизия 12–13: доля точек только ПОКА камера движется (обычный и потоковый режим); в покое всегда рисуются ВСЕ точки файла (предела в покое больше нет)
     // ревизия 26: видеокарта сбросила изображение (белый экран) — предел точек на экране уменьшается вдвое, окно перезагружается, облако открывается снова
-    window.addEventListener('bim-gl-lost', async (e) => {
+    // r196: потеря контекста — БЕЗ блокирующего диалога: снижаем бюджет вдвое, сохраняем камеру/настройки,
+    // перезагружаем тот же файл и показываем тост. «Перезагрузить окно» остаётся обычным Ctrl+R/F5.
+    window.addEventListener('bim-gl-lost', function (e) {
       const d = (e && e.detail) || {}, shown = Number(d.loaded) || 0, cur = gpuPointBudget();
-      const next = Math.max(20000000, Math.floor(Math.min(cur, shown > 0 ? shown : cur) / 2 / 10000000) * 10000000);
-      try { localStorage.setItem('bim.gpuPointBudget', String(next)); if (shown > 0) localStorage.setItem('bim.gpuResetAt', String(shown)); const sv = Number(localStorage.getItem('bim.preloadPoints')) || 0; if (sv > next) localStorage.setItem('bim.preloadPoints', String(next)); } catch (_) {}
-      const p = d.path || lastCloudPath || '', kit = window.__lxKit;
-      const msg = 'Видеокарта не справилась с облаком' + (shown ? ' (' + fmtMln(shown) + ' млн точек на экране)' : '') + ' и сбросила изображение, поэтому окно просмотра стало пустым. Окно будет перезагружено' + (p ? ', и облако откроется снова' : '') + ': на экране будет до ' + fmtMln(next) + ' млн точек, выбранных равномерно по всему облаку. Файл не меняется — все точки остаются в нём.';
-      let go = true;
-      if (kit && kit.ask) { try { go = await kit.ask({ title: 'Видеокарта сбросила изображение', message: msg, okLabel: 'Перезагрузить окно', cancelLabel: 'Позже', wide: true }); } catch (_) { go = true; } }
-      else toast(msg);
-      if (!go) { toast('Окно просмотра не заработает до перезагрузки: перезапустите приложение и откройте облако снова.'); return; }
-      try { if (p) sessionStorage.setItem('bim.reopenCloud', p); } catch (_) {}
-      try { location.reload(); } catch (_) {}
+      // r196: снижаем ТЕКУЩИЙ БЮДЖЕТ вдвое (не по числу успевших загрузиться точек — иначе падает до 20M)
+      const next = Math.max(20000000, Math.floor(cur / 2 / 5000000) * 5000000);
+      const p = d.path || lastCloudPath || '';
+      try {
+        localStorage.setItem('bim.gpuPointBudget', String(next));
+        localStorage.setItem('bim.gpuResetAt', String(shown));
+        localStorage.setItem('bim.gpuShowAll', '0');
+        if (p) sessionStorage.setItem('bim.reopenCloud', p);
+        const sv = Number(localStorage.getItem('bim.preloadPoints')) || 0; if (sv > next) localStorage.setItem('bim.preloadPoints', String(next));
+        try { if (viewer) sessionStorage.setItem('bim.restoreCam', JSON.stringify({ yaw: viewer.yaw, pitch: viewer.pitch, dist: viewer.dist, target: viewer.target && viewer.target.slice ? viewer.target.slice() : viewer.target, bright: viewer._ptBright, basePx: viewer._autoPointBasePx })); } catch (_) {}
+      } catch (_) {}
+      toast('Видеокарта сбросила изображение' + (shown ? ' (' + fmtMln(shown) + ' млн точек)' : '') + ' — качество снижено до ' + fmtMln(next) + ' млн (≈' + (gpuBytesFor(next) / 1073741824).toFixed(1) + ' ГБ), чтобы не зависало. Облако перезагружается; перезагрузить окно можно Ctrl+R.', { tone: 'warn', ms: 9000 });
+      setTimeout(function () { try { location.reload(); } catch (err) {} }, 900);
+    });
+    // восстановление камеры/настроек после авто-перезапуска по потере контекста
+    window.addEventListener('lx-cloud-loaded', function () {
+      let raw = null; try { raw = sessionStorage.getItem('bim.restoreCam'); } catch (e) {}
+      if (!raw || !viewer) return;
+      try {
+        const c = JSON.parse(raw); if (c && isFinite(c.yaw) && isFinite(c.pitch)) {
+          if (isFinite(c.dist)) viewer.dist = c.dist;
+          if (Array.isArray(c.target)) viewer.target = c.target;
+          if (isFinite(c.bright) && viewer.setBrightness) viewer.setBrightness(c.bright);
+          if (isFinite(c.basePx) && viewer.setPointBasePx) viewer.setPointBasePx(c.basePx);
+          viewer.yaw = c.yaw; viewer.pitch = c.pitch; viewer.render();
+        }
+        sessionStorage.removeItem('bim.restoreCam');
+      } catch (_) {}
     });
     try {
       const rp = sessionStorage.getItem('bim.reopenCloud');
@@ -5978,12 +6011,12 @@
     function n(k, d) { var v = Number(s(k, d)); return isFinite(v) ? v : d; }
     // миграция один раз: старые дефолты (lixel 1.36/1.29) давали пересвет — сбрасываем на базовый тон 1.1
     try {
-      if (localStorage.getItem('bim.perfRev') !== '172') {
+      if (localStorage.getItem('bim.perfRev') !== '195') {
         ['bim.perf.look', 'bim.perf.brightness', 'bim.perf.contrast', 'bim.perf.saturation', 'bim.perf.autoPoint', 'bim.perf.quality', 'bim.perf.dynRes'].forEach(function (k) { localStorage.removeItem(k); });
-        localStorage.setItem('bim.perfRev', '172');
+        localStorage.setItem('bim.perfRev', '195');
       }
     } catch (e) {}
-    var look = s('bim.perf.look', 'neutral'), bright = n('bim.perf.brightness', 1.1), contrast = n('bim.perf.contrast', 1.05), sat = n('bim.perf.saturation', 1.05);
+    var look = s('bim.perf.look', 'neutral'), bright = n('bim.perf.brightness', 1.0), contrast = n('bim.perf.contrast', 1.0), sat = n('bim.perf.saturation', 1.0);
     return {
       quality: ['auto', 'high', 'fast'].indexOf(s('bim.perf.quality', 'auto')) >= 0 ? s('bim.perf.quality', 'auto') : 'auto',
       look: ['lixel', 'neutral', 'custom'].indexOf(look) >= 0 ? look : 'neutral',
@@ -5999,10 +6032,10 @@
     var p = renderPrefs();
     try { if (viewer.setQualityMode) viewer.setQualityMode(p.quality); } catch (e) {}
     try { if (viewer.setAutoPointSize) viewer.setAutoPointSize(p.autoPoint); } catch (e) {}
-    try { if (viewer.setPointBasePx) viewer.setPointBasePx(3.4); } catch (e) {}
+    try { if (viewer.setPointBasePx) viewer.setPointBasePx(2.8); } catch (e) {}
     try {
       if (p.look === 'lixel') viewer.setLixelLook(true);
-      else if (p.look === 'neutral') { viewer.setBrightness(1.1); viewer.setGrade(false); }
+      else if (p.look === 'neutral') { viewer.setBrightness(1.0); viewer.setGrade(false); }
       else { viewer.setBrightness(p.brightness); viewer.setGrade({ on: true, exposure: 1, contrast: p.contrast, saturation: p.saturation, gamma: 1, tone: 0 }); }
     } catch (e) {}
     try { var qb = $('qBright'); if (qb) qb.value = String(p.look === 'lixel' ? 1.36 : p.brightness); var qg = $('qGrade'); if (qg) qg.classList.toggle('on', p.look !== 'neutral'); } catch (e) {}
@@ -6046,9 +6079,11 @@
       const cap = window.__bimPcCapacity, gpu = cap && cap.gpu;
       const total = Number(gpu && gpu.vramTotal) || 0;
       let n = 0; try { const ci = viewer && viewer.getCloudInfo && viewer.getCloudInfo(); n = ci && ci.loadedCount || 0; } catch (e) {}
-      const bytes = n * 16 + 512 * 1048576;
-      el.textContent = total > 0 ? ('VRAM ~' + (bytes / 1073741824).toFixed(1) + ' / ' + (total / 1073741824).toFixed(0) + ' ГБ') : ('VRAM ~' + (bytes / 1073741824).toFixed(1) + ' ГБ');
-      el.title = 'Оценка занятой VRAM: ' + n.toLocaleString('ru-RU') + ' точек × 16 Б + резерв 0,5 ГБ; бюджет: ' + (window.__bimEffectiveBudget ? window.__bimEffectiveBudget() : 0).toLocaleString('ru-RU') + ' точек';
+      const budget = gpuPointBudget();
+      const bytes = n * GPU_BYTES_PER_POINT + 512 * 1048576;
+      const bbytes = gpuBytesFor(budget);
+      el.textContent = (total > 0 ? ('VRAM ~' + (bytes / 1073741824).toFixed(1) + ' / ' + (total / 1073741824).toFixed(0) + ' ГБ') : ('VRAM ~' + (bytes / 1073741824).toFixed(1) + ' ГБ')) + ' · бюджет ' + (budget / 1e6).toFixed(0) + ' млн (≈' + (bbytes / 1073741824).toFixed(1) + ' ГБ)';
+      el.title = 'Оценка: ' + n.toLocaleString('ru-RU') + ' точек × 24 Б + резерв 0,5 ГБ; бюджет: ' + (window.__bimEffectiveBudget ? window.__bimEffectiveBudget() : 0).toLocaleString('ru-RU') + ' точек';
     } catch (e) {}
   }
   function ensureVramHud() {

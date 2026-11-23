@@ -35,7 +35,7 @@ test('r55: «Показать все точки файла» — кнопка в
   assert.match(ui, /window\.__bimShowAllPoints\(\)/, 'нажимает обработчик');
   const app = read('renderer/app.js');
   assert.match(app, /window\.__bimShowAllPoints = async function \(\)/, 'обработчик есть');
-  assert.match(app, /localStorage\.setItem\('bim\.gpuPointBudget', '600000000'\)/, 'поднимает предел');
-  assert.match(app, /window\.__bimOpenCloudPath\(p, \{ fresh: true, allPoints: true \}\)/, 'перечитывает файл целиком');
+  assert.match(app, /localStorage\.setItem\('bim\.gpuPointBudget', String\(budgetPts\)\)/, 'безопасный бюджет вместо слепых 600M');
+  assert.match(app, /Все точки не поместятся в видеопамять/);
   assert.match(app, /if \(extra && extra\.allPoints\) pre = \{ maxPoints: 0 \}/, 'окно загрузки и предел обходятся');
 });

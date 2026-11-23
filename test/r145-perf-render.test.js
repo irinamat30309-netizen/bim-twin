@@ -47,7 +47,7 @@ test('r145: viewer — адаптивный размер точки, качес�
   }
   assert.match(SRC, /_resize\(\)[\s\S]{0,200}\(this\._renderScale \|\| 1\)/, 'динамическое разрешение не применяется в _resize');
   assert.match(SRC, /const autoPx = isCloud && this\._autoPointSize/, 'авто-размер не учитывается в отрисовке');
-  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 3\.4\)/, 'база 3–5 px (perspective) не задана');
+  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.8\)/, 'база 3–5 px (perspective) не задана');
   assert.match(SRC, /total <= \(this\._streamCpuMaxPoints \|\| 160000000\)/, 'CPU-копии потока не ограничены 160 млн');
   assert.match(SRC, /setLixelLook\(on\)[\s\S]{0,240}setBrightness\(1\.36\)[\s\S]{0,240}saturation: 1\.29/, 'пресет «как в Lixel» не задан (1.36/1.29)');
   assert.match(SRC, /_grade\s*=\s*\{\s*on:\s*false/, 'нейтральный grade по умолчанию должен сохраниться (r145 включает его из настроек)');

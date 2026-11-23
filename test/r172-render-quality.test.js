@@ -18,22 +18,22 @@ const SRC = read('renderer/webgl-viewer.js');
 const APP = read('renderer/app.js');
 const PANEL = read('renderer/ui/perf-panel.js');
 
-test('r172/r174: размер точки — авто 3–5 px, в движении ≥2.5 px', () => {
-  assert.match(SRC, /this\._autoPointSize = true; this\._autoPointBasePx = 3\.4; this\._softSplats = true; this\._softSplatsLimit = 150000000/, 'дефолт авто-точки 3.4 px');
-  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 3\.4\)/, 'формула адаптивной точки');
-  assert.match(SRC, /Math\.max\(3\.0, Math\.min\(5\.0, hCss \/ 1200/, 'клэмп базы 3–5 px');
-  assert.match(SRC, /Math\.max\(2\.5, autoH \* \(this\._motionSizeScale \|\| 0\.9\)\)/, 'в движении не меньше 2.5 px');
-  assert.match(APP, /viewer\.setPointBasePx\) viewer\.setPointBasePx\(3\.4\)/, 'приложение задаёт базу 3.4 px');
+test('r195: размер точки — авто 2.8 px (2–3), в движении ≥2.0 px', () => {
+  assert.match(SRC, /this\._autoPointSize = true; this\._autoPointBasePx = 2\.8; this\._softSplats = false; this\._softSplatsLimit = 150000000/, 'дефолт авто-точки 3.4 px');
+  assert.match(SRC, /hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.8\)/, 'формула адаптивной точки');
+  assert.match(SRC, /Math\.max\(2\.0, Math\.min\(3\.0, hCss \/ 1200/, 'клэмп базы 3–5 px');
+  assert.match(SRC, /Math\.max\(2\.0, autoH \* \(this\._motionSizeScale \|\| 0\.9\)\)/, 'в движении не меньше 2.5 px');
+  assert.match(APP, /viewer\.setPointBasePx\) viewer\.setPointBasePx\(2\.8\)/, 'приложение задаёт базу 3.4 px');
 });
 
 test('r172: базовый тон без пересвета, «Как в Lixel» — пресет', () => {
-  assert.match(SRC, /this\._ptBright = 1\.1;/, 'базовый gain ×1.1');
-  assert.match(SRC, /this\._grade = \{ on: false, exposure: 1\.0, contrast: 1\.05, saturation: 1\.05, gamma: 1\.0, tone: 0\.9 \};/);
+  assert.match(SRC, /this\._ptBright = 1\.0;/, 'базовый gain ×1.1');
+  assert.match(SRC, /this\._grade = \{ on: false, exposure: 1\.0, contrast: 1\.0, saturation: 1\.0, gamma: 1\.0, tone: 0\.0 \};/);
   assert.match(SRC, /setLixelLook\(on\)[\s\S]{0,240}setBrightness\(1\.36\)[\s\S]{0,240}saturation: 1\.29/, 'пресет Lixel сохранён');
   assert.match(APP, /look: \['lixel', 'neutral', 'custom'\]/, 'пресет остаётся опцией');
-  assert.match(APP, /viewer\.setBrightness\(1\.1\); viewer\.setGrade\(false\)/, 'нейтральный дефолт ×1.1');
-  assert.match(APP, /bim\.perfRev'\) !== '172'/, 'нет миграции старых пересвеченных настроек');
-  assert.match(PANEL, /var b = Number\(g\('brightness', 1\.1\)\)/, 'панель по умолчанию 1.1');
+  assert.match(APP, /viewer\.setBrightness\(1\.0\); viewer\.setGrade\(false\)/, 'нейтральный дефолт ×1.1');
+  assert.match(APP, /bim\.perfRev'\) !== '195'/, 'нет миграции старых пересвеченных настроек');
+  assert.match(PANEL, /var b = Number\(g\('brightness', 1\.0\)\)/, 'панель по умолчанию 1.1');
   assert.match(PANEL, /act === 'lixel'[\s\S]{0,120}brightness: 1\.36, saturation: 1\.29/, 'кнопка «Как в Lixel»');
 });
 
@@ -49,7 +49,7 @@ test('r172: динамическое качество — разрешение �
 test('r172/r173: GPU-бюджет 300M (быстро 80M), show-all явно, CPU-копии только для небольших облаков', () => {
   assert.match(APP, /GPU_POINT_BUDGET = 300000000/);
   assert.match(APP, /GPU_POINT_BUDGET_FAST = 80000000/);
-  assert.match(APP, /if \(allowAll\) return Math\.floor\(Math\.min\(Math\.max\(v, qb\), 600000000\)\)/, 'старый предел 305M не раздувает GPU без явной кнопки');
+  assert.match(APP, /if \(allowAll\) return Math\.floor\(qb\)/, '«все точки» не обходят безопасный VRAM-бюджет');
   assert.match(APP, /bim\.gpuShowAll/, 'явная кнопка «Показать все точки» — отдельный флаг');
   assert.match(SRC, /this\._streamCpuMaxPoints = 60000000/, 'без CPU-копий для 120–590 млн');
   assert.match(SRC, /total <= \(this\._streamCpuMaxPoints \|\| 160000000\)/);
