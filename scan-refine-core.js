@@ -628,7 +628,10 @@ function clampColors(X, RGB, n, alive, o) {
 /** Цвет: «пёстрые» точки (ревизия 20; швы плитки и кладки не усредняются), затем ограничение «соли с перцем» (ревизия 21). */
 function cleanColors(X, RGB, n, alive, level, o) {
   const L = NOISE_LEVELS[level] || NOISE_LEVELS.normal;
-  let k = fixSpeckles(X, RGB, n, alive, Object.assign({ cell: 0.02, minNb: 6, iters: 2 }, L.speck));
+  // r193: на плотных облаках тяжёлые цветовые проходы можно отключать (opt.speckles/opt.clamp),
+  // если чистовая идёт для уже очищенного/однопроходного облака — экономия заметной доли CPU.
+  let k = 0;
+  if (!(o && o.speckles === false)) k += fixSpeckles(X, RGB, n, alive, Object.assign({ cell: 0.02, minNb: 6, iters: 2 }, L.speck));
   if (!(o && o.clamp === false) && L.clampT) k += clampColors(X, RGB, n, alive, { T: (o && o.clampT) || L.clampT, blend: o && o.blend != null ? o.blend : (L.blend || 0) });
   return k;
 }
@@ -898,7 +901,7 @@ function processTile(B, T, ctx) {
   if (opt.color && RGB) nColor += cleanColors(X, RGB, n, alive, opt.noiseLevel || 'strong', { clamp: opt.colorClamp !== false });
   // ревизия 55: «сиреневая кайма» — тонкая полоса на резком краю (хроматическая аберрация камеры). Точка фиолетовая
   // (R и B заметно выше G), но вокруг неё таких мало — это кайма, а не фиолетовый предмет: цвет берётся у соседей.
-  if (opt.color && RGB) nColor += fixFringe(X, RGB, n, alive, opt.fringeOpt || {});
+  if (opt.color && RGB && opt.fringe !== false) nColor += fixFringe(X, RGB, n, alive, opt.fringeOpt || {});
   if (st) { st.color = Date.now() - st0; st0 = Date.now(); }
   if (peqOn) peq = passEqualize(X, RGB, TT, n, alive, Object.assign({}, opt.passEqOpt || {}, { off: [cxm, cym, zm], skip: nc0 }));
   if (tfix && RGB) for (let i = 0; i < n; i++) if (alive[i] && own[i]) tfix(RGB, i * 3);   // тоновая кривая — последней

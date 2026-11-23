@@ -522,6 +522,12 @@
         { key: 'traj', label: 'Убрать движущиеся объекты', type: 'select', value: found ? 'auto' : 'none', options: trajOpts,
           hint: 'Нужно время точек (GPS time) в LAS. Траектория сканера (<проект Lixel>/project_data/poses.csv) не обязательна, с ней находится больше.' },
         { key: 'level', label: 'Строгость', type: 'select', value: 'normal', options: [{ value: 'strict', label: 'Строго — только уверенные' }, { value: 'normal', label: 'Обычно' }, { value: 'loose', label: 'Мягко — больше, с риском задеть лишнее' }], showIf: function (v) { return v.traj !== 'off'; } },
+        { key: 'dynProfile', label: 'Поиск людей: профиль', type: 'select', value: 'auto', showIf: function (v) { return v.traj !== 'off'; },
+          options: [
+            { value: 'auto', label: 'Быстро — рекомендуется для больших облаков (>200 млн)' },
+            { value: 'exact', label: 'Точно — медленнее, на больших облаках в разы дольше' }
+          ],
+          hint: 'Быстрый профиль (воксель 22 см, реже лучи, меньше блоков) включается автоматически для облаков крупнее 200 млн точек: ~2–3 мин на 600 млн вместо ~10. Точный — для небольших облаков и спорных случаев.' },
         { key: 'noise', label: 'Убрать шум', type: 'checkbox', value: true },
         { key: 'icicles', label: 'Убрать «сосульки» под кромками навесов и окон', type: 'checkbox', value: false, showIf: function (v) { return !!v.noise; },
           hint: 'Редкая вертикальная «бахрома» под кромками: узкая по горизонтали, вытянутая вниз, под плотной поверхностью сверху. На реальной съёмке снимает около 0,45 % точек. Трубы, кабели и стойки не трогаются (они плотнее вдоль высоты), но на необычной геометрии проверьте результат перед сохранением.' },
@@ -563,7 +569,7 @@
     await run('Чистовая обработка…', async function (setPct) {
       if (api.onRefineScanProgress) stopSub = api.onRefineScanProgress(jobId, function (f, lab) { setPct(0.02 + 0.97 * f, lab || 'Обработка…'); });
       try {
-        res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, noise: !!values.noise, noiseLevel: values.noiseLevel || 'strong',
+        res = await api.refineScan({ path: file, posesPath: posesPath, dynamic: dyn, dynOpts: DYN_LEVELS[values.level] || DYN_LEVELS.normal, dynProfile: values.dynProfile === 'exact' ? 'exact' : 'auto', noise: !!values.noise, noiseLevel: values.noiseLevel || 'strong',
           thin: !!values.thin, color: !!values.color, align: values.align !== false, colorBalance: !!values.color && values.colorBalance !== false, photo: photo, xbinPath: xbinPath, inPlace: inPlace, keepBackup: keepBackup, jobId: jobId,
           alignGauge: values.alignGauge ? 'median' : 'start',
           tone: values.tone === 'raw' ? 'raw' : 'lixel',

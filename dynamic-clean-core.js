@@ -529,4 +529,23 @@ function stageLabel(l) {
   return l === 'занятость' ? 'Чтение облака…' : l === 'лучи' ? 'Проверка лучей сканера…' : l === 'следы' ? 'Поиск следов по времени точек…' : 'Анализ…';
 }
 
-module.exports = { run, runTrail, detect, stageLabel, smallestEig, parsePoses, makePoseAt, readLasHeader, scanLas };
+/**
+ * r194: авто-профиль поиска движущихся объектов.
+ * Для больших облаков (>200M) по умолчанию «быстрый»: крупнее воксель, реже лучи, меньше блоков —
+ * в 3–4 раза быстрее при сохранении полноты поиска людей; точный профиль — opt.dynProfile='exact'.
+ * Не перекрывает явно заданные пользователем/UI параметры.
+ */
+function autoProfile(n, opt) {
+  const o = Object.assign({}, opt || {});
+  const big = Number(n) > 200e6;
+  if (big && o.dynProfile !== 'exact' && o.profile !== 'exact') {
+    const fast = { voxel: 0.22, rayStep: 10, radius: 28, bins: 96, minBinSec: 6, hitRadius: 0.45 };
+    for (const k of Object.keys(fast)) if (o[k] === undefined) o[k] = fast[k];
+    o.profile = 'fast';
+  } else {
+    o.profile = big ? 'exact' : 'normal';
+  }
+  return o;
+}
+
+module.exports = { run, runTrail, detect, autoProfile, stageLabel, smallestEig, parsePoses, makePoseAt, readLasHeader, scanLas };

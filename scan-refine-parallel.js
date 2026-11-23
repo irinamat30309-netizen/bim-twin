@@ -18,12 +18,35 @@ function pickThreads(opt, nTiles, maxTile) {
   if (nTiles <= 1) return 1;
   if (opt.threads) return Math.max(1, Math.min(nTiles, 64, Math.floor(opt.threads)));
   const cpu = opt._cpus || (typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length);
-  const free = (typeof opt._freeMem === 'number' ? opt._freeMem : os.freemem()) - (768 << 20);
+  // r193: на очень больших облаках main-поток почти всё время ждёт воркеры, поэтому берём все ядра
+  const maxWorkers = Math.max(1, Math.min(16, opt._bigCloud ? cpu : (cpu > 2 ? cpu - 1 : cpu)));
+  const total = typeof opt._freeMem === 'number' ? opt._freeMem : os.freemem();
+  const free = total - (768 << 20);
   const byMem = Math.floor(free / (BYTES_PER_POINT * Math.max(1, maxTile * 1.25)));
-  return Math.max(1, Math.min(Math.max(2, cpu - 1), cpu, byMem, 16, nTiles));   // одно ядро — интерфейсу, если ядер больше двух
+  // r193: если памяти мало — не сваливаемся в один поток, а уменьшаем плитку (см. fitTileMaxToMemory)
+  const threads = Math.min(maxWorkers, cpu, 16, nTiles, Math.max(1, byMem));
+  return Math.max(1, Math.min(threads, nTiles));
+}
+/**
+ * r193: подбирает tileMax так, чтобы на CPU−1 воркеров хватило памяти.
+ * Раньше при занятой памяти (в приложении открыто большое облако) pickThreads отдавал 1 поток —
+ * плиточная стадия шла ~в 5 раз дольше (жалоба «~80 мин» на 590M). Теперь режем плитку, а не потоки.
+ */
+function fitTileMaxToMemory(opt) {
+  if (opt.threads || opt._tileMaxFixed) return;
+  try {
+    const cpu = opt._cpus || (typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length);
+    const workers = Math.max(2, Math.min(16, opt._bigCloud ? cpu : (cpu > 2 ? cpu - 1 : cpu)));
+    const total = typeof opt._freeMem === 'number' ? opt._freeMem : os.freemem();
+    const available = Math.max(256 << 20, total - (768 << 20));
+    const perWorker = available / workers;
+    const maxByMem = Math.floor(perWorker / (BYTES_PER_POINT * 1.25));
+    opt._memInfo = { freeMemMB: Math.round(total / 1048576), workers, maxTileByMem: maxByMem, tileMaxBefore: opt.tileMax };
+    if (maxByMem < opt.tileMax) opt.tileMax = Math.max(400000, maxByMem);
+  } catch (_) {}
 }
 function liteOpt(opt) {
-  const o = {}; for (const k of ['_stageTimings', 'noise', 'noiseLevel', 'thin', 'thinIters', 'thinCell', 'planar', 'maxThinShift', 'alignOpt', 'color', 'colorClamp', 'colorBalance', 'passEq', 'passEqOpt', 'fillNoColor', 'fillNoColorOpt', 'toneLate', 'degrain', 'degrainOpt', 'icicles', 'iciclesOpt', 'glass', 'glassOpt', 'fringeOpt']) if (opt[k] !== undefined) o[k] = opt[k];
+  const o = {}; for (const k of ['_stageTimings', 'noise', 'noiseLevel', 'thin', 'thinIters', 'thinCell', 'planar', 'maxThinShift', 'alignOpt', 'color', 'colorClamp', 'colorBalance', 'passEq', 'passEqOpt', 'fillNoColor', 'fillNoColorOpt', 'toneLate', 'degrain', 'degrainOpt', 'icicles', 'iciclesOpt', 'glass', 'glassOpt', 'fringeOpt', 'fringe', 'speckles']) if (opt[k] !== undefined) o[k] = opt[k];
   return o;
 }
 /**
@@ -46,9 +69,12 @@ async function refineParallel(src, dst, opt, onProgress) {
     const fd0 = fs.openSync(src, 'r'); const H0 = R.readHeader(fd0); fs.closeSync(fd0);
     const prof = denseCleanProfile(H0 && H0.n, opt);
     if (opt.denseProfile !== false && prof.dense) { opt.thin = false; opt.denseProfileUsed = true; }
+    if (H0 && H0.n > 150e6) opt._bigCloud = true;   // r193: большие облака — все ядра (main всё равно ждёт)
     if (opt.degrain === undefined) opt.degrain = prof.degrain;
     opt._denseProfile = prof;
   } catch (_) {}
+  // r193: сначала подгоняем размер плитки под свободную память (потоки не режем)
+  try { fitTileMaxToMemory(opt); } catch (_) {}
   // Ревизия 56: плитки под размер облака. Раньше облако до 4 млн точек всегда было одной плиткой — один поток, и
   // чистовая не ускорялась. Если точек немного на поток, режем мельче (не меньше 0,6 млн на плитку), чтобы работали все
   // ядра: на окне 120 с (3,08 млн) это 35,9 → 14,2 с. Качество то же: в 25 плотных кубах 1 м — столько же точек и та же
@@ -66,9 +92,20 @@ async function refineParallel(src, dst, opt, onProgress) {
   }
   const prog = typeof onProgress === 'function' ? onProgress : () => {};
   const tPrep = Date.now();
-  const P = R.refine(src, dst, Object.assign({}, opt, { _prepareOnly: true }), prog);
+  // r193: подготовка занимает 0..0.10 прогресса (плитки — 0.10..1.0); раньше 0.45 отдавали подготовке,
+  // из-за чего общий прогресс и ETA расходились с реальной скоростью плиток.
+  const prepProg = (f, label) => { try { prog(Math.min(0.10, Math.max(0, (Number(f) || 0) * (0.10 / 0.45))), label, { stage: 'prepare', frac: Number(f) || 0, prepMs: Date.now() - tPrep }); } catch (_) {} };
+  const P = R.refine(src, dst, Object.assign({}, opt, { _prepareOnly: true }), prepProg);
   const prepareMs = Date.now() - tPrep;
   const { H, tiles, tmp, N, t0 } = P; let ofd = P.ofd; const workers = [];
+  // r193: для плотных облаков без повторных проходов (align пропущен, colorBalance.segments=0) местное
+  // выравнивание проходов passEq нечего исправлять — отключаем, экономия ~15–20 % CPU цветовой стадии.
+  try {
+    if (opt._denseProfile && opt._denseProfile.dense && opt.passEq === undefined &&
+        (!P.align || P.align.skipped) && (!P.colorBalance || !P.colorBalance.segments)) {
+      opt.passEq = false; opt._colorSimplify = 'no-multipass';
+    }
+  } catch (_) {}
   try {
     const jobs = []; let maxTile = 0;
     for (let t = 0; t < tiles.length; t++) if (fs.existsSync(path.join(tmp, t + '.bin'))) { jobs.push(t); if (tiles[t].n > maxTile) maxTile = tiles[t].n; }
@@ -87,9 +124,11 @@ async function refineParallel(src, dst, opt, onProgress) {
       wpos += r.w; out += r.k; done += r.n0; nDyn += r.nDyn; nNoise += r.nNoise; nMoved += r.nMoved; nColor += r.nColor; nNoC += r.noColor || 0; nNoCL += r.noColorLeft || 0; nGrain += r.degrain || 0; if (r.stageMs) for (const k in r.stageMs) stageMs[k] = (stageMs[k] || 0) + r.stageMs[k];
       for (let a = 0; a < 3; a++) { if (r.bb[a] < bb[a]) bb[a] = r.bb[a]; if (r.bb[a + 3] > bb[a + 3]) bb[a + 3] = r.bb[a + 3]; }
             const frac = N ? done / N : 1;
-      const el = (Date.now() - tTiles) / 1000;
+      const elapsedTilesMs = Date.now() - tTiles;
+      const el = elapsedTilesMs / 1000;
       const eta = frac > 0.02 && frac < 1 ? Math.max(1, Math.round(el / frac - el)) : 0;
-      prog(0.45 + 0.55 * frac, 'Обработка плиток… ' + Math.round(frac * 100) + '%' + (eta ? ' (~' + Math.max(1, Math.round(eta / 60)) + ' мин)' : ''));
+      prog(0.10 + 0.90 * Math.min(1, frac), 'Обработка плиток… ' + Math.round(frac * 100) + '%' + (eta ? ' (~' + Math.max(1, Math.round(eta / 60)) + ' мин)' : ''),
+        { stage: 'tiles', frac, done, total: N, elapsedTilesMs, etaMs: eta * 1000, prepMs: Date.now() - tPrep, threads });
     };
     if (threads <= 1) { const ctx = TW.makeCtx(data); for (const t of jobs) take(TW.runTile(ctx, tmp, t, tiles[t])); }
     else {
@@ -117,11 +156,11 @@ async function refineParallel(src, dst, opt, onProgress) {
     }
     R.finishLas(ofd, H, out, bb, wpos); fs.closeSync(ofd); ofd = null;
     const tilesMs = Date.now() - tTiles;
-    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: P.c16, align: P.align, colorBalance: P.colorBalance, noColor: { found: nNoC, left: nNoCL }, degrain: nGrain, threads, stageMs, prepareMs, tilesMs, workerMs, denseProfile: opt._denseProfile || null };
+    return { points: N, written: out, dynamic: nDyn, noise: nNoise, moved: nMoved, recolored: nColor, tiles: tiles.length, ms: Date.now() - t0, color16: P.c16, align: P.align, colorBalance: P.colorBalance, noColor: { found: nNoC, left: nNoCL }, degrain: nGrain, threads, threadsMax: (opt._memInfo && opt._memInfo.workers) || threads, tileMax: opt.tileMax, memInfo: opt._memInfo || null, colorSimplify: opt._colorSimplify || null, stageMs, prepareMs, tilesMs, workerMs, denseProfile: opt._denseProfile || null };
   } finally {
     for (const w of workers) { try { await w.terminate(); } catch (_) {} }
     if (ofd !== null) { try { fs.closeSync(ofd); } catch (_) {} }
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
   }
 }
-module.exports = { refineParallel, pickThreads, denseCleanProfile, BYTES_PER_POINT };
+module.exports = { refineParallel, pickThreads, fitTileMaxToMemory, denseCleanProfile, BYTES_PER_POINT };

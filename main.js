@@ -1649,6 +1649,7 @@ function registerIpc() {
       tmpOut = path.join(workDir, 'out.las');
       const NOISE_LEVELS = ['soft', 'normal', 'strong', 'max', 'inspect'];
       const opt = { noise: a.noise !== false, thin: a.thin !== false, color: a.color !== false, dynamic: !!a.dynamic,
+        dynProfile: a.dynProfile === 'exact' ? 'exact' : 'auto',
         noiseLevel: NOISE_LEVELS.includes(a.noiseLevel) ? a.noiseLevel : 'strong',
         align: a.align !== false, colorBalance: a.colorBalance !== false,   // ревизия 21: сведение проходов и ровный цвет
         // ревизия 55: опора сведения — начало съёмки (по умолчанию) или середина, чтобы облако не уезжало

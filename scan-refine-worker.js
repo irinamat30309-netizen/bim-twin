@@ -6,6 +6,7 @@ const RP = require('./scan-refine-parallel');   // ревизия 45: плитк
 const D = require('./dynamic-clean-core');
 const CB = require('./color-balance-core');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 /**
@@ -24,7 +25,10 @@ function densifySource(src, tmpDir, o) {
 (async () => { try {
   const { src, out, tmpDir, posesText, dynOpt, opt } = workerData || {};
   let last = -1;
-  const send = (f, label) => { const p = Math.floor(f * 400); if (p === last) return; last = p; parentPort.postMessage({ type: 'progress', progress: f, label }); };
+  const startedAt = Date.now();
+  let lastOverall = 0;
+  // r193: прогресс монотонный и привязан к фактическому времени стадии (иначе «общий 68%» при плитках 4%).
+  const send = (f, label) => { const fv = Math.max(lastOverall, Math.min(0.999, Number(f) || 0)); lastOverall = fv; const p = Math.floor(fv * 400); if (p === last) return; last = p; parentPort.postMessage({ type: 'progress', progress: fv, label }); };
   const o = Object.assign({}, opt || {}, { tmpDir });
   let dynWarning = null, dynStats = null, base = 0;
   o.dynamic = null;
@@ -35,19 +39,45 @@ function densifySource(src, tmpDir, o) {
   // ревизия 19: движущиеся объекты и без траектории — по «следам» во времени точек LAS
   if (opt && opt.dynamic) {
     try {
-      const v = D.detect(src, posesText || null, dynOpt || {}, (f, l) => send(0.4 * f, 'Движущиеся объекты: ' + D.stageLabel(l).toLowerCase()));
+      const tDyn = Date.now();
+      // r194: для больших облаков — быстрый профиль dynamic (воксель/лучи/блоки), точный — явной опцией.
+      let dynOptUse = dynOpt || {};
+      try { const fdH = fs.openSync(src, 'r'); const HH = R.readHeader(fdH); fs.closeSync(fdH); dynOptUse = D.autoProfile(HH && HH.n, Object.assign({ dynProfile: o.dynProfile }, dynOptUse)); } catch (_) {}
+      o._dynProfile = dynOptUse.profile || null;
+      const profTag = dynOptUse.profile === 'fast' ? ' (быстро)' : '';
+      // r193: динамика обычно минуты, плитки — десятки минут; не отдаём ей 40 % прогресса,
+      // иначе «общий 68 %» при плитках 4 % и ETA расходятся. Отводим динамике 0..0.08.
+      const v = D.detect(src, posesText || null, dynOptUse, (f, l) => send(0.08 * f, 'Движущиеся объекты' + profTag + ': ' + D.stageLabel(l).toLowerCase()));
       o.dynamic = { sets: v.sets }; dynStats = v.stats;
+      dynStats = dynStats || {}; dynStats.ms = Date.now() - tDyn; dynStats.profile = dynOptUse.profile || 'normal';
     } catch (e) { dynWarning = String((e && e.message) || e); }
-    base = 0.4;
+    base = 0.08;
   }
   const xbin = posesText ? densifySource(src, tmpDir, o) : null, pRef = xbin ? 0.75 : 1;
-  const prog = (f, l) => send(base + (1 - base) * pRef * f, l);
+  // r193: прогресс по времени: после подготовки ETA плиток известен, общий прогресс = прошло/(прошло+осталось плиток).
+  const prog = (f, l, meta) => {
+    try {
+      let overall;
+      if (meta && meta.stage === 'tiles') {
+        const elapsed = Date.now() - startedAt;
+        const eta = Number(meta.etaMs) || 0;
+        overall = eta > 0 ? elapsed / (elapsed + eta) : (base + (1 - base) * pRef * f);
+      } else if (meta && meta.stage === 'prepare') {
+        // подготовка забирает ещё ≤0.03 (всего ≤0.11); плитки — по фактическому времени (см. выше)
+        overall = base + 0.03 * Math.min(1, (Number(meta.frac) || 0) / 0.45);
+      } else {
+        overall = base + (1 - base) * pRef * f;
+      }
+      send(overall, l);
+    } catch (_) { send(base + (1 - base) * pRef * f, l); }
+  };
   let st, parallelWarning = null;
   try { st = await RP.refineParallel(src, out, o, prog); }
-  catch (e) {   // пул потоков не поднялся (мало памяти, ограничения системы) — обработка в одном потоке, как раньше
+  catch (e) {   // пул потоков не поднялся — пробуем мельче плитки и снова все ядра (не один поток!)
     parallelWarning = String((e && e.message) || e); last = -1;
-    // ревизия 50: сначала те же плитки в этом потоке (со сглаживанием зерна цвета), затем — прежняя обработка целиком
-    try { st = await RP.refineParallel(src, out, Object.assign({}, o, { threads: 1 }), prog); }
+    const cpu = (typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length) || 4;
+    const retry = Object.assign({}, o, { _tileMaxFixed: false, tileMax: 600000, threads: Math.max(2, Math.min(8, cpu - 1)) });
+    try { st = await RP.refineParallel(src, out, retry, prog); }
     catch (_) { last = -1; st = R.refine(src, out, o, prog); }
   }
   // ревизия 51: уплотнение по сырому лидару — пустоты между точками карты заполняются точками лидара, прижатыми к поверхности
