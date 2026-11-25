@@ -108,6 +108,6 @@ test('подключение (ревизия 12): main.js берёт едины�
   assert.ok(!/\b120000000\b/.test(main), 'в main.js не осталось жёсткого 120 млн');
   assert.match(app, /function lodDrawBudget\(/);
   assert.match(app, /resolvePointBudget/);
-  assert.ok(!/id="qDensity"/.test(html) && !/qDensity/.test(app));
+  assert.ok(/id="qDensity"/.test(html) && /qDensity/.test(app), 'r197: режим плотности добавлен');
 });
 

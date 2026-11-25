@@ -13,18 +13,18 @@ const PANEL = read('renderer/ui/perf-panel.js');
 const CSS = read('renderer/ui/design-r192.css');
 
 test('r195: default — hard-точки, 2.8 px, клэмп 2–3, нейтральный тон 1.0', () => {
-  assert.match(SRC, /this\._autoPointBasePx = 2\.8; this\._softSplats = false/);
-  assert.match(SRC, /const auto = Math\.max\(2\.0, Math\.min\(3\.0, hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.8\)\)\)/);
+  assert.match(SRC, /this\._autoPointBasePx = 2\.3; this\._ptMaxCap = 4\.0; this\._softSplats = false/);
+  assert.match(SRC, /const auto = Math\.max\(1\.5, Math\.min\(4\.0, hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.3\)\)\)/);
   assert.match(SRC, /Math\.max\(2\.0, autoH \* \(this\._motionSizeScale \|\| 0\.9\)\)/);
   assert.match(SRC, /this\._ptBright = 1\.0;/);
   assert.match(SRC, /this\._grade = \{ on: false, exposure: 1\.0, contrast: 1\.0, saturation: 1\.0, gamma: 1\.0, tone: 0\.0 \};/);
-  assert.match(APP, /viewer\.setPointBasePx\(2\.8\)/);
+  assert.match(APP, /viewer\.setPointBasePx\(2\.3\)/);
   assert.match(APP, /viewer\.setBrightness\(1\.0\); viewer\.setGrade\(false\)/);
 });
 
 test('r195: миграция старых пресетов (rev 195) и панель без «Lixel» по умолчанию', () => {
-  assert.match(APP, /bim\.perfRev'\) !== '195'/);
-  assert.match(APP, /localStorage\.setItem\('bim\.perfRev', '195'\)/);
+  assert.match(APP, /bim\.perfRev'\) !== '197'/);
+  assert.match(APP, /localStorage\.setItem\('bim\.perfRev', '197'\)/);
   assert.match(APP, /bright = n\('bim\.perf\.brightness', 1\.0\)/);
   assert.match(PANEL, /var b = Number\(g\('brightness', 1\.0\)\)/);
   assert.match(PANEL, /savePrefs\(\{ quality: 'auto', look: 'neutral', autoPoint: true, brightness: 1\.0/);

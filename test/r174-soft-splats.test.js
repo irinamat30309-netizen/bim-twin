@@ -24,10 +24,10 @@ test('r195: мягкие круглые сплаты — disc mask, energy-prese
 });
 
 test('r174: размер точки 3–5 px в покое, в движении ≥2.5 px', () => {
-  assert.match(SRC, /this\._autoPointSize = true; this\._autoPointBasePx = 2\.8; this\._softSplats = false; this\._softSplatsLimit = 150000000/);
-  assert.match(SRC, /Math\.max\(2\.0, Math\.min\(3\.0, hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.8\)\)\)/);
+  assert.match(SRC, /this\._autoPointSize = true; this\._autoPointBasePx = 2\.3; this\._ptMaxCap = 4\.0; this\._softSplats = false; this\._softSplatsLimit = 150000000/);
+  assert.match(SRC, /Math\.max\(1\.5, Math\.min\(4\.0, hCss \/ 1200 \* \(this\._autoPointBasePx \|\| 2\.3\)\)\)/);
   assert.match(SRC, /Math\.max\(2\.0, autoH \* \(this\._motionSizeScale \|\| 0\.9\)\)/);
-  assert.match(APP, /setPointBasePx\(2\.8\)/);
+  assert.match(APP, /setPointBasePx\(2\.3\)/);
 });
 
 test('r174: fallback — >150M или деградация → hard-точки 3–4 px, без alpha', () => {

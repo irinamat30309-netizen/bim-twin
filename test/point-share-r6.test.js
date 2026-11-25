@@ -194,8 +194,8 @@ test('CloudChunks.resolve: нехватка памяти окна даёт по�
 
 test('интерфейс (ревизия 12): ни «Доли точек», ни «Предела, млн», ни «В покое: до N млн» — точек на экране всегда столько, сколько в файле', () => {
   const app = R_('renderer', 'app.js'), html = R_('renderer', 'index.html');
-  assert.ok(!/id="qShare"/.test(html) && !/id="qDensity"/.test(html) && !/id="qIdle"/.test(html));
-  assert.ok(!/'Доля точек файла'/.test(app) && !/applyPointShare/.test(app) && !/qDensity/.test(app) && !/setOctreeIdleLimit/.test(app));
+  assert.ok(!/id="qShare"/.test(html) && !/id="qIdle"/.test(html) && /id="qDensity"/.test(html), 'r197: режим плотности добавлен');
+  assert.ok(!/'Доля точек файла'/.test(app) && !/applyPointShare/.test(app) && !/setOctreeIdleLimit/.test(app));
   assert.ok(/id="qMove"/.test(html), 'доля точек только на время движения камеры остаётся');
   const ui = R_('renderer', 'lixel-cloud-ui.js');
   assert.ok(/cpShareNote/.test(ui) && /Показано .* из .* млн точек/.test(ui) && !/bim-preview-state/.test(ui));

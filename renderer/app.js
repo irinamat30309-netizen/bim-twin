@@ -207,6 +207,16 @@
   // резерв ОС/драйвера и framebuffer — 1 ГБ; целевая доля VRAM: Авто 78%, Высокое 80%.
   const GPU_BYTES_PER_POINT = 24;
   const GPU_RESERVE_MB = 1024;
+  function densityMode() { try { const v = localStorage.getItem('bim.render.density'); return v === 'exact' || v === 'fast' ? v : 'balanced'; } catch (e) { return 'balanced'; } }
+  function densityBudget(qb, q) {
+    // r197: Точно — до 80% VRAM, Сбалансировано — текущий VRAM-бюджет, Быстро — 60% бюджета.
+    if (q === 'fast') return qb;
+    const d = densityMode();
+    if (d === 'exact') return Math.max(qb, gpuBudgetPoints(0.80));
+    if (d === 'fast') return Math.min(qb, gpuBudgetPoints(0.42));
+    if (d === 'balanced') return Math.min(qb, gpuBudgetPoints(0.53));
+    return qb;
+  }
   function gpuBudgetPoints(frac) {
     try {
       const cap = window.__bimPcCapacity, gpu = cap && cap.gpu;
@@ -224,8 +234,15 @@
     if (q === 'fast') return GPU_POINT_BUDGET_FAST;
     // r196: бюджет из реального объёма атрибутов (24 Б/точку) + резерв 1 ГБ; для 12 ГБ ≈356–367 млн, не 530M.
     const byVram = gpuBudgetPoints(q === 'high' ? 0.80 : 0.78);
-    if (byVram > 0) return Math.min(2000000000, byVram);
+    if (byVram > 0) return Math.min(2000000000, densityBudget(byVram, q));
     return GPU_POINT_BUDGET;
+  }
+  function applyDensityToViewer() {
+    try {
+      if (!viewer || !viewer.setMaxPointPx) return;
+      const d = densityMode();
+      viewer.setMaxPointPx(d === 'exact' ? 4.5 : d === 'fast' ? 3.0 : 4.0);
+    } catch (e) {}
   }
   function gpuPointBudget() {
     // r145/r173: разовый сброс старых «пределов после сброса GPU» на VRAM-бюджет.
@@ -2446,6 +2463,12 @@
     });
     const qAtten = $('qAtten');
     if (qAtten) qAtten.addEventListener('click', () => { if (!viewer || !viewer.setAttenuate) { toast('Доступно в 3D-режиме (WebGL)'); return; } const toGrow = !(viewer.attenuateOn && viewer.attenuateOn()); const on = viewer.setAttenuate(toGrow); qAtten.classList.toggle('on', on); toast(on ? 'Размер точки растёт при приближении' : 'Постоянный размер точки — как в CloudCompare'); });
+    window.__bimDensityMode = densityMode;
+    const qDensity = $('qDensity');
+    if (qDensity) {
+      try { qDensity.value = densityMode(); } catch (e) {}
+      qDensity.addEventListener('change', () => { try { localStorage.setItem('bim.render.density', qDensity.value === 'exact' || qDensity.value === 'fast' ? qDensity.value : 'balanced'); } catch (e) {} const map = { exact: 'Точно', balanced: 'Сбалансировано', fast: 'Быстро' }; toast('Плотность: ' + (map[qDensity.value] || 'Сбалансировано') + '. Размер/плотность применены; новый бюджет точек — при повторном открытии облака.'); try { if (viewer && viewer.setMaxPointPx) viewer.setMaxPointPx(qDensity.value === 'exact' ? 4.5 : qDensity.value === 'fast' ? 3.0 : 4.0); } catch (e) {} });
+    }
     const qDense = $('qDense');
     if (qDense) qDense.addEventListener('click', () => { if (!viewer || !viewer.setDenseFill) { toast('Доступно в 3D-режиме (WebGL)'); return; } const on = viewer.setDenseFill(!qDense.classList.contains('on')); qDense.classList.toggle('on', on); const qA = $('qAtten'); if (qA && viewer.attenuateOn) { const a = viewer.attenuateOn(); qA.classList.toggle('on', a); } toast(on ? 'Плотная заливка включена — без чёрных промежутков при приближении' : 'Плотная заливка выключена'); });
     const qFrame = $('qFrame');
@@ -6011,9 +6034,9 @@
     function n(k, d) { var v = Number(s(k, d)); return isFinite(v) ? v : d; }
     // миграция один раз: старые дефолты (lixel 1.36/1.29) давали пересвет — сбрасываем на базовый тон 1.1
     try {
-      if (localStorage.getItem('bim.perfRev') !== '195') {
-        ['bim.perf.look', 'bim.perf.brightness', 'bim.perf.contrast', 'bim.perf.saturation', 'bim.perf.autoPoint', 'bim.perf.quality', 'bim.perf.dynRes'].forEach(function (k) { localStorage.removeItem(k); });
-        localStorage.setItem('bim.perfRev', '195');
+      if (localStorage.getItem('bim.perfRev') !== '197') {
+        ['bim.perf.look', 'bim.perf.brightness', 'bim.perf.contrast', 'bim.perf.saturation', 'bim.perf.autoPoint', 'bim.perf.quality', 'bim.perf.dynRes', 'bim.ptBase', 'bim.pointSize', 'bim.cloud.pointSize'].forEach(function (k) { localStorage.removeItem(k); });
+        localStorage.setItem('bim.perfRev', '197');
       }
     } catch (e) {}
     var look = s('bim.perf.look', 'neutral'), bright = n('bim.perf.brightness', 1.0), contrast = n('bim.perf.contrast', 1.0), sat = n('bim.perf.saturation', 1.0);
@@ -6032,7 +6055,7 @@
     var p = renderPrefs();
     try { if (viewer.setQualityMode) viewer.setQualityMode(p.quality); } catch (e) {}
     try { if (viewer.setAutoPointSize) viewer.setAutoPointSize(p.autoPoint); } catch (e) {}
-    try { if (viewer.setPointBasePx) viewer.setPointBasePx(2.8); } catch (e) {}
+    try { if (viewer.setPointBasePx) viewer.setPointBasePx(2.3); } catch (e) {}
     try {
       if (p.look === 'lixel') viewer.setLixelLook(true);
       else if (p.look === 'neutral') { viewer.setBrightness(1.0); viewer.setGrade(false); }
@@ -6181,7 +6204,7 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); ensureVramHud(); ensureNoColorBanner(); } catch (e) { console.warn('render prefs', e); }
+    try { applyRenderPrefs(); applyDensityToViewer(); ensureVramHud(); ensureNoColorBanner(); } catch (e) { console.warn('render prefs', e); }
     try { if (extraUiWanted()) { ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); ensureClipP3(); } } catch (e) { console.warn('extra ui', e); }
     // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.
     try { startPendingCloudOpen(); } catch (e) { console.warn('r149 pending cloud', e); }

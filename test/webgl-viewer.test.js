@@ -29,20 +29,20 @@ test('cloudQuality: exports present', () => {
 
 test('cloudQuality: small clouds get largest crisp points', () => {
   const q = V.cloudQuality(500);
-  assert.strictEqual(q.pointSize, 1.5);
-  assert.strictEqual(q.ptMax, 3.5);
+  assert.strictEqual(q.pointSize, 1.2);
+  assert.strictEqual(q.ptMax, 5.0);
 });
 
 test('cloudQuality: mid clouds (~2M) moderate size', () => {
   const q = V.cloudQuality(2000000);
-  assert.strictEqual(q.pointSize, 1.3);
-  assert.strictEqual(q.ptMax, 3);
+  assert.strictEqual(q.pointSize, 1.0);
+  assert.strictEqual(q.ptMax, 4.0);
 });
 
 test('cloudQuality: huge clouds (>6M) smallest size for perf', () => {
   const q = V.cloudQuality(8000000);
-  assert.strictEqual(q.pointSize, 1.3);
-  assert.strictEqual(q.ptMax, 2.5);
+  assert.strictEqual(q.pointSize, 1.0);
+  assert.strictEqual(q.ptMax, 4.0);
 });
 
 test('cloudQuality: monotonic non-increasing size as count grows', () => {
@@ -62,15 +62,15 @@ test('cloudQuality: CloudCompare-like small points (<= legacy defaults)', () => 
   assert.ok(V.cloudQuality(500000).pointSize <= 1.4);
   assert.ok(V.cloudQuality(100).pointSize <= 1.5);
   // caps must stay small so near points do not bloat into big squares
-  assert.ok(V.cloudQuality(100).ptMax <= 3.5);
-  assert.ok(V.cloudQuality(8000000).ptMax <= 2.5);
+  assert.ok(V.cloudQuality(100).ptMax <= 5.0);
+  assert.ok(V.cloudQuality(8000000).ptMax <= 4.0);
 });
 
 test('cloudQuality: handles float / non-integer counts (truncates)', () => {
   // 400000.9 | 0 === 400000 -> NOT > 400000 -> stays in smallest-count tier (1.0)
-  assert.strictEqual(V.cloudQuality(400000.9).pointSize, 1.5);
+  assert.strictEqual(V.cloudQuality(400000.9).pointSize, 1.2);
   // 400001.9 | 0 === 400001 -> > 400000 -> next tier (1.4)
-  assert.strictEqual(V.cloudQuality(400001.9).pointSize, 1.4);
+  assert.strictEqual(V.cloudQuality(400001.9).pointSize, 1.1);
 });
 
 test('loadCloud preserves E57 scan point order when adaptive-render shuffle would otherwise run', () => {

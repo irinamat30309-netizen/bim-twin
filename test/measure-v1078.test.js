@@ -134,8 +134,8 @@ test('webgl-viewer.js: CloudCompare-стиль — снап под курсор 
 
 test('webgl-viewer.js: адаптивная плотность при приближении', () => {
   assert.ok(/const adaptive = isCloud && !fixedPx && !this\._frameBox/.test(VW), 'adaptive density flag missing');
-  assert.ok(VW.includes('uPtMin, adaptive ? baseSize : 1.0'), 'adaptive must keep base size as floor');
-  assert.ok(VW.includes('adaptive ? 4.0 : 1.0'), 'adaptive should raise max point size to fill gaps (r172: 4 px fill-rate cap)');
+  assert.ok(VW.includes('uPtMin, isCloud ? (this._interacting ? 2.0 : Math.max(2.2'), 'cloud attenuation floor 1.5–2 px');
+  assert.ok(VW.includes('_ptMaxCap'), 'attenuation must be capped (1.5–5 px)');
   assert.ok(VW.includes('this._densityBoost'), 'density boost must widen adaptive point size');
   assert.ok(VW.includes('this._interBudget = 128000000'), 'interactive budget must keep points on zoom');
   assert.ok(VW.includes('setDensityBoost(v)'), 'density boost setter missing');
