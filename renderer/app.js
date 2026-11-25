@@ -207,6 +207,39 @@
   // резерв ОС/драйвера и framebuffer — 1 ГБ; целевая доля VRAM: Авто 78%, Высокое 80%.
   const GPU_BYTES_PER_POINT = 24;
   const GPU_RESERVE_MB = 1024;
+  // r198: профили отображения. Классический — эталон r177 (мягкие сплаты 3.4px, яркость 1.1, LOD 300M).
+  const RENDER_PROFILES = {
+    classic: { label: 'Классический (r177)', soft: true, autoBase: 3.4, cap: 5.0, bright: 1.1, attenuate: false, density: 'classic', budget: 300000000 },
+    balanced: { label: 'Сбалансированный', soft: false, autoBase: 2.3, cap: 4.0, bright: 1.0, attenuate: true, density: 'balanced', budget: 0 },
+    max: { label: 'Максимум детализации', soft: false, autoBase: 2.3, cap: 4.5, bright: 1.0, attenuate: true, density: 'exact', budget: 0 }
+  };
+  function renderProfile() {
+    try { const ov = API && API.renderProfileOverride; if (ov && RENDER_PROFILES[ov]) return ov; } catch (e) {}
+    try { const v = localStorage.getItem('bim.render.profile'); if (RENDER_PROFILES[v]) return v; } catch (e) {}
+    return 'classic';
+  }
+  function applyProfileToViewer(profileName) {
+    const pr = RENDER_PROFILES[profileName] || RENDER_PROFILES.classic;
+    try {
+      if (!viewer) return;
+      if (viewer._softSplats !== pr.soft) { if (pr.soft) viewer.setSoftSplatsForce(true); else { viewer.setSoftSplatsForce(false); viewer._softSplats = false; } }
+      if (viewer.setAutoPointSize) viewer.setAutoPointSize(true);
+      if (viewer.setPointBasePx) viewer.setPointBasePx(pr.autoBase);
+      if (viewer.setMaxPointPx) viewer.setMaxPointPx(pr.cap);
+      if (viewer.setBrightness) viewer.setBrightness(pr.bright);
+      if (viewer.setGrade) viewer.setGrade(false);
+      if (viewer.setAttenuate) viewer.setAttenuate(pr.attenuate);
+    } catch (e) {}
+  }
+  window.__bimSetRenderProfile = function (name) {
+    if (!RENDER_PROFILES[name]) return false;
+    try { localStorage.setItem('bim.render.profile', name); } catch (e) {}
+    applyProfileToViewer(name);
+    const pr = RENDER_PROFILES[name];
+    toast('Профиль отображения: ' + pr.label + '. Бюджет точек применится при повторном открытии облака.');
+    return true;
+  };
+  window.__bimRenderProfile = renderProfile;
   function densityMode() { try { const v = localStorage.getItem('bim.render.density'); return v === 'exact' || v === 'fast' ? v : 'balanced'; } catch (e) { return 'balanced'; } }
   function densityBudget(qb, q) {
     // r197: Точно — до 80% VRAM, Сбалансировано — текущий VRAM-бюджет, Быстро — 60% бюджета.
@@ -240,6 +273,9 @@
   function applyDensityToViewer() {
     try {
       if (!viewer || !viewer.setMaxPointPx) return;
+      const prof = renderProfile();
+      if (prof === 'classic') { viewer.setMaxPointPx(2.5); return; }
+      if (prof === 'max') { viewer.setMaxPointPx(4.5); return; }
       const d = densityMode();
       viewer.setMaxPointPx(d === 'exact' ? 4.5 : d === 'fast' ? 3.0 : 4.0);
     } catch (e) {}
@@ -252,8 +288,13 @@
         localStorage.setItem('bim.gpuBudgetRev', '196');
       }
     } catch (e) {}
-    // стенд r173: BIM_RENDER_BUDGET переопределяет бюджет (80/200/300/600 млн)
+    // стенд: BIM_RENDER_BUDGET переопределяет бюджет
     try { const ov = Number(API && API.renderBudgetOverride) || 0; if (ov >= 10000000) return Math.floor(Math.min(ov, 600000000)); } catch (_) {}
+    // r198: бюджет по профилю (Классический — LOD 300M; Максимум — 80% VRAM; Сбалансированный — 0.53)
+    const prof = renderProfile();
+    if (prof === 'classic') return 300000000;
+    if (prof === 'max') { try { const b = gpuBudgetPoints(0.80); if (b > 0) return Math.min(b, 2000000000); } catch (e) {} }
+    if (prof === 'balanced') { try { const b = gpuBudgetPoints(0.53); if (b > 0) return Math.min(b, 2000000000); } catch (e) {} }
     let v = 0; try { v = Number(localStorage.getItem('bim.gpuPointBudget')) || 0; } catch (_) {}
     let allowAll = false; try { allowAll = localStorage.getItem('bim.gpuShowAll') === '1'; } catch (_) {}
     const qb = qualityPointBudget();
@@ -6034,6 +6075,9 @@
     function n(k, d) { var v = Number(s(k, d)); return isFinite(v) ? v : d; }
     // миграция один раз: старые дефолты (lixel 1.36/1.29) давали пересвет — сбрасываем на базовый тон 1.1
     try {
+      if (localStorage.getItem('bim.uiProfileRev') !== '198') { localStorage.setItem('bim.render.profile', 'classic'); localStorage.setItem('bim.uiProfileRev', '198'); }
+    } catch (e) {}
+    try {
       if (localStorage.getItem('bim.perfRev') !== '197') {
         ['bim.perf.look', 'bim.perf.brightness', 'bim.perf.contrast', 'bim.perf.saturation', 'bim.perf.autoPoint', 'bim.perf.quality', 'bim.perf.dynRes', 'bim.ptBase', 'bim.pointSize', 'bim.cloud.pointSize'].forEach(function (k) { localStorage.removeItem(k); });
         localStorage.setItem('bim.perfRev', '197');
@@ -6204,11 +6248,11 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); applyDensityToViewer(); ensureVramHud(); ensureNoColorBanner(); } catch (e) { console.warn('render prefs', e); }
+    try { applyRenderPrefs(); applyProfileToViewer(renderProfile()); applyDensityToViewer(); ensureVramHud(); ensureNoColorBanner(); } catch (e) { console.warn('render prefs', e); }
     try { if (extraUiWanted()) { ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); ensureClipP3(); } } catch (e) { console.warn('extra ui', e); }
     // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.
     try { startPendingCloudOpen(); } catch (e) { console.warn('r149 pending cloud', e); }
-    try { window.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { try { applyRenderPrefs(); } catch (e) {} }, 120); }); } catch (e) {}
+    try { window.addEventListener('lx-cloud-loaded', function () { setTimeout(function () { try { applyRenderPrefs(); applyProfileToViewer(renderProfile()); applyDensityToViewer(); } catch (e) {} }, 120); }); } catch (e) {}
     // Keep the AI-highlight affordance in sync with the viewer's default state.
     try { const aiBtn = $('btnAI'); const aiOn = !!viewer.showAI; if (aiBtn) { aiBtn.classList.toggle('on', aiOn); aiBtn.setAttribute('aria-pressed', String(aiOn)); } } catch (e) {}
     viewer.onQualityChange = () => { if (window.__bimRefreshQuality) window.__bimRefreshQuality(); };

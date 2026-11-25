@@ -224,6 +224,11 @@
         I('btnIsolate', 'focus', null, { sel: '#btnIsolate', toggle: 1 }),
         I('btnLOD', 'gauge', null, { sel: '#btnLOD', toggle: 1 })
       ]),
+      G('profiles', 'Профиль отображения', [
+        I('profileClassic', 'palette', 'Классический (r177)', { call: '__bimSetRenderProfile', args: ['classic'], tip: 'Эталон r177: мягкие сплаты 3.4 px, яркость 1.1, LOD 300M' }),
+        I('profileBalanced', 'layout-panel-top', 'Сбалансированный', { call: '__bimSetRenderProfile', args: ['balanced'], tip: 'Плотные точки 1.0, аттенюация до 4 px, экономный бюджет' }),
+        I('profileMax', 'gauge', 'Максимум детализации', { call: '__bimSetRenderProfile', args: ['max'], tip: 'До 80% VRAM, аттенюация до 4.5 px — максимум плотности' })
+      ]),
       G('extra', 'Дополнительно', [
         I('extraUiToggle', 'layout-panel-top', 'Доп. панели (опыт)', { call: '__bimToggleExtraUiConfirm', toggle: 1, tip: 'Показать/скрыть экспериментальные панели r145: рейка, «Управление данными», нижние плашки, FPS. По умолчанию выключены' })
       ])
