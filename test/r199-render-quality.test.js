@@ -1,12 +1,12 @@
 'use strict';
 /*
- * r199 — качество рендера облака «как в Lixel Studio».
- * Профиль «Фото (Lixel)» (выбираемый; DEFAULT — «Классический (r177)» по замерам):
- * плоский энергосберегающий сплэт (alpha=1, без тёмных колец/пересвета) + перспективная аттенюация,
- * база 2.4 px при 1080p, clamp 1.8…6 px, яркость 1.0, насыщенность ×0.88, бюджет 450M.
- * «Классический (r177)», «Сбалансированный», «Максимум детализации» сохранены.
- * Отдельно закреплён корень «1 px»: setAttenuate(false) не должен фиксировать pointSize=1
- * и отменять autoBase; ручной слайдер setCloudPointSize(1) остаётся фиксированным.
+ * r199/r201 — качество рендера облака «как в Lixel Studio».
+ * Профиль «Фото (Lixel)» (DEFAULT): плоский энергосберегающий сплэт (alpha=1, без тёмных колец/пересвета)
+ * + перспективная аттенюация, база 2.4 px при 1080p, clamp 1.8…6 px, яркость 1.0, насыщенность ×0.82,
+ * chroma-only screen-space denoise K=0.8 (luma не трогается), бюджет 380M.
+ * classic/balanced/max сохранены. r201: soft-alpha AA и fixed-size 2.0–2.2 проверены и отклонены
+ * (speckle +80 % / +28 %), EDL отклонён.
+ * Отдельно закреплён корень «1 px»: setAttenuate(false) не должен фиксировать pointSize=1.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -40,11 +40,14 @@ test('r199: профиль «Фото (Lixel)»: плоский энергосб
   assert.strictEqual(p.bool('soft'), true, 'фото: мягкие сплаты должны быть включены');
   assert.strictEqual(p.bool('softFlat'), true, 'фото: плоский сплэт без тёмных колец (это и убирает зерно r177)');
   assert.strictEqual(p.bool('attenuate'), true, 'фото: перспективная аттенюация должна быть включена');
-  assert.strictEqual(p.bool('photoSmooth'), null, 'фото: без экранного denoise');
+  assert.strictEqual(p.bool('photoSmooth'), true, 'r201: chroma-only screen-space denoise включён');
+  assert.strictEqual(p.num('smoothK'), 0.8, 'r201: сила chroma-denoise 0.8');
+  assert.strictEqual(p.num('smoothYK'), 0.45, 'r201: медианный luma-фильтр 0.45 (убирает спикл)');
+  assert.strictEqual(p.bool('softAlpha'), null, 'r201: soft-alpha AA отклонён — на замерах speckle хуже в 1.8×');
   assert.strictEqual(p.bool('edl'), null, 'фото: без EDL — у эталона нет тёмных контуров');
 });
 
-test('r199: база 2.4 px (2.2–2.6), clamp 1.8…6, яркость 1.0 (без пересвета), насыщенность 0.88', () => {
+test('r199: база 2.4 px (2.2–2.6), clamp 1.8…6, яркость 1.0, насыщенность 0.82', () => {
   const p = profileBlock('photo');
   const base = p.num('autoBase');
   assert.ok(base >= 2.2 && base <= 2.6, 'autoBase 2.2–2.6 px, получено ' + base);
@@ -52,7 +55,7 @@ test('r199: база 2.4 px (2.2–2.6), clamp 1.8…6, яркость 1.0 (бе
   assert.strictEqual(p.num('minPx'), 1.8);
   assert.strictEqual(p.num('maxPx'), 6.0);
   assert.strictEqual(p.num('bright'), 1.0, 'пересвет недопустим: яркость ровно 1.0');
-  assert.strictEqual(p.num('saturation'), 0.88);
+  assert.strictEqual(p.num('saturation'), 0.82);
   assert.ok(p.num('densityBoost') >= 1.2, 'перекрытие сплэтов для сплошной поверхности');
 });
 
@@ -89,7 +92,7 @@ test('r199: шейдер — плоский энергосберегающий �
   assert.match(VW, /uniform float uSoft;/);
   assert.match(VW, /alpha = 1\.0;/);
   assert.match(VW, /float edge = smoothstep\(1\.0, 0\.45, rr\);[\s\S]{0,180}c \*= \(0\.55 \+ 0\.45 \* edge\);/);
-  assert.match(VW, /if\(uSoftFlat>0\.5\)\{[\s\S]{0,320}float feather = smoothstep\(1\.0, 0\.86, rr\);[\s\S]{0,120}c \*= \(0\.94 \+ 0\.06 \* feather\);/);
+  assert.match(VW, /if\(uSoftFlat>0\.5\)\{[\s\S]{0,700}float feather = smoothstep\(1\.0, 0\.86, rr\);[\s\S]{0,120}c \*= \(0\.94 \+ 0\.06 \* feather\);/);
   assert.match(VW, /if\(uSoftFlat<0\.5\) splat=0\.82\+0\.18\*sqrt/, 'в плоском режиме нет двойного затемнения кромки');
 });
 
@@ -104,14 +107,20 @@ test('r199: аттенюация по локальному шагу + clamp 1.8�
   assert.match(VW, /setMaxPointPx\(px\)[^}]*Math\.max\(1\.5, Math\.min\(5\.0, v\)\)/);
 });
 
-test('r199: EDL/denoise остаются опциями, фото-профиль их не включает', () => {
+test('r201: chroma-only denoise включён в фото; EDL и soft-alpha — опции, отклонены замерами', () => {
   assert.match(VW, /setPhotoSmooth\(on\)/);
   assert.match(VW, /setEdl\(on, strength, tol\)/);
   assert.match(VW, /if\(abs\(zn - zs\) > uEdlTol\) sum \+=/);
   assert.match(VW, /float shade = clamp\(exp\(-sum \* uStrength \* 20\.0\), 0\.55, 1\.0\);/);
   assert.match(APP, /setPhotoSmooth\(!!pr\.photoSmooth\)/);
+  assert.match(APP, /setPhotoSmoothStrength\(pr\.smoothK/);
   assert.match(APP, /setEdl\(!!pr\.edl, pr\.edlStrength/);
   assert.match(APP, /setSoftFlat\(!!pr\.softFlat\)/);
+  // soft-alpha AA реализован, но профилем не включается (на замерах speckle +80 %)
+  assert.match(VW, /uniform float uSoftAlpha;/);
+  assert.match(VW, /alpha = smoothstep\(1\.0, 0\.60, rr\);/);
+  assert.match(VW, /setSoftAlpha\(on\)/);
+  assert.match(APP, /setSoftAlpha\(!!pr\.softAlpha\)/);
 });
 
 test('r199: view-dependent плотность — ближние кирпичи в приоритете при бюджете кадра', () => {

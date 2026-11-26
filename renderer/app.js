@@ -213,7 +213,7 @@
   // в эталоне их нет; плоский сплэт/EDL остаются в коде как опции тестов.
   const RENDER_PROFILES = {
     classic: { label: 'Классический (r177)', soft: true, autoBase: 3.4, cap: 5.0, bright: 1.1, attenuate: false, density: 'classic', budget: 300000000 },
-    photo: { label: 'Фото (Lixel)', soft: true, softFlat: true, autoBase: 2.4, cap: 6.0, bright: 1.0, attenuate: true, density: 'photo', budget: 380000000, densityBoost: 1.45, minPx: 1.8, maxPx: 6.0, nearDensity: true, saturation: 0.88 },
+    photo: { label: 'Фото (Lixel)', soft: true, softFlat: true, photoSmooth: true, smoothK: 0.8, smoothYK: 0.45, autoBase: 2.4, cap: 6.0, bright: 1.0, attenuate: true, density: 'photo', budget: 380000000, densityBoost: 1.45, minPx: 1.8, maxPx: 6.0, nearDensity: true, saturation: 0.82 },
     balanced: { label: 'Сбалансированный', soft: false, autoBase: 2.3, cap: 4.0, bright: 1.0, attenuate: true, density: 'balanced', budget: 0 },
     max: { label: 'Максимум детализации', soft: false, autoBase: 2.3, cap: 4.5, bright: 1.0, attenuate: true, density: 'exact', budget: 0 }
   };
@@ -248,6 +248,7 @@
       try { if (viewer._cloudDisplay) viewer._cloudDisplay.pointSize = null; } catch (e) {}
       // r199: фото-режим — плоский сплэт, размерный clamp 1.8…6 px, приоритет ближних кирпичей в движении.
       if (viewer.setSoftFlat) viewer.setSoftFlat(!!pr.softFlat);
+      if (viewer.setSoftAlpha) viewer.setSoftAlpha(!!pr.softAlpha);
       if (viewer.setPhotoSmooth) viewer.setPhotoSmooth(!!pr.photoSmooth);
       if (viewer.setPhotoSmoothStrength) viewer.setPhotoSmoothStrength(pr.smoothK != null ? pr.smoothK : 0.55);
       if (viewer.setPhotoLumaStrength) viewer.setPhotoLumaStrength(pr.smoothYK || 0);
@@ -6309,6 +6310,8 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
+    // r201: фон вьюпорта как у Lixel (#0E1013); в коде тема уже #0E1013, но CSS-подложка .stage светлее.
+    try { document.documentElement.style.setProperty('--viewer-bg', '#0E1013'); document.documentElement.style.setProperty('--viewport-a', '#0E1013'); } catch (e) {}
     try { applyRenderPrefs(); applyProfileToViewer(renderProfile()); applyDensityToViewer(); ensureVramHud(); ensureNoColorBanner(); ensurePhotoProfileMenuItem(); } catch (e) { console.warn('render prefs', e); }
     try { if (extraUiWanted()) { ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); ensureClipP3(); } } catch (e) { console.warn('extra ui', e); }
     // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.

@@ -77,9 +77,9 @@ async function runPost(grayPath, colorIn, colorOut, opt, range, log) {
     const at = (q) => { xyz[0] = bufC.readInt32LE(q) * H.sx + H.ox; xyz[1] = bufC.readInt32LE(q + 4) * H.sy + H.oy; xyz[2] = bufC.readInt32LE(q + 8) * H.sz + H.oz; };
 
     // ---------- ячейки заливки (15 см) ----------
-    const fillCell = Math.max(0.05, opt.fillCell || 0.15);
-    const fillR = Math.max(1, Math.ceil((opt.fillRadius || 0.3) / fillCell));
-    const fillIters = Math.max(1, opt.fillIters | 0 || 2);
+    const fillCell = Math.max(0.05, opt.fillCell || 0.10);   // r201: quality — 10 см (0.15/0.30 смазывали, 0.05/0.10 оставляли серые пятна)
+    const fillR = Math.max(1, Math.ceil((opt.fillRadius || 0.20) / fillCell));
+    const fillIters = Math.max(1, opt.fillIters | 0 || 3);
     const B0 = 8192, OFF = 4096;
     const keyOf = (x, y, z) => {
       const ix = Math.floor(x / fillCell) + OFF, iy = Math.floor(y / fillCell) + OFF, iz = Math.floor(z / fillCell) + OFF;
@@ -577,4 +577,53 @@ if (wd && wd.run) {
   }
 }
 
-module.exports = { postColor, postParallel, postParallelFill, denoiseGlobal, readHead };
+// r201: финальный мягкий gray-world баланс уже покрашенного LAS (in-place).
+// Причина: даже после neutralWB остаётся синий перекос из-за заливки/выбора кадров (B/R 1.15 vs 1.0 у Lixel).
+// strength 0.8 — снимаем каст, но не превращаем сцену в серую; gains ограничены 0.8…1.25.
+function colorBalanceInPlace(path, strength, log) {
+  strength = strength == null ? 0.8 : Math.max(0, Math.min(1, Number(strength) || 0));
+  const fd = fs.openSync(path, 'r+');
+  try {
+    const H = readHead(fd);
+    const RGB = H.rgb, RL = H.rl, N = H.n;
+    const c16 = detectC16(fd, H);
+    const maxv = c16 ? 65535 : 255;
+    const CH = Math.max(1024, Math.floor((8 << 20) / RL));
+    const buf = Buffer.allocUnsafe(CH * RL);
+    const step = Math.max(1, Math.floor(N / 400000));
+    const sums = [0, 0, 0]; let cnt = 0;
+    for (let i = 0; i < N; i += CH) {
+      const c = Math.min(CH, N - i);
+      readChunk(fd, buf, H.off + i * RL, c * RL);
+      for (let q = 0; q < c * RL; q += RL * step) {
+        sums[0] += getC(buf, q, RGB, c16); sums[1] += getC(buf, q, RGB + 2, c16); sums[2] += getC(buf, q, RGB + 4, c16); cnt++;
+      }
+    }
+    if (!cnt) return { ok: false, error: 'no_samples' };
+    const mean = sums.map(s => s / cnt);
+    const target = (mean[0] + mean[1] + mean[2]) / 3;
+    let gains = mean.map(m => Math.pow(target / Math.max(1e-6, m), strength));
+    gains = gains.map(g => Math.max(0.8, Math.min(1.25, g)));
+    const gm = Math.cbrt(gains[0] * gains[1] * gains[2]) || 1;
+    gains = gains.map(g => g / gm);
+    let changed = 0;
+    for (let i = 0; i < N; i += CH) {
+      const c = Math.min(CH, N - i);
+      readChunk(fd, buf, H.off + i * RL, c * RL);
+      for (let q = 0; q < c * RL; q += RL) {
+        const r = getC(buf, q, RGB, c16), g = getC(buf, q, RGB + 2, c16), b = getC(buf, q, RGB + 4, c16);
+        const nr = Math.max(0, Math.min(maxv, Math.round(r * gains[0])));
+        const ng = Math.max(0, Math.min(maxv, Math.round(g * gains[1])));
+        const nb = Math.max(0, Math.min(maxv, Math.round(b * gains[2])));
+        if (nr !== r || ng !== g || nb !== b) changed++;
+        setC(buf, q, RGB, nr, c16); setC(buf, q, RGB + 2, ng, c16); setC(buf, q, RGB + 4, nb, c16);
+      }
+      fs.writeSync(fd, buf, 0, c * RL, H.off + i * RL);
+    }
+    const st = { ok: true, strength, meanBefore: mean.map(v => +v.toFixed(1)), gains: gains.map(v => +v.toFixed(3)), changed, ms: 0 };
+    if (log) log('color balance: mean ' + st.meanBefore.join('/') + ' gains ' + st.gains.join('/') + ' changed ' + changed);
+    return st;
+  } finally { fs.closeSync(fd); }
+}
+
+module.exports = { postColor, postParallel, postParallelFill, denoiseGlobal, colorBalanceInPlace, readHead };

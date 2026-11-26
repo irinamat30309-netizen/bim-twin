@@ -161,6 +161,15 @@ app.whenReady().then(async () => {
           post = await PP.postColor(srcAbs, dstAbs, postTmp, opt, (m) => say('[' + ((Date.now() - T0) / 60000).toFixed(1) + ' мин] ' + m));
         }
         fs.rmSync(dstAbs, { force: true }); fs.renameSync(postTmp, dstAbs);
+        // r201: финальный gray-world баланс — ОПЦИЯ (opt.colorBalance > 0), по умолчанию выключен.
+        // Для сцены «тёплый двор + синее стекло» глобальный баланс делал фасад синее (B/R 1.247 vs 1.116 у Lixel),
+        // поэтому дефолт 0; при необходимости strength 0.3–0.8 задаётся в BIM_RECOLOR_OPT.
+        const cbStrength = Number(opt.colorBalance) || 0;
+        if (cbStrength > 0) {
+          try {
+            r.stats.colorBalance = PP.colorBalanceInPlace(dstAbs, Math.min(1, cbStrength), say);
+          } catch (e) { r.colorBalanceWarning = String((e && e.message) || e); say('color balance failed: ' + r.colorBalanceWarning); }
+        }
         r.stats.post = post;
         r.stats.colored = post.colored; r.stats.filled = (post.fill && post.fill.filled) || 0;
         say(JSON.stringify({ note: 'post', ms: post.ms, colored: post.colored, filled: r.stats.filled, denoise: post.denoise }));

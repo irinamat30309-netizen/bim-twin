@@ -35,12 +35,18 @@ const DEF = { window: 2.5, bucket: 2, K: 4, cell: 8, thetaMax: 1.35, thetaSharp:
   improve: false,
   bestView: true, sharp: true, sharpW: 0.55, lapScale: 12, expoFix: true,
   frameNorm: true, normClip: [0.05, 0.95], normGainMin: 0.8, normGainMax: 1.25, wb: true,
+  // r201: neutralWB — баланс белого к нейтральному target (R=G=B=meanY), а не к среднему кадров.
+  // Причина синего каста r199: normTarget сам синий (r64/g68/b83), WB усиливал синий до +20 %.
+  // r201: КАЧЕСТВО ВАЖНЕЕ СКОРОСТИ — нейтральный WB включён по умолчанию.
+  neutralWB: true,
   // r200: грейд 1.36/1.29 пересвечивал (LUT по старому облаку: пересвет 0.11→31 %, насыщенность 28.7→34.2 %)
   // и давал синий каст на выходе. Эталон Lixel: luma 114–121, sat 19–26 % при sat(1.29)=40.6 %→ снижено до 1.05/1.24.
-  grade: true, gradeGain: 1.24, gradeKnee: 170, gradeDark: 25, gradeSat: 1.05,
+  // r201: после neutralWB грейд 1.24 давал +22 % яркости к Lixel (ΔRGB ровный +21 по всем каналам).
+  // quality: gain/sat 1.0 — только мягкая кривая светов, без усиления.
+  grade: true, gradeGain: 1.0, gradeKnee: 170, gradeDark: 25, gradeSat: 1.0,
   fill: true, fillCell: 0.07, fillRadius: 0.14, fillIters: 3, fillMaxPts: 700000000,   // r179: заполнение потоковое — работает и на 589M
   // r179: ускорение — отбор кадров по движению камеры (м/градусы/макс. пауза) и необязательный stride
-  frameStride: 2, frameStepM: 0, frameStepDeg: 0, frameMaxGap: 0,   // r179: 2× меньше кадров (соседние кадры почти одинаковы)
+  frameStride: 1, frameStepM: 0, frameStepDeg: 0, frameMaxGap: 0,   // r201: quality — все кадры (2× медленнее, чище цвет)
   frameStrideMinFrames: 64,   // r180: шаг по кадрам только на длинных съёмках; на коротких/тестовых сценах — все кадры
   // r173: анти-«зерно». 1) пространственная согласованность кадра: соседние точки предпочитают один
   // доминирующий кадр в ячейке 5 см (меньше «спекла» от разных кадров); 2) усреднение 2 согласованных
@@ -244,11 +250,13 @@ function prepareFrame(img, st, target, o) {
   const exp = target ? lim(target.meanY / meanAfter, o.normGainMin, o.normGainMax) : 1;
   // баланс белого — ТОЛЬКО по цветности (доля канала), иначе экспозиция применялась бы дважды
   let gr = 1, gg = 1, gb = 1;
-  if (target && o.wb) {
-    const sumS = Math.max(1e-6, st.meanR + st.meanG + st.meanB), sumT = Math.max(1e-6, target.meanR + target.meanG + target.meanB);
-    gr = lim((target.meanR / sumT) / Math.max(1e-6, st.meanR / sumS), 0.85, 1.2);
-    gg = lim((target.meanG / sumT) / Math.max(1e-6, st.meanG / sumS), 0.85, 1.2);
-    gb = lim((target.meanB / sumT) / Math.max(1e-6, st.meanB / sumS), 0.85, 1.2);
+  // r201: нейтральный target убирает синий каст, который накапливался при WB к среднему кадров.
+  const wbTarget = (target && o.neutralWB) ? { meanR: target.meanY, meanG: target.meanY, meanB: target.meanY } : target;
+  if (wbTarget && o.wb) {
+    const sumS = Math.max(1e-6, st.meanR + st.meanG + st.meanB), sumT = Math.max(1e-6, wbTarget.meanR + wbTarget.meanG + wbTarget.meanB);
+    gr = lim((wbTarget.meanR / sumT) / Math.max(1e-6, st.meanR / sumS), 0.85, 1.2);
+    gg = lim((wbTarget.meanG / sumT) / Math.max(1e-6, st.meanG / sumS), 0.85, 1.2);
+    gb = lim((wbTarget.meanB / sumT) / Math.max(1e-6, st.meanB / sumS), 0.85, 1.2);
     const gm = Math.cbrt(gr * gg * gb) || 1; gr /= gm; gg /= gm; gb /= gm;
   }
   img.norm = { off: st.p5, scale: sc };

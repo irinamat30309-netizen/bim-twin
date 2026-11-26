@@ -147,6 +147,7 @@
   uniform float uClipOn; uniform float uClipDist; uniform vec3 uClipMin; uniform vec3 uClipMax; uniform float uUseVColor; uniform float uRound; uniform float uFrame;
   uniform float uElevMode; uniform float uAttrMode; uniform float uElevMin; uniform float uElevMax; uniform float uBright; uniform float uSoft;
   uniform float uSoftFlat;
+  uniform float uSoftAlpha;
   uniform float uCloudPass; uniform float uCloudOpacity; uniform float uPalette;
   uniform float uGrade; uniform float uExposure; uniform float uContrast; uniform float uSaturation; uniform float uGamma; uniform float uTone;
   vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }
@@ -190,11 +191,17 @@
       if(rr > 1.0) discard;
       alpha = 1.0;
       if(uSoftFlat>0.5){
-        // r199 «Фото (Lixel)»: плоский центр сплэта + тонкая мягкая кромка (антиалиасинг ~1 px).
-        // Затемнение только в последних ~7 % радиуса: соседние точки перекрываются без тёмной сетки,
-        // alpha=1 (запись, не накопление) — пересвета/вымывания нет.
-        float feather = smoothstep(1.0, 0.86, rr);
-        c *= (0.94 + 0.06 * feather);
+        if(uSoftAlpha>0.5){
+          // r201: soft-alpha AA — цвет не затемняется, кромка уходит в прозрачность.
+          // alpha=1 внутри 0.60 радиуса, 0 на краю; BLEND включается только для этого варианта.
+          alpha = smoothstep(1.0, 0.60, rr);
+        } else {
+          // r199 «Фото (Lixel)»: плоский центр сплэта + тонкая мягкая кромка (антиалиасинг ~1 px).
+          // Затемнение только в последних ~7 % радиуса: соседние точки перекрываются без тёмной сетки,
+          // alpha=1 (запись, не накопление) — пересвета/вымывания нет.
+          float feather = smoothstep(1.0, 0.86, rr);
+          c *= (0.94 + 0.06 * feather);
+        }
       } else {
         float edge = smoothstep(1.0, 0.45, rr);
         // r195: energy-preserving soft (опция «Высокое»): мягкий край без alpha-накопления/пересвета
@@ -226,7 +233,9 @@
     if(uSmooth > 0.0 || uSmoothY > 0.0){
       float y0 = dot(c, vec3(0.2126,0.7152,0.0722));
       vec3 accC = c; float wC = 1.0;
-      float accY = y0; float wY = 1.0;
+      // r201: для luma — медиана 3×3 (9 отсчётов), а не билатеральное среднее: именно медиана убирает
+      // «перец» из одиночных пересвеченных/тёмных точек, не размывая края поверхностей.
+      float lv[9]; lv[0] = y0;
       for(int i = 0; i < 8; i++){
         float a = float(i) * 0.7853981634;
         vec2 off = vec2(cos(a), sin(a)) * uTexel;
@@ -235,15 +244,23 @@
         float dyn = dot(cn, vec3(0.2126,0.7152,0.0722));
         float ok = (dn >= 1.0 ? 0.0 : 1.0);
         accC += cn * (ok * exp(-abs(dyn - y0) * 9.0)); wC += ok * exp(-abs(dyn - y0) * 9.0);
-        accY += dyn * (ok * exp(-abs(dyn - y0) * 30.0)); wY += ok * exp(-abs(dyn - y0) * 30.0);
+        lv[i + 1] = ok > 0.5 ? dyn : y0;
+      }
+      // сортировка вставками 9 значений (медиана = lv[4])
+      for(int i = 1; i < 9; i++){
+        float key = lv[i]; int j = i - 1;
+        for(int k = 0; k < 8; k++){
+          if(j >= 0 && lv[j] > key){ lv[j + 1] = lv[j]; j--; }
+        }
+        lv[j + 1] = key;
       }
       vec3 avgC = accC / max(wC, 1e-4);
-      float yAvg = accY / max(wY, 1e-4);
+      float yMed = lv[4];
       float cb0 = -0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
       float cr0 = 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;
       float cbs = -0.168736 * avgC.r - 0.331264 * avgC.g + 0.5 * avgC.b;
       float crs = 0.5 * avgC.r - 0.418688 * avgC.g - 0.081312 * avgC.b;
-      float Y = mix(y0, yAvg, uSmoothY);
+      float Y = mix(y0, yMed, uSmoothY);
       float Cb = mix(cb0, cbs, uSmooth);
       float Cr = mix(cr0, crs, uSmooth);
       c = clamp(vec3(Y + 1.402 * Cr, Y - 0.344136 * Cb - 0.714136 * Cr, Y + 1.772 * Cb), 0.0, 1.0);
@@ -372,7 +389,7 @@
       this._autoPointSize = true; this._autoPointBasePx = 2.3; this._ptMaxCap = 4.0; this._softSplats = false; this._softSplatsLimit = 150000000; this._softForce = false; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
       // r199 «Фото (Lixel)»: плоский энергосберегающий сплэт + перспективная аттенюация одновременно,
       // размер 1.8…6 px по глубине/локальному шагу, яркость 1.0; экранное подавление цветового зерна.
-      this._softFlat = false; this._photoSmooth = false; this._nearDensity = false; this._photoMinPx = 1.8; this._photoMaxPx = 6.0; this._photoSmoothK = 0.55; this._photoSmoothYK = 0; this._photoSize = false;
+      this._softFlat = false; this._photoSmooth = false; this._nearDensity = false; this._photoMinPx = 1.8; this._photoMaxPx = 6.0; this._photoSmoothK = 0.55; this._photoSmoothYK = 0; this._photoSize = false; this._softAlpha = false;
     try { canvas.addEventListener('webglcontextlost', () => { this._softSplats = false; this._softSplatsFail = true; }); } catch (_) {}
       // r172: динамическое разрешение в движении не ниже 85 % (было 75 % → «мыло»).
       this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.9; this._qualityMode = 'auto';
@@ -414,7 +431,7 @@
       this.aClassification = gl.getAttribLocation(p, 'aClassification');
       this.aRad = gl.getAttribLocation(p, 'aRad');
       this.u = {};
-      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uSoft', 'uSoftFlat', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog', 'uQOff', 'uQScale']) this.u[k] = gl.getUniformLocation(p, k);
+      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uSoft', 'uSoftFlat', 'uSoftAlpha', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog', 'uQOff', 'uQScale']) this.u[k] = gl.getUniformLocation(p, k);
       gl.uniform3f(this.u.uQScale, 1, 1, 1); gl.uniform3f(this.u.uQOff, 0, 0, 0);   // r9: обычные объекты рисуются без распаковки позиций
       gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
       const _tc = this._themeColors(); gl.clearColor(_tc.bg[0], _tc.bg[1], _tc.bg[2], 1);
@@ -3173,7 +3190,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         // r199: flat-сплэт пишет alpha=1 — блендинг не нужен (и стоит fill-rate на 450M); depth test достаточно.
         // Classic r195 с мягкой кромкой по-прежнему рисуется с блендингом.
         const flatPt = !!(this._softFlat && !(o._isStation || o._isSel));
-        if (softOn && !flatPt) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(true); } else { gl.disable(gl.BLEND); }
+        const alphaAA = !!(this._softAlpha && !(o._isStation || o._isSel));
+        if (softOn && (!flatPt || alphaAA)) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(true); } else { gl.disable(gl.BLEND); }
         gl.uniform1f(this.u.uSoft, softOn ? 1 : 0);
         // Атрибутивные цветовые режимы — только для основного облака.
         const isMainCloud = o === (this.base && this.base[0]) && !o._isStation && !o._isSel;
@@ -3189,6 +3207,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         gl.uniform1f(this.u.uCloudPass,isCloud?1:0);
         // r199: только профиль «Фото» рисует плоские сплэты с тонкой кромкой (classic/r195 остаются как были).
         gl.uniform1f(this.u.uSoftFlat, (isCloud && this._softFlat && softOn) ? 1 : 0);
+        gl.uniform1f(this.u.uSoftAlpha, (isCloud && this._softFlat && this._softAlpha && softOn) ? 1 : 0);
         const vh = gl.canvas.height || 600;
         // r145: адаптивный по дистанции размер точки (как в Lixel): база 3–4 px при 1920×1080/1440,
         // вблизи точки растут (attenuation), в движении чуть мельче. Ручной слайдер (fixedPx) главнее.
@@ -3255,7 +3274,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
           if (o._segs) dc = this._drawPointSegs(o, dc, attrMode, plan); else gl.drawArrays(gl.POINTS, 0, dc);
           if (isCloud && (this._interacting || this._probeIdle)) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + (plan ? Math.max(dc, plan.visible) : o.count); }
         }
-        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uSoft, 0); gl.uniform1f(this.u.uSoftFlat, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); if (isCloud) gl.disable(gl.BLEND); gl.bindVertexArray(null); return;
+        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uSoft, 0); gl.uniform1f(this.u.uSoftFlat, 0); gl.uniform1f(this.u.uSoftAlpha, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); if (isCloud) gl.disable(gl.BLEND); gl.bindVertexArray(null); return;
       }
       gl.uniform1f(this.u.uCloudPass,0);
       let col = o.color; let amb = 0.4;
@@ -4494,6 +4513,9 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     // чтобы «Классический (r177)» и r195-вид не менялись.
     setSoftFlat(on) { this._softFlat = !!on; this.render(); return this._softFlat; }
     softFlatOn() { return !!this._softFlat; }
+    // r201: soft-alpha AA — плоский цвет, кромка в alpha (BLEND). Сравнивается с текущим flat (alpha=1).
+    setSoftAlpha(on) { this._softAlpha = !!on; this.render(); return this._softAlpha; }
+    softAlphaOn() { return !!this._softAlpha; }
     // r199: экранное подавление цветового зерна (билатеральный 3×3 по готовому кадру). Только для «Фото»;
     // геометрию и глубину не трогает, поэтому края/силуэты остаются резкими.
     setPhotoSmooth(on) {

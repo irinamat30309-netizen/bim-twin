@@ -78,7 +78,8 @@ const luma = (out, i) => 0.299 * out[i * 3] + 0.587 * out[i * 3 + 1] + 0.114 * o
 
 test('r145: улучшенный цвет — больше покрытие (заполнение), ярче, без «магентового» мусора', async () => {
   const old = await runScene({ window: 0.5, fill: false, grade: false, bestView: false });
-  const now = await runScene({ window: 0.5, improve: true, fillRadius: 0.5, fillCell: 0.15, fillIters: 8 });
+  // r201: дефолт грейда стал нейтральным (1.0/1.0). Тест проверяет историческую кривую r145 — задаём её явно.
+  const now = await runScene({ window: 0.5, improve: true, fillRadius: 0.5, fillCell: 0.15, fillIters: 8, gradeGain: 1.36, gradeSat: 1.29 });
   assert.ok(now.st.colored >= old.st.colored, 'покрытие не меньше: ' + now.st.colored + ' vs ' + old.st.colored);
   assert.ok(now.st.filled > 0, 'серые зоны заполнены соседями: ' + now.st.filled);
   let lo = 0, ln = 0, mo = 0, mn = 0;

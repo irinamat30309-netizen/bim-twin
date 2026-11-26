@@ -14,8 +14,10 @@ const dirs = [];
 function tmpdir() { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'r179-')); dirs.push(d); return d; }
 test.after(() => { for (const d of dirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {} } });
 
-test('r179: дефолты ускорения — шаг кадров 2, дизеринг выключен, заполнение/денойз включены', () => {
-  assert.equal(RC.DEF.frameStride, 2, 'frameStride=2 по умолчанию');
+test('r179/r201: дефолты — все кадры (quality), дизеринг выключен, заполнение/денойз включены', () => {
+  // r201: приоритет качества — frameStride=1 (все кадры); ускорение frameStride=2 остаётся опцией.
+  assert.equal(RC.DEF.frameStride, 1, 'frameStride=1 по умолчанию (quality)');
+  assert.equal(RC.DEF.neutralWB, true, 'нейтральный WB по умолчанию (без синего каста)');
   assert.equal(RC.DEF.dither, false, 'дизеринг выключен');
   assert.equal(RC.DEF.fill, true);
   assert.equal(RC.DEF.denoise, true);
