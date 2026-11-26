@@ -207,19 +207,30 @@
   // резерв ОС/драйвера и framebuffer — 1 ГБ; целевая доля VRAM: Авто 78%, Высокое 80%.
   const GPU_BYTES_PER_POINT = 24;
   const GPU_RESERVE_MB = 1024;
-  // r198: профили отображения. Классический — эталон r177 (мягкие сплаты 3.4px, яркость 1.1, LOD 300M).
+  // r199: «Фото (Lixel)» — DEFAULT. По разбору эталонов (E) и настройкам Lixel (H):
+  // радиальный мягкий сплэт (как r177, alpha=1, без накопления/пересвета) + перспективная аттенюация,
+  // база 1.9 px при 1080p (1.7…4.5 px), яркость 1.15, насыщенность ×0.88. Без EDL и без экранного denoise —
+  // в эталоне их нет; плоский сплэт/EDL остаются в коде как опции тестов.
   const RENDER_PROFILES = {
     classic: { label: 'Классический (r177)', soft: true, autoBase: 3.4, cap: 5.0, bright: 1.1, attenuate: false, density: 'classic', budget: 300000000 },
+    photo: { label: 'Фото (Lixel)', soft: true, softFlat: true, autoBase: 2.4, cap: 6.0, bright: 1.0, attenuate: true, density: 'photo', budget: 380000000, densityBoost: 1.45, minPx: 1.8, maxPx: 6.0, nearDensity: true, saturation: 0.88 },
     balanced: { label: 'Сбалансированный', soft: false, autoBase: 2.3, cap: 4.0, bright: 1.0, attenuate: true, density: 'balanced', budget: 0 },
     max: { label: 'Максимум детализации', soft: false, autoBase: 2.3, cap: 4.5, bright: 1.0, attenuate: true, density: 'exact', budget: 0 }
   };
+  // r199: «Фото (Lixel)» — DEFAULT по итогам замеров на новом цвете: плоский энергосберегающий сплэт убирает
+  // тёмные кольца r177 (speckle 0.060 против 0.184), gradient 0.0565 попадает в диапазон эталона Lixel 0.03–0.08
+  // (у classic 0.122 — «звонче» эталона), brightness/clipped ближе к эталону. Classic остаётся выбираемым.
+  const DEFAULT_RENDER_PROFILE = 'photo';
   function renderProfile() {
     try { const ov = API && API.renderProfileOverride; if (ov && RENDER_PROFILES[ov]) return ov; } catch (e) {}
-    try { const v = localStorage.getItem('bim.render.profile'); if (RENDER_PROFILES[v]) return v; } catch (e) {}
-    return 'classic';
+    try {
+      const v = localStorage.getItem('bim.render.profile');
+      if (RENDER_PROFILES[v]) return v;
+    } catch (e) { return 'classic'; }   // среда без localStorage: исторический безопасный профиль
+    return DEFAULT_RENDER_PROFILE;
   }
   function applyProfileToViewer(profileName) {
-    const pr = RENDER_PROFILES[profileName] || RENDER_PROFILES.classic;
+    const pr = RENDER_PROFILES[profileName] || RENDER_PROFILES[DEFAULT_RENDER_PROFILE];
     try {
       if (!viewer) return;
       if (viewer._softSplats !== pr.soft) { if (pr.soft) viewer.setSoftSplatsForce(true); else { viewer.setSoftSplatsForce(false); viewer._softSplats = false; } }
@@ -227,8 +238,30 @@
       if (viewer.setPointBasePx) viewer.setPointBasePx(pr.autoBase);
       if (viewer.setMaxPointPx) viewer.setMaxPointPx(pr.cap);
       if (viewer.setBrightness) viewer.setBrightness(pr.bright);
-      if (viewer.setGrade) viewer.setGrade(false);
+      if (viewer.setGrade) {
+        // r199: насыщенность как в эталоне (×0.88 для фото); без тонмаппинга/контраста, чтобы не «звенеть».
+        if (pr.saturation != null) viewer.setGrade({ on: true, exposure: 1, contrast: 1, saturation: pr.saturation, gamma: 1, tone: 0 });
+        else viewer.setGrade(false);
+      }
       if (viewer.setAttenuate) viewer.setAttenuate(pr.attenuate);
+      // r199: панельный pointSize=1 не должен перебивать autoBase профиля — авто-режим всегда с null.
+      try { if (viewer._cloudDisplay) viewer._cloudDisplay.pointSize = null; } catch (e) {}
+      // r199: фото-режим — плоский сплэт, размерный clamp 1.8…6 px, приоритет ближних кирпичей в движении.
+      if (viewer.setSoftFlat) viewer.setSoftFlat(!!pr.softFlat);
+      if (viewer.setPhotoSmooth) viewer.setPhotoSmooth(!!pr.photoSmooth);
+      if (viewer.setPhotoSmoothStrength) viewer.setPhotoSmoothStrength(pr.smoothK != null ? pr.smoothK : 0.55);
+      if (viewer.setPhotoLumaStrength) viewer.setPhotoLumaStrength(pr.smoothYK || 0);
+      if (viewer.setPhotoSize) viewer.setPhotoSize(pr.minPx != null && pr.maxPx != null);
+      // EDL управляется профилем только если он его явно задаёт; ручной EDL пользователя не сбрасываем,
+      // но при уходе с фото-профиля, включившего EDL, выключаем его обратно.
+      if (viewer.setEdl) {
+        if (pr.edl !== undefined) viewer.setEdl(!!pr.edl, pr.edlStrength != null ? pr.edlStrength : 0.8, pr.edlTol != null ? pr.edlTol : 0.04);
+        else if (window.__bimProfileEdlOn) viewer.setEdl(false);
+      }
+      window.__bimProfileEdlOn = !!pr.edl;
+      if (viewer.setNearDensity) viewer.setNearDensity(!!pr.nearDensity);
+      if (viewer.setPhotoClamp) viewer.setPhotoClamp(pr.minPx || 1.8, pr.maxPx || 6.0);
+      if (viewer.setDensityBoost) viewer.setDensityBoost(pr.densityBoost || 1.8);
     } catch (e) {}
   }
   window.__bimSetRenderProfile = function (name) {
@@ -240,6 +273,25 @@
     return true;
   };
   window.__bimRenderProfile = renderProfile;
+  // r199: «Фото (Lixel)» в меню «Вид → Профиль отображения». Реестр команд статический (commands.js),
+  // поэтому пункт добавляется здесь и лента один раз перестраивается — без правки чужого модуля.
+  function ensurePhotoProfileMenuItem() {
+    try {
+      const C = window.__lxCommands;
+      if (!C || !Array.isArray(C.TABS)) return false;
+      let grp = null;
+      for (const t of C.TABS) for (const g of (t.groups || [])) if (g && g.id === 'profiles') grp = g;
+      if (!grp) return false;
+      if (!grp.items) grp.items = [];
+      if (grp.items.some(function (i) { return i && i.id === 'profilePhoto'; })) return true;
+      const item = { id: 'profilePhoto', ico: 'camera', label: 'Фото (Lixel)', size: 'lg', call: '__bimSetRenderProfile', args: ['photo'], tip: 'DEFAULT r199: плоские мягкие сплэты + аттенюация 2.4–6 px, яркость 1.0, без пересвета и зерна' };
+      grp.items.unshift(item);
+      if (C.byId) C.byId.profilePhoto = item;
+      const rib = window.__lxRibbon;
+      if (rib && rib.build) { const cur = rib.current; rib.build(); if (cur) rib.select(cur); }
+      return true;
+    } catch (e) { try { console.warn('photo profile menu', e); } catch (_) {} return false; }
+  }
   function densityMode() { try { const v = localStorage.getItem('bim.render.density'); return v === 'exact' || v === 'fast' ? v : 'balanced'; } catch (e) { return 'balanced'; } }
   function densityBudget(qb, q) {
     // r197: Точно — до 80% VRAM, Сбалансировано — текущий VRAM-бюджет, Быстро — 60% бюджета.
@@ -274,6 +326,8 @@
     try {
       if (!viewer || !viewer.setMaxPointPx) return;
       const prof = renderProfile();
+      // r199: «Фото» — база 2.4 px и собственный clamp 1.8…6 px (setPhotoClamp), без classic-потолка 2.5.
+      if (prof === 'photo') { viewer.setPointBasePx(2.4); viewer.setMaxPointPx(5.0); return; }
       if (prof === 'classic') { viewer.setMaxPointPx(2.5); return; }
       if (prof === 'max') { viewer.setMaxPointPx(4.5); return; }
       const d = densityMode();
@@ -292,6 +346,7 @@
     try { const ov = Number(API && API.renderBudgetOverride) || 0; if (ov >= 10000000) return Math.floor(Math.min(ov, 600000000)); } catch (_) {}
     // r198: бюджет по профилю (Классический — LOD 300M; Максимум — 80% VRAM; Сбалансированный — 0.53)
     const prof = renderProfile();
+    if (prof === 'photo') return 380000000;   // r199: 450M дал <35 FPS на чистом замере e2e (25.7); 380M — компромисс lead
     if (prof === 'classic') return 300000000;
     if (prof === 'max') { try { const b = gpuBudgetPoints(0.80); if (b > 0) return Math.min(b, 2000000000); } catch (e) {} }
     if (prof === 'balanced') { try { const b = gpuBudgetPoints(0.53); if (b > 0) return Math.min(b, 2000000000); } catch (e) {} }
@@ -6076,6 +6131,12 @@
     // миграция один раз: старые дефолты (lixel 1.36/1.29) давали пересвет — сбрасываем на базовый тон 1.1
     try {
       if (localStorage.getItem('bim.uiProfileRev') !== '198') { localStorage.setItem('bim.render.profile', 'classic'); localStorage.setItem('bim.uiProfileRev', '198'); }
+      // r199: «Фото (Lixel)» — DEFAULT; classic остаётся эталоном r177 и выбирается в меню.
+      if (localStorage.getItem('bim.uiProfileRev') !== '199') {
+        let _rp = ''; try { _rp = localStorage.getItem('bim.render.profile') || ''; } catch (e) {}
+        if (!_rp || _rp === 'classic') { try { localStorage.setItem('bim.render.profile', 'photo'); } catch (e) {} }
+        localStorage.setItem('bim.uiProfileRev', '199');
+      }
     } catch (e) {}
     try {
       if (localStorage.getItem('bim.perfRev') !== '197') {
@@ -6248,7 +6309,7 @@
     viewer.onHover = null;
     try { window.__viewer = viewer; window.dispatchEvent(new Event('lx-viewer-ready')); } catch (e) {}
     // r145: по умолчанию — адаптивный размер точки и тонмаппинг «как в Lixel»; панель «Производительность».
-    try { applyRenderPrefs(); applyProfileToViewer(renderProfile()); applyDensityToViewer(); ensureVramHud(); ensureNoColorBanner(); } catch (e) { console.warn('render prefs', e); }
+    try { applyRenderPrefs(); applyProfileToViewer(renderProfile()); applyDensityToViewer(); ensureVramHud(); ensureNoColorBanner(); ensurePhotoProfileMenuItem(); } catch (e) { console.warn('render prefs', e); }
     try { if (extraUiWanted()) { ensurePerfPanel(); ensureLxDesign(); ensureP1Tools(); ensureSectionsP2(); ensureClipP3(); } } catch (e) { console.warn('extra ui', e); }
     // r149: облако из командной строки стартует сразу после создания viewer — параллельно загрузке данных/настроек.
     try { startPendingCloudOpen(); } catch (e) { console.warn('r149 pending cloud', e); }

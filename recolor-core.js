@@ -35,7 +35,9 @@ const DEF = { window: 2.5, bucket: 2, K: 4, cell: 8, thetaMax: 1.35, thetaSharp:
   improve: false,
   bestView: true, sharp: true, sharpW: 0.55, lapScale: 12, expoFix: true,
   frameNorm: true, normClip: [0.05, 0.95], normGainMin: 0.8, normGainMax: 1.25, wb: true,
-  grade: true, gradeGain: 1.36, gradeKnee: 170, gradeDark: 25, gradeSat: 1.29,
+  // r200: грейд 1.36/1.29 пересвечивал (LUT по старому облаку: пересвет 0.11→31 %, насыщенность 28.7→34.2 %)
+  // и давал синий каст на выходе. Эталон Lixel: luma 114–121, sat 19–26 % при sat(1.29)=40.6 %→ снижено до 1.05/1.24.
+  grade: true, gradeGain: 1.24, gradeKnee: 170, gradeDark: 25, gradeSat: 1.05,
   fill: true, fillCell: 0.07, fillRadius: 0.14, fillIters: 3, fillMaxPts: 700000000,   // r179: заполнение потоковое — работает и на 589M
   // r179: ускорение — отбор кадров по движению камеры (м/градусы/макс. пауза) и необязательный stride
   frameStride: 2, frameStepM: 0, frameStepDeg: 0, frameMaxGap: 0,   // r179: 2× меньше кадров (соседние кадры почти одинаковы)

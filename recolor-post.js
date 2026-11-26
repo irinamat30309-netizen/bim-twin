@@ -316,7 +316,10 @@ function sampleGrid(colorIn, head, opt) {
   const lo1 = Math.floor(lo[A1] / cell) * cell, lo2 = Math.floor(lo[A2] / cell) * cell;
   const hi1 = Math.ceil(hi[A1] / cell) * cell, hi2 = Math.ceil(hi[A2] / cell) * cell;
   let nU = Math.floor((hi1 - lo1) / cell) + 1, nV = Math.floor((hi2 - lo2) / cell) + 1;
-  const cap = opt.denoiseMaxCells || 12000000;
+  // r200: 12e6 ячеек на фасаде 220×77 м раздувало ячейку денойза до 3.77 см вместо 2 см —
+  // появлялась межъячеечная «ступенька» 3.8 см (локальный шум 25.5 против 12.4 у старого цвета).
+  // 30e6 удерживает 2 см и стоит ~0.5–1 ГБ RAM на 594M.
+  const cap = opt.denoiseMaxCells || 30000000;
   if (nU * nV > cap) { const s = Math.sqrt(nU * nV / cap); cell *= s; nU = Math.floor((hi1 - lo1) / cell) + 1; nV = Math.floor((hi2 - lo2) / cell) + 1; }
   return { A1, A2, lo1, lo2, cell, nU, nV, NG: nU * nV, sx, sy, sz, ox, oy, oz };
   return { A1, A2, lo1: lo[A1], lo2: lo[A2], cell, nU, nV, NG: nU * nV, sx, sy, sz, ox, oy, oz };

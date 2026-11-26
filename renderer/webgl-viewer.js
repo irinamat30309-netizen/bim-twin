@@ -146,6 +146,7 @@
   uniform vec3 uColor; uniform float uUnlit; uniform vec3 uLightDir; uniform float uAmbient;
   uniform float uClipOn; uniform float uClipDist; uniform vec3 uClipMin; uniform vec3 uClipMax; uniform float uUseVColor; uniform float uRound; uniform float uFrame;
   uniform float uElevMode; uniform float uAttrMode; uniform float uElevMin; uniform float uElevMax; uniform float uBright; uniform float uSoft;
+  uniform float uSoftFlat;
   uniform float uCloudPass; uniform float uCloudOpacity; uniform float uPalette;
   uniform float uGrade; uniform float uExposure; uniform float uContrast; uniform float uSaturation; uniform float uGamma; uniform float uTone;
   vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }
@@ -162,7 +163,7 @@
     // Screen-door opacity: order-independent, no sorting/copying of huge point buffers.
     if(uCloudPass>0.5){ uint h=uint(gl_FragCoord.x)*1973u+uint(gl_FragCoord.y)*9277u; h=(h^(h>>13u))*1274126177u; if(float(h&65535u)/65536.0>=uCloudOpacity) discard; }
     float splat=1.0;
-    if(uRound>0.5){ vec2 pc=gl_PointCoord*2.0-1.0; float r2=dot(pc,pc); if(r2>1.0) discard; splat=0.82+0.18*sqrt(max(0.0,1.0-r2)); }
+    if(uRound>0.5){ vec2 pc=gl_PointCoord*2.0-1.0; float r2=dot(pc,pc); if(r2>1.0) discard; if(uSoftFlat<0.5) splat=0.82+0.18*sqrt(max(0.0,1.0-r2)); }
     vec3 c;
     if(uCloudPass>0.5 && uAttrMode>2.5){
       c = classColor(vClassification);
@@ -187,10 +188,18 @@
     if(uSoft>0.5){
       vec2 sc = gl_PointCoord * 2.0 - 1.0; float rr = length(sc);
       if(rr > 1.0) discard;
-      float edge = smoothstep(1.0, 0.45, rr);
-      // r195: energy-preserving soft (опция «Высокое»): мягкий край без alpha-накопления/пересвета
       alpha = 1.0;
-      c *= (0.55 + 0.45 * edge);
+      if(uSoftFlat>0.5){
+        // r199 «Фото (Lixel)»: плоский центр сплэта + тонкая мягкая кромка (антиалиасинг ~1 px).
+        // Затемнение только в последних ~7 % радиуса: соседние точки перекрываются без тёмной сетки,
+        // alpha=1 (запись, не накопление) — пересвета/вымывания нет.
+        float feather = smoothstep(1.0, 0.86, rr);
+        c *= (0.94 + 0.06 * feather);
+      } else {
+        float edge = smoothstep(1.0, 0.45, rr);
+        // r195: energy-preserving soft (опция «Высокое»): мягкий край без alpha-накопления/пересвета
+        c *= (0.55 + 0.45 * edge);
+      }
     }
     if(uFrame>0.5){ vec2 fe=abs(gl_PointCoord*2.0-1.0); if(max(fe.x,fe.y)>0.70) c=vec3(0.0); }
     frag=vec4(c, alpha);
@@ -205,22 +214,69 @@
   precision highp float; in vec2 vUv; out vec4 frag;
   uniform sampler2D uCol; uniform sampler2D uDep;
   uniform vec2 uTexel; uniform float uNear; uniform float uFar; uniform float uStrength; uniform float uRadius;
+  uniform float uSmooth; uniform float uSmoothY; uniform float uEdlTol;
   float lin(float d){ float z = d * 2.0 - 1.0; return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear)); }
   void main(){
     vec3 c = texture(uCol, vUv).rgb;
     float d0 = texture(uDep, vUv).r;
     if(d0 >= 1.0){ frag = vec4(c, 1.0); return; }
-    float lz0 = log2(lin(d0) + 1e-3);
-    float sum = 0.0;
-    for(int i = 0; i < 8; i++){
-      float a = float(i) * 0.7853981634;
-      vec2 off = vec2(cos(a), sin(a)) * uTexel * uRadius;
-      float dn = texture(uDep, vUv + off).r;
-      float lzn = (dn >= 1.0) ? lz0 : log2(lin(dn) + 1e-3);
-      sum += max(0.0, lz0 - lzn);
+    // r199 «Фото (Lixel)»: подавление цветового зерна старого recolor. По умолчанию усредняются
+    // ТОЛЬКО Cb/Cr (яркость/резкость не мылится); uSmoothY — опциональное мягкое подавление luma-выбросов
+    // (билатеральное, с узким окном по яркости), по умолчанию 0. Края/глубина не смешиваются с фоном.
+    if(uSmooth > 0.0 || uSmoothY > 0.0){
+      float y0 = dot(c, vec3(0.2126,0.7152,0.0722));
+      vec3 accC = c; float wC = 1.0;
+      float accY = y0; float wY = 1.0;
+      for(int i = 0; i < 8; i++){
+        float a = float(i) * 0.7853981634;
+        vec2 off = vec2(cos(a), sin(a)) * uTexel;
+        float dn = texture(uDep, vUv + off).r;
+        vec3 cn = texture(uCol, vUv + off).rgb;
+        float dyn = dot(cn, vec3(0.2126,0.7152,0.0722));
+        float ok = (dn >= 1.0 ? 0.0 : 1.0);
+        accC += cn * (ok * exp(-abs(dyn - y0) * 9.0)); wC += ok * exp(-abs(dyn - y0) * 9.0);
+        accY += dyn * (ok * exp(-abs(dyn - y0) * 30.0)); wY += ok * exp(-abs(dyn - y0) * 30.0);
+      }
+      vec3 avgC = accC / max(wC, 1e-4);
+      float yAvg = accY / max(wY, 1e-4);
+      float cb0 = -0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
+      float cr0 = 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;
+      float cbs = -0.168736 * avgC.r - 0.331264 * avgC.g + 0.5 * avgC.b;
+      float crs = 0.5 * avgC.r - 0.418688 * avgC.g - 0.081312 * avgC.b;
+      float Y = mix(y0, yAvg, uSmoothY);
+      float Cb = mix(cb0, cbs, uSmooth);
+      float Cr = mix(cr0, crs, uSmooth);
+      c = clamp(vec3(Y + 1.402 * Cr, Y - 0.344136 * Cb - 0.714136 * Cr, Y + 1.772 * Cb), 0.0, 1.0);
     }
-    float shade = exp(-sum * uStrength * 40.0);
-    frag = vec4(c * shade, 1.0);
+    if(uStrength > 0.0001){
+      // r199 (по настройкам Lixel EdlOutline и замечанию lead): сначала билатерально сглаживаем глубину —
+      // шум глубины на соседних точках не должен считаться контуром; затем контур только там, где разрыв
+      // больше uEdlTol (3–5 см). Тёмная обводка ограничена clamp 0.55 — «чёрных» контуров на каждой точке нет.
+      float z0 = lin(d0);
+      float zs = z0, ws = 1.0;
+      for(int i = 0; i < 8; i++){
+        float a = float(i) * 0.7853981634;
+        vec2 off = vec2(cos(a), sin(a)) * uTexel * uRadius;
+        float dn = texture(uDep, vUv + off).r;
+        if(dn >= 1.0) continue;
+        float zn = lin(dn);
+        float w = exp(-abs(zn - z0) / max(0.01, z0 * 0.002));
+        zs += zn * w; ws += w;
+      }
+      zs /= max(ws, 1e-4);
+      float sum = 0.0;
+      for(int i = 0; i < 8; i++){
+        float a = float(i) * 0.7853981634;
+        vec2 off = vec2(cos(a), sin(a)) * uTexel * uRadius;
+        float dn = texture(uDep, vUv + off).r;
+        if(dn >= 1.0) continue;
+        float zn = lin(dn);
+        if(abs(zn - zs) > uEdlTol) sum += abs(log2(zs + 1e-3) - log2(zn + 1e-3));
+      }
+      float shade = clamp(exp(-sum * uStrength * 20.0), 0.55, 1.0);
+      c *= shade;
+    }
+    frag = vec4(c, 1.0);
   }`;
 
   // Кэш сцены: статичная часть (облако, модель) лежит в текстурах цвета и глубины; при наведении курсора копируем её на экран (цвет + глубина),
@@ -314,6 +370,9 @@
       // r172: базовый тон «как есть» (без пересвета): небольшой gain ×1.1, grade выключен; «Как в Lixel» — пресет.
       // Адаптивный размер точки по умолчанию: 2–3 px в покое (не жирно), в движении не меньше 2 px.
       this._autoPointSize = true; this._autoPointBasePx = 2.3; this._ptMaxCap = 4.0; this._softSplats = false; this._softSplatsLimit = 150000000; this._softForce = false; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
+      // r199 «Фото (Lixel)»: плоский энергосберегающий сплэт + перспективная аттенюация одновременно,
+      // размер 1.8…6 px по глубине/локальному шагу, яркость 1.0; экранное подавление цветового зерна.
+      this._softFlat = false; this._photoSmooth = false; this._nearDensity = false; this._photoMinPx = 1.8; this._photoMaxPx = 6.0; this._photoSmoothK = 0.55; this._photoSmoothYK = 0; this._photoSize = false;
     try { canvas.addEventListener('webglcontextlost', () => { this._softSplats = false; this._softSplatsFail = true; }); } catch (_) {}
       // r172: динамическое разрешение в движении не ниже 85 % (было 75 % → «мыло»).
       this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.9; this._qualityMode = 'auto';
@@ -321,7 +380,7 @@
       this._denseFill = false; this._frameBox = false; // плотная заливка при приближении; чёрные рамки точек
       // Фотореалистичная цветокоррекция (тонмаппинг) — по умолчанию ВЫКЛ: убирает «пересвет/вымытость».
       this._grade = { on: false, exposure: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, tone: 0.0 };
-      this._edl = false; this._edlReady = false; this._edlStrength = 1.0; this._edlRadius = 1.4;
+      this._edl = false; this._edlReady = false; this._edlStrength = 1.0; this._edlRadius = 1.4; this._edlTol = 0.04;
       this._pickReady = false; // GPU-проход выбора видимых точек (ленивая инициализация)
       this._photo = false; this._photoSaved = null;   // фото-качество экскурсии
       this._edlAutoTried = false; // авто-EDL при первой загрузке облака (плотный «фото»-вид как в CloudCompare)
@@ -355,7 +414,7 @@
       this.aClassification = gl.getAttribLocation(p, 'aClassification');
       this.aRad = gl.getAttribLocation(p, 'aRad');
       this.u = {};
-      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uSoft', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog', 'uQOff', 'uQScale']) this.u[k] = gl.getUniformLocation(p, k);
+      for (const k of ['uMVP', 'uColor', 'uUnlit', 'uLightDir', 'uAmbient', 'uClipOn', 'uClipDist', 'uClipMin', 'uClipMax', 'uUseVColor', 'uPointSize', 'uRound', 'uFrame', 'uSoft', 'uSoftFlat', 'uAttenuate', 'uPtScale', 'uPtMin', 'uPtMax', 'uElevMode', 'uAttrMode', 'uElevMin', 'uElevMax', 'uBright', 'uGrade', 'uExposure', 'uContrast', 'uSaturation', 'uGamma', 'uTone', 'uCloudPass', 'uCloudOpacity', 'uPalette', 'uRadOn', 'uRadMin', 'uRadLog', 'uQOff', 'uQScale']) this.u[k] = gl.getUniformLocation(p, k);
       gl.uniform3f(this.u.uQScale, 1, 1, 1); gl.uniform3f(this.u.uQOff, 0, 0, 0);   // r9: обычные объекты рисуются без распаковки позиций
       gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
       const _tc = this._themeColors(); gl.clearColor(_tc.bg[0], _tc.bg[1], _tc.bg[2], 1);
@@ -494,13 +553,21 @@
       const reduce = !!o._shuffled;
       const share = (reduce && budget < V) ? Math.max(0, budget) / V : 1;
       const smart = reduce && !!this._interacting && this._moveSmart !== false, K = this._smartK || 6;
+      // r199 «Фото»: в движении бюджет делится не одинаковой долей каждому кирпичу, а по его экранной площади —
+      // точки у камеры/на крупных кирпичах получают больше, дальние не пересэмплируются. Это view-dependent
+      // плотность в пределах уже загруженного облака (без постройки octree и без повторного чтения файла).
+      let sumA = 0;
+      if (this._nearDensity && share < 1) for (let q = 0; q < takes.length; q++) if (takes[q] > 0) { const a = areas[q]; sumA += Math.min(Number.isFinite(a) ? a : W * H, W * H); }
       let drawn = 0; ci = 0;
       for (const sg of o._segs) {
         const nc = sg.boxes ? sg.boxes.length / 6 : 1, CH = sg.boxes ? sg.chunk : sg.n;
         for (let c = 0; c < nc; c++, ci++) {
           let t = takes[ci];
           if (t > 0) {
-            if (share < 1) t = Math.max(1, Math.ceil(t * share));
+            if (share < 1) {
+              if (sumA > 0) { const a = Math.min(Number.isFinite(areas[ci]) ? areas[ci] : W * H, W * H); t = Math.max(1, Math.min(t, Math.ceil(budget * a / sumA))); }
+              else t = Math.max(1, Math.ceil(t * share));
+            }
             if (smart && areas[ci] !== Infinity) { const cap = Math.max(64, Math.ceil(K * areas[ci])); if (cap < t) t = cap; }
             takes[ci] = t; drawn += t;
           }
@@ -2809,7 +2876,10 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     }
     setEDL(on) { this._edl = !!on; if (this._edl && !this._edlReady) this._edlInit(); this.render(); return this._edl && !!this._edlReady; }
     // Постоянный размер точки на экране (как в CloudCompare) ↔ растёт при приближении
-    setAttenuate(on) { this._attenuate = !!on; this._cloudDisplay.pointSize=on?null:1;this._notifyCloudChanged(); this.render(); return this._attenuate; }
+    // r199: при выключении аттенюации НЕ фиксируем точку в 1 px (это отменяло autoBase 3.4/soft и давало
+    // «крошку»): возвращаем null — авто-размер профиля считается по autoBase. Ручной слайдер задаётся
+    // отдельно через setCloudPointSize(v) и остаётся фиксированным.
+    setAttenuate(on) { this._attenuate = !!on; this._cloudDisplay.pointSize = null; this._notifyCloudChanged(); this.render(); return this._attenuate; }
     attenuateOn() { return !!this._attenuate; }
     setDenseFill(on) { this._denseFill = !!on; if (on) this._attenuate = true;this._cloudDisplay.pointSize=on?null:1;this._notifyCloudChanged(); this.render(); return this._denseFill; }
     denseFillOn() { return !!this._denseFill; }
@@ -2877,7 +2947,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, EDL_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, EDL_FS)); gl.linkProgram(p);
         if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('EDL link: ' + gl.getProgramInfoLog(p));
         this._edlProg = p; this._edlU = {};
-        for (const k of ['uCol', 'uDep', 'uTexel', 'uNear', 'uFar', 'uStrength', 'uRadius']) this._edlU[k] = gl.getUniformLocation(p, k);
+        for (const k of ['uCol', 'uDep', 'uTexel', 'uNear', 'uFar', 'uStrength', 'uRadius', 'uSmooth', 'uSmoothY', 'uEdlTol']) this._edlU[k] = gl.getUniformLocation(p, k);
         const aP = gl.getAttribLocation(p, 'aP');
         this._edlVao = gl.createVertexArray(); gl.bindVertexArray(this._edlVao);
         const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -2917,7 +2987,14 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this._edlDepTex); gl.uniform1i(this._edlU.uDep, 1);
       gl.uniform2f(this._edlU.uTexel, 1 / (this._edlW || 1), 1 / (this._edlH || 1));
       gl.uniform1f(this._edlU.uNear, near); gl.uniform1f(this._edlU.uFar, far);
-      gl.uniform1f(this._edlU.uStrength, this._edlStrength || 1.0); gl.uniform1f(this._edlU.uRadius, this._edlRadius || 1.4);
+      gl.uniform1f(this._edlU.uStrength, this._edl ? (this._edlStrength || 1.0) : 0);
+      gl.uniform1f(this._edlU.uRadius, this._edlRadius || 1.4);
+      gl.uniform1f(this._edlU.uEdlTol, this._edlTol || 0.04);
+      // r199: фото-профиль включает только цветовое подавление зерна (EDL выключен — без чёрных обводок).
+      const _smK = (this._photoSmoothK != null) ? this._photoSmoothK : 0.55;
+      const _smY = (this._photoSmoothYK != null) ? this._photoSmoothYK : 0;
+      gl.uniform1f(this._edlU.uSmooth, this._photoSmooth ? _smK : 0);
+      gl.uniform1f(this._edlU.uSmoothY, this._photoSmooth ? _smY : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.bindVertexArray(null); gl.enable(gl.DEPTH_TEST); gl.useProgram(this.prog); gl.activeTexture(gl.TEXTURE0);
     }
@@ -3068,13 +3145,13 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     _renderNowInner() {
       const gl = this.gl; if (!gl) return;
       if (this._octAccUsable()) { try { this._renderOctAcc(); return; } catch (e) { console.warn('накопительный кадр отключён', e); this._octAccBroken = true; this._octAcc = null; gl.bindFramebuffer(gl.FRAMEBUFFER, null); } }
-      const _edlOn = this._edl && this._edlReady && !!(this.base[0] && this.base[0].points);
-      if (!_edlOn && this._sceneCacheUsable()) { try { this._renderCached(); return; } catch (e) { console.warn('кэш сцены отключён', e); this._scBroken = true; gl.bindFramebuffer(gl.FRAMEBUFFER, null); } }
-      if (_edlOn) { if (this._edlW !== this.canvas.width || this._edlH !== this.canvas.height) this._edlResize(); gl.bindFramebuffer(gl.FRAMEBUFFER, this._edlFbo); }
+      const _fxOn = (this._edl || this._photoSmooth) && this._edlReady && !!(this.base[0] && this.base[0].points);
+      if (!_fxOn && this._sceneCacheUsable()) { try { this._renderCached(); return; } catch (e) { console.warn('кэш сцены отключён', e); this._scBroken = true; gl.bindFramebuffer(gl.FRAMEBUFFER, null); } }
+      if (_fxOn) { if (this._edlW !== this.canvas.width || this._edlH !== this.canvas.height) this._edlResize(); gl.bindFramebuffer(gl.FRAMEBUFFER, this._edlFbo); }
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       const vp = this._vp(); this._lastVP = vp;
       this._setFrameUniforms(vp);
-      this._edlOnThisFrame = _edlOn;
+      this._edlOnThisFrame = _fxOn;
       const drawList = this.base.concat(this.overlay).concat(this.tour && this._stationObjs ? this._stationObjs : []).concat(this._selObj ? [this._selObj] : []).concat(this._prevObj ? [this._prevObj] : []).concat(this._hoverObj ? [this._hoverObj] : []).concat(this._hoverLines ? [this._hoverLines] : []);
       // solids first
       for (const o of drawList) { if (o.line || o.hidden || (o.points && this.cloudVisible === false)) continue; this._drawObj(o); }
@@ -3092,7 +3169,12 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         // fragment-discard; круглые сплэты только для маркеров/выбора и фото-режима.
         const roundPt = (!(o._isStation || o._isSel)) ? 1 : ((o._isStation || o._isSel) ? 1 : ((this._roundPoints && !this._frameBox) ? 1 : 0));
         gl.uniform1f(this.u.uRound, roundPt); gl.uniform1f(this.u.uAmbient, 1);
-        const softOn = !(o._isStation || o._isSel) && this._softSplats !== false && !this._softSplatsFail && (this._softForce || (o.count || 0) <= (this._softSplatsLimit || 150000000)); if (softOn) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(true); } gl.uniform1f(this.u.uSoft, softOn ? 1 : 0);
+        const softOn = !(o._isStation || o._isSel) && this._softSplats !== false && !this._softSplatsFail && (this._softForce || (o.count || 0) <= (this._softSplatsLimit || 150000000));
+        // r199: flat-сплэт пишет alpha=1 — блендинг не нужен (и стоит fill-rate на 450M); depth test достаточно.
+        // Classic r195 с мягкой кромкой по-прежнему рисуется с блендингом.
+        const flatPt = !!(this._softFlat && !(o._isStation || o._isSel));
+        if (softOn && !flatPt) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(true); } else { gl.disable(gl.BLEND); }
+        gl.uniform1f(this.u.uSoft, softOn ? 1 : 0);
         // Атрибутивные цветовые режимы — только для основного облака.
         const isMainCloud = o === (this.base && this.base[0]) && !o._isStation && !o._isSel;
         const colorMode = isMainCloud ? this.getColorMode() : 'rgb';
@@ -3105,6 +3187,8 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         // Картинка. Опционально размер растёт при приближении (для прогулки поверхность плотнее).
         const isCloud = !(o._isStation || o._isSel);
         gl.uniform1f(this.u.uCloudPass,isCloud?1:0);
+        // r199: только профиль «Фото» рисует плоские сплэты с тонкой кромкой (classic/r195 остаются как были).
+        gl.uniform1f(this.u.uSoftFlat, (isCloud && this._softFlat && softOn) ? 1 : 0);
         const vh = gl.canvas.height || 600;
         // r145: адаптивный по дистанции размер точки (как в Lixel): база 3–4 px при 1920×1080/1440,
         // вблизи точки растут (attenuation), в движении чуть мельче. Ручной слайдер (fixedPx) главнее.
@@ -3150,6 +3234,18 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
           gl.uniform1f(this.u.uPtMax, Math.max(Math.min(o._ptMax || 8.0, this._ptMaxCap || 8.0) * psm * (this._denseFill ? 9.0 : 1.0), closeCap));
         }
         gl.uniform1f(this.u.uRadOn, radOn);
+        // r199 «Фото (Lixel)»: экранная компенсация плотности. База — 2.4 px при 1080p (не 1 px),
+        // вблизи размер растёт по локальному шагу/глубине и закрашивает промежутки, но не больше 6 px;
+        // вдали не раздувается. Раньше (r197) минимум 2.3 px был меньше classic 3.1 px — отсюда «сыпучесть».
+        if (isCloud && atten && !fixedPx && !this._frameBox && this._photoSize) {
+          const dprP = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2) * (this._renderScale || 1);
+          const hCssP = vh / Math.max(0.5, dprP);
+          const photoBase = Math.max(this._photoMinPx || 1.8, Math.min(this._photoMaxPx || 6.0, hCssP / 1080 * (this._autoPointBasePx || 2.4))) * psm;
+          const photoMax = Math.max(photoBase, Math.min(this._photoMaxPx || 6.0, 6.0) * psm);
+          gl.uniform1f(this.u.uPtMin, photoBase);
+          gl.uniform1f(this.u.uPtMax, photoMax);
+          baseSize = photoBase;
+        }
         gl.uniform1f(this.u.uFrame, (isCloud && this._frameBox) ? 1 : 0);
         gl.uniform1f(this.u.uPointSize, baseSize);
         if (!o.col) { o._uColorCache = o._uColorCache || new Float32Array(o.color || [0.82, 0.86, 0.93]); gl.uniform3fv(this.u.uColor, o._uColorCache); }
@@ -3159,7 +3255,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
           if (o._segs) dc = this._drawPointSegs(o, dc, attrMode, plan); else gl.drawArrays(gl.POINTS, 0, dc);
           if (isCloud && (this._interacting || this._probeIdle)) { this._probeDrawn = (this._probeDrawn || 0) + dc; this._probeTotal = (this._probeTotal || 0) + (plan ? Math.max(dc, plan.visible) : o.count); }
         }
-        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uSoft, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); if (isCloud) gl.disable(gl.BLEND); gl.bindVertexArray(null); return;
+        gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uSoft, 0); gl.uniform1f(this.u.uSoftFlat, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); if (isCloud) gl.disable(gl.BLEND); gl.bindVertexArray(null); return;
       }
       gl.uniform1f(this.u.uCloudPass,0);
       let col = o.color; let amb = 0.4;
@@ -4394,6 +4490,44 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     }
     setSoftSplatsForce(on) { this._softForce = !!on; if (on) { this._softSplatsFail = false; this._softSplats = true; } this.render(); return this._softForce; }
     softSplatsState() { return { soft: !!this._softSplats, force: !!this._softForce, fail: !!this._softSplatsFail, limit: this._softSplatsLimit || 0 }; }
+    // r199 «Фото (Lixel)»: плоский энергосберегающий сплэт (без двойного затемнения кромки) — отдельный режим,
+    // чтобы «Классический (r177)» и r195-вид не менялись.
+    setSoftFlat(on) { this._softFlat = !!on; this.render(); return this._softFlat; }
+    softFlatOn() { return !!this._softFlat; }
+    // r199: экранное подавление цветового зерна (билатеральный 3×3 по готовому кадру). Только для «Фото»;
+    // геометрию и глубину не трогает, поэтому края/силуэты остаются резкими.
+    setPhotoSmooth(on) {
+      on = !!on;
+      if (on && !this._photoSmooth) { if (!this._edlReady) { try { this._edlInit(); } catch (e) { console.warn('photo smooth init failed', e); } } }
+      this._photoSmooth = on && !!this._edlReady;
+      this.render(); return this._photoSmooth;
+    }
+    photoSmoothOn() { return !!this._photoSmooth; }
+    setPhotoSmoothStrength(v) { this._photoSmoothK = Math.max(0, Math.min(1, +v)); this.render(); return this._photoSmoothK; }
+    // r199: отдельная (по умолчанию 0) сила подавления luma-выбросов. Резкость важнее: 0 = luma не трогаем.
+    setPhotoLumaStrength(v) { this._photoSmoothYK = Math.max(0, Math.min(1, +v)); this.render(); return this._photoSmoothYK; }
+    setEdlThreshold(t) { const v = +t; if (isFinite(v)) this._edlTol = Math.max(0.005, Math.min(0.5, v)); this.render(); return this._edlTol; }
+    // r199: EDL как у Lixel (EdlOutline), но с порогом по глубине: контур только на реальных разрывах,
+    // а не на каждой паре соседних точек. Сила 0.5–1.2, порог 0.03–0.05 м.
+    setEdl(on, strength, tol) {
+      if (strength != null && isFinite(+strength)) this._edlStrength = Math.max(0.05, Math.min(3, +strength));
+      if (tol != null && isFinite(+tol)) this._edlTol = Math.max(0.005, Math.min(0.5, +tol));
+      on = !!on;
+      if (on && !this._edlReady) { try { this._edlInit(); } catch (e) { console.warn('EDL init failed', e); } }
+      this._edl = on && !!this._edlReady;
+      this.render(); return this._edl;
+    }
+    edlState() { return { on: !!this._edl, ready: !!this._edlReady, strength: this._edlStrength, tol: this._edlTol, radius: this._edlRadius }; }
+    setPhotoSize(on) { this._photoSize = !!on; this.render(); return this._photoSize; }
+    // r199: пределы размера сплэта для «Фото» — база 1.8…6 px (setMaxPointPx остаётся 5.0 для остальных профилей).
+    setPhotoClamp(minPx, maxPx) {
+      const a = +minPx, b = +maxPx;
+      if (isFinite(a)) this._photoMinPx = Math.max(1.0, Math.min(4.0, a));
+      if (isFinite(b)) this._photoMaxPx = Math.max(2.0, Math.min(8.0, b));
+      this.render(); return { min: this._photoMinPx, max: this._photoMaxPx };
+    }
+    // r199: приоритет ближних/крупных кирпичей при ограниченном бюджете кадра (view-dependent плотность).
+    setNearDensity(on) { this._nearDensity = !!on; this.render(); return this._nearDensity; }
     _softReset() { this._softSplatsFail = false; this._softPerfBad = 0; this._softSplats = !!(this._softSplatsLimit && this._softSplatsLimit > 0); }
     clearOctreeStream(restoreColorMode) {
       const gl = this.gl;
