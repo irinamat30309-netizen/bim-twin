@@ -222,12 +222,31 @@
   uniform sampler2D uCol; uniform sampler2D uDep;
   uniform vec2 uTexel; uniform float uNear; uniform float uFar; uniform float uStrength; uniform float uRadius;
   uniform float uSmooth; uniform float uSmoothY; uniform float uEdlTol;
-  uniform float uMedianR;
+  uniform float uMedianR; uniform float uHoleFill;
   float lin(float d){ float z = d * 2.0 - 1.0; return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear)); }
   void main(){
     vec3 c = texture(uCol, vUv).rgb;
     float d0 = texture(uDep, vUv).r;
-    if(d0 >= 1.0){ frag = vec4(c, 1.0); return; }
+    if(d0 >= 1.0){
+      // r203: заполнение 1-px «дыр» на поверхностях (как в Lixel): если 6+ из 8 соседей — точки
+      // одной поверхности (разброс глубины < 8 см), красим пиксель их средним. Контуры не размываются:
+      // у краёв силуэта валидных соседей меньше 6.
+      if(uHoleFill > 0.5){
+        // r203: 5×5-заполнение дыр до ~4 px (два прохода пасса). Только если ≥10 из 24 соседей —
+        // точки одной поверхности (разброс глубины < 15 см); у краёв силуэта соседей меньше.
+        int cnt = 0; vec3 sum = vec3(0.0); float zmin = 1e9; float zmax = -1e9;
+        for(int i = -2; i <= 2; i++){
+          for(int j = -2; j <= 2; j++){
+            if(i == 0 && j == 0) continue;
+            vec2 off = vec2(float(i), float(j)) * uTexel;
+            float dn = texture(uDep, vUv + off).r;
+            if(dn < 1.0){ cnt++; sum += texture(uCol, vUv + off).rgb; float zn = lin(dn); zmin = min(zmin, zn); zmax = max(zmax, zn); }
+          }
+        }
+        if(cnt >= 10 && (zmax - zmin) < 0.15){ frag = vec4(sum / float(cnt), 1.0); return; }
+      }
+      frag = vec4(c, 1.0); return;
+    }
     // r199 «Фото (Lixel)»: подавление цветового зерна старого recolor. По умолчанию усредняются
     // ТОЛЬКО Cb/Cr (яркость/резкость не мылится); uSmoothY — опциональное мягкое подавление luma-выбросов
     // (билатеральное, с узким окном по яркости), по умолчанию 0. Края/глубина не смешиваются с фоном.
@@ -400,7 +419,7 @@
       this._autoPointSize = true; this._autoPointBasePx = 2.3; this._ptMaxCap = 4.0; this._softSplats = false; this._softSplatsLimit = 150000000; this._softForce = false; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
       // r199 «Фото (Lixel)»: плоский энергосберегающий сплэт + перспективная аттенюация одновременно,
       // размер 1.8…6 px по глубине/локальному шагу, яркость 1.0; экранное подавление цветового зерна.
-      this._softFlat = false; this._photoSmooth = false; this._nearDensity = false; this._photoMinPx = 1.8; this._photoMaxPx = 6.0; this._photoSmoothK = 0.55; this._photoSmoothYK = 0; this._photoSize = false; this._softAlpha = false; this._photoMedianR = 1; this._photoSmoothPasses = 1;
+      this._softFlat = false; this._photoSmooth = false; this._photoHoleFill = true; this._nearDensity = false; this._photoMinPx = 1.8; this._photoMaxPx = 6.0; this._photoSmoothK = 0.55; this._photoSmoothYK = 0; this._photoSize = false; this._softAlpha = false; this._photoMedianR = 1; this._photoSmoothPasses = 1;
     try { canvas.addEventListener('webglcontextlost', () => { this._softSplats = false; this._softSplatsFail = true; }); } catch (_) {}
       // r172: динамическое разрешение в движении не ниже 85 % (было 75 % → «мыло»).
       this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.9; this._qualityMode = 'auto';
@@ -2975,7 +2994,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, EDL_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, EDL_FS)); gl.linkProgram(p);
         if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('EDL link: ' + gl.getProgramInfoLog(p));
         this._edlProg = p; this._edlU = {};
-        for (const k of ['uCol', 'uDep', 'uTexel', 'uNear', 'uFar', 'uStrength', 'uRadius', 'uSmooth', 'uSmoothY', 'uEdlTol', 'uMedianR']) this._edlU[k] = gl.getUniformLocation(p, k);
+        for (const k of ['uCol', 'uDep', 'uTexel', 'uNear', 'uFar', 'uStrength', 'uRadius', 'uSmooth', 'uSmoothY', 'uEdlTol', 'uMedianR', 'uHoleFill']) this._edlU[k] = gl.getUniformLocation(p, k);
         const aP = gl.getAttribLocation(p, 'aP');
         this._edlVao = gl.createVertexArray(); gl.bindVertexArray(this._edlVao);
         const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -3036,6 +3055,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       gl.uniform1f(this._edlU.uSmooth, this._photoSmooth ? _smK : 0);
       gl.uniform1f(this._edlU.uSmoothY, _smY);
       gl.uniform1f(this._edlU.uMedianR, (this._photoMedianR != null && this._photoMedianR > 1.5) ? 2.0 : 1.0);
+    gl.uniform1f(this._edlU.uHoleFill, this._photoHoleFill ? 1.0 : 0.0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.bindVertexArray(null); gl.enable(gl.DEPTH_TEST); gl.useProgram(this.prog); gl.activeTexture(gl.TEXTURE0);
     }
@@ -4569,6 +4589,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     setPhotoLumaStrength(v) { this._photoSmoothYK = Math.max(0, Math.min(1, +v)); this.render(); return this._photoSmoothYK; }
     // r202: радиус luma-медианы: 1 = 3×3, 2 = разреженная 5×5 (9 отсчётов по радиусу 2).
     setPhotoMedianRadius(r) { this._photoMedianR = +r >= 2 ? 2 : 1; this.render(); return this._photoMedianR; }
+  setPhotoHoleFill(on) { this._photoHoleFill = on !== false; this.render(); return this._photoHoleFill; }
     // r202: 1 — один композитный проход, 2 — chroma-denoise дважды (сильнее, luma-медиана один раз).
     setPhotoSmoothPasses(n) { this._photoSmoothPasses = (+n >= 2) ? 2 : 1; this.render(); return this._photoSmoothPasses; }
     setEdlThreshold(t) { const v = +t; if (isFinite(v)) this._edlTol = Math.max(0.005, Math.min(0.5, v)); this.render(); return this._edlTol; }

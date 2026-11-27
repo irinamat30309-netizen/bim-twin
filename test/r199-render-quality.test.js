@@ -175,3 +175,19 @@ test('r202: медиана 5×5, два прохода chroma-denoise и вто�
   assert.match(VW, /this\._fxTex2 = gl\.createTexture\(\); this\._fxFbo2 = gl\.createFramebuffer\(\);/);
   assert.match(VW, /passes === 2/);
 });
+
+test('r203: профиль Lixel — фиксированные 2 px, все 594M, hole fill', () => {
+  const l = profileBlock('lixel');
+  assert.match(l.src, /label: 'Lixel \(точка 2 px, все точки\)'/);
+  assert.strictEqual(l.num('fixedPx'), 2.0);
+  assert.strictEqual(l.num('budget'), 594110150);
+  assert.strictEqual(l.num('smoothK'), 1.0);
+  assert.strictEqual(l.num('medianR'), 2);
+  assert.strictEqual(l.bool('holeFill'), true);
+  assert.match(APP, /if \(prof === 'lixel'\) return 594110150;/);
+  assert.match(APP, /profileLixel/);
+  assert.match(APP, /setCloudPointSize\(pr\.fixedPx\)/);
+  assert.match(VW, /uniform float uHoleFill;/);
+  assert.match(VW, /setPhotoHoleFill\(on\)/);
+  assert.match(VW, /cnt >= 10 && \(zmax - zmin\) < 0\.15/);
+});

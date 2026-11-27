@@ -218,7 +218,10 @@
     max: { label: 'Максимум детализации', soft: false, autoBase: 2.3, cap: 4.5, bright: 1.0, attenuate: true, density: 'exact', budget: 0 },
     // r202: «Максимум качества» — все точки файла (594M). Замер: ctxLost 0, FPS 17.8/28.4, фактически ≈8.9 ГиБ,
     // но HUD по 24 Б/точку показывает 13.8/12 ГБ — на 12-ГБ карте риск context lost; не DEFAULT.
-    quality: { label: 'Максимум качества (все точки)', soft: true, softFlat: true, photoSmooth: true, smoothK: 1.0, smoothYK: 0.7, medianR: 2, smoothPasses: 2, autoBase: 2.4, cap: 6.0, bright: 1.0, attenuate: true, density: 'photo', budget: 594110150, densityBoost: 1.45, minPx: 1.8, maxPx: 6.0, nearDensity: true, saturation: 0.82 }
+    quality: { label: 'Максимум качества (все точки)', soft: true, softFlat: true, photoSmooth: true, smoothK: 1.0, smoothYK: 0.7, medianR: 2, smoothPasses: 2, autoBase: 2.4, cap: 6.0, bright: 1.0, attenuate: true, density: 'photo', budget: 594110150, densityBoost: 1.45, minPx: 2.0, maxPx: 6.0, nearDensity: true, saturation: 0.82 },
+    // r203: Lixel-режим — как в Lixel Studio: маленькая фиксированная точка (2 px), без аттенюации,
+    // все точки файла (594M), насыщенность 1.0. «Жирные» 2.4–6 px были причиной нечёткости.
+    lixel: { label: 'Lixel (точка 2 px, все точки)', soft: false, fixedPx: 2.0, autoBase: 2.0, cap: 2.0, minPx: 2.0, maxPx: 2.0, bright: 1.0, attenuate: false, density: 'photo', budget: 594110150, densityBoost: 1.45, nearDensity: false, saturation: 1.0, edl: false, photoSmooth: true, smoothK: 1.0, smoothYK: 0.7, medianR: 2, smoothPasses: 2, holeFill: true }
   };
   // r199: «Фото (Lixel)» — DEFAULT по итогам замеров на новом цвете: плоский энергосберегающий сплэт убирает
   // тёмные кольца r177 (speckle 0.060 против 0.184), gradient 0.0565 попадает в диапазон эталона Lixel 0.03–0.08
@@ -237,9 +240,16 @@
     try {
       if (!viewer) return;
       if (viewer._softSplats !== pr.soft) { if (pr.soft) viewer.setSoftSplatsForce(true); else { viewer.setSoftSplatsForce(false); viewer._softSplats = false; } }
-      if (viewer.setAutoPointSize) viewer.setAutoPointSize(true);
-      if (viewer.setPointBasePx) viewer.setPointBasePx(pr.autoBase);
-      if (viewer.setMaxPointPx) viewer.setMaxPointPx(pr.cap);
+      if (pr.fixedPx != null) {
+        // r203 Lixel: фиксированный размер точки, без авто-размера и аттенюации.
+        if (viewer.setAutoPointSize) viewer.setAutoPointSize(false);
+        if (viewer.setCloudPointSize) viewer.setCloudPointSize(pr.fixedPx);
+        if (viewer.setAttenuate) viewer.setAttenuate(false);
+      } else {
+        if (viewer.setAutoPointSize) viewer.setAutoPointSize(true);
+        if (viewer.setPointBasePx) viewer.setPointBasePx(pr.autoBase);
+        if (viewer.setMaxPointPx) viewer.setMaxPointPx(pr.cap);
+      }
       if (viewer.setBrightness) viewer.setBrightness(pr.bright);
       if (viewer.setGrade) {
         // r199: насыщенность как в эталоне (×0.88 для фото); без тонмаппинга/контраста, чтобы не «звенеть».
@@ -248,7 +258,7 @@
       }
       if (viewer.setAttenuate) viewer.setAttenuate(pr.attenuate);
       // r199: панельный pointSize=1 не должен перебивать autoBase профиля — авто-режим всегда с null.
-      try { if (viewer._cloudDisplay) viewer._cloudDisplay.pointSize = null; } catch (e) {}
+      if (pr.fixedPx == null) { try { if (viewer._cloudDisplay) viewer._cloudDisplay.pointSize = null; } catch (e) {} }
       // r199: фото-режим — плоский сплэт, размерный clamp 1.8…6 px, приоритет ближних кирпичей в движении.
       if (viewer.setSoftFlat) viewer.setSoftFlat(!!pr.softFlat);
       if (viewer.setSoftAlpha) viewer.setSoftAlpha(!!pr.softAlpha);
@@ -256,6 +266,7 @@
       if (viewer.setPhotoSmoothStrength) viewer.setPhotoSmoothStrength(pr.smoothK != null ? pr.smoothK : 0.55);
       if (viewer.setPhotoLumaStrength) viewer.setPhotoLumaStrength(pr.smoothYK || 0);
       if (viewer.setPhotoMedianRadius) viewer.setPhotoMedianRadius(pr.medianR || 1);
+      if (viewer.setPhotoHoleFill) viewer.setPhotoHoleFill(pr.holeFill !== false);
       if (viewer.setPhotoSmoothPasses) viewer.setPhotoSmoothPasses(pr.smoothPasses || 1);
       if (viewer.setPhotoSize) viewer.setPhotoSize(pr.minPx != null && pr.maxPx != null);
       // EDL управляется профилем только если он его явно задаёт; ручной EDL пользователя не сбрасываем,
@@ -268,6 +279,8 @@
       if (viewer.setNearDensity) viewer.setNearDensity(!!pr.nearDensity);
       if (viewer.setPhotoClamp) viewer.setPhotoClamp(pr.minPx || 1.8, pr.maxPx || 6.0);
       if (viewer.setDensityBoost) viewer.setDensityBoost(pr.densityBoost || 1.8);
+      // r203: fixedPx ставим ПОСЛЕДНИМ — setAttenuate(false) обнуляет _cloudDisplay.pointSize.
+      if (pr.fixedPx != null && viewer.setCloudPointSize) viewer.setCloudPointSize(pr.fixedPx);
     } catch (e) {}
   }
   window.__bimSetRenderProfile = function (name) {
@@ -298,6 +311,10 @@
       if (!grp.items.some(function (i) { return i && i.id === 'profileQuality'; })) {
         const q = { id: 'profileQuality', ico: 'gauge', label: 'Максимум качества (все точки)', size: 'lg', call: '__bimSetRenderProfile', args: ['quality'], tip: 'Все 594M точек: факт ≈8.9 ГиБ, HUD 13.8 из 12 ГБ, возможен context lost; FPS ~18–28' };
         grp.items.push(q); if (C.byId) C.byId.profileQuality = q; added = true;
+      }
+      if (!grp.items.some(function (i) { return i && i.id === 'profileLixel'; })) {
+        const lx = { id: 'profileLixel', ico: 'scan-eye', label: 'Lixel (точка 2 px)', size: 'lg', call: '__bimSetRenderProfile', args: ['lixel'], tip: 'Как Lixel Studio: фиксированные 2 px, все 594M точек, без аттенюации; saturation 1.0, hole fill' };
+        grp.items.push(lx); if (C.byId) C.byId.profileLixel = lx; added = true;
       }
       if (added) {
         const rib = window.__lxRibbon;
@@ -342,6 +359,7 @@
       const prof = renderProfile();
       // r199: «Фото» — база 2.4 px и собственный clamp 1.8…6 px (setPhotoClamp), без classic-потолка 2.5.
       if (prof === 'photo' || prof === 'quality') { viewer.setPointBasePx(2.4); viewer.setMaxPointPx(5.0); return; }
+      if (prof === 'lixel') { viewer.setCloudPointSize(2); viewer.setMaxPointPx(2); return; }
       if (prof === 'classic') { viewer.setMaxPointPx(2.5); return; }
       if (prof === 'max') { viewer.setMaxPointPx(4.5); return; }
       const d = densityMode();
@@ -362,6 +380,7 @@
     const prof = renderProfile();
     if (prof === 'photo') return 380000000;   // r199: 450M дал <35 FPS на чистом замере e2e (25.7); 380M — компромисс lead
     if (prof === 'quality') return 594110150; // r202: все точки файла (594M), только по явному выбору профиля
+    if (prof === 'lixel') return 594110150;   // r203: Lixel-режим — все точки файла, 2 px
     if (prof === 'classic') return 300000000;
     if (prof === 'max') { try { const b = gpuBudgetPoints(0.80); if (b > 0) return Math.min(b, 2000000000); } catch (e) {} }
     if (prof === 'balanced') { try { const b = gpuBudgetPoints(0.53); if (b > 0) return Math.min(b, 2000000000); } catch (e) {} }
