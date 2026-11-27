@@ -3520,7 +3520,8 @@ function registerIpc() {
     return new Promise((resolve) => {
       const cp = require('child_process');
       let ch;
-      try { ch = cp.spawn(py, [script], { windowsHide: true }); }
+      const pyEnv = Object.assign({}, process.env, { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' });
+      try { ch = cp.spawn(py, [script], { windowsHide: true, env: pyEnv }); }
       catch (e) { resolve({ ok: false, error: 'spawn_failed', needPython: true }); return; }
       let out = '', err = '';
       const to = setTimeout(() => { try { ch.kill(); } catch (_) {} resolve({ ok: false, error: 'timeout' }); }, 20 * 60 * 1000);

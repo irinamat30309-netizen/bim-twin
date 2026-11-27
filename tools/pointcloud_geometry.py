@@ -751,6 +751,26 @@ def run_mesh(req):
     vcol = None
     if mesh.has_vertex_colors():
         vcol = np.asarray(mesh.vertex_colors) * 255.0
+    elif rgb is not None and verts.size:
+        # r204: Poisson/BPA не переносят цвет точек — красим вершины по ближайшей точке
+        # (как в Lixel: поверхность остаётся цветной, а не серой).
+        try:
+            ref = np.asarray(pcd.points)
+            ref_col = np.asarray(pcd.colors) * 255.0
+            if ref.size and ref_col.size:
+                try:
+                    from scipy.spatial import cKDTree
+                    _, idx = cKDTree(ref).query(verts, k=1, workers=-1)
+                except Exception:
+                    tree = o3d.geometry.KDTreeFlann(pcd)
+                    idx = np.empty(verts.shape[0], dtype=np.int64)
+                    for i in range(verts.shape[0]):
+                        _, ii, _ = tree.search_knn_vector_3d(verts[i], 1)
+                        idx[i] = ii[0] if ii else 0
+                vcol = np.clip(ref_col[np.asarray(idx, dtype=np.int64)], 0, 255)
+                mesh.vertex_colors = o3d.utility.Vector3dVector(vcol / 255.0)
+        except Exception:
+            vcol = None
     verts, up_axis, double_precision, coordinate_frame = _restore_source_coordinates(
         verts, req.get('inputFrame'))
     output_crs = req.get('outputCrsWkt') if coordinate_frame == 'target-source' else None

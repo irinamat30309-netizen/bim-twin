@@ -3042,7 +3042,19 @@
           lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0; return true;
         }
         if (pr && pr.fallback && API.readFile) {
-          const b64 = await API.readFile(p);
+          let b64 = null;
+          if (API.readPicked) { try { const rp = await API.readPicked(p); if (rp && rp.ok) b64 = rp.base64; } catch (_) {} }
+          if (!b64) b64 = await API.readFile(p);
+          if (!b64) return false;
+          const browserParsed = await load3DBuffer(p, b64ToU8(b64).buffer);
+          if (!browserParsed || !browserParsed.ok) return false;
+          lastCloudPath = p; lastCloudCount = (browserParsed.meta && browserParsed.meta.points) || 0; return true;
+        }
+        // r204: main-парсер не читает mesh-PLY (только облака) — грузим меш рендерером.
+        if (/\.(ply|obj|stl|glb|gltf)$/i.test(p) && API.readFile) {
+          let b64 = null;
+          if (API.readPicked) { try { const rp = await API.readPicked(p); if (rp && rp.ok) b64 = rp.base64; } catch (_) {} }
+          if (!b64) b64 = await API.readFile(p);
           if (!b64) return false;
           const browserParsed = await load3DBuffer(p, b64ToU8(b64).buffer);
           if (!browserParsed || !browserParsed.ok) return false;
@@ -3204,9 +3216,9 @@
     }
     async function geomMesh() {
       if (!geomCloudReady() || !API.meshCloud) return;
-      toast('Построение поверхности (Poisson)… нужен Open3D, может занять время');
+      toast('Lixel: очищаю облако и заполняю поверхность (Poisson, depth 11)… это может занять несколько минут');
       try {
-        const r = await API.meshCloud({ path: curCloudPath(), method: 'poisson' });
+        const r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.04, maxPoints: 12000000 });
         if (r && r.ok) {
           const loaded = await reloadGeomCloud(r.path);
           if (loaded) {
@@ -3328,7 +3340,7 @@
       window.__lxKit.menu(gb, [
         GI('chart-column', 'Отклонения (скан ↔ модель)', () => withBusy(gb, 'Расчёт отклонений…', geomDeviation)),
         GI('git-compare', 'Совмещение сканов (ICP)', () => withBusy(gb, 'Совмещение (ICP)…', geomRegister)),
-        GI('shapes', 'Построить поверхность (mesh)', () => withBusy(gb, 'Построение поверхности…', geomMesh)),
+        GI('shapes', 'Lixel: очистить и заполнить (поверхность)', () => withBusy(gb, 'Lixel-поверхность…', geomMesh)),
         { sep: true },
         GI('sparkles', 'Облако → 3DGS (настройки + тур)', () => openSplatConvertDialog()),
         GI('save', 'Сохранить 3DGS (.ply)', () => saveConvertedSplat()),
