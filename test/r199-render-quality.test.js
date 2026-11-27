@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /*
  * r199/r201 — качество рендера облака «как в Lixel Studio».
  * Профиль «Фото (Lixel)» (DEFAULT): плоский энергосберегающий сплэт (alpha=1, без тёмных колец/пересвета)
@@ -62,7 +62,7 @@ test('r199: база 2.4 px (2.2–2.6), clamp 1.8…6, яркость 1.0, на
 });
 
 test('r199: DEFAULT — «Фото (Lixel)»; «Классический (r177)» сохранён выбираемым', () => {
-  assert.match(APP, /const DEFAULT_RENDER_PROFILE = 'photo';/);
+  assert.match(APP, /const DEFAULT_RENDER_PROFILE = 'lixel';/);
   assert.match(APP, /return DEFAULT_RENDER_PROFILE;/);
   assert.match(APP, /getItem\('bim\.uiProfileRev'\) !== '199'[\s\S]{0,400}setItem\('bim\.render\.profile', 'photo'\)/);
   assert.match(APP, /classic: \{ label: 'Классический \(r177\)', soft: true, autoBase: 3\.4, cap: 5\.0, bright: 1\.1, attenuate: false, density: 'classic', budget: 300000000 \}/);
@@ -164,7 +164,7 @@ test('r202: профиль «Максимум качества» — все 594M
   assert.match(APP, /if \(prof === 'quality'\) return 594110150;/);
   assert.match(APP, /profileQuality/);
   assert.match(APP, /ВНИМАНИЕ: все ~594 млн точек/);
-  assert.match(APP, /const DEFAULT_RENDER_PROFILE = 'photo';/);
+  assert.match(APP, /const DEFAULT_RENDER_PROFILE = 'lixel';/);
 });
 
 test('r202: медиана 5×5, два прохода chroma-denoise и второй FBO зарегистрированы', () => {
@@ -191,3 +191,4 @@ test('r203: профиль Lixel — фиксированные 2 px, все 594
   assert.match(VW, /setPhotoHoleFill\(on\)/);
   assert.match(VW, /cnt >= 10 && \(zmax - zmin\) < 0\.15/);
 });
+

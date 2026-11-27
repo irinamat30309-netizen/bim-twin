@@ -226,7 +226,7 @@
   // r199: «Фото (Lixel)» — DEFAULT по итогам замеров на новом цвете: плоский энергосберегающий сплэт убирает
   // тёмные кольца r177 (speckle 0.060 против 0.184), gradient 0.0565 попадает в диапазон эталона Lixel 0.03–0.08
   // (у classic 0.122 — «звонче» эталона), brightness/clipped ближе к эталону. Classic остаётся выбираемым.
-  const DEFAULT_RENDER_PROFILE = 'photo';
+  const DEFAULT_RENDER_PROFILE = 'lixel';
   function renderProfile() {
     try { const ov = API && API.renderProfileOverride; if (ov && RENDER_PROFILES[ov]) return ov; } catch (e) {}
     try {
@@ -6170,6 +6170,11 @@
         let _rp = ''; try { _rp = localStorage.getItem('bim.render.profile') || ''; } catch (e) {}
         if (!_rp || _rp === 'classic') { try { localStorage.setItem('bim.render.profile', 'photo'); } catch (e) {} }
         localStorage.setItem('bim.uiProfileRev', '199');
+      }
+      // r203: новый DEFAULT — «Lixel (точка 2 px)», как в Lixel Studio; одноразовая миграция.
+      if (localStorage.getItem('bim.uiProfileRev') !== '203') {
+        try { localStorage.setItem('bim.render.profile', 'lixel'); } catch (e) {}
+        localStorage.setItem('bim.uiProfileRev', '203');
       }
     } catch (e) {}
     try {
