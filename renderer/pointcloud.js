@@ -188,6 +188,70 @@
     return null;
   }
 
+  // --- r210: помощники для PLY-меша -------------------------------------------------
+  // Грани храним кусками Int32Array: 4 млн треугольников в обычном JS-массиве — это
+  // сотни мегабайт и секунды на push(), из-за чего большой меш «не доезжал» до экрана.
+  function FaceStore() { this.parts = []; this.part = null; this.used = 0; this.total = 0; }
+  FaceStore.prototype.push = function (v) {
+    if (!this.part || this.used >= this.part.length) { this.part = new Int32Array(1 << 20); this.parts.push(this.part); this.used = 0; }
+    this.part[this.used++] = v; this.total++;
+  };
+  FaceStore.prototype.push3 = function (a, b, c) { this.push(a); this.push(b); this.push(c); };
+  FaceStore.prototype.toIndexArray = function () {
+    var out = new Uint32Array(this.total), o = 0, parts = this.parts;
+    for (var p = 0; p < parts.length; p++) {
+      var a = parts[p], n = (p === parts.length - 1) ? this.used : a.length;
+      if (n <= 0) continue;
+      out.set(a.subarray(0, n), o); o += n;
+    }
+    return out;
+  };
+  // Сглаженные нормали по площади (если в файле нет nx/ny/nz). Нужны для освещения:
+  // без них меш рисуется плоским/тёмным. Считаются уже в координатах вьюера.
+  function computeVertexNormals(verts, idx, vn) {
+    var N = new Float32Array(vn * 3);
+    var i, a, b, c, e1x, e1y, e1z, e2x, e2y, e2z, nx, ny, nz;
+    for (i = 0; i + 2 < idx.length; i += 3) {
+      a = idx[i] * 3; b = idx[i + 1] * 3; c = idx[i + 2] * 3;
+      e1x = verts[b] - verts[a]; e1y = verts[b + 1] - verts[a + 1]; e1z = verts[b + 2] - verts[a + 2];
+      e2x = verts[c] - verts[a]; e2y = verts[c + 1] - verts[a + 1]; e2z = verts[c + 2] - verts[a + 2];
+      nx = e1y * e2z - e1z * e2y; ny = e1z * e2x - e1x * e2z; nz = e1x * e2y - e1y * e2x;
+      N[a] += nx; N[a + 1] += ny; N[a + 2] += nz;
+      N[b] += nx; N[b + 1] += ny; N[b + 2] += nz;
+      N[c] += nx; N[c + 1] += ny; N[c + 2] += nz;
+    }
+    for (i = 0; i < vn; i++) {
+      var x = N[i * 3], y = N[i * 3 + 1], z = N[i * 3 + 2];
+      var l = Math.sqrt(x * x + y * y + z * z);
+      if (l > 1e-12 && isFinite(l)) { N[i * 3] = x / l; N[i * 3 + 1] = y / l; N[i * 3 + 2] = z / l; }
+      else { N[i * 3] = 0; N[i * 3 + 1] = 1; N[i * 3 + 2] = 0; }
+    }
+    return N;
+  }
+  // up-axis для меша. PLY не хранит ось вверх; меши из Poisson/Open3D/CloudCompare/MeshLab/
+  // Blender — геодезические Z-up. Свой меш приложение пишет с comment up=y (+ coordinate_frame=
+  // target-viewer-local) — этот случай распознаётся явно. Без метаданных считаем Z-up:
+  // раньше меш из Z-up скана разворачивался «на бок» и на экране был пустой кадр.
+  function meshUpAxis(comments, firstXYZ, ranges) {
+    var c = (comments || []).join(' ').toLowerCase();
+    var m = /(?:^|[\s])(?:bim_twin_)?up\s*[=:]\s*([xyz])\b/.exec(c);
+    if (m) return m[1] === 'y' ? 'y' : 'z';
+    if (/coordinate_frame\s*[=:]\s*(?:target-)?viewer-local/.test(c)) return 'y';
+    if (/y[- ]up\b/.test(c)) return 'y';
+    if (/z[- ]up\b|cloudcompare|lixel|chcnav|navvis|leica|trimble|faro\b|matterport/.test(c)) return 'z';
+    if (firstXYZ && firstXYZ.some(function (v) { return isFinite(v) && Math.abs(v) > 10000; })) return 'z';
+    if (ranges && ranges.length >= 3) {
+      var order = [0, 1, 2].sort(function (a, b) { return ranges[a] - ranges[b]; });
+      var lo = ranges[order[0]], next = ranges[order[1]];
+      if (lo > 1e-6 && lo <= next * 0.78) {
+        if (order[0] === 2) return 'z';
+        if (order[0] === 1) return 'y';
+        return ranges[1] <= ranges[2] * 0.78 ? 'y' : 'z';
+      }
+    }
+    return 'z';
+  }
+
   function parsePLY(buf) {
     var bytes = new Uint8Array(buf);
     // read header (line-by-line up to 'end_header')
@@ -233,7 +297,7 @@
       return v;
     }
 
-    var verts = null, vcols = null, vnorm = null, vIntensities = null, vClasses = null, intensityMax = 0, intensityType = '', vn = 0, faces = [], plyOrigin = null;
+    var verts = null, vcols = null, vnorm = null, vIntensities = null, vClasses = null, intensityMax = 0, intensityType = '', vn = 0, faces = new FaceStore(), plyOrigin = null;
     for (var ei = 0; ei < elements.length; ei++) {
       var el = elements[ei];
       if (el.name === 'vertex') {
@@ -266,13 +330,22 @@
         }
       } else if (el.name === 'face' || (el.props.length === 1 && el.props[0].list)) {
         for (var fi = 0; fi < el.count; fi++) {
-          var faceIdx = null;
           for (var fp = 0; fp < el.props.length; fp++) {
             var pr = el.props[fp];
-            if (pr.list) { var n = readScalar(pr.countType); var arr = new Array(n); for (var z = 0; z < n; z++) arr[z] = readScalar(pr.itemType); if (!faceIdx) faceIdx = arr; }
-            else readScalar(pr.type);
+            if (pr.list) {
+              var n = readScalar(pr.countType);
+              if (n > 0 && n <= 4096) {
+                // треугольники «веером»: (0, i, i+1) — без промежуточного JS-массива на каждую грань
+                var first = -1, prev = -1;
+                for (var z = 0; z < n; z++) {
+                  var vv = readScalar(pr.itemType);
+                  if (z === 0) first = vv;
+                  else if (z === 1) prev = vv;
+                  else { faces.push3(first, prev, vv); prev = vv; }
+                }
+              } else { for (var z2 = 0; z2 < n; z2++) readScalar(pr.itemType); }
+            } else readScalar(pr.type);
           }
-          if (faceIdx && faceIdx.length >= 3) for (var fk = 1; fk + 1 < faceIdx.length; fk++) faces.push(faceIdx[0], faceIdx[fk], faceIdx[fk + 1]);
         }
       } else {
         // skip unknown element records
@@ -288,7 +361,11 @@
     var axisStep=Math.max(1,Math.ceil(vn/50000)),axisVals=[[],[],[]];
     for(var ai=0;ai<vn;ai+=axisStep)for(var aa=0;aa<3;aa++)axisVals[aa].push(verts[ai*3+aa]);
     var axisRanges=axisVals.map(function(a){a.sort(function(x,y){return x-y;});return a.length?a[Math.floor((a.length-1)*0.995)]-a[Math.floor((a.length-1)*0.005)]:0;});
-    var upAxis = window.LasCore && window.LasCore.plyUpAxis ? window.LasCore.plyUpAxis(comments, plyOrigin || [], axisRanges) : 'y';
+    // r210: у меша без метаданных ось «вверх» — геодезическая Z-up (см. meshUpAxis).
+    // Точечные облака сохраняют прежнюю эвристику LasCore, чтобы не менять их вид.
+    var upAxis = faces.total >= 3
+      ? meshUpAxis(comments, plyOrigin || [], axisRanges)
+      : (window.LasCore && window.LasCore.plyUpAxis ? window.LasCore.plyUpAxis(comments, plyOrigin || [], axisRanges) : 'y');
     var ccx = (mnx + mxx) / 2, ccy = (mny + mxy) / 2, ccz = (mnz + mxz) / 2;
     var W = mxx - mnx, D = (upAxis === 'z' ? mxy - mny : mxz - mnz), H = (upAxis === 'z' ? mxz - mnz : mxy - mny);
     for (var mm = 0; mm < vn; mm++) {
@@ -300,24 +377,42 @@
     var crsWkt = window.LasCore && window.LasCore.plyCrsWkt ? window.LasCore.plyCrsWkt(comments) : null;
     var units = window.LasCore && window.LasCore.plyUnits ? window.LasCore.plyUnits(comments) : null;
 
-    if (faces.length >= 3) {
-      // build lit mesh (triangle soup) with optional per-vertex colour
-      var tri = faces.length / 3;
-      var P = new Float32Array(tri * 9), N = new Float32Array(tri * 9), C = vcols ? new Float32Array(tri * 9) : null;
-      for (var f = 0; f < tri; f++) {
-        var ia = faces[f * 3], ib = faces[f * 3 + 1], ic = faces[f * 3 + 2];
-        var ax = verts[ia * 3], ay = verts[ia * 3 + 1], az = verts[ia * 3 + 2];
-        var bx = verts[ib * 3], by = verts[ib * 3 + 1], bz = verts[ib * 3 + 2];
-        var cxx = verts[ic * 3], cyy = verts[ic * 3 + 1], czz = verts[ic * 3 + 2];
-        var nx, ny, nz;
-        if (vnorm) { nx = vnorm[ia * 3]; ny = vnorm[ia * 3 + 1]; nz = vnorm[ia * 3 + 2]; }
-        else { var e1x = bx - ax, e1y = by - ay, e1z = bz - az, e2x = cxx - ax, e2y = cyy - ay, e2z = czz - az; nx = e1y * e2z - e1z * e2y; ny = e1z * e2x - e1x * e2z; nz = e1x * e2y - e1y * e2x; var ln = Math.hypot(nx, ny, nz) || 1; nx /= ln; ny /= ln; nz /= ln; }
-        var o9 = f * 9;
-        P[o9] = ax; P[o9 + 1] = ay; P[o9 + 2] = az; P[o9 + 3] = bx; P[o9 + 4] = by; P[o9 + 5] = bz; P[o9 + 6] = cxx; P[o9 + 7] = cyy; P[o9 + 8] = czz;
-        N[o9] = nx; N[o9 + 1] = ny; N[o9 + 2] = nz; N[o9 + 3] = nx; N[o9 + 4] = ny; N[o9 + 5] = nz; N[o9 + 6] = nx; N[o9 + 7] = ny; N[o9 + 8] = nz;
-        if (C) { C[o9] = vcols[ia * 3]; C[o9 + 1] = vcols[ia * 3 + 1]; C[o9 + 2] = vcols[ia * 3 + 2]; C[o9 + 3] = vcols[ib * 3]; C[o9 + 4] = vcols[ib * 3 + 1]; C[o9 + 5] = vcols[ib * 3 + 2]; C[o9 + 6] = vcols[ic * 3]; C[o9 + 7] = vcols[ic * 3 + 1]; C[o9 + 8] = vcols[ic * 3 + 2]; }
+    if (faces.total >= 3) {
+      // r210: ИНДЕКСИРОВАННЫЙ меш вместо «супа» треугольников.
+      // Для 4 млн треугольников суп — это 12 млн вершин (435 МБ Float32 только в JS)
+      // и ещё столько же в видеопамяти; индексированный меш — ~2 млн вершин и Uint32-индексы
+      // (~100 МБ), поэтому 2–4 млн треугольников стабильно грузятся и рисуются.
+      var rawIdx = faces.toIndexArray();
+      var idx = rawIdx, dropped = 0;
+      // грани с индексами вне диапазона (повреждённый файл) не должны давать NaN в вершинах
+      var badIdx = 0;
+      for (var qc = 0; qc < rawIdx.length; qc++) if (rawIdx[qc] >= vn || rawIdx[qc] < 0) { badIdx++; break; }
+      if (badIdx) {
+        var okTri = 0;
+        for (var qc2 = 0; qc2 + 2 < rawIdx.length; qc2 += 3) { var a0 = rawIdx[qc2], b0 = rawIdx[qc2 + 1], c0i = rawIdx[qc2 + 2]; if (a0 >= 0 && b0 >= 0 && c0i >= 0 && a0 < vn && b0 < vn && c0i < vn) okTri++; }
+        idx = new Uint32Array(okTri * 3);
+        var wo = 0;
+        for (var qc3 = 0; qc3 + 2 < rawIdx.length; qc3 += 3) {
+          var a1 = rawIdx[qc3], b1 = rawIdx[qc3 + 1], c1i = rawIdx[qc3 + 2];
+          if (a1 >= 0 && b1 >= 0 && c1i >= 0 && a1 < vn && b1 < vn && c1i < vn) { idx[wo++] = a1; idx[wo++] = b1; idx[wo++] = c1i; }
+        }
+        dropped = (rawIdx.length - idx.length) / 3;
       }
-      return { ok: true, kind: 'mesh', pos: P, nor: N, col: C, count: tri * 3, meta: { kind: 'mesh', tris: tri, w: W, d: D, h: H, format: 'PLY mesh', colored: !!C, srcXform: srcTransform, crsWkt: crsWkt, units:units } };
+      var tri = idx.length / 3;
+      if (!vnorm) vnorm = computeVertexNormals(verts, idx, vn);
+      // цвет вершин — байтами (8 бит/канал как в файле): 3,9 МБ вместо 46 МБ на 4 млн вершин
+      var colU8 = null;
+      if (vcols) {
+        colU8 = new Uint8Array(vn * 3);
+        for (var ci = 0; ci < vn * 3; ci++) { var cv0 = vcols[ci] * 255 + 0.5; colU8[ci] = cv0 <= 0 ? 0 : (cv0 >= 255 ? 255 : cv0); }
+      }
+      return {
+        ok: true, kind: 'mesh', pos: verts, nor: vnorm, col: colU8, idx: idx, count: vn,
+        meta: { kind: 'mesh', tris: tri, vertices: vn, w: W, d: D, h: H,
+          format: 'PLY mesh' + (upAxis === 'z' ? ' (Z-up→Y-up)' : ' (Y-up)'),
+          colored: !!colU8, upAxis: upAxis, droppedFaces: dropped, indexed: true,
+          srcXform: srcTransform, crsWkt: crsWkt, units: units }
+      };
     }
 
     // point cloud (optionally stride-sampled)

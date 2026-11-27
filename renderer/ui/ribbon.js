@@ -19,6 +19,7 @@
   var MODE_TOOLS = { btnMeasure: 1, btnSection: 1, vtEdit: 1, vtWalk: 1, vtTour: 1, lxObjInspectBtn: 1, lxObjExtractBtn: 1, 'draw.sect': 1 };
 
   var cells = Object.create(null);   // id → { item, cell, btn, group }
+  var savedNodes = Object.create(null); // id → DOM-узел, перенесённый в ленту: переживает повторный build()
   var pending = [];                  // команды, чьи элементы создаёт другой модуль позже
   var tabBtns = {}, panels = {}, current = '';
   var $ = function (id) { return D.getElementById(id); };
@@ -138,6 +139,7 @@
   }
   function adopt(item, node) {
     var rec = cells[item.id]; if (!rec || !node) return false;
+    savedNodes[item.id] = node;   // повторный build() не должен терять уже перенесённые кнопки
     if (item.kind === 'select') place(rec, selectBox(item, node));
     else place(rec, skin(item, node));
     return true;
@@ -167,9 +169,9 @@
     var rec = cells[item.id] = { item: item, cell: cell, btn: null, group: group };
     if (item.slot || item.kind === 'select') { cell.hidden = true; return cell; }
     if (item.sel) {
-      var n = findLegacy(item.sel);
+      var n = savedNodes[item.id] || findLegacy(item.sel);
       if (n) { rec.btn = skin(item, n); cell.appendChild(n); }
-      else { cell.hidden = true; pending.push(item); }
+      else { cell.hidden = true; if (!pending.some(function (p) { return p.id === item.id; })) pending.push(item); }
       return cell;
     }
     rec.btn = callButton(item); cell.appendChild(rec.btn);
@@ -198,7 +200,14 @@
     return box;
   }
   function build() {
+    // Повторная сборка (app.js добавляет пункты профилей и зовёт build()) НЕ должна уничтожать
+    // уже перенесённые в ленту legacy-кнопки: textContent='' отвязывает их от DOM, но ссылки
+    // в savedNodes сохраняют узлы, и ниже они вставляются в новые ячейки. Иначе кнопки
+    // (#btnAI, #btnVerify, #btnSettings…) навсегда исчезают и init app.js падает.
+    Object.keys(cells).forEach(function (id) { var r = cells[id]; if (r && r.btn) savedNodes[id] = r.btn; });
+    var keepTab = current;
     tabsEl.textContent = ''; ribbonEl.textContent = '';
+    cells = Object.create(null); tabBtns = {}; panels = {}; pending = [];
     tabsEl.setAttribute('role', 'tablist');
     C.TABS.forEach(function (t) {
       var b = el('button', 'lx-tab', { type: 'button', role: 'tab', id: 'lxTab-' + t.id, 'data-tab': t.id, 'aria-controls': 'lxPanel-' + t.id, 'aria-selected': 'false', tabindex: '-1' });
@@ -224,7 +233,13 @@
     tg.appendChild(icon('chevron-up', 16));
     tg.addEventListener('click', function () { collapse(!R.classList.contains('lx-ribbon-collapsed')); });
     tabsEl.appendChild(tg);
-    tabsEl.addEventListener('keydown', onTabKey);
+    if (!tabsEl.__lxKeydownBound) { tabsEl.__lxKeydownBound = 1; tabsEl.addEventListener('keydown', onTabKey); }
+    // вернуть в новые ячейки кнопки/селекты, созданные модулями (slot) и сохранённые с прошлой сборки
+    Object.keys(savedNodes).forEach(function (id) {
+      var rec = cells[id]; if (!rec || rec.btn || !rec.item) return;
+      adopt(rec.item, savedNodes[id]);
+    });
+    select(keepTab || store(KEY_TAB) || C.TABS[0].id);
   }
 
   /* Прокрутка широких вкладок: стрелки по краям, затухание края, колесо мыши = горизонтальная прокрутка. */

@@ -668,9 +668,14 @@
   // Единая точка загрузки геометрии в 3D-вьюер по расширению
   async function load3DBuffer(name, buf) {
     if (/\.(glb|gltf)$/i.test(name)) {
-      if (/\.gltf$/i.test(name)) { const gltf = JSON.parse(new TextDecoder().decode(new Uint8Array(buf))); viewer.loadGltf(gltf, []); }
-      else viewer.loadGlb(buf);
-      return { ok: true, kind: 'mesh' };
+      if (!viewer || (!viewer.loadGlb && !viewer.loadGltf)) return { ok: false, kind: 'mesh', message: '3D-вьюер не загружен' };
+      let info = null;
+      try {
+        if (/\.gltf$/i.test(name)) { const gltf = JSON.parse(new TextDecoder().decode(new Uint8Array(buf))); info = viewer.loadGltf(gltf, []); }
+        else info = viewer.loadGlb(buf);
+      } catch (e) { console.warn('glb load', e); return { ok: false, kind: 'mesh', message: (e && e.message) || 'Не удалось прочитать GLB/glTF' }; }
+      try { if (viewer.resetView) viewer.resetView(); } catch (_) {}
+      return { ok: true, kind: 'mesh', meta: { kind: 'mesh', tris: (info && info.tris) || (viewer.modelDims && viewer.modelDims.tris) || 0, textures: (info && info.textures) || 0, objects: (info && info.objects) || 0, format: /\.gltf$/i.test(name) ? 'glTF' : 'GLB' } };
     }
     if (/\.(obj|stl)$/i.test(name)) {
       if (!window.MeshViewer) return { ok: false, message: 'Модуль OBJ/STL-вьюера не загружен.' };
@@ -762,12 +767,17 @@
             if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, {sourceName:p}); cacheCloud(p, pr); }
             lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0;
           } else if (pr && pr.fallback) {
-            const b64 = await API.readFile(p); if (!b64) { toast('Файл PLY не найден'); return; }
+            let b64 = null;
+            try { if (API.readPicked) { const rp = await API.readPicked(p); if (rp && rp.ok) b64 = rp.base64; } } catch (_) {}
+            if (!b64) { b64 = await API.readFile(p); }
+            if (!b64) { toast('Файл PLY не найден'); return; }
             const r = await load3DBuffer(p, b64ToU8(b64).buffer);
             if (!r.ok) { toast(r.message || 'Не удалось открыть PLY mesh'); return; }
             // load3DBuffer already routes the parsed result into the appropriate
             // viewer method; r is only a status object and has no vertex buffers.
-            lastCloudPath = p; lastCloudCount = (r.meta && r.meta.points) || 0;
+            lastCloudPath = p; lastCloudCount = (r.meta && (r.meta.points || r.meta.tris)) || 0;
+            try { if (viewer.resetView) viewer.resetView(); } catch (_) {}
+            if (r.kind !== 'points') { try { await applyModelDims(room, 'auto'); } catch (_) {} }
           } else { toast((pr && pr.message) || 'Не удалось открыть облако'); return; }
         }
       } else {
@@ -776,11 +786,13 @@
         const r = await load3DBuffer(p, buf);
         if (!r.ok) { toast(r.message || 'Не удалось открыть облако'); return; }
         if (r.kind !== 'points') await applyModelDims(room, 'auto');
-        lastCloudPath = p; lastCloudCount = (r.meta && r.meta.points) || 0;
+        lastCloudPath = p; lastCloudCount = (r.meta && (r.meta.points || r.meta.tris)) || 0;
       }
       $('btnBackRoom').style.display = '';
       pendingCloudPath = null; updateOpenCloudBtn();
-      toast('Облако открыто' + (lastCloudCount ? ': ' + Number(lastCloudCount).toLocaleString('ru-RU') + ' точек' : ''));
+      if (/\.(glb|gltf|obj|stl)$/i.test(p || '')) toast('Модель открыта' + (lastCloudCount ? ': ' + Number(lastCloudCount).toLocaleString('ru-RU') : ''));
+      else if (/\.ply$/i.test(p || '') && viewer.modelDims && viewer.modelDims.tris) toast('Меш открыт: ' + Number(viewer.modelDims.tris).toLocaleString('ru-RU') + ' треуг.');
+      else toast('Облако открыто' + (lastCloudCount ? ': ' + Number(lastCloudCount).toLocaleString('ru-RU') + ' точек' : ''));
     } catch (e) { console.warn('open cloud', e); toast('Ошибка открытия облака'); }
     finally { if (btn) btn.classList.remove('on'); }
   }
@@ -801,7 +813,33 @@
     try {
       const popts = opts && opts.allPoints ? { allPoints: true } : { skipPreview: !!(opts && opts.skipPreview), noAllAsk: !!(opts && opts.noAllAsk), forceParts: !!(opts && opts.forceParts) };
       const pr = await parseCloudWithProgress(p, String(p).split(/[\\/]/).pop(), popts);
-      if (!pr || !pr.ok) { if (!(pr && pr.cancelled)) toast((pr && pr.message) || 'Не удалось открыть облако'); return false; }
+      if (!pr || !pr.ok) {
+        // r210: главный парсер читает только облака; меш (PLY с гранями) и 3D-модели
+        // (GLB/glTF/OBJ/STL) открываем через вьюер — иначе файл «не открывался»/окно пустое.
+        const meshLike = /\.(ply|glb|gltf|obj|stl)$/i.test(String(p || ''));
+        if (meshLike) {
+          let b64 = null;
+          try { if (API.readPicked) { const rp = await API.readPicked(p); if (rp && rp.ok) b64 = rp.base64; } } catch (_) {}
+          if (!b64 && API.readFile) { try { b64 = await API.readFile(p); } catch (_) {} }
+          if (b64) {
+            const mr = await load3DBuffer(p, b64ToU8(b64).buffer);
+            if (mr && mr.ok) {
+              lastCloudPath = p; lastCloudCount = (mr.meta && (mr.meta.points || mr.meta.tris)) || 0;
+              try { window.__bimCurrentCloudPath = p; } catch (_) {}
+              try { if (viewer.resetView) viewer.resetView(); } catch (_) {}
+              if (mr.kind !== 'points') { try { await applyModelDims(current, 'auto'); } catch (_) {} }
+              try { if (window.MultiCloud && typeof window.MultiCloud.syncFromViewer === 'function') window.MultiCloud.syncFromViewer(String(p).split(/[\\/]/).pop(), p); } catch (_) {}
+              toast(mr.meta && mr.meta.tris
+                ? ('Меш открыт: ' + Number(mr.meta.tris).toLocaleString('ru-RU') + ' треуг.' + (mr.meta.textures ? ' · текстур: ' + mr.meta.textures : ''))
+                : 'Модель открыта');
+              return true;
+            }
+            if (!(pr && pr.cancelled)) { toast((mr && mr.message) || 'Не удалось открыть меш/модель'); return false; }
+          }
+        }
+        if (!(pr && pr.cancelled)) toast((pr && pr.message) || 'Не удалось открыть облако');
+        return false;
+      }
       if (pr.kind === 'mesh') viewer.loadColoredMesh(pr); else if (!pr.viewerLoaded) { viewer.loadCloud(pr, { sourceName: p }); cacheCloud(p, pr); }
       lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0;
       try { window.__bimCurrentCloudPath = p; } catch (_) {}
@@ -2231,6 +2269,10 @@
       } catch (e) { console.warn('save-model', e); toast('Модель показана, но не сохранена: ' + (e && e.message ? e.message : 'ошибка')); }
     }
     if (isCloud && r.meta) { const pts = (r.meta.points || 0).toLocaleString('ru'); toast('Облако точек · ' + pts + ' точек' + (r.meta.colored ? '' : ' · цвет по высоте')); }
+    else if (r.kind === 'mesh') {
+      const mt = r.meta || {}, nt = Number(mt.tris || (viewer.modelDims && viewer.modelDims.tris) || 0);
+      toast('Меш · ' + nt.toLocaleString('ru-RU') + ' треугольников' + (mt.textures ? ' · текстур: ' + mt.textures : (mt.colored ? ' · цвет вершин' : '')) + (mt.crsWkt ? ' · CRS' : ''));
+    }
     else if (r.kind === 'mesh-overlay') {
       toast('Меш ' + file.name + ' открыт · ' + Number(r.triangles || 0).toLocaleString('ru-RU') + ' треугольников' + meshWarningSummary(r.warnings, r.metadata));
     }
@@ -3039,7 +3081,7 @@
         if (pr && pr.ok) {
           if (pr.kind === 'mesh') { viewer.loadColoredMesh(pr); try { if (viewer.resetView) viewer.resetView(); } catch (_) {} }
           else { viewer.loadCloud(pr, { preserveView: true, sourceName:p }); cacheCloud(p, pr); }
-          lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0; return true;
+          lastCloudPath = p; lastCloudCount = (pr.meta && (pr.meta.points || pr.meta.tris)) || 0; return true;
         }
         if (pr && pr.fallback && API.readFile) {
           let b64 = null;
@@ -3049,7 +3091,7 @@
           const browserParsed = await load3DBuffer(p, b64ToU8(b64).buffer);
           if (!browserParsed || !browserParsed.ok) return false;
           if (browserParsed.kind === 'mesh') { try { if (viewer.resetView) viewer.resetView(); } catch (_) {} }
-          lastCloudPath = p; lastCloudCount = (browserParsed.meta && browserParsed.meta.points) || 0; return true;
+          lastCloudPath = p; lastCloudCount = (browserParsed.meta && (browserParsed.meta.points || browserParsed.meta.tris)) || 0; return true;
         }
         // r204: main-парсер не читает mesh-PLY (только облака) — грузим меш рендерером.
         if (/\.(ply|obj|stl|glb|gltf)$/i.test(p) && API.readFile) {
@@ -3060,7 +3102,7 @@
           const browserParsed = await load3DBuffer(p, b64ToU8(b64).buffer);
           if (!browserParsed || !browserParsed.ok) return false;
           if (browserParsed.kind === 'mesh') { try { if (viewer.resetView) viewer.resetView(); } catch (_) {} }
-          lastCloudPath = p; lastCloudCount = (browserParsed.meta && browserParsed.meta.points) || 0; return true;
+          lastCloudPath = p; lastCloudCount = (browserParsed.meta && (browserParsed.meta.points || browserParsed.meta.tris)) || 0; return true;
         }
       } catch (e) { console.warn('geom reload', e); }
       return false;
@@ -6425,14 +6467,17 @@
       ml.setAttribute('data-tip', 'Режим: ' + modeName + (CAN_PERSIST ? '' : ' — данные не записываются на диск'));
     }
 
-    $('btnAI').addEventListener('click', e => { const on = !e.currentTarget.classList.contains('on'); e.currentTarget.classList.toggle('on', on); viewer.setAIHighlight(on); });
-    $('btnVerify').addEventListener('click', () => runVerify());
-    $('btnSettings').addEventListener('click', openSettings);
-    $('btnReset').addEventListener('click', () => viewer.resetView());
-    $('btnCompare').addEventListener('click', openCompare);
-    $('cmpClose').addEventListener('click', () => $('cmpModal').classList.remove('open'));
-    $('btnEdit').addEventListener('click', () => setEditing(!editing));
-    $('btnBackup').addEventListener('click', doBackup);
+    // r210: устойчивая привязка — отсутствие одного элемента (или перестройка ленты) не должно
+    // валить весь init: иначе перестают работать все последующие кнопки, включая «Модель»/меш.
+    const onEl = (id, ev, fn) => { const el = $(id); if (el) { try { el.addEventListener(ev, fn); } catch (_) {} } return el; };
+    onEl('btnAI', 'click', e => { const on = !e.currentTarget.classList.contains('on'); e.currentTarget.classList.toggle('on', on); viewer.setAIHighlight(on); });
+    onEl('btnVerify', 'click', () => runVerify());
+    onEl('btnSettings', 'click', openSettings);
+    onEl('btnReset', 'click', () => viewer.resetView());
+    onEl('btnCompare', 'click', openCompare);
+    onEl('cmpClose', 'click', () => { const m = $('cmpModal'); if (m) m.classList.remove('open'); });
+    onEl('btnEdit', 'click', () => setEditing(!editing));
+    onEl('btnBackup', 'click', doBackup);
     bindProjectHistoryControls();
 
     // Кастомные кнопки окна (десктоп, кроме macOS — там системные «светофоры»)
@@ -6444,13 +6489,13 @@
         $('tbClose').addEventListener('click', () => API.winClose());
       } else if (wb) { wb.style.display = 'none'; }
     } catch (e) {}
-    $('btnBackRoom').addEventListener('click', () => { if (current) openRoom(current.id); });
+    onEl('btnBackRoom', 'click', () => { if (current) openRoom(current.id); });
     { const _boc = $('btnOpenCloud'); if (_boc) _boc.addEventListener('click', openPendingCloud); }
-    $('search').addEventListener('input', e => { searchTerm = e.target.value.trim().toLowerCase(); renderTree(); });
+    onEl('search', 'input', e => { searchTerm = e.target.value.trim().toLowerCase(); renderTree(); });
     document.querySelectorAll('.fchip').forEach(c => c.addEventListener('click', () => { document.querySelectorAll('.fchip').forEach(x => { x.classList.remove('active'); x.setAttribute('aria-pressed', 'false'); }); c.classList.add('active'); c.setAttribute('aria-pressed', 'true'); filter = c.dataset.f; renderTree(); }));
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => { activeTab = t.dataset.tab; syncTabs(); }));
-    $('modelInput').addEventListener('change', e => { if (e.target.files[0]) loadModelFile(e.target.files[0]); e.target.value = ''; });
-    $('docInput').addEventListener('change', e => { if (e.target.files[0]) addDocumentFile(e.target.files[0]); e.target.value = ''; });
+    onEl('modelInput', 'change', e => { if (e.target.files[0]) loadModelFile(e.target.files[0]); e.target.value = ''; });
+    onEl('docInput', 'change', e => { if (e.target.files[0]) addDocumentFile(e.target.files[0]); e.target.value = ''; });
 
     await loadTeam();
     const ps = $('projSelect'); if (ps) ps.addEventListener('change', e => switchProjectUI(e.target.value));

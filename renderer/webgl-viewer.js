@@ -58,26 +58,54 @@
     }
     return tmax < 0 ? null : (tmin > 0 ? tmin : 0);
   }
-  function buildGrid(pos) {
-    const ntri = pos.length / 9;
+  // r210: сетка-ускоритель для тяжёлых мешей. Поддерживает индексированный меш (idx):
+  // в ячейках лежат НОМЕРА треугольников, а не смещения в «супе» — вершин в буфере втрое меньше.
+  // Память — плоские Int32Array (2 прохода: счётчики → заполнение): 11 млн треугольников
+  // больше не превращаются в гигабайт JS-объектов Map/Array, пикинг остаётся быстрым.
+  function buildGrid(pos, idx) {
+    const ntri = idx ? (idx.length / 3) | 0 : (pos.length / 9) | 0;
     let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
-    for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) { const v = pos[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; }
+    const P = pos;
+    if (idx) {
+      for (let i = 0; i < idx.length; i++) { const b = idx[i] * 3; for (let k = 0; k < 3; k++) { const v = P[b + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; } }
+    } else {
+      for (let i = 0; i < P.length; i += 3) for (let k = 0; k < 3; k++) { const v = P[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; }
+    }
     const ext = [(mx[0] - mn[0]) || 1, (mx[1] - mn[1]) || 1, (mx[2] - mn[2]) || 1];
     const res = Math.max(1, Math.min(64, Math.round(Math.cbrt(ntri))));
     const dim = [res, res, res];
     const cell = [ext[0] / dim[0], ext[1] / dim[1], ext[2] / dim[2]];
-    const cells = new Map();
-    const keyOf = (cx, cy, cz) => (cx * dim[1] + cy) * dim[2] + cz;
     const clamp = (v, m) => v < 0 ? 0 : (v >= m ? m - 1 : v);
+    const nCells = dim[0] * dim[1] * dim[2];
+    const keyOf = (cx, cy, cz) => (cx * dim[1] + cy) * dim[2] + cz;
+    const counts = new Uint32Array(nCells + 1);
+    const tmn = [0, 0, 0], tmx = [0, 0, 0], c0 = [0, 0, 0], c1 = [0, 0, 0];
+    const triCells = (t) => {
+      tmn[0] = tmn[1] = tmn[2] = Infinity; tmx[0] = tmx[1] = tmx[2] = -Infinity;
+      if (idx) {
+        for (let j = 0; j < 3; j++) { const b = idx[t * 3 + j] * 3; for (let k = 0; k < 3; k++) { const v = P[b + k]; if (v < tmn[k]) tmn[k] = v; if (v > tmx[k]) tmx[k] = v; } }
+      } else {
+        const b = t * 9;
+        for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) { const v = P[b + j * 3 + k]; if (v < tmn[k]) tmn[k] = v; if (v > tmx[k]) tmx[k] = v; }
+      }
+      for (let k = 0; k < 3; k++) {
+        c0[k] = clamp(Math.floor((tmn[k] - mn[k]) / cell[k]), dim[k]);
+        c1[k] = clamp(Math.floor((tmx[k] - mn[k]) / cell[k]), dim[k]);
+      }
+    };
     for (let t = 0; t < ntri; t++) {
-      const b = t * 9;
-      let tmn = [Infinity, Infinity, Infinity], tmx = [-Infinity, -Infinity, -Infinity];
-      for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) { const v = pos[b + j * 3 + k]; if (v < tmn[k]) tmn[k] = v; if (v > tmx[k]) tmx[k] = v; }
-      const c0 = [clamp(Math.floor((tmn[0] - mn[0]) / cell[0]), dim[0]), clamp(Math.floor((tmn[1] - mn[1]) / cell[1]), dim[1]), clamp(Math.floor((tmn[2] - mn[2]) / cell[2]), dim[2])];
-      const c1 = [clamp(Math.floor((tmx[0] - mn[0]) / cell[0]), dim[0]), clamp(Math.floor((tmx[1] - mn[1]) / cell[1]), dim[1]), clamp(Math.floor((tmx[2] - mn[2]) / cell[2]), dim[2])];
-      for (let x = c0[0]; x <= c1[0]; x++) for (let y = c0[1]; y <= c1[1]; y++) for (let z = c0[2]; z <= c1[2]; z++) { const key = keyOf(x, y, z); let a = cells.get(key); if (!a) { a = []; cells.set(key, a); } a.push(b); }
+      triCells(t);
+      for (let x = c0[0]; x <= c1[0]; x++) for (let y = c0[1]; y <= c1[1]; y++) for (let z = c0[2]; z <= c1[2]; z++) counts[keyOf(x, y, z) + 1]++;
     }
-    return { mn, mx, dim, cell, cells, keyOf };
+    for (let i = 1; i <= nCells; i++) counts[i] += counts[i - 1];
+    const total = counts[nCells];
+    const data = new Int32Array(total);
+    const fill = counts.slice(0, nCells);   // курсор на каждую ячейку
+    for (let t = 0; t < ntri; t++) {
+      triCells(t);
+      for (let x = c0[0]; x <= c1[0]; x++) for (let y = c0[1]; y <= c1[1]; y++) for (let z = c0[2]; z <= c1[2]; z++) { const key = keyOf(x, y, z); data[fill[key]++] = t; }
+    }
+    return { mn, mx, dim, cell, keyOf, counts, data, indexed: !!idx };
   }
   function traverseGrid(grid, o, d, cb) {
     const hit = rayAABB(o, d, grid.mn, grid.mx);
@@ -93,8 +121,9 @@
       else { step[k] = 0; tMax[k] = Infinity; tDelta[k] = Infinity; }
     }
     for (;;) {
-      const arr = grid.cells.get(grid.keyOf(cur[0], cur[1], cur[2]));
-      if (arr && cb(arr)) return;
+      const key = grid.keyOf(cur[0], cur[1], cur[2]);
+      const s = grid.counts[key], e = grid.counts[key + 1];
+      if (e > s && cb(grid.data.subarray(s, e))) return;
       const axis = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
       cur[axis] += step[axis];
       if (cur[axis] < 0 || cur[axis] >= grid.dim[axis]) return;
@@ -174,7 +203,7 @@
       float t = (uElevMax==uElevMin) ? 0.5 : clamp((vW.y-uElevMin)/(uElevMax-uElevMin),0.0,1.0);
       c = uPalette>1.5 ? vec3(1.0,1.0-t,0.0) : uPalette>0.5 ? vec3(t) : ramp(t);
     } else if(uUseVColor>0.5) c=vC; else c=uColor;
-    if(uUnlit<0.5){ vec3 n=normalize(vN); float d=max(dot(n,normalize(uLightDir)),0.0); c=c*(uAmbient+(1.0-uAmbient)*d); }
+    if(uUnlit<0.5){ vec3 n=normalize(vN); if(!gl_FrontFacing) n=-n; float d=max(dot(n,normalize(uLightDir)),0.0); c=c*(uAmbient+(1.0-uAmbient)*d); }
     c *= uBright;
     if(uGrade>0.5 && uUseVColor>0.5 && uElevMode<0.5 && uAttrMode<1.5){
       c *= uExposure;
@@ -210,6 +239,28 @@
     }
     if(uFrame>0.5){ vec2 fe=abs(gl_PointCoord*2.0-1.0); if(max(fe.x,fe.y)>0.70) c=vec3(0.0); }
     frag=vec4(c, alpha);
+  }`;
+
+  // r210: GLB/glTF с текстурой — отдельная программа (UV + baseColorTexture).
+  // Меш с текстурой рисуется этим проходом, остальная сцена — прежним (uUnlit/точки/линии).
+  const TEX_VS = `#version 300 es
+  in vec3 aPos; in vec3 aNormal; in vec2 aUV; uniform mat4 uMVP;
+  out vec3 vN; out vec3 vW; out vec2 vUV;
+  void main(){ vW = aPos; vN = aNormal; vUV = aUV; gl_Position = uMVP * vec4(aPos, 1.0); }`;
+  const TEX_FS = `#version 300 es
+  precision highp float; in vec3 vN; in vec3 vW; in vec2 vUV; out vec4 frag;
+  uniform sampler2D uTex; uniform vec3 uColor; uniform float uAmbient; uniform vec3 uLightDir;
+  uniform float uClipOn; uniform vec3 uClipMin; uniform vec3 uClipMax; uniform float uUnlit;
+  void main(){
+    if(uClipOn>0.5 && (vW.x<uClipMin.x||vW.x>uClipMax.x||vW.y<uClipMin.y||vW.y>uClipMax.y||vW.z<uClipMin.z||vW.z>uClipMax.z)) discard;
+    vec4 t = texture(uTex, vUV);
+    vec3 c = t.rgb * uColor;
+    if(uUnlit<0.5){
+      vec3 n = normalize(vN); if(!gl_FrontFacing) n = -n;
+      float d = max(dot(n, normalize(uLightDir)), 0.0);
+      c *= (uAmbient + (1.0 - uAmbient) * d);
+    }
+    frag = vec4(c, 1.0);
   }`;
 
   // EDL (Eye-Dome Lighting) — экранный постпроцесс: подчёркивает края/глубину облака,
@@ -466,6 +517,20 @@
       gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
       const _tc = this._themeColors(); gl.clearColor(_tc.bg[0], _tc.bg[1], _tc.bg[2], 1);
     }
+    // r210: программа для GLB/glTF с текстурой (UV + baseColorTexture). Создаётся лениво,
+    // поэтому точечные облака и обычные меши не платят за лишний шейдер.
+    _ensureTexProgram() {
+      if (this._texProg) return this._texProg;
+      const gl = this.gl;
+      const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('tex shader: ' + gl.getShaderInfoLog(s)); return s; };
+      const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, TEX_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, TEX_FS)); gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('tex link: ' + gl.getProgramInfoLog(p));
+      this._texProg = p;
+      this._texA = { aPos: gl.getAttribLocation(p, 'aPos'), aNormal: gl.getAttribLocation(p, 'aNormal'), aUV: gl.getAttribLocation(p, 'aUV') };
+      this._texU = {};
+      for (const k of ['uMVP', 'uTex', 'uColor', 'uAmbient', 'uLightDir', 'uClipOn', 'uClipMin', 'uClipMax', 'uUnlit']) this._texU[k] = gl.getUniformLocation(p, k);
+      return p;
+    }
 
     _resize() {
       // r145: масштаб рендера (динамическое разрешение во время вращения) — 1 в покое.
@@ -498,6 +563,13 @@
         gl.bufferSubData(T, i, n === CH ? tmp : tmp.subarray(0, n));
       }
       return true;
+    }
+    // r210: цвет вершин меша может быть уже байтами (Uint8Array, как в PLY) — грузим как есть,
+    // это в 4 раза меньше видеопамяти и JS-памяти. Возвращает тип для vertexAttribPointer.
+    _uploadColorArray(col) {
+      const gl = this.gl, T = gl.ARRAY_BUFFER;
+      if (col instanceof Uint8Array || col instanceof Uint8ClampedArray) { gl.bufferData(T, col, gl.STATIC_DRAW); return 'u8'; }
+      return this._bigColorBuffer(col) ? 'u8' : 'f32';
     }
     // Ревизия 15: облако крупнее _segPoints делится на сегменты — отдельные буферы видеопамяти (позиции Float32, цвет 3 байта; интенсивность и
     // классы — лениво, только когда включён такой цвет). Рисуются все сегменты подряд: ВСЕ точки файла, сколько бы их ни было (ограничение
@@ -676,7 +748,8 @@
       const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); this._bigBufferData(o.pos);
       gl.enableVertexAttribArray(this.aPos); gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
       if (o.nor) { const nb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nb); gl.bufferData(gl.ARRAY_BUFFER, o.nor, gl.STATIC_DRAW); gl.enableVertexAttribArray(this.aNormal); gl.vertexAttribPointer(this.aNormal, 3, gl.FLOAT, false, 0, 0); o._nb = nb; }
-if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); const u8 = this._bigColorBuffer(o.col); gl.enableVertexAttribArray(this.aColor); gl.vertexAttribPointer(this.aColor, 3, u8 ? gl.UNSIGNED_BYTE : gl.FLOAT, !!u8, 0, 0); o._cb = cb; }
+      else if (!o.points && !o.line) { try { gl.disableVertexAttribArray(this.aNormal); gl.vertexAttrib3f(this.aNormal, 0, 1, 0); } catch (_) {} }   // меш без нормалей: не normalize(0)
+      if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); const kind = this._uploadColorArray(o.col); gl.enableVertexAttribArray(this.aColor); if (kind === 'u8') gl.vertexAttribPointer(this.aColor, 3, gl.UNSIGNED_BYTE, true, 0, 0); else gl.vertexAttribPointer(this.aColor, 3, gl.FLOAT, false, 0, 0); o._cb = cb; }
       if (o.intensity && this.aIntensity >= 0) {
         const ib = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ib);
         gl.bufferData(gl.ARRAY_BUFFER, o.intensity, gl.STATIC_DRAW);
@@ -691,16 +764,36 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         gl.vertexAttribPointer(this.aClassification, 1, gl.UNSIGNED_BYTE, false, 0, 0);
         o._kb = kb;
       }
+      // r210: индексированный меш — вершин в 3 раза меньше, чем в «супе» треугольников
+      if (o.idx && o.idx.length) {
+        const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, o.idx instanceof Uint32Array ? o.idx : Uint32Array.from(o.idx), gl.STATIC_DRAW);
+        o._ib = ib; o.idxCount = o.idx.length; o.triCount = (o.idx.length / 3) | 0;
+      } else if (o.pos && !o.points && !o.line) o.triCount = (o.pos.length / 9) | 0;
+      // r210: GLB/glTF с baseColorTexture — UV в том же VAO (атрибут текстурной программы)
+      if (o.uv && o.uv.length) {
+        this._ensureTexProgram();
+        const uv = o.uv instanceof Float32Array ? o.uv : new Float32Array(o.uv);
+        const ub = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ub); gl.bufferData(gl.ARRAY_BUFFER, uv, gl.STATIC_DRAW);
+        const loc = this._texA.aUV; gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0); o._ub = ub;
+        // локации атрибутов двух программ могут не совпасть — продублируем pos/normal в VAO под текстурную программу
+        if (this._texA.aPos !== this.aPos) { gl.enableVertexAttribArray(this._texA.aPos); gl.vertexAttribPointer(this._texA.aPos, 3, gl.FLOAT, false, 0, 0); }
+        if (this._texA.aNormal !== this.aNormal) {
+          if (o.nor) { gl.enableVertexAttribArray(this._texA.aNormal); gl.vertexAttribPointer(this._texA.aNormal, 3, gl.FLOAT, false, 0, 0); }
+          else { try { gl.disableVertexAttribArray(this._texA.aNormal); gl.vertexAttrib3f(this._texA.aNormal, 0, 1, 0); } catch (_) {} }
+        }
+      }
       gl.bindVertexArray(null); o._vao = vao; o._pb = pb; o.count = o.pos.length / 3;
       if (!o.line) {
         let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
         const P = o.pos; for (let i = 0; i < P.length; i += 3) for (let k = 0; k < 3; k++) { const v = P[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; }
         o.aabb = { mn, mx };
-        if (!o.points && P.length / 9 > 1500) o._grid = buildGrid(P);   // BVH-подобный ускоритель для тяжёлых мешей
+        const ntri = o.idx ? (o.idx.length / 3) : (P.length / 9);
+        if (!o.points && ntri > 1500) o._grid = buildGrid(P, o.idx);   // BVH-подобный ускоритель для тяжёлых мешей
       }
       return o;
     }
-    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._segs) { for (const sg of o._segs) { try { gl.deleteVertexArray(sg.vao); gl.deleteBuffer(sg.pb); if (sg.cb) gl.deleteBuffer(sg.cb); if (sg.ib) gl.deleteBuffer(sg.ib); if (sg.kb) gl.deleteBuffer(sg.kb); if (sg.rb) gl.deleteBuffer(sg.rb); } catch (_) {} } o._segs = null; o._radModel = null; o._radSegReady = false; o._vao = null; o._pb = null; o._cb = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._kb) gl.deleteBuffer(o._kb); if (o._radVbo) { gl.deleteBuffer(o._radVbo); o._radVbo = null; o._rad = null; } } }
+    _delObjs(list) { const gl = this.gl; for (const o of list) { if (o._lodCells) { for (const c of o._lodCells) { gl.deleteVertexArray(c.buf.vao); gl.deleteBuffer(c.buf.pb); if (c.buf.cb) gl.deleteBuffer(c.buf.cb); } o._lodCells = null; } if (o._lodCoarse) { gl.deleteVertexArray(o._lodCoarse.vao); gl.deleteBuffer(o._lodCoarse.pb); if (o._lodCoarse.cb) gl.deleteBuffer(o._lodCoarse.cb); o._lodCoarse = null; } if (o._segs) { for (const sg of o._segs) { try { gl.deleteVertexArray(sg.vao); gl.deleteBuffer(sg.pb); if (sg.cb) gl.deleteBuffer(sg.cb); if (sg.ib) gl.deleteBuffer(sg.ib); if (sg.kb) gl.deleteBuffer(sg.kb); if (sg.rb) gl.deleteBuffer(sg.rb); } catch (_) {} } o._segs = null; o._radModel = null; o._radSegReady = false; o._vao = null; o._pb = null; o._cb = null; } if (o._vao) gl.deleteVertexArray(o._vao); if (o._pb) gl.deleteBuffer(o._pb); if (o._nb) gl.deleteBuffer(o._nb); if (o._cb) gl.deleteBuffer(o._cb); if (o._ib) gl.deleteBuffer(o._ib); if (o._ub) gl.deleteBuffer(o._ub); if (o._kb) gl.deleteBuffer(o._kb); if (o._radVbo) { gl.deleteBuffer(o._radVbo); o._radVbo = null; o._rad = null; } } }
     _makeLodObj(o) {
       const gl = this.gl; const lb = o._lodBuild;
       const mkBuf = (pos, col) => {
@@ -989,42 +1082,180 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       const dv = new DataView(arrayBuffer); if (dv.getUint32(0, true) !== 0x46546C67) throw new Error('Файл не является .glb');
       const total = dv.getUint32(8, true); let off = 12, json = null, bin = null;
       while (off < total) { const clen = dv.getUint32(off, true), ctype = dv.getUint32(off + 4, true); off += 8; const chunk = arrayBuffer.slice(off, off + clen); off += clen; if (ctype === 0x4E4F534A) json = JSON.parse(new TextDecoder('utf-8').decode(chunk)); else if (ctype === 0x004E4942) bin = new Uint8Array(chunk); }
-      if (!json) throw new Error('В .glb нет JSON-чанка'); this.loadGltf(json, bin ? [bin] : []);
+      if (!json) throw new Error('В .glb нет JSON-чанка'); return this.loadGltf(json, bin ? [bin] : []);
     }
 
+    // r210: GLB/glTF 2.0 — геометрия из примитивов (с учётом node-трансформов), цвета вершин,
+    // материалы (baseColorFactor) и главное — baseColorTexture (PNG/JPEG из GLB) с UV.
+    // Текстуры декодируются асинхронно и подставляются в объекты после загрузки, без блокировки UI.
     loadGltf(gltf, buffers) {
-      const getAcc = i => { const acc = gltf.accessors[i], bv = gltf.bufferViews[acc.bufferView], src = buffers[bv.buffer]; const u8 = src instanceof Uint8Array ? src : new Uint8Array(src); const off = u8.byteOffset + (bv.byteOffset || 0) + (acc.byteOffset || 0); const comp = { 5126: Float32Array, 5123: Uint16Array, 5125: Uint32Array, 5121: Uint8Array }[acc.componentType]; const num = acc.count * ({ SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }[acc.type]); return new comp(u8.buffer, off, num); };
-      const pos = []; const nrmArr = [];
-      const addMesh = (mi, world) => {
-        const nmat = invert(world);   // нормали трансформируем обратной транспонированной матрицей
-        for (const prim of (gltf.meshes[mi].primitives || [])) {
-          if (prim.attributes.POSITION == null) continue;
-          const Pa = getAcc(prim.attributes.POSITION);
-          const Na = prim.attributes.NORMAL != null ? getAcc(prim.attributes.NORMAL) : null;   // уважаем accessor NORMAL
-          const idx = prim.indices != null ? getAcc(prim.indices) : null;
-          const vcount = idx ? idx.length : (Pa.length / 3);
-          const gi = k => idx ? idx[k] : k;
-          for (let k = 0; k + 2 < vcount; k += 3) {
-            const wp = [], vis = [];
-            for (let j = 0; j < 3; j++) { const vi = gi(k + j); vis.push(vi); wp.push(tpt(world, [Pa[vi * 3], Pa[vi * 3 + 1], Pa[vi * 3 + 2]])); }
-            let wn;
-            if (Na) { wn = vis.map(vi => { const t = tvec(nmat, [Na[vi * 3], Na[vi * 3 + 1], Na[vi * 3 + 2], 0]); return norm([t[0], t[1], t[2]]); }); }
-            else { const fn = norm(cross(sub(wp[1], wp[0]), sub(wp[2], wp[0]))); wn = [fn, fn, fn]; }
-            for (let j = 0; j < 3; j++) { pos.push(wp[j][0], wp[j][1], wp[j][2]); nrmArr.push(wn[j][0], wn[j][1], wn[j][2]); }
+      if (!gltf || typeof gltf !== 'object') throw new Error('Пустой glTF');
+      for (const k of ['accessors', 'bufferViews', 'meshes', 'nodes']) if (!Array.isArray(gltf[k])) gltf[k] = [];
+      const toBytes = (uri) => {
+        try {
+          if (typeof uri !== 'string' || !/^data:/i.test(uri)) return null;
+          const comma = uri.indexOf(',');
+          if (comma < 0) return null;
+          const meta = uri.slice(5, comma), b64 = uri.slice(comma + 1);
+          const binStr = /;base64/i.test(meta) ? atob(b64) : decodeURIComponent(b64);
+          const out = new Uint8Array(binStr.length);
+          for (let i = 0; i < binStr.length; i++) out[i] = binStr.charCodeAt(i) & 255;
+          return out;
+        } catch (_) { return null; }
+      };
+      const bufData = (i) => {
+        if (buffers && buffers[i]) return buffers[i];
+        const b = (gltf.buffers || [])[i];
+        return b && b.uri ? toBytes(b.uri) : null;
+      };
+      const getAcc = (i) => {
+        const acc = gltf.accessors[i]; if (!acc || acc.bufferView == null) return null;
+        const bv = gltf.bufferViews[acc.bufferView]; if (!bv) return null;
+        const src = bufData(bv.buffer); if (!src) return null;
+        const u8 = src instanceof Uint8Array ? src : new Uint8Array(src);
+        const off = ((u8.byteOffset || 0) + (bv.byteOffset || 0) + (acc.byteOffset || 0));
+        const Comp = { 5120: Int8Array, 5121: Uint8Array, 5122: Int16Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array }[acc.componentType];
+        if (!Comp) return null;
+        const num = acc.count * ({ SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }[acc.type] || 1);
+        try { return new Comp(u8.buffer, u8.byteOffset + (bv.byteOffset || 0) + (acc.byteOffset || 0), num); } catch (_) { return null; }
+      };
+      // --- текстуры (ленивая асинхронная загрузка, кэш по индексу) ---
+      this._glbTextures = (this._glbTextures || []);
+      const jobs = new Map();
+      const imageBytes = (imgIdx) => {
+        const img = (gltf.images || [])[imgIdx]; if (!img) return null;
+        if (img.bufferView != null) {
+          const bv = gltf.bufferViews[img.bufferView]; if (!bv) return null;
+          const src = bufData(bv.buffer); if (!src) return null;
+          const u8 = src instanceof Uint8Array ? src : new Uint8Array(src);
+          const start = (u8.byteOffset || 0) + (bv.byteOffset || 0);
+          return { bytes: new Uint8Array(u8.buffer, start, bv.byteLength), mime: img.mimeType || (img.uri && /\.jpe?g$/i.test(img.uri) ? 'image/jpeg' : 'image/png') };
+        }
+        if (img.uri) { const b = toBytes(img.uri); if (b) return { bytes: b, mime: (img.uri.match(/^data:([^;,]+)/i) || [])[1] || 'image/png' }; }
+        return null;
+      };
+      const texJob = (texIdx) => {
+        if (texIdx == null) return null;
+        if (jobs.has(texIdx)) return jobs.get(texIdx);
+        const tex = (gltf.textures || [])[texIdx];
+        const job = { tex: null, failed: false, texIdx };
+        jobs.set(texIdx, job);
+        const src = tex && imageBytes(tex.source);
+        if (!src || typeof createImageBitmap !== 'function') { job.failed = true; return job; }
+        try {
+          const blob = new Blob([src.bytes], { type: src.mime || 'image/png' });
+          createImageBitmap(blob).then((bmp) => {
+            try {
+              const gl = this.gl;
+              const t = gl.createTexture();
+              gl.bindTexture(gl.TEXTURE_2D, t);
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+              gl.generateMipmap(gl.TEXTURE_2D);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+              gl.bindTexture(gl.TEXTURE_2D, null);
+              job.tex = t; this._glbTextures.push(t);
+              try { bmp.close && bmp.close(); } catch (_) {}
+              for (const o of this.base) if (o._texJob === job) { o._tex = t; o._texAmbient = 0.68; }
+              this.render();
+            } catch (e) { job.failed = true; try { console.warn('[glb] texture upload failed', e); } catch (_) {} }
+          }).catch((e) => { job.failed = true; try { console.warn('[glb] texture decode failed', e && e.message); } catch (_) {} });
+        } catch (e) { job.failed = true; }
+        return job;
+      };
+      // --- геометрия ---
+      const objs = [];
+      const addPrimitive = (meshIdx, prim, world, meshName) => {
+        if (!prim || prim.attributes == null || prim.mode === 1 || prim.mode === 0) return;
+        const posAccIdx = prim.attributes.POSITION; if (posAccIdx == null) return;
+        const Pa = getAcc(posAccIdx); if (!Pa) return;
+        const Na = prim.attributes.NORMAL != null ? getAcc(prim.attributes.NORMAL) : null;
+        const UvA = prim.attributes.TEXCOORD_0 != null ? getAcc(prim.attributes.TEXCOORD_0) : (prim.attributes.TEXCOORD != null ? getAcc(prim.attributes.TEXCOORD) : null);
+        const Ca = prim.attributes.COLOR_0 != null ? getAcc(prim.attributes.COLOR_0) : null;
+        const idx = prim.indices != null ? getAcc(prim.indices) : null;
+        const vcount = idx ? idx.length : (Pa.length / 3);
+        const gi = k => idx ? idx[k] : k;
+        const mat = (gltf.materials || [])[prim.material] || null;
+        const pbr = mat && mat.pbrMetallicRoughness || null;
+        const factor = pbr && Array.isArray(pbr.baseColorFactor) ? pbr.baseColorFactor : (mat && Array.isArray(mat.baseColorFactor) ? mat.baseColorFactor : null);
+        const hasTex = !!(pbr && pbr.baseColorTexture && pbr.baseColorTexture.index != null && UvA);
+        const job = hasTex ? texJob(pbr.baseColorTexture.index) : null;
+        const nmat = invert(world);
+        const pos = [], nrm = [], uvs = [], cols = [];
+        const caType = (Ca && gltf.accessors[prim.attributes.COLOR_0] || {}).type || 'VEC4';
+        const caStride = caType === 'VEC3' ? 3 : 4;
+        const caDiv = !Ca ? 1 : (Ca.constructor === Float32Array ? 1 : (Ca.constructor === Uint16Array ? 65535 : (Ca.constructor === Int8Array ? 127 : 255)));
+        for (let t = 0; t + 2 < vcount; t += 3) {
+          const wp = [], vis = [];
+          for (let j = 0; j < 3; j++) {
+            const vi = gi(t + j); vis.push(vi);
+            wp.push(tpt(world, [Pa[vi * 3], Pa[vi * 3 + 1], Pa[vi * 3 + 2]]));
+          }
+          let wn;
+          if (Na) wn = vis.map(vi => { const tt = tvec(nmat, [Na[vi * 3], Na[vi * 3 + 1], Na[vi * 3 + 2], 0]); return norm([tt[0], tt[1], tt[2]]); });
+          else { const fn = norm(cross(sub(wp[1], wp[0]), sub(wp[2], wp[0]))); wn = [fn, fn, fn]; }
+          for (let j = 0; j < 3; j++) {
+            const vi = vis[j];
+            pos.push(wp[j][0], wp[j][1], wp[j][2]);
+            nrm.push(wn[j][0], wn[j][1], wn[j][2]);
+            if (hasTex && UvA) uvs.push(UvA[vi * 2], UvA[vi * 2 + 1]);
+            if (Ca && !hasTex) cols.push(Ca[vi * caStride] / caDiv, Ca[vi * caStride + 1] / caDiv, Ca[vi * caStride + 2] / caDiv);
           }
         }
+        if (!pos.length) return;
+        const o = {
+          id: null, el: null, status: 'none',
+          pos: new Float32Array(pos), nor: new Float32Array(nrm),
+          color: factor ? [factor[0], factor[1], factor[2]] : hex2rgb('#8f9bb0'),
+          _glb: true, _glbName: meshName || ('mesh ' + meshIdx)
+        };
+        if (uvs.length) o.uv = new Float32Array(uvs);
+        if (!hasTex && cols.length) o.col = new Float32Array(cols);
+        if (job) { o._texJob = job; if (job.tex) { o._tex = job.tex; o._texAmbient = 0.68; } }
+        objs.push(o);
       };
-      const visit = (idx, parent) => { const n = gltf.nodes[idx]; const wm = mul(parent, nodeLocal(n)); if (n.mesh != null) addMesh(n.mesh, wm); (n.children || []).forEach(c => visit(c, wm)); };
+      const visit = (nodeIdx, parent) => {
+        const n = gltf.nodes[nodeIdx]; if (!n) return;
+        const wm = mul(parent, nodeLocal(n));
+        if (n.mesh != null && gltf.meshes[n.mesh]) {
+          const mesh = gltf.meshes[n.mesh];
+          for (const prim of (mesh.primitives || [])) addPrimitive(n.mesh, prim, wm, mesh.name);
+        }
+        (n.children || []).forEach(c => visit(c, wm));
+      };
       const scene = gltf.scenes ? gltf.scenes[gltf.scene || 0] : null;
       if (gltf.nodes && scene && scene.nodes) scene.nodes.forEach(r => visit(r, ident()));
-      else if (gltf.meshes) gltf.meshes.forEach((_, i) => addMesh(i, ident()));
-      const P = new Float32Array(pos); const nor = new Float32Array(nrmArr);
+      else if (gltf.meshes) gltf.meshes.forEach((m, i) => (m.primitives || []).forEach(p => addPrimitive(i, p, ident(), m.name)));
+      if (!objs.length) throw new Error('В glTF/GLB нет треугольной геометрии');
       this.room = null; this.selectedId = null; this.isolate = false; this._clearMeasure();
-      this._modelFull = { pos: P, nor }; this.lod = false;
-      this._setBase([{ id: null, pos: P, nor, color: hex2rgb('#8f9bb0'), status: 'none' }]);
-      this.modelDims = this._computeModelDims(P);
+      this._undo = [];
+      // glTF уже Y-up, своя система координат/CRS — прежние метаданные облака не наследуем
+      this._srcXform = null; this._srcCrs = null; this._srcUnits = null;
+      this._srcMeta = { kind: 'mesh', format: 'glTF/GLB', textures: jobs.size };
+      this._classificationLabels = null; this._intensityValues = null; this._attributeWarnings = [];
+      this._glbInfo = { objects: objs.length, textures: jobs.size, textured: [...jobs.values()].filter(j => !j.failed).length };
+      this._modelFull = null; this.lod = false;
+      this._setBase(objs);
+      this.modelDims = this._computeModelDimsMulti(objs);
+      this._srcMeta.tris = this.modelDims ? this.modelDims.tris : 0;
       this._frame(); this.render();
       if (typeof this.onModelDims === 'function' && this.modelDims) this.onModelDims(this.modelDims);
+      return { objects: objs.length, textures: jobs.size, tris: this.modelDims && this.modelDims.tris };
+    }
+    _computeModelDimsMulti(objs) {
+      if (!objs || !objs.length) return null;
+      let dims = null, vol = 0, tris = 0, verts = 0;
+      for (const o of objs) {
+        const d = this._computeModelDims(o);
+        if (!d) continue;
+        if (!dims) dims = d;
+        vol += d.volume || 0; tris += d.tris || 0; verts += d.vertices || 0;
+      }
+      if (!dims) return null;
+      dims.volume = vol; dims.tris = tris; dims.vertices = verts;
+      return dims;
     }
 
     // Облако точек (LAS/LAZ/E57/PLY): pos + поточечный цвет (col)
@@ -1499,10 +1730,12 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       this._srcXform = meta.srcXform || null;
       this._srcCrs = meta.crsWkt || null;
       this._srcUnits = meta.units || null; this._srcMeta = Object.assign({}, meta);
-      const P = mesh.pos, nor = mesh.nor, col = mesh.col || null;
-      this._modelFull = { pos: P, nor, col }; this.lod = false;
-      this._setBase([{ id: null, pos: P, nor, col, color: hex2rgb('#9aa6bb'), status: 'none' }]);
-      this.modelDims = this._computeModelDims(P);
+      const P = mesh.pos, nor = mesh.nor, col = mesh.col || null, idx = mesh.idx || null;
+      this._modelFull = idx ? { pos: P, nor, col, idx } : { pos: P, nor, col }; this.lod = false;
+      // r210: индексированный меш (pos/nor/col на вершину + idx) грузится втрое компактнее «супа».
+      this._setBase([{ id: null, pos: P, nor, col, idx, uv: mesh.uv || null, color: hex2rgb('#9aa6bb'), status: 'none' }]);
+      const _mobj = this.base && this.base[0];
+      this.modelDims = this._computeModelDims(_mobj || P);
       this._frame(); this.render();
       if (typeof this.onModelDims === 'function' && this.modelDims) this.onModelDims(this.modelDims);
     }
@@ -1512,27 +1745,60 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       return { w, d, h, footprint: w * d, bboxVolume: w * d * h, volume: 0, tris: 0, points: n, isCloud: true, mn: c.mn.slice(), mx: c.mx.slice() };
     }
 
-    // Реальные габариты/площадь/объём модели из мировой геометрии (значения «1 в 1» с 3D)
-    _computeModelDims(P) {
+    // Реальные габариты/площадь/объём модели из мировой геометрии (значения «1 в 1» с 3D).
+    // r210: принимает объект вьюера (с idx) или старый «суп» позиций.
+    _computeModelDims(objOrPos) {
       const c = this.bbox; if (!c || c.mn[0] === Infinity) return null;
       const w = c.mx[0] - c.mn[0], h = c.mx[1] - c.mn[1], d = c.mx[2] - c.mn[2];
+      const obj = (objOrPos && objOrPos.pos) ? objOrPos : null;
+      const P = obj ? obj.pos : objOrPos;
+      const I = obj && obj.idx ? obj.idx : null;
+      const nt = I ? (I.length / 3) | 0 : Math.floor(P.length / 9);
       let vol6 = 0;   // объём меша через сумму знаковых тетраэдров (теорема о дивергенции)
-      for (let i = 0; i + 8 < P.length; i += 9) {
-        const ax = P[i], ay = P[i + 1], az = P[i + 2], bx = P[i + 3], by = P[i + 4], bz = P[i + 5], cx = P[i + 6], cy = P[i + 7], cz = P[i + 8];
-        vol6 += ax * (by * cz - cy * bz) - bx * (ay * cz - cy * az) + cx * (ay * bz - by * az);
+      if (I) {
+        for (let t = 0; t < I.length; t += 3) {
+          const ia = I[t] * 3, ib = I[t + 1] * 3, ic = I[t + 2] * 3;
+          const ax = P[ia], ay = P[ia + 1], az = P[ia + 2], bx = P[ib], by = P[ib + 1], bz = P[ib + 2], cx = P[ic], cy = P[ic + 1], cz = P[ic + 2];
+          vol6 += ax * (by * cz - cy * bz) - bx * (ay * cz - cy * az) + cx * (ay * bz - by * az);
+        }
+      } else {
+        for (let i = 0; i + 8 < P.length; i += 9) {
+          const ax = P[i], ay = P[i + 1], az = P[i + 2], bx = P[i + 3], by = P[i + 4], bz = P[i + 5], cx = P[i + 6], cy = P[i + 7], cz = P[i + 8];
+          vol6 += ax * (by * cz - cy * bz) - bx * (ay * cz - cy * az) + cx * (ay * bz - by * az);
+        }
       }
-      return { w, d, h, footprint: w * d, bboxVolume: w * d * h, volume: Math.abs(vol6) / 6, tris: Math.floor(P.length / 9), mn: c.mn.slice(), mx: c.mx.slice() };
+      return { w, d, h, footprint: w * d, bboxVolume: w * d * h, volume: Math.abs(vol6) / 6, tris: nt, vertices: P.length / 3, mn: c.mn.slice(), mx: c.mx.slice() };
+    }
+
+    // r210: дистанция камеры, при которой bbox целиком попадает в кадр (учитываем FOV и aspect).
+    // Раньше dist=size*1.28 для широкого фасада давал пустой кадр/обрезку, а камера после
+    // загрузки меша могла смотреть мимо него — отсюда «меш не виден».
+    _fitCameraDist(ex, ey, ez) {
+      const vfov = this._fov || 0.87;
+      let asp = 1.6;
+      try {
+        const w = (this.canvas && this.canvas.clientWidth) || (this.canvas && this.canvas.width) || 0;
+        const h = (this.canvas && this.canvas.clientHeight) || (this.canvas && this.canvas.height) || 0;
+        if (w > 0 && h > 0) asp = w / h;
+      } catch (_) {}
+      asp = Math.max(0.2, Math.min(4, asp));
+      const hfov = 2 * Math.atan(Math.tan(vfov / 2) * asp);
+      const needV = (ey / 2) / Math.tan(vfov / 2);
+      const needH = (ex / 2) / Math.tan(hfov / 2);
+      const needD = (ez / 2) / Math.tan(hfov / 2) * 0.5;
+      return Math.max(1e-3, Math.max(needV, needH) * 1.35 + needD + 0.05 * Math.max(ex, ey, ez));
     }
 
     _frame() { const c = this.bbox;
       this.target = [(c.mn[0] + c.mx[0]) / 2, (c.mn[1] + c.mx[1]) / 2, (c.mn[2] + c.mx[2]) / 2];
       const ex=Math.max(1e-3,c.mx[0]-c.mn[0]), ey=Math.max(1e-3,c.mx[1]-c.mn[1]), ez=Math.max(1e-3,c.mx[2]-c.mn[2]);
       const long=Math.max(ex,ez), cross=Math.max(ey,Math.min(ex,ez));
+      const fit = this._fitCameraDist(ex, ey, ez);
       if(long/Math.max(1e-3,Math.min(ex,ez))>3){
         this.yaw=ez>=ex?0.28:(Math.PI/2-0.28); this.pitch=-0.18;
-        this.dist=Math.max(long*0.78+cross*1.7,cross*2.8);
+        this.dist=Math.max(fit, cross*1.6);
       }else{
-        const size=Math.max(ex,ey,ez)||8; this.yaw=-0.72; this.pitch=-0.52; this.dist=size*1.28;
+        this.yaw=-0.72; this.pitch=-0.52; this.dist=fit;
       }
       this._ortho=false;
     }
@@ -1542,6 +1808,7 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       const ex = Math.max(1e-3, c.mx[0] - c.mn[0]), ey = Math.max(1e-3, c.mx[1] - c.mn[1]), ez = Math.max(1e-3, c.mx[2] - c.mn[2]);
       const horizontalLong = Math.max(ex, ez), cross = Math.max(ey, Math.min(ex, ez));
       const elongated = horizontalLong / Math.max(1e-3, Math.min(ex, ez)) > 3;
+      const fit = this._fitCameraDist(ex, ey, ez);
       let yaw, pitch, dist;
       if (elongated) {
         // Long corridors/buildings must be viewed mostly along their long axis.
@@ -1549,12 +1816,11 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         // correctly-scaled 4 m-high scan look like a flat strip.
         yaw = ez >= ex ? 0.28 : (Math.PI / 2 - 0.28);
         pitch = -0.18;
-        dist = horizontalLong * 0.78 + cross * 1.7;
+        dist = Math.max(fit, cross * 1.6);
       } else {
-        const size = Math.max(ex, ey, ez) || 8;
-        yaw = -0.72; pitch = -0.52; dist = size * 1.28;
+        yaw = -0.72; pitch = -0.52; dist = fit;
       }
-      this._tweenTo({ yaw, pitch, dist:Math.max(dist, cross * 2.2), target:t });
+      this._tweenTo({ yaw, pitch, dist, target:t });
       this._ortho = false;
     }
     // Ортографическая проекция (точный план, без перспективных искажений)
@@ -3336,11 +3602,33 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         gl.uniform1f(this.u.uRound, 0); gl.uniform1f(this.u.uSoft, 0); gl.uniform1f(this.u.uSoftFlat, 0); gl.uniform1f(this.u.uSoftAlpha, 0); gl.uniform1f(this.u.uFrame, 0); gl.uniform1f(this.u.uAttenuate, 0); gl.uniform1f(this.u.uRadOn, 0); gl.uniform1f(this.u.uElevMode, 0); gl.uniform1f(this.u.uAttrMode, 0); if (isCloud) gl.disable(gl.BLEND); gl.bindVertexArray(null); return;
       }
       gl.uniform1f(this.u.uCloudPass,0);
+      // r210: текстурированный меш (GLB/glTF) — свой проход: UV + baseColorTexture
+      if (o._tex && o.uv && o._vao && !o.line) {
+        const tp = this._ensureTexProgram(), tu = this._texU;
+        gl.useProgram(tp);
+        gl.uniformMatrix4fv(tu.uMVP, false, new Float32Array(this._lastVP || this._vp()));
+        gl.uniform3fv(tu.uColor, new Float32Array(o.color || [1, 1, 1]));
+        gl.uniform1f(tu.uAmbient, o._texAmbient != null ? o._texAmbient : 0.62);
+        gl.uniform1f(tu.uUnlit, 0);
+        gl.uniform3fv(tu.uLightDir, new Float32Array(norm([0.5, 0.9, 0.6])));
+        const cb = this._clipBounds();
+        gl.uniform1f(tu.uClipOn, (this._clipActive() && cb) ? 1 : 0);
+        if (cb) { gl.uniform3f(tu.uClipMin, cb.mn[0], cb.mn[1], cb.mn[2]); gl.uniform3f(tu.uClipMax, cb.mx[0], cb.mx[1], cb.mx[2]); }
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, o._tex); gl.uniform1i(tu.uTex, 0);
+        if (o._ib) gl.drawElements(gl.TRIANGLES, o.idxCount, gl.UNSIGNED_INT, 0);
+        else gl.drawArrays(gl.TRIANGLES, 0, o.count);
+        gl.bindTexture(gl.TEXTURE_2D, null); gl.activeTexture(gl.TEXTURE0);
+        gl.useProgram(this.prog); gl.bindVertexArray(null);
+        return;
+      }
       let col = o.color; let amb = 0.4;
       if (!o.line) { if (this.showAI && o.status && o.status !== 'none') col = hex2rgb(STATUS_COLOR[o.status]); if (o.id && o.id === this.selectedId) { col = mixW(col, 0.28); amb = 0.62; } }
       gl.uniform3fv(this.u.uColor, new Float32Array(col)); gl.uniform1f(this.u.uUnlit, o.line ? 1 : 0); gl.uniform1f(this.u.uAmbient, amb);
       gl.uniform1f(this.u.uUseVColor, (!o.line && o.col) ? 1 : 0); gl.uniform1f(this.u.uPointSize, 1);
-      gl.drawArrays(o.line ? gl.LINES : gl.TRIANGLES, 0, o.count); gl.uniform1f(this.u.uUseVColor, 0); gl.bindVertexArray(null);
+      if (o.line) gl.drawArrays(gl.LINES, 0, o.count);
+      else if (o._ib) gl.drawElements(gl.TRIANGLES, o.idxCount, gl.UNSIGNED_INT, 0);   // r210: индексированный меш
+      else gl.drawArrays(gl.TRIANGLES, 0, o.count);
+      gl.uniform1f(this.u.uUseVColor, 0); gl.bindVertexArray(null);
     }
 
     // ---------- picking (Moller-Trumbore) ----------
@@ -3365,13 +3653,26 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const qv = cross(tv, e1); const v = dot(d, qv) * invDet; if (v < 0 || u + v > 1) return;
         const t = dot(e2, qv) * invDet; if (t > 1e-4 && t < bestT) { bestT = t; best = obj; }
       };
+      // r210: треугольник индексированного меша (n — номер треугольника)
+      const triTestIdx = (P, I, n, obj) => {
+        const ia = I[n * 3] * 3, ib = I[n * 3 + 1] * 3, ic = I[n * 3 + 2] * 3;
+        const a = [P[ia], P[ia + 1], P[ia + 2]], b = [P[ib], P[ib + 1], P[ib + 2]], c = [P[ic], P[ic + 1], P[ic + 2]];
+        const e1 = sub(b, a), e2 = sub(c, a); const pv = cross(d, e2); const det = dot(e1, pv);
+        if (Math.abs(det) < 1e-7) return; const invDet = 1 / det;
+        const tv = sub(o, a); const u = dot(tv, pv) * invDet; if (u < 0 || u > 1) return;
+        const qv = cross(tv, e1); const v = dot(d, qv) * invDet; if (v < 0 || u + v > 1) return;
+        const t = dot(e2, qv) * invDet; if (t > 1e-4 && t < bestT) { bestT = t; best = obj; }
+      };
       for (const obj of this.base) {
         if (obj.line || obj.hidden || obj.points) continue;
-        const P = obj.pos;
+        const P = obj.pos, I = obj.idx || null;
         if (obj.aabb && rayAABB(o, d, obj.aabb.mn, obj.aabb.mx) == null) continue;   // отсекаем объекты вне луча
         if (obj._grid) {
           const seen = new Set();
-          traverseGrid(obj._grid, o, d, (arr) => { for (const i of arr) { if (seen.has(i)) continue; seen.add(i); triTest(P, i, obj); } return false; });
+          traverseGrid(obj._grid, o, d, (arr) => { for (const n of arr) { if (seen.has(n)) continue; seen.add(n); if (I) triTestIdx(P, I, n, obj); else triTest(P, n * 9, obj); } return false; });
+        } else if (I) {
+          const nt = (I.length / 3) | 0;
+          for (let n = 0; n < nt; n++) triTestIdx(P, I, n, obj);
         } else {
           for (let i = 0; i < P.length; i += 9) triTest(P, i, obj);
         }
