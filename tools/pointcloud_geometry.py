@@ -713,12 +713,37 @@ def _best_fit_transform(P, Q, weights=None):
     return T
 
 
+def _auto_crop(xyz, rgb=None, voxel=1.0, frac=0.05):
+    """r204: оставить плотное ядро скана (здание), отрезать редкие деревья/выбросы.
+    Ячейки 1 м; порог = 5 % от максимальной заполненности; bbox по оставшимся точкам."""
+    import numpy as np
+    if xyz is None or len(xyz) == 0:
+        return xyz, rgb
+    mn = xyz.min(axis=0)
+    k = np.floor((xyz - mn) / voxel).astype(np.int64)
+    key = (k[:, 0] * 1000003 + k[:, 1]) * 1000003 + k[:, 2]
+    uniq, inv, cnt = np.unique(key, return_inverse=True, return_counts=True)
+    thr = max(2.0, float(cnt.max()) * float(frac))
+    keep_cells = uniq[cnt >= thr]
+    mask = np.isin(key, keep_cells)
+    if int(mask.sum()) < 1000:
+        return xyz, rgb
+    q = xyz[mask]
+    lo = q.min(axis=0) - voxel * 0.5
+    hi = q.max(axis=0) + voxel * 0.5
+    m2 = np.all((xyz >= lo) & (xyz <= hi), axis=1)
+    out_rgb = rgb[m2] if rgb is not None else None
+    return xyz[m2], out_rgb
+
+
 def run_mesh(req):
     import numpy as np
     if not _have('open3d'):
         _fail('need_open3d', needOpen3d=True)
     import open3d as o3d
     xyz, rgb, _, _ = read_ply_numpy(req['input'])
+    if req.get('autoCrop'):
+        xyz, rgb = _auto_crop(xyz, rgb, float(req.get('cropVoxel') or 1.0), 0.05)
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
     if rgb is not None:
@@ -748,6 +773,15 @@ def run_mesh(req):
             mesh.remove_vertices_by_mask(~keep)
     verts = np.asarray(mesh.vertices)
     faces = np.asarray(mesh.triangles)
+    # r204: Poisson иногда возвращает NaN-вершины («bad average roots») — иначе меш невидим.
+    if verts.size and not np.isfinite(verts).all():
+        good = np.isfinite(verts).all(axis=1)
+        remap = np.full(verts.shape[0], -1, dtype=np.int64)
+        remap[good] = np.arange(int(good.sum()), dtype=np.int64)
+        if faces.size:
+            fm = np.all(good[faces], axis=1)
+            faces = remap[faces[fm]]
+        verts = verts[good]
     vcol = None
     if mesh.has_vertex_colors():
         vcol = np.asarray(mesh.vertex_colors) * 255.0

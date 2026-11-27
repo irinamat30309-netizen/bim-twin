@@ -4164,14 +4164,13 @@ function registerIpc() {
       };
       if (normPath(out) === normPath(abs)) return { ok: false, error: 'output_overwrites_input' };
       const script = ensureGeomScript();
-      const hasTransform = validGeomSourceTransform(pi.meta);
-      const inputFrame = hasTransform ? {
-        axis: pi.meta.srcXform.axis,
-        t: pi.meta.srcXform.t.slice(0, 3)
-      } : null;
+      // r204: меш — визуальный слой; оставляем его в координатах вьюера (Y-up). Если вернуть
+      // «source» (Z-up), просмотрщик получает меш в другой СК и показывает пустоту.
+      const inputFrame = null;
       const r = await runPyClean(py, script, {
         mode: 'mesh', input: pi.ply, output: out, method: a.method || 'poisson',
         depth: a.depth, voxel: a.voxel, trim: a.trim,
+        autoCrop: a.autoCrop !== false, cropVoxel: a.cropVoxel,
         inputFrame: inputFrame,
         outputCrsWkt: inputFrame ? ((pi.meta && pi.meta.crsWkt) || null) : null
       });

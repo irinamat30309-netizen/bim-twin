@@ -3037,7 +3037,7 @@
       try {
         const pr = await API.parseCloud(p);
         if (pr && pr.ok) {
-          if (pr.kind === 'mesh') viewer.loadColoredMesh(pr);
+          if (pr.kind === 'mesh') { viewer.loadColoredMesh(pr); try { if (viewer.resetView) viewer.resetView(); } catch (_) {} }
           else { viewer.loadCloud(pr, { preserveView: true, sourceName:p }); cacheCloud(p, pr); }
           lastCloudPath = p; lastCloudCount = (pr.meta && pr.meta.points) || 0; return true;
         }
@@ -3216,9 +3216,9 @@
     }
     async function geomMesh() {
       if (!geomCloudReady() || !API.meshCloud) return;
-      toast('Lixel: очищаю облако и заполняю поверхность (Poisson, depth 11)… это может занять несколько минут');
+      toast('Lixel: очищаю облако, отрезаю редкие края и заполняю поверхность (Poisson depth 11)… это может занять несколько минут');
       try {
-        const r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.04, maxPoints: 12000000 });
+        const r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.04, maxPoints: 12000000, autoCrop: true });
         if (r && r.ok) {
           const loaded = await reloadGeomCloud(r.path);
           if (loaded) {
@@ -6678,5 +6678,6 @@
 
   window.addEventListener('DOMContentLoaded', init);
 })();
+
 
 
