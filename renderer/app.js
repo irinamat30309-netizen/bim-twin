@@ -1,4 +1,4 @@
-﻿/* BIM Twin — renderer v0.4 (Phase A: persistence + CRUD + uploads + backup). */
+/* BIM Twin — renderer v0.4 (Phase A: persistence + CRUD + uploads + backup). */
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -3216,15 +3216,20 @@
         }
       } catch (e) { toast('Ошибка совмещения'); }
     }
-    async function geomMesh() {
+    async function geomMesh(ultra) {
       if (!geomCloudReady() || !API.meshCloud) return;
-      toast('Lixel: очищаю облако, отрезаю редкие края и заполняю поверхность (Poisson depth 11)… это может занять несколько минут');
+      const depth = ultra ? 12 : 11;
+      const voxel = ultra ? 0.01 : 0.02;
+      toast(ultra
+        ? 'Lixel МАКСИМУМ: depth 12, воксель 1 см — поверхность строится дольше и тяжелее для GPU…'
+        : 'Lixel: очищаю облако, отрезаю редкие края и заполняю поверхность (depth 11, 2 см)… это может занять несколько минут');
       try {
-        let r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.02, maxPoints: 12000000, autoCrop: true, cropFrac: 0.08 });
+        const args = { path: curCloudPath(), method: 'poisson', depth, voxel, maxPoints: 12000000, autoCrop: true, cropFrac: 0.08 };
+        let r = await API.meshCloud(args);
         if (r && (r.needOpen3d || r.needPython) && API.ensurePyDeps) {
           toast('Для поверхности не хватает Open3D — скачиваю автоматически…');
           const e = await API.ensurePyDeps();
-          if (e && e.open3d) r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.02, maxPoints: 12000000, autoCrop: true, cropFrac: 0.08 });
+          if (e && e.open3d) r = await API.meshCloud(args);
         }
         if (r && r.ok) {
           const loaded = await reloadGeomCloud(r.path);
@@ -3348,6 +3353,7 @@
         GI('chart-column', 'Отклонения (скан ↔ модель)', () => withBusy(gb, 'Расчёт отклонений…', geomDeviation)),
         GI('git-compare', 'Совмещение сканов (ICP)', () => withBusy(gb, 'Совмещение (ICP)…', geomRegister)),
         GI('shapes', 'Lixel: очистить и заполнить (поверхность)', () => withBusy(gb, 'Lixel-поверхность…', geomMesh)),
+        GI('scan-eye', 'Lixel: максимум (depth 12, 1 см)', () => withBusy(gb, 'Lixel-максимум…', () => geomMesh(true))),
         { sep: true },
         GI('sparkles', 'Облако → 3DGS (настройки + тур)', () => openSplatConvertDialog()),
         GI('save', 'Сохранить 3DGS (.ply)', () => saveConvertedSplat()),
