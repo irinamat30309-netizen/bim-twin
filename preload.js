@@ -144,6 +144,8 @@ contextBridge.exposeInMainWorld('bimAPI', {
   meshCloud: (a) => inv('bim:meshCloud', a),
   pdalRun: (a) => inv('bim:pdalRun', a),
   installPyDeps: () => inv('bim:installPyDeps'),
+  ensurePyDeps: () => inv('bim:ensurePyDeps'),
+  onPySetupProgress: (cb) => { const h = (_e, d) => { try { cb(d); } catch (_) {} }; try { ipcRenderer.on('bim:pySetupProgress', h); } catch (_) {} return () => { try { ipcRenderer.removeListener('bim:pySetupProgress', h); } catch (_) {} }; },
   readDocument: (docId) => inv('bim:readDocument', docId),
   openFile: (p) => inv('bim:openFile', p),
   saveCopy: (docId) => inv('bim:saveCopy', docId),

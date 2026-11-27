@@ -3048,6 +3048,7 @@
           if (!b64) return false;
           const browserParsed = await load3DBuffer(p, b64ToU8(b64).buffer);
           if (!browserParsed || !browserParsed.ok) return false;
+          if (browserParsed.kind === 'mesh') { try { if (viewer.resetView) viewer.resetView(); } catch (_) {} }
           lastCloudPath = p; lastCloudCount = (browserParsed.meta && browserParsed.meta.points) || 0; return true;
         }
         // r204: main-парсер не читает mesh-PLY (только облака) — грузим меш рендерером.
@@ -3058,6 +3059,7 @@
           if (!b64) return false;
           const browserParsed = await load3DBuffer(p, b64ToU8(b64).buffer);
           if (!browserParsed || !browserParsed.ok) return false;
+          if (browserParsed.kind === 'mesh') { try { if (viewer.resetView) viewer.resetView(); } catch (_) {} }
           lastCloudPath = p; lastCloudCount = (browserParsed.meta && browserParsed.meta.points) || 0; return true;
         }
       } catch (e) { console.warn('geom reload', e); }
@@ -3218,7 +3220,12 @@
       if (!geomCloudReady() || !API.meshCloud) return;
       toast('Lixel: очищаю облако, отрезаю редкие края и заполняю поверхность (Poisson depth 11)… это может занять несколько минут');
       try {
-        const r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.04, maxPoints: 12000000, autoCrop: true });
+        let r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.04, maxPoints: 12000000, autoCrop: true });
+        if (r && (r.needOpen3d || r.needPython) && API.ensurePyDeps) {
+          toast('Для поверхности не хватает Open3D — скачиваю автоматически…');
+          const e = await API.ensurePyDeps();
+          if (e && e.open3d) r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.04, maxPoints: 12000000, autoCrop: true });
+        }
         if (r && r.ok) {
           const loaded = await reloadGeomCloud(r.path);
           if (loaded) {
@@ -3675,6 +3682,14 @@
             else if (st && st.numpy) { label = 'NumPy (базовый Python)'; color = 'warn'; }
             else if (st && st.python) { label = 'Python есть, пакеты не найдены'; color = 'warn'; }
             setEng(label, color);
+            if (st && !st.open3d && !st.cloudCompare && API.ensurePyDeps) {
+              setEng('ставлю Open3D автоматически…', 'warn');
+              toast('Скачиваю движок поверхности (Python 3.12 + Open3D)… это займёт несколько минут');
+              API.ensurePyDeps().then((r) => {
+                if (r && r.open3d) { setEng('Open3D (полный конвейер)', 'ok'); toast('Open3D установлен — поверхность Lixel доступна'); }
+                else { setEng('Python без Open3D', 'warn'); }
+              }).catch(() => {});
+            }
             if (st && !st.open3d && !st.cloudCompare && (typeof CAN_PERSIST === 'undefined' || CAN_PERSIST) && API.installPyDeps) {
               menu.appendChild(window.__lxKit.menuItem({ ico: 'download', label: 'Установить Open3D (макс. качество)', sub: 'Автоматически: изолированный Python + Open3D, без прав администратора',
                 onClick: async () => { try { const r = await API.installPyDeps(); toast((r && r.message) || 'Запущена установка Open3D…'); } catch (e) { toast('Не удалось запустить установку'); } } }));

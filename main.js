@@ -4007,6 +4007,54 @@ function registerIpc() {
       return { ok: true, python: true, pythonBin: py, numpy: !!(r && r.numpy), scipy: !!(r && r.scipy), open3d: !!(r && r.open3d), pdal: !!(r && r.pdal), pyVersion: (r && r.python) || null, cloudCompare: !!ccBin() };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
+  // r205: автоматическая установка Python+Open3D при первом запуске (без консоли и кликов).
+  let _pyDepsPromise = null;
+  ipcMain.handle('bim:ensurePyDeps', async (event) => {
+    if (_pyDepsPromise) return _pyDepsPromise;
+    _pyDepsPromise = (async () => {
+      try {
+        const send = (line) => { try { if (event && event.sender && !event.sender.isDestroyed()) event.sender.send('bim:pySetupProgress', { line: String(line).slice(0, 300) }); } catch (_) {} };
+        const status = async () => {
+          const py = pythonBin();
+          if (!py) return { python: false, open3d: false };
+          const st = await runPyClean(py, ensureGeomScript(), { mode: 'status' });
+          return { python: true, open3d: !!(st && st.open3d), numpy: !!(st && st.numpy), scipy: !!(st && st.scipy) };
+        };
+        const before = await status();
+        if (before.open3d) return { ok: true, ready: true, open3d: true, python: true };
+        send('Ищу установщик Python/Open3D…');
+        let ps1 = '';
+        for (const c of [path.join(process.resourcesPath || '', 'setup-python.ps1'), path.join(__dirname, 'scripts', 'setup-python.ps1'), path.join(__dirname, 'resources', 'setup-python.ps1')]) {
+          try { if (c && fs.existsSync(c)) { ps1 = c; break; } } catch (_) {}
+        }
+        if (!ps1) return { ok: false, error: 'no_setup_script', open3d: false };
+        let wheels = '';
+        for (const w of [path.join(process.resourcesPath || '', 'wheels'), path.join(path.dirname(ps1), 'wheels')]) {
+          try { if (w && fs.existsSync(w)) { wheels = w; break; } } catch (_) {}
+        }
+        send('Скачиваю изолированный Python 3.12 + Open3D… это займёт несколько минут');
+        const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1];
+        if (wheels) args.push('-Wheels', wheels);
+        const ch = require('child_process').spawn('powershell.exe', args, { windowsHide: true, env: Object.assign({}, process.env, { PYTHONUTF8: '1' }) });
+        let tail = '';
+        const onData = (d) => {
+          const text = String(d || '');
+          tail = (tail + text).slice(-4000);
+          for (const ln of text.split(/\r?\n/)) {
+            const s = ln.trim();
+            if (s && /Downloading|Installing|Already|Done|Failed|pip|Python/i.test(s)) send(s);
+          }
+        };
+        ch.stdout.on('data', onData); ch.stderr.on('data', onData);
+        const code = await new Promise((res) => { const t = setTimeout(() => { try { ch.kill(); } catch (_) {} res(-1); }, 30 * 60 * 1000); ch.on('close', (c) => { clearTimeout(t); res(c); }); ch.on('error', () => { clearTimeout(t); res(-2); }); });
+        _pyBinCache = undefined;
+        const after = await status();
+        send(after.open3d ? 'Готово: Open3D установлен.' : 'Установка завершилась без Open3D.');
+        return { ok: !!after.open3d, ready: !!after.open3d, open3d: !!after.open3d, numpy: !!after.numpy, scipy: !!after.scipy, exitCode: code, message: after.open3d ? 'Open3D установлен' : (tail || 'Не удалось установить Open3D') };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e), open3d: false }; }
+    })();
+    try { return await _pyDepsPromise; } finally { _pyDepsPromise = null; }
+  });
   ipcMain.handle('bim:deviation', async (event, a) => {
     const tmps = [];
     try {
