@@ -743,7 +743,9 @@ def run_mesh(req):
     import open3d as o3d
     xyz, rgb, _, _ = read_ply_numpy(req['input'])
     if req.get('autoCrop'):
-        xyz, rgb = _auto_crop(xyz, rgb, float(req.get('cropVoxel') or 1.0), 0.05)
+        xyz, rgb = _auto_crop(xyz, rgb, float(req.get('cropVoxel') or 1.0), float(req.get('cropFrac') or 0.05))
+    # r205: цвет вершин берём с ПОЛНОГО (не воксельного) облака — иначе границы окон/кирпича мылятся.
+    ref_xyz, ref_rgb = xyz, rgb
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
     if rgb is not None:
@@ -789,8 +791,8 @@ def run_mesh(req):
         # r204: Poisson/BPA не переносят цвет точек — красим вершины по ближайшей точке
         # (как в Lixel: поверхность остаётся цветной, а не серой).
         try:
-            ref = np.asarray(pcd.points)
-            ref_col = np.asarray(pcd.colors) * 255.0
+            ref = np.asarray(ref_xyz)
+            ref_col = np.asarray(ref_rgb, dtype=np.float64)
             if ref.size and ref_col.size:
                 try:
                     from scipy.spatial import cKDTree

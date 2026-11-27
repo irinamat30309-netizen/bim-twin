@@ -1,4 +1,4 @@
-/* BIM Twin — renderer v0.4 (Phase A: persistence + CRUD + uploads + backup). */
+﻿/* BIM Twin — renderer v0.4 (Phase A: persistence + CRUD + uploads + backup). */
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -3220,11 +3220,11 @@
       if (!geomCloudReady() || !API.meshCloud) return;
       toast('Lixel: очищаю облако, отрезаю редкие края и заполняю поверхность (Poisson depth 11)… это может занять несколько минут');
       try {
-        let r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.04, maxPoints: 12000000, autoCrop: true });
+        let r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.02, maxPoints: 12000000, autoCrop: true, cropFrac: 0.08 });
         if (r && (r.needOpen3d || r.needPython) && API.ensurePyDeps) {
           toast('Для поверхности не хватает Open3D — скачиваю автоматически…');
           const e = await API.ensurePyDeps();
-          if (e && e.open3d) r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.04, maxPoints: 12000000, autoCrop: true });
+          if (e && e.open3d) r = await API.meshCloud({ path: curCloudPath(), method: 'poisson', depth: 11, voxel: 0.02, maxPoints: 12000000, autoCrop: true, cropFrac: 0.08 });
         }
         if (r && r.ok) {
           const loaded = await reloadGeomCloud(r.path);
@@ -6693,6 +6693,7 @@
 
   window.addEventListener('DOMContentLoaded', init);
 })();
+
 
 
 

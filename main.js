@@ -4218,7 +4218,7 @@ function registerIpc() {
       const r = await runPyClean(py, script, {
         mode: 'mesh', input: pi.ply, output: out, method: a.method || 'poisson',
         depth: a.depth, voxel: a.voxel, trim: a.trim,
-        autoCrop: a.autoCrop !== false, cropVoxel: a.cropVoxel,
+        autoCrop: a.autoCrop !== false, cropVoxel: a.cropVoxel, cropFrac: a.cropFrac,
         inputFrame: inputFrame,
         outputCrsWkt: inputFrame ? ((pi.meta && pi.meta.crsWkt) || null) : null
       });
