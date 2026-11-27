@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /*
  * tools/recolor-cli.js — «Цвет по фото камер» без окна приложения (ревизия 55, r179 — параллельно по тайлам).
  *
@@ -24,7 +24,9 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 try { app.on('window-all-closed', () => {}); } catch (_) {}
 const RP = require('../recolor-parallel');
 
-const [src, dst, xbin, posesPath, optJson] = process.argv.slice(2);
+const __args = process.argv.slice(2).filter(a => !String(a).startsWith('--'));
+if (__args.length && /recolor-cli\.js$/i.test(__args[0])) __args.shift();
+const [src, dst, xbin, posesPath, optJson] = __args;
 if (!src || !dst || !xbin || !posesPath) {
   console.error('нужно: electron tools/recolor-cli.js in.las out.las scan.xbin poses.csv [json]');
   process.exit(2);
@@ -183,3 +185,5 @@ app.whenReady().then(async () => {
     app.exit(1);
   }
 }).catch((e) => { console.error(e && e.stack || e); app.exit(1); });
+
+
