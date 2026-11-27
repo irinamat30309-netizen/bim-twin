@@ -1,9 +1,3 @@
-c5186db8afa606a797013f2a35bd8860ec030de5dd82a6a4b20a4fc123baaa38  _scratch/r209/wip-tools/calib-probe.js
-9a5347cd97c9f9ba03e57a71f092c1ec7ae6d9a57063502f181dda47509a57e1  _scratch/r209/wip-tools/dump-all-batches.ps1
-555f5432ed4cb927a1edcf5411d4afcc305a13e839b1122f00689dd2123bffb9  _scratch/r209/wip-tools/frame-dump-preload.js
-2260af2b395f2cae2ac091339e91295038a9b75a665e35b2e86e80c640c86703  _scratch/r209/wip-tools/frame-dump.html
-881a58058f92402cc0a3be853e45bce0bff8deeae84196429ac131d3a9314256  _scratch/r209/wip-tools/frame-dump.js
-42760c87458989f4ddbe03e59114a28be8c01e0c44f6df810a8ea0c62358e7c2  _scratch/r209/wip-tools/proj-check.js
 fb6afbb7d22a13fadb25d19506ca35d7789abb60d929b723e251d8c84aa6a06c  .github/workflows/ci.yml
 b9e06d22ab44139c78903e3a4ede3501cfe3d609addfde59e020747ad2b73296  .github/workflows/datadog-synthetics.yml
 2193e14a9102b7b6788f900635533bda382d4b073b4514cfeab409621d992a6b  .github/workflows/quality.yml
