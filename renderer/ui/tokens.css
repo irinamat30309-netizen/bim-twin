@@ -139,7 +139,7 @@ html[data-theme="light"] {
   --rb-min: 52px;
   --rb-glabel: 11px;
   /* 3D-область всегда на тёмном фоне — даже в светлой теме интерфейса */
-  --viewer-bg: #1c1b1a;
+  --viewer-bg: #0e1013;
 
   /* слои */
   --z-stage: 20;

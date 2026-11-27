@@ -6,8 +6,8 @@
  * Проверяем:
  *   1) размеры ленты: иконка 28px, подпись 11.5px/1.2, max-width 112px, padding 6px,
  *      min-width 52px, подпись группы 11px; --h-ribbon увеличен (tokens.css);
- *   2) светлая тема: интерфейс светлый, 3D-область — тёмная (токен --viewer-bg #1c1b1a,
- *      chrome.js принудительно включает вьюеру тёмную тему и тёплый фон #1c1b1a);
+ *   2) светлая тема: интерфейс светлый, 3D-область — тёмная (токен --viewer-bg #0E1013,
+ *      chrome.js принудительно включает вьюеру тёмную тему и фон #0E1013 как у Lixel);
  *   3) привязка (snap) при старте выключена и не включается при открытии проекта/облака
  *      (modes.js → viewer.setMeasureSnap(false), кнопка #mmSnap не активна);
  *   4) адаптивность: media-запросы ≥2560 и ≥3200 px масштабируют иконки/подписи/ленту,
@@ -164,7 +164,7 @@ test('r130: ribbon.js создаёт иконки больших кнопок 28
 
 // ===================== 2. Светлая тема: тёмный 3D =====================
 test('r130: светлая тема — тёмный фон 3D-области (CSS-токен и контейнер вьюера)', () => {
-  assert.match(TOKENS, /--viewer-bg:\s*#(1c1b1a|232221)/i, 'токен тёмного фона 3D — графит из палитры');
+  assert.match(TOKENS, /--viewer-bg:\s*#0e1013/i, 'токен тёмного фона 3D — как у Lixel #0E1013');
   assert.match(SHELL, /\.stage\s*\{[^}]*background:\s*var\(--viewer-bg/s, 'контейнер вьюера использует тёмный --viewer-bg');
   assert.ok(!/\.stage\s*\{[^}]*background:\s*var\(--viewport-a\)/s.test(SHELL), 'сцена не должна крашиться в светлый --viewport-a');
 });
@@ -172,7 +172,7 @@ test('r130: светлая тема — тёмный фон 3D-области (C
 test('r130: chrome.js принудительно включает вьюеру тёмную тему при светлой теме UI', () => {
   assert.match(CHROME, /function paintViewerTheme\(\)/, 'нет синхронизации темы вьюера');
   assert.match(CHROME, /function initViewerTheme\(\)/, 'нет инициализации темы вьюера');
-  assert.match(CHROME, /var VIEWER_BG = \[28 \/ 255, 27 \/ 255, 26 \/ 255\]/, 'фон сцены — тёплый графит #1c1b1a');
+  assert.match(CHROME, /var VIEWER_BG = \[14 \/ 255, 16 \/ 255, 19 \/ 255\]/, 'фон сцены — #0E1013 как у Lixel');
   assert.match(CHROME, /uiLight \? 'dark' : theme/, 'в светлой теме UI вьюер принудительно тёмный');
   assert.match(CHROME, /lx-viewer-ready/, 'тема вьюера ставится после создания вьюера');
   assert.match(CHROME, /lx-pctools-ready/, 'тема вьюера ставится после готовности pcTools');
@@ -180,13 +180,13 @@ test('r130: chrome.js принудительно включает вьюеру �
   assert.match(CHROME, /paintViewerTheme: paintViewerTheme/, 'paintViewerTheme доступен для проверки/повторного применения');
 });
 
-test('r130: chrome.js (vm) — светлая тема UI не делает сцену светлой, фон — #1c1b1a', () => {
+test('r130/r202: chrome.js (vm) — светлая тема UI не делает сцену светлой, фон — #0E1013', () => {
   const env = makeChromeEnv('light');
   env.W.__lxChrome.initViewerTheme();
   assert.strictEqual(env.fake.theme, 'dark', 'вьюер должен быть тёмным в светлой теме UI');
   const bg = env.fake._themeColors().bg;
-  assert.ok(Math.abs(bg[0] - 28 / 255) < 1e-9 && Math.abs(bg[1] - 27 / 255) < 1e-9 && Math.abs(bg[2] - 26 / 255) < 1e-9,
-    'фон сцены должен быть #1c1b1a, а не ' + JSON.stringify(bg));
+  assert.ok(Math.abs(bg[0] - 14 / 255) < 1e-9 && Math.abs(bg[1] - 16 / 255) < 1e-9 && Math.abs(bg[2] - 19 / 255) < 1e-9,
+    'фон сцены должен быть #0E1013, а не ' + JSON.stringify(bg));
   assert.strictEqual(env.attrs['data-theme'], 'light', 'интерфейс остаётся светлым');
 });
 
@@ -263,5 +263,5 @@ test('r130: старые media для узких экранов сохранен
   assert.match(SHELL, /@media \(max-width: 1100px\)/, 'адаптивность ≤1100px сохранена');
   // тёмная тема по умолчанию, светлая — через data-theme; 3D всё равно тёмный
   assert.match(TOKENS, /html\[data-theme="light"\]/, 'светлая тема описана');
-  assert.match(TOKENS, /--viewer-bg:\s*#1c1b1a/i, 'тёмный фон 3D не зависит от темы UI');
+  assert.match(TOKENS, /--viewer-bg:\s*#0e1013/i, 'тёмный фон 3D (#0E1013) не зависит от темы UI');
 });

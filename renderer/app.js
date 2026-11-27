@@ -213,9 +213,12 @@
   // в эталоне их нет; плоский сплэт/EDL остаются в коде как опции тестов.
   const RENDER_PROFILES = {
     classic: { label: 'Классический (r177)', soft: true, autoBase: 3.4, cap: 5.0, bright: 1.1, attenuate: false, density: 'classic', budget: 300000000 },
-    photo: { label: 'Фото (Lixel)', soft: true, softFlat: true, photoSmooth: true, smoothK: 0.8, smoothYK: 0.45, autoBase: 2.4, cap: 6.0, bright: 1.0, attenuate: true, density: 'photo', budget: 380000000, densityBoost: 1.45, minPx: 1.8, maxPx: 6.0, nearDensity: true, saturation: 0.82 },
+    photo: { label: 'Фото (Lixel)', soft: true, softFlat: true, photoSmooth: true, smoothK: 1.0, smoothYK: 0.7, medianR: 2, smoothPasses: 2, autoBase: 2.4, cap: 6.0, bright: 1.0, attenuate: true, density: 'photo', budget: 380000000, densityBoost: 1.45, minPx: 1.8, maxPx: 6.0, nearDensity: true, saturation: 0.82 },
     balanced: { label: 'Сбалансированный', soft: false, autoBase: 2.3, cap: 4.0, bright: 1.0, attenuate: true, density: 'balanced', budget: 0 },
-    max: { label: 'Максимум детализации', soft: false, autoBase: 2.3, cap: 4.5, bright: 1.0, attenuate: true, density: 'exact', budget: 0 }
+    max: { label: 'Максимум детализации', soft: false, autoBase: 2.3, cap: 4.5, bright: 1.0, attenuate: true, density: 'exact', budget: 0 },
+    // r202: «Максимум качества» — все точки файла (594M). Замер: ctxLost 0, FPS 17.8/28.4, фактически ≈8.9 ГиБ,
+    // но HUD по 24 Б/точку показывает 13.8/12 ГБ — на 12-ГБ карте риск context lost; не DEFAULT.
+    quality: { label: 'Максимум качества (все точки)', soft: true, softFlat: true, photoSmooth: true, smoothK: 1.0, smoothYK: 0.7, medianR: 2, smoothPasses: 2, autoBase: 2.4, cap: 6.0, bright: 1.0, attenuate: true, density: 'photo', budget: 594110150, densityBoost: 1.45, minPx: 1.8, maxPx: 6.0, nearDensity: true, saturation: 0.82 }
   };
   // r199: «Фото (Lixel)» — DEFAULT по итогам замеров на новом цвете: плоский энергосберегающий сплэт убирает
   // тёмные кольца r177 (speckle 0.060 против 0.184), gradient 0.0565 попадает в диапазон эталона Lixel 0.03–0.08
@@ -252,6 +255,8 @@
       if (viewer.setPhotoSmooth) viewer.setPhotoSmooth(!!pr.photoSmooth);
       if (viewer.setPhotoSmoothStrength) viewer.setPhotoSmoothStrength(pr.smoothK != null ? pr.smoothK : 0.55);
       if (viewer.setPhotoLumaStrength) viewer.setPhotoLumaStrength(pr.smoothYK || 0);
+      if (viewer.setPhotoMedianRadius) viewer.setPhotoMedianRadius(pr.medianR || 1);
+      if (viewer.setPhotoSmoothPasses) viewer.setPhotoSmoothPasses(pr.smoothPasses || 1);
       if (viewer.setPhotoSize) viewer.setPhotoSize(pr.minPx != null && pr.maxPx != null);
       // EDL управляется профилем только если он его явно задаёт; ручной EDL пользователя не сбрасываем,
       // но при уходе с фото-профиля, включившего EDL, выключаем его обратно.
@@ -270,12 +275,13 @@
     try { localStorage.setItem('bim.render.profile', name); } catch (e) {}
     applyProfileToViewer(name);
     const pr = RENDER_PROFILES[name];
-    toast('Профиль отображения: ' + pr.label + '. Бюджет точек применится при повторном открытии облака.');
+    const warn = name === 'quality' ? ' ВНИМАНИЕ: все ~594 млн точек, HUD ≈13.8/12 ГБ — возможен context lost; применится при повторном открытии облака.' : ' Бюджет точек применится при повторном открытии облака.';
+    toast('Профиль отображения: ' + pr.label + '.' + warn);
     return true;
   };
   window.__bimRenderProfile = renderProfile;
-  // r199: «Фото (Lixel)» в меню «Вид → Профиль отображения». Реестр команд статический (commands.js),
-  // поэтому пункт добавляется здесь и лента один раз перестраивается — без правки чужого модуля.
+  // r199/r202: «Фото (Lixel)» и «Максимум качества» в меню «Вид → Профиль отображения».
+  // Реестр команд статический (commands.js), поэтому пункты добавляются здесь, лента перестраивается один раз.
   function ensurePhotoProfileMenuItem() {
     try {
       const C = window.__lxCommands;
@@ -284,12 +290,19 @@
       for (const t of C.TABS) for (const g of (t.groups || [])) if (g && g.id === 'profiles') grp = g;
       if (!grp) return false;
       if (!grp.items) grp.items = [];
-      if (grp.items.some(function (i) { return i && i.id === 'profilePhoto'; })) return true;
-      const item = { id: 'profilePhoto', ico: 'camera', label: 'Фото (Lixel)', size: 'lg', call: '__bimSetRenderProfile', args: ['photo'], tip: 'DEFAULT r199: плоские мягкие сплэты + аттенюация 2.4–6 px, яркость 1.0, без пересвета и зерна' };
-      grp.items.unshift(item);
-      if (C.byId) C.byId.profilePhoto = item;
-      const rib = window.__lxRibbon;
-      if (rib && rib.build) { const cur = rib.current; rib.build(); if (cur) rib.select(cur); }
+      let added = false;
+      if (!grp.items.some(function (i) { return i && i.id === 'profilePhoto'; })) {
+        const item = { id: 'profilePhoto', ico: 'camera', label: 'Фото (Lixel)', size: 'lg', call: '__bimSetRenderProfile', args: ['photo'], tip: 'DEFAULT: плоские мягкие сплэты + аттенюация 2.4–6 px, медиана 5×5 + chroma-denoise, яркость 1.0' };
+        grp.items.unshift(item); if (C.byId) C.byId.profilePhoto = item; added = true;
+      }
+      if (!grp.items.some(function (i) { return i && i.id === 'profileQuality'; })) {
+        const q = { id: 'profileQuality', ico: 'gauge', label: 'Максимум качества (все точки)', size: 'lg', call: '__bimSetRenderProfile', args: ['quality'], tip: 'Все 594M точек: факт ≈8.9 ГиБ, HUD 13.8 из 12 ГБ, возможен context lost; FPS ~18–28' };
+        grp.items.push(q); if (C.byId) C.byId.profileQuality = q; added = true;
+      }
+      if (added) {
+        const rib = window.__lxRibbon;
+        if (rib && rib.build) { const cur = rib.current; rib.build(); if (cur) rib.select(cur); }
+      }
       return true;
     } catch (e) { try { console.warn('photo profile menu', e); } catch (_) {} return false; }
   }
@@ -328,7 +341,7 @@
       if (!viewer || !viewer.setMaxPointPx) return;
       const prof = renderProfile();
       // r199: «Фото» — база 2.4 px и собственный clamp 1.8…6 px (setPhotoClamp), без classic-потолка 2.5.
-      if (prof === 'photo') { viewer.setPointBasePx(2.4); viewer.setMaxPointPx(5.0); return; }
+      if (prof === 'photo' || prof === 'quality') { viewer.setPointBasePx(2.4); viewer.setMaxPointPx(5.0); return; }
       if (prof === 'classic') { viewer.setMaxPointPx(2.5); return; }
       if (prof === 'max') { viewer.setMaxPointPx(4.5); return; }
       const d = densityMode();
@@ -348,6 +361,7 @@
     // r198: бюджет по профилю (Классический — LOD 300M; Максимум — 80% VRAM; Сбалансированный — 0.53)
     const prof = renderProfile();
     if (prof === 'photo') return 380000000;   // r199: 450M дал <35 FPS на чистом замере e2e (25.7); 380M — компромисс lead
+    if (prof === 'quality') return 594110150; // r202: все точки файла (594M), только по явному выбору профиля
     if (prof === 'classic') return 300000000;
     if (prof === 'max') { try { const b = gpuBudgetPoints(0.80); if (b > 0) return Math.min(b, 2000000000); } catch (e) {} }
     if (prof === 'balanced') { try { const b = gpuBudgetPoints(0.53); if (b > 0) return Math.min(b, 2000000000); } catch (e) {} }

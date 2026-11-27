@@ -41,8 +41,10 @@ test('r199: профиль «Фото (Lixel)»: плоский энергосб
   assert.strictEqual(p.bool('softFlat'), true, 'фото: плоский сплэт без тёмных колец (это и убирает зерно r177)');
   assert.strictEqual(p.bool('attenuate'), true, 'фото: перспективная аттенюация должна быть включена');
   assert.strictEqual(p.bool('photoSmooth'), true, 'r201: chroma-only screen-space denoise включён');
-  assert.strictEqual(p.num('smoothK'), 0.8, 'r201: сила chroma-denoise 0.8');
-  assert.strictEqual(p.num('smoothYK'), 0.45, 'r201: медианный luma-фильтр 0.45 (убирает спикл)');
+  assert.strictEqual(p.num('smoothK'), 1.0, 'r202: chroma-denoise K=1.0');
+  assert.strictEqual(p.num('smoothYK'), 0.7, 'r202: медианный luma-фильтр 0.7');
+  assert.strictEqual(p.num('medianR'), 2, 'r202: разреженная 5×5 медиана');
+  assert.strictEqual(p.num('smoothPasses'), 2, 'r202: chroma-denoise в два прохода');
   assert.strictEqual(p.bool('softAlpha'), null, 'r201: soft-alpha AA отклонён — на замерах speckle хуже в 1.8×');
   assert.strictEqual(p.bool('edl'), null, 'фото: без EDL — у эталона нет тёмных контуров');
 });
@@ -146,7 +148,30 @@ test('r199: фото-профиль выбираем; classic и остальн�
   assert.match(APP, /window\.__bimSetRenderProfile = function/);
   assert.match(APP, /ensurePhotoProfileMenuItem/);
   assert.match(APP, /args: \['photo'\]/);
+  assert.match(APP, /args: \['quality'\]/);
   assert.match(APP, /applyProfileToViewer\(renderProfile\(\)\)/);
   assert.match(APP, /if \(prof === 'classic'\) return 300000000;/);
   assert.match(APP, /setMaxPointPx\(d === 'exact' \? 4\.5 : d === 'fast' \? 3\.0 : 4\.0\);/);
+});
+
+test('r202: профиль «Максимум качества» — все 594M, только явный выбор, с предупреждением', () => {
+  const q = profileBlock('quality');
+  assert.match(q.src, /label: 'Максимум качества \(все точки\)'/);
+  assert.strictEqual(q.num('budget'), 594110150);
+  assert.strictEqual(q.num('smoothK'), 1.0);
+  assert.strictEqual(q.num('medianR'), 2);
+  assert.strictEqual(q.num('smoothPasses'), 2);
+  assert.match(APP, /if \(prof === 'quality'\) return 594110150;/);
+  assert.match(APP, /profileQuality/);
+  assert.match(APP, /ВНИМАНИЕ: все ~594 млн точек/);
+  assert.match(APP, /const DEFAULT_RENDER_PROFILE = 'photo';/);
+});
+
+test('r202: медиана 5×5, два прохода chroma-denoise и второй FBO зарегистрированы', () => {
+  assert.match(VW, /uniform float uMedianR;/);
+  assert.match(VW, /setPhotoMedianRadius\(r\)/);
+  assert.match(VW, /setPhotoSmoothPasses\(n\)/);
+  assert.match(VW, /dir \* 3\.0/);
+  assert.match(VW, /this\._fxTex2 = gl\.createTexture\(\); this\._fxFbo2 = gl\.createFramebuffer\(\);/);
+  assert.match(VW, /passes === 2/);
 });

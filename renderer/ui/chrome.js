@@ -62,8 +62,8 @@
    * В светлой теме интерфейс остаётся светлым, а сцена — тёмной. app.js при смене темы
    * зовёт viewer.setTheme(<тема>), поэтому здесь «оборачиваем» setTheme/_themeColors
    * вьюера: сам renderer/webgl-viewer.js — чужая зона, его не правим. Фон сцены —
-   * тёплый графит #1c1b1a по палитре проекта (без синего и чистого белого). */
-  var VIEWER_BG = [28 / 255, 27 / 255, 26 / 255];   // #1c1b1a
+   * как у Lixel Studio: #0E1013 (r202; было #1c1b1a). */
+  var VIEWER_BG = [14 / 255, 16 / 255, 19 / 255];   // #0E1013
   function currentViewer() {
     var v = null;
     try { if (W.__pcTools && typeof W.__pcTools.viewer === 'function') v = W.__pcTools.viewer(); } catch (e) { }

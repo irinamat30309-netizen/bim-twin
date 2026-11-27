@@ -222,6 +222,7 @@
   uniform sampler2D uCol; uniform sampler2D uDep;
   uniform vec2 uTexel; uniform float uNear; uniform float uFar; uniform float uStrength; uniform float uRadius;
   uniform float uSmooth; uniform float uSmoothY; uniform float uEdlTol;
+  uniform float uMedianR;
   float lin(float d){ float z = d * 2.0 - 1.0; return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear)); }
   void main(){
     vec3 c = texture(uCol, vUv).rgb;
@@ -233,18 +234,28 @@
     if(uSmooth > 0.0 || uSmoothY > 0.0){
       float y0 = dot(c, vec3(0.2126,0.7152,0.0722));
       vec3 accC = c; float wC = 1.0;
-      // r201: для luma — медиана 3×3 (9 отсчётов), а не билатеральное среднее: именно медиана убирает
-      // «перец» из одиночных пересвеченных/тёмных точек, не размывая края поверхностей.
+      // r202: luma — медиана 3×3 (uMedianR=1) или разреженная 5×5 (uMedianR=2, 9 отсчётов по радиусу 2).
+      // Chroma — среднее по ДВУМ кольцам (r=1 и r=2), это дополнительно −~35 % хрома-шума без потери luma.
       float lv[9]; lv[0] = y0;
       for(int i = 0; i < 8; i++){
         float a = float(i) * 0.7853981634;
-        vec2 off = vec2(cos(a), sin(a)) * uTexel;
-        float dn = texture(uDep, vUv + off).r;
-        vec3 cn = texture(uCol, vUv + off).rgb;
-        float dyn = dot(cn, vec3(0.2126,0.7152,0.0722));
-        float ok = (dn >= 1.0 ? 0.0 : 1.0);
-        accC += cn * (ok * exp(-abs(dyn - y0) * 9.0)); wC += ok * exp(-abs(dyn - y0) * 9.0);
-        lv[i + 1] = ok > 0.5 ? dyn : y0;
+        vec2 dir = vec2(cos(a), sin(a)) * uTexel;
+        float dn1 = texture(uDep, vUv + dir).r;
+        vec3 cn1 = texture(uCol, vUv + dir).rgb;
+        float dyn1 = dot(cn1, vec3(0.2126,0.7152,0.0722));
+        float ok1 = (dn1 >= 1.0 ? 0.0 : 1.0);
+        accC += cn1 * (ok1 * exp(-abs(dyn1 - y0) * 9.0)); wC += ok1 * exp(-abs(dyn1 - y0) * 9.0);
+        float dn2 = texture(uDep, vUv + dir * 2.0).r;
+        vec3 cn2 = texture(uCol, vUv + dir * 2.0).rgb;
+        float dyn2 = dot(cn2, vec3(0.2126,0.7152,0.0722));
+        float ok2 = (dn2 >= 1.0 ? 0.0 : 1.0);
+        accC += cn2 * (ok2 * 0.55 * exp(-abs(dyn2 - y0) * 9.0)); wC += ok2 * 0.55 * exp(-abs(dyn2 - y0) * 9.0);
+        float dn3 = texture(uDep, vUv + dir * 3.0).r;
+        vec3 cn3 = texture(uCol, vUv + dir * 3.0).rgb;
+        float dyn3 = dot(cn3, vec3(0.2126,0.7152,0.0722));
+        float ok3 = (dn3 >= 1.0 ? 0.0 : 1.0);
+        accC += cn3 * (ok3 * 0.30 * exp(-abs(dyn3 - y0) * 9.0)); wC += ok3 * 0.30 * exp(-abs(dyn3 - y0) * 9.0);
+        lv[i + 1] = (uMedianR > 1.5 ? (ok2 > 0.5 ? dyn2 : y0) : (ok1 > 0.5 ? dyn1 : y0));
       }
       // сортировка вставками 9 значений (медиана = lv[4])
       for(int i = 1; i < 9; i++){
@@ -389,7 +400,7 @@
       this._autoPointSize = true; this._autoPointBasePx = 2.3; this._ptMaxCap = 4.0; this._softSplats = false; this._softSplatsLimit = 150000000; this._softForce = false; this._softSplatsFail = false; this._softPerfBad = 0; this._motionSizeScale = 0.9;
       // r199 «Фото (Lixel)»: плоский энергосберегающий сплэт + перспективная аттенюация одновременно,
       // размер 1.8…6 px по глубине/локальному шагу, яркость 1.0; экранное подавление цветового зерна.
-      this._softFlat = false; this._photoSmooth = false; this._nearDensity = false; this._photoMinPx = 1.8; this._photoMaxPx = 6.0; this._photoSmoothK = 0.55; this._photoSmoothYK = 0; this._photoSize = false; this._softAlpha = false;
+      this._softFlat = false; this._photoSmooth = false; this._nearDensity = false; this._photoMinPx = 1.8; this._photoMaxPx = 6.0; this._photoSmoothK = 0.55; this._photoSmoothYK = 0; this._photoSize = false; this._softAlpha = false; this._photoMedianR = 1; this._photoSmoothPasses = 1;
     try { canvas.addEventListener('webglcontextlost', () => { this._softSplats = false; this._softSplatsFail = true; }); } catch (_) {}
       // r172: динамическое разрешение в движении не ниже 85 % (было 75 % → «мыло»).
       this._renderScale = 1; this._dynRes = true; this._dynScaleMoving = 0.9; this._qualityMode = 'auto';
@@ -2964,12 +2975,14 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
         const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, EDL_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, EDL_FS)); gl.linkProgram(p);
         if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('EDL link: ' + gl.getProgramInfoLog(p));
         this._edlProg = p; this._edlU = {};
-        for (const k of ['uCol', 'uDep', 'uTexel', 'uNear', 'uFar', 'uStrength', 'uRadius', 'uSmooth', 'uSmoothY', 'uEdlTol']) this._edlU[k] = gl.getUniformLocation(p, k);
+        for (const k of ['uCol', 'uDep', 'uTexel', 'uNear', 'uFar', 'uStrength', 'uRadius', 'uSmooth', 'uSmoothY', 'uEdlTol', 'uMedianR']) this._edlU[k] = gl.getUniformLocation(p, k);
         const aP = gl.getAttribLocation(p, 'aP');
         this._edlVao = gl.createVertexArray(); gl.bindVertexArray(this._edlVao);
         const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
         gl.enableVertexAttribArray(aP); gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0); gl.bindVertexArray(null);
         this._edlColTex = gl.createTexture(); this._edlDepTex = gl.createTexture(); this._edlFbo = gl.createFramebuffer();
+        // r202: второй цветовой буфер для двухпроходного chroma-denoise (K дважды ≈ −55 % шума).
+        this._fxTex2 = gl.createTexture(); this._fxFbo2 = gl.createFramebuffer();
         this._edlW = 0; this._edlH = 0; this._edlResize();
         gl.bindFramebuffer(gl.FRAMEBUFFER, this._edlFbo);
         const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
@@ -2992,26 +3005,37 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       gl.bindFramebuffer(gl.FRAMEBUFFER, this._edlFbo);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._edlColTex, 0);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this._edlDepTex, 0);
+      // r202: цветовой буфер второго прохода
+      gl.bindTexture(gl.TEXTURE_2D, this._fxTex2);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this._fxFbo2);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._fxTex2, 0);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       this._edlW = w; this._edlH = h;
     }
-    _edlComposite() {
+    _edlComposite() { this._fxComposite(this._edlColTex, this._edlDepTex, true, true); }
+    // r202: общий композит. colorTex/depthTex — источники; doLuma — применять luma-медиану;
+    // doEdl — применять EDL. Двухпроходный режим: pass1 только chroma, pass2 chroma+luma(+EDL).
+    _fxComposite(colorTex, depthTex, doLuma, doEdl) {
       const gl = this.gl; const c = this.bbox;
       const dg = Math.sqrt(Math.pow(c.mx[0] - c.mn[0], 2) + Math.pow(c.mx[1] - c.mn[1], 2) + Math.pow(c.mx[2] - c.mn[2], 2)) || 8;
       const near = Math.max(1e-5, Math.min(dg * 0.0006, this.dist * 0.05)), far = Math.max(2000, dg * 4);
       gl.useProgram(this._edlProg); gl.disable(gl.DEPTH_TEST); gl.bindVertexArray(this._edlVao);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this._edlColTex); gl.uniform1i(this._edlU.uCol, 0);
-      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this._edlDepTex); gl.uniform1i(this._edlU.uDep, 1);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, colorTex); gl.uniform1i(this._edlU.uCol, 0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, depthTex); gl.uniform1i(this._edlU.uDep, 1);
       gl.uniform2f(this._edlU.uTexel, 1 / (this._edlW || 1), 1 / (this._edlH || 1));
       gl.uniform1f(this._edlU.uNear, near); gl.uniform1f(this._edlU.uFar, far);
-      gl.uniform1f(this._edlU.uStrength, this._edl ? (this._edlStrength || 1.0) : 0);
+      gl.uniform1f(this._edlU.uStrength, (doEdl && this._edl) ? (this._edlStrength || 1.0) : 0);
       gl.uniform1f(this._edlU.uRadius, this._edlRadius || 1.4);
       gl.uniform1f(this._edlU.uEdlTol, this._edlTol || 0.04);
-      // r199: фото-профиль включает только цветовое подавление зерна (EDL выключен — без чёрных обводок).
       const _smK = (this._photoSmoothK != null) ? this._photoSmoothK : 0.55;
-      const _smY = (this._photoSmoothYK != null) ? this._photoSmoothYK : 0;
+      const _smY = (doLuma && this._photoSmooth && this._photoSmoothYK != null) ? this._photoSmoothYK : 0;
       gl.uniform1f(this._edlU.uSmooth, this._photoSmooth ? _smK : 0);
-      gl.uniform1f(this._edlU.uSmoothY, this._photoSmooth ? _smY : 0);
+      gl.uniform1f(this._edlU.uSmoothY, _smY);
+      gl.uniform1f(this._edlU.uMedianR, (this._photoMedianR != null && this._photoMedianR > 1.5) ? 2.0 : 1.0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.bindVertexArray(null); gl.enable(gl.DEPTH_TEST); gl.useProgram(this.prog); gl.activeTexture(gl.TEXTURE0);
     }
@@ -3175,7 +3199,22 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
       gl.uniform1f(this.u.uClipOn, 0);
       for (const o of drawList) { if (!o.line || o.hidden) continue; this._drawObj(o); }
       if (this._octActive && this.cloudVisible !== false) this._drawOctree();
-      if (this._edlOnThisFrame) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); this._edlComposite(); }
+      if (this._edlOnThisFrame) {
+        const passes = (this._photoSmooth && (this._photoSmoothPasses | 0) >= 2 && this._fxFbo2) ? 2 : 1;
+        if (passes === 2) {
+          // r202: pass1 — chroma-only в промежуточный FBO; pass2 — chroma+luma(+EDL) на экран.
+          gl.bindFramebuffer(gl.FRAMEBUFFER, this._fxFbo2);
+          gl.viewport(0, 0, this._edlW || this.canvas.width, this._edlH || this.canvas.height);
+          this._fxComposite(this._edlColTex, this._edlDepTex, false, false);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+          this._fxComposite(this._fxTex2, this._edlDepTex, true, true);
+        } else {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+          this._edlComposite();
+        }
+      }
       if (this.measuring && this._measLabels && this._measLabels.length) this._renderMeasLabels();
     }
     _drawObj(o) {
@@ -4528,6 +4567,10 @@ if (o.col && this.aColor >= 0) { const cb = gl.createBuffer(); gl.bindBuffer(gl.
     setPhotoSmoothStrength(v) { this._photoSmoothK = Math.max(0, Math.min(1, +v)); this.render(); return this._photoSmoothK; }
     // r199: отдельная (по умолчанию 0) сила подавления luma-выбросов. Резкость важнее: 0 = luma не трогаем.
     setPhotoLumaStrength(v) { this._photoSmoothYK = Math.max(0, Math.min(1, +v)); this.render(); return this._photoSmoothYK; }
+    // r202: радиус luma-медианы: 1 = 3×3, 2 = разреженная 5×5 (9 отсчётов по радиусу 2).
+    setPhotoMedianRadius(r) { this._photoMedianR = +r >= 2 ? 2 : 1; this.render(); return this._photoMedianR; }
+    // r202: 1 — один композитный проход, 2 — chroma-denoise дважды (сильнее, luma-медиана один раз).
+    setPhotoSmoothPasses(n) { this._photoSmoothPasses = (+n >= 2) ? 2 : 1; this.render(); return this._photoSmoothPasses; }
     setEdlThreshold(t) { const v = +t; if (isFinite(v)) this._edlTol = Math.max(0.005, Math.min(0.5, v)); this.render(); return this._edlTol; }
     // r199: EDL как у Lixel (EdlOutline), но с порогом по глубине: контур только на реальных разрывах,
     // а не на каждой паре соседних точек. Сила 0.5–1.2, порог 0.03–0.05 м.
